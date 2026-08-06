@@ -140,8 +140,29 @@ def _trs(pos, rot, scale) -> np.ndarray:
 def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     """Matriz de skinning de cada hueso en la clave `k`: (huesos, 4, 4).
 
-    Dos pasos: la transformacion que dan las pistas y, por delante, la inversa
+    Dos pasos: la transformacion que dan las pistas y, POR DETRAS, la inversa
     de la matriz de reposo. NO se compone con el padre.
+
+    El orden `A · inv(B)` no es el de la formula de libro para vector-fila
+    (`inv(B) · A`, llevar el vertice al espacio del hueso y de ahi al animado).
+    Los dos dan identidad en la clave de reposo, asi que esa prueba no los
+    distingue; lo que los separa es cuanto deforman la malla:
+
+        arista estirada, percentiles 1-99   inv(B)·A        A·inv(B)
+        estandarte                          [0.625, 1.633]  [0.946, 1.044]
+        brazo del estandarte                [0.711, 1.200]  [0.991, 1.010]
+        jdarcjik (un hueso por vertice)     [1.000, 1.000]  [1.000, 1.000]
+
+    Con `inv(B)·A` cada hueso gira alrededor de SU pivote. Los del brazo estan
+    a 880 unidades, giran solidarios (correlacion 0.992) y aun asi sus dos
+    transformaciones difieren en una traslacion: al mezclarlas los vertices se
+    van al punto medio y la malla encoge hasta 0.686. Es lo que se veia como
+    un brazo que se deforma al bascular el estandarte.
+
+    Como las matrices de reposo son traslaciones puras -- solo el pivote, la
+    parte lineal es identidad -- `A · inv(B)` es rotar sobre el origen de la
+    capa y trasladar por `(a - b)`. La capa bascula rigida, que es el aspecto
+    de un puppet de WE, y de paso el brazo recorre el doble (57.8 -> 116.6).
 
     Que no haya que componer es lo contrario de lo que parece, asi que conviene
     dejar por que. Las pistas ya vienen en espacio global: el `parent` del
@@ -159,8 +180,8 @@ def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     out = np.empty((len(bones), 4, 4))
     for j, bone in enumerate(bones):
         tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
-        out[j] = (np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64))
-                  @ _trs(tr[0:3], tr[3:6], tr[6:9]))
+        out[j] = (_trs(tr[0:3], tr[3:6], tr[6:9])
+                  @ np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64)))
     return out
 
 

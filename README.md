@@ -322,8 +322,29 @@ todavía no está identificado.
 
 #### Skinning
 
-`v' = Σ_j w_j · (v · inv(B_j) · A_j)`, con matrices de **vector-fila** (`v·M`),
+`v' = Σ_j w_j · (v · A_j · inv(B_j))`, con matrices de **vector-fila** (`v·M`),
 igual que la MVP.
+
+El orden importa y **no es el de la fórmula de libro** (`inv(B)·A`, llevar el
+vértice al espacio del hueso y de ahí al animado). Los dos dan identidad en la
+clave de reposo, así que esa prueba no los distingue; lo que los separa es
+cuánto deforman la malla:
+
+| arista estirada, percentiles 1–99 | `inv(B)·A` | `A·inv(B)` |
+|---|---|---|
+| estandarte | [0.625, 1.633] | **[0.946, 1.044]** |
+| brazo del estandarte | [0.711, 1.200] | **[0.991, 1.010]** |
+| `jdarcjik` (un hueso por vértice) | [1.000, 1.000] | [1.000, 1.000] |
+
+Con `inv(B)·A` cada hueso gira alrededor de **su** pivote. Los del brazo están
+a 880 unidades, giran solidarios (correlación 0.992) y aun así sus dos
+transformaciones difieren en una traslación: al mezclarlas los vértices se van
+al punto medio y la malla encoge hasta 0.686. Eso se veía como un brazo que se
+deforma al bascular el estandarte.
+
+Como las matrices de reposo son **traslaciones puras** —solo el pivote, la
+parte lineal es identidad—, `A·inv(B)` equivale a rotar sobre el origen de la
+capa y trasladar por `(a − b)`. La capa bascula rígida.
 
 **No hay que componer con el hueso padre.** Es lo contrario de lo que dicta el
 reflejo, así que conviene dejar por qué: las pistas ya vienen en espacio
