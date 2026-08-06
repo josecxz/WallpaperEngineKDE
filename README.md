@@ -250,6 +250,53 @@ flag `IS_VOLUME 0x40`) tienen un layout de mipmap propio aún sin resolver.
 `read_texture` lanza `TexError` en vez de devolver píxeles basura. No hace
 falta ninguno para renderizar una escena; son para corrección de color.
 
+### `.mdl` — `tools/wemdl.py`
+
+Las mallas *puppet*. Un objeto con `puppet` no se dibuja sobre un quad: trae
+una malla propia cuyos vértices se deforman por huesos. Sin ella la capa se
+coloca por `origin` y acaba donde el autor no la puso.
+
+```
+char[]   magic "MDLV00NN" terminado en nul
+byte[12] constantes, idénticas en las 6 versiones observadas
+char[]   ruta del material, terminada en nul
+byte[]   relleno según versión
+u32      campo de serialización (0, o 0x01800009 en 0016)
+u32      TAMAÑO EN BYTES del bloque de vértices
+vértices
+u32      TAMAÑO EN BYTES del bloque de índices
+u16[]    índices
+...      bloques MDLS (esqueleto) y MDLA (animación), sin decodificar
+byte[]   relleno a cero; algunos exportadores rellenan a 1 MiB
+```
+
+Los dos tamaños son **en bytes, no en elementos**. Leerlos como número de
+elementos desborda el fichero, y ése fue el primer indicio de que iban así.
+
+Vértice de 52 bytes, 13 campos de 4:
+
+| Campos | Tipo | Contenido |
+|---|---|---|
+| 0–2 | `float3` | posición (`z` siempre 0: mallas planas) |
+| 3–6 | `u32 × 4` | índices de hueso |
+| 7–10 | `float4` | pesos, suman 1 |
+| 11–12 | `float2` | UV |
+
+Que 3–6 son enteros se ve en un vértice atado al hueso 6: como flotante ese
+patrón de bits es un denormal (8e-45), no un 6. Y que 7–10 son los pesos lo
+confirma que **sumen 1 en los 19 462 vértices** del corpus, con desviación
+máxima 1.19e-07 — el epsilon del `float`.
+
+**Validación** (`tools/test_wemdl.py`): 42 de 84 mallas decodifican, 21 758
+vértices y 40 185 triángulos, y las 42 cierran exactamente sobre un bloque
+`MDLS`/`MDLA` — ni un byte de basura tras la geometría.
+
+**Sin soportar a propósito:** MDLV0017, 0019 y 0023 (42 ficheros) sitúan el
+bloque en otro sitio y usan un stride mayor que el corpus no determina: 40 y
+80 encajan igual de bien y el rango de las UV no desempata. Se rechazan con
+error explícito en vez de adivinar. Las cuatro capas de Jeanne son MDLV0013,
+así que no bloquean.
+
 ## Uso
 
 ```sh
