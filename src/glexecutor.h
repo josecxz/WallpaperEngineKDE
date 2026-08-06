@@ -106,6 +106,10 @@ private:
         QVector<QByteArray> samplerSources;
         QVector<QByteArray> uniformNames;
         Blend blend = Blend::Normal;
+        // Malla puppet a dibujar, o -1 para el quad a pantalla completa. Solo
+        // el pase base de un objeto con puppet trae malla; los de efecto son
+        // post-proceso y siguen usando el quad.
+        int mesh = -1;
         GlName program = 0;
         qsizetype targetIndex = kCompo;
         QVector<Sampler> samplers;
@@ -127,6 +131,19 @@ private:
         GlName id = 0;
     };
 
+    // Malla puppet. El fichero trae los vertices intercalados (posicion vec3 +
+    // UV vec2, el mismo layout que el quad, para que los shaders no cambien) y
+    // detras los indices u16.
+    struct MeshSpec {
+        QString path;
+        int vertexCount = 0;
+        int indexCount = 0;
+        GlName vao = 0, vbo = 0, ibo = 0;
+    };
+
+    // Malla lista para dibujar, o nullptr si el id no existe o no se subio.
+    const MeshSpec *meshFor(int id) const;
+
     qsizetype targetIndex(const QString &name);   // crea el target si no existe
     bool buildCompositeProgram();
     void beginObject();
@@ -137,6 +154,7 @@ private:
 
     QVector<Op> m_ops;
     QHash<int, TexSpec> m_textures;
+    QHash<int, MeshSpec> m_meshes;
     QVector<Target> m_targets;              // indexable y estable
     QHash<QString, qsizetype> m_targetByName;
     Target m_compo[2];      // buffer del objeto en curso (ping-pong)

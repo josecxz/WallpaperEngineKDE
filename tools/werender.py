@@ -34,6 +34,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
+import wemdl
 import wepaths
 import wescene
 import weshader
@@ -43,12 +44,17 @@ from wescene import AssetResolver, SceneError, load_scene
 IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
 
 
-def object_mvp(obj, canvas: tuple[int, int]) -> list[float]:
-    """Matriz que coloca el quad del objeto en su sitio del lienzo.
+def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
+    """Matriz que coloca la geometria del objeto en su sitio del lienzo.
 
     El quad que sube el ejecutor va de -1 a 1. El objeto declara su centro
     (`origin`), su tamano en pixeles (`size`) y su `scale`, todo en
     coordenadas del lienzo; hay que mapear uno al otro y de ahi a clip space.
+
+    Con `mesh` la geometria no es el quad sino la malla puppet, cuyos vertices
+    ya vienen en pixeles respecto al centro del objeto. Ahi `size` no pinta
+    nada -- aplicarlo escalaria dos veces -- y basta con pasar de pixeles a
+    clip space.
 
     El shader hace `mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix)`,
     que es la convencion de vector-fila de HLSL: en GLSL `v * M` toma columnas,
@@ -61,8 +67,12 @@ def object_mvp(obj, canvas: tuple[int, int]) -> list[float]:
     angles = (_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
 
     # Semiextension y centro, normalizados a clip space (-1..1).
-    sx = size[0] * scale[0] / w
-    sy = size[1] * scale[1] / h
+    if mesh:
+        sx = 2.0 * scale[0] / w
+        sy = 2.0 * scale[1] / h
+    else:
+        sx = size[0] * scale[0] / w
+        sy = size[1] * scale[1] / h
     crop = (_floats(obj.raw.get("_cropoffset")) + [0.0, 0.0])[:2] if APPLY_CROP else [0.0, 0.0]
     tx = 2.0 * (origin[0] + crop[0]) / w - 1.0
     ty = 2.0 * (origin[1] + crop[1]) / h - 1.0
@@ -122,9 +132,15 @@ class Renderer:
         self.time = time
         self.tmp = Path(tempfile.mkdtemp(prefix="werender-"))
         self.tex_ids: dict[str, int] = {}
-        self.lines: list[str] = []   # cabecera: canvas y texturas
+        self.lines: list[str] = []   # cabecera: canvas, texturas y mallas
         self.body: list[str] = []    # los pases, repetibles por fotograma
-        self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0}
+        # Malla puppet por objeto. La clave es id(obj) y no el nombre porque
+        # dos capas pueden compartirlo; el objeto es el que manda.
+        self.meshes: dict[int, int] = {}
+        self.mesh_files: list[Path] = []
+        self.notes: list[str] = []
+        self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
+                      "puppet": 0, "puppet_omitido": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
 
@@ -155,6 +171,58 @@ class Renderer:
 
 
     # ── un pase ───────────────────────────────────────────────────────────
+    def _emit_mesh(self, obj) -> None:
+        """Sube la malla puppet del objeto, si la tiene y sabemos leerla.
+
+        Se escribe intercalada como 5 float por vertice (posicion + UV), que es
+        justo el layout del quad del ejecutor: asi los shaders no cambian y el
+        VAO de la malla usa las mismas dos localizaciones de atributo.
+
+        Los pesos y los indices de hueso se decodifican pero todavia no se
+        suben: sin las pistas de animacion (bloque MDLA) no hay nada que
+        deformar, y la pose de reposo ya corrige la colocacion.
+        """
+        if os.environ.get("WE_NO_PUPPET"):
+            return          # para aislar la malla al depurar
+        # `puppet` no lo declara el objeto sino el modelo al que apunta su
+        # `image`, junto a `material` y `autosize`.
+        img = obj.raw.get("image")
+        if not isinstance(img, str) or not img:
+            return
+        try:
+            rel = self.res.read_json(img).get("puppet")
+        except SceneError:
+            return
+        if not isinstance(rel, str) or not rel:
+            return
+        try:
+            blob = self.res.read_bytes(rel)
+            m = wemdl.parse_mdl(blob, rel)
+        except (SceneError, wemdl.MdlError, KeyError) as e:
+            self.stats["puppet_omitido"] += 1
+            self.notes.append(f"puppet sin malla ({rel}): {e}")
+            return
+
+        inter = np.empty((m.vertex_count, 5), dtype="<f4")
+        inter[:, 0:3] = m.positions
+        inter[:, 3] = m.uvs[:, 0]
+        # Las texturas se suben volteadas (ver _tex), asi que v=0 es el borde
+        # de abajo. En la malla la v crece hacia abajo: medido como
+        # corr(y, v) = -1 exacto en las cuatro capas de Jeanne, que es lo que
+        # cabe esperar de una rejilla regular. Hay que invertirla.
+        inter[:, 4] = 1.0 - m.uvs[:, 1]
+        idx = np.asarray(m.indices, dtype="<u2")
+
+        mid = len(self.mesh_files)
+        path = self.tmp / f"mesh{mid:03d}.bin"
+        with open(path, "wb") as fh:
+            fh.write(inter.tobytes())
+            fh.write(idx.tobytes())
+        self.mesh_files.append(path)
+        self.lines.append(f"mesh {mid} {path} {m.vertex_count} {idx.size}")
+        self.meshes[id(obj)] = mid
+        self.stats["puppet"] += 1
+
     def emit_pass(self, p, sresolver, canvas: tuple[int, int], obj=None) -> None:
         # Los metadatos del shader dicen que uniform se enlaza con que
         # propiedad del material, y con que valor por defecto.
@@ -238,7 +306,14 @@ class Renderer:
         # Solo el pase base dibuja geometria; los de efecto son post-proceso a
         # pantalla completa sobre el buffer del objeto y se quedan con la
         # identidad.
-        mvp = object_mvp(obj, canvas) if (obj is not None and p.stage == "base") else IDENTITY
+        # Solo el pase base de un objeto con puppet dibuja su malla; los de
+        # efecto siguen siendo el quad a pantalla completa.
+        mesh_id = self.meshes.get(id(obj)) if (obj is not None and p.stage == "base") else None
+        if mesh_id is not None:
+            self.body.append(f"mesh {mesh_id}")
+
+        mvp = object_mvp(obj, canvas, mesh=mesh_id is not None) \
+            if (obj is not None and p.stage == "base") else IDENTITY
         self.body.append("umat4 g_ModelViewProjectionMatrix " +
                          " ".join(f"{x:.6g}" for x in mvp))
         self.body.append("u1f g_Time @TIME@")
@@ -313,6 +388,7 @@ class Renderer:
         for obj in scene.objects:
             if obj.kind != "image" or not obj.passes:
                 continue
+            self._emit_mesh(obj)
             # Marca de inicio de objeto. El ejecutor la usa para componer el
             # objeto anterior sobre la escena en vez de pisarlo. `copybackground`
             # dice si este objeto arranca desde una copia de lo que hay detras
@@ -353,6 +429,7 @@ class Renderer:
         for obj in scene.objects:
             if obj.kind != "image" or not obj.passes:
                 continue
+            self._emit_mesh(obj)
             # Marca de inicio de objeto. El ejecutor la usa para componer el
             # objeto anterior sobre la escena en vez de pisarlo. `copybackground`
             # dice si este objeto arranca desde una copia de lo que hay detras
@@ -422,7 +499,7 @@ def emit_plan(wallpaper: Path, out_dir: Path) -> dict:
 
     remap: dict[str, str] = {}
     for src in sorted(r.tmp.iterdir()):
-        if src.suffix in (".rgba", ".vert", ".frag"):
+        if src.suffix in (".rgba", ".vert", ".frag", ".bin"):
             dst = out_dir / src.name
             dst.write_bytes(src.read_bytes())
             remap[str(src)] = str(dst)

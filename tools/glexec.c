@@ -59,6 +59,49 @@ static int compo_cur;
 
 static GLuint quad_vao, quad_vbo;
 
+/* Mallas puppet. El fichero trae los vertices intercalados (vec3 posicion +
+ * vec2 UV, el mismo layout que el quad) y detras los indices u16. */
+#define MAX_MESHES 64
+static struct {
+    GLuint vao, vbo, ibo;
+    int index_count;
+} meshes[MAX_MESHES];
+static int n_meshes;
+
+static void load_mesh(int id, const char *path, int nvert, int nidx)
+{
+    if (id < 0 || id >= MAX_MESHES) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "malla no abre: %s\n", path); return; }
+    size_t vbytes = (size_t)nvert * 5 * sizeof(float);
+    size_t ibytes = (size_t)nidx * sizeof(unsigned short);
+    void *buf = malloc(vbytes + ibytes);
+    if (!buf) { fclose(f); return; }
+    if (fread(buf, 1, vbytes + ibytes, f) != vbytes + ibytes) {
+        fprintf(stderr, "malla corta: %s\n", path);
+        free(buf); fclose(f); return;
+    }
+    fclose(f);
+
+    glGenVertexArrays(1, &meshes[id].vao);
+    glBindVertexArray(meshes[id].vao);
+    glGenBuffers(1, &meshes[id].vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, meshes[id].vbo);
+    glBufferData(GL_ARRAY_BUFFER, vbytes, buf, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          (void *)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glGenBuffers(1, &meshes[id].ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, meshes[id].ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, ibytes, (char *)buf + vbytes, GL_STATIC_DRAW);
+    meshes[id].index_count = nidx;
+    free(buf);
+    glBindVertexArray(quad_vao);
+    if (id >= n_meshes) n_meshes = id + 1;
+}
+
 /* Cache de programas: renderizar una secuencia repite el mismo plan una vez
  * por fotograma, y recompilar 24 programas por fotograma domina el tiempo
  * total. La clave es el par de rutas, que ya identifica la variante. */
@@ -284,7 +327,7 @@ int main(int argc, char **argv)
     }
 
     char line[4096];
-    int in_pass = 0, drawn = 0, skipped = 0;
+    int in_pass = 0, drawn = 0, skipped = 0, mesh_id = -1;
     GLuint prog = 0;
     char target[128] = "SCREEN";
     char blend[32] = "normal";
@@ -313,6 +356,11 @@ int main(int argc, char **argv)
             if (id >= 0 && id < MAX_TEX) {
                 textures[id] = load_texture(path, w, h);
             }
+        } else if (strcmp(kw, "mesh") == 0 && !in_pass) {
+            int id, nvert, nidx;
+            char path[512];
+            if (sscanf(line, "%*s %d %511s %d %d", &id, path, &nvert, &nidx) == 4)
+                load_mesh(id, path, nvert, nidx);
         } else if (strcmp(kw, "dump") == 0) {
             /* Instrumentacion: vuelca el compuesto actual para poder ver en
              * que pase exacto se pierde la imagen. */
@@ -346,10 +394,14 @@ int main(int argc, char **argv)
             in_pass = 1;
             prog = 0;
             n_samplers = n_unis = 0;
+            mesh_id = -1;
             snprintf(target, sizeof target, "SCREEN");
             snprintf(blend, sizeof blend, "normal");
         } else if (!in_pass) {
             continue;
+        } else if (strcmp(kw, "mesh") == 0) {
+            /* Dentro de un pase `mesh` lleva solo el id. */
+            sscanf(line, "%*s %d", &mesh_id);
         } else if (strcmp(kw, "prog") == 0) {
             char vp[512], fp[512];
             sscanf(line, "%*s %511s %511s", vp, fp);
@@ -432,8 +484,15 @@ int main(int argc, char **argv)
                 }
             }
 
-            glBindVertexArray(quad_vao);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            if (mesh_id >= 0 && mesh_id < MAX_MESHES && meshes[mesh_id].index_count > 0) {
+                glBindVertexArray(meshes[mesh_id].vao);
+                glDrawElements(GL_TRIANGLES, meshes[mesh_id].index_count,
+                               GL_UNSIGNED_SHORT, (void *)0);
+                glBindVertexArray(quad_vao);
+            } else {
+                glBindVertexArray(quad_vao);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            }
             drawn++;
 
             if (to_screen)

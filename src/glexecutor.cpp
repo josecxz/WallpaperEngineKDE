@@ -130,6 +130,12 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             t.w = tok[3].toInt();
             t.h = tok[4].toInt();
             m_textures.insert(tok[1].toInt(), t);
+        } else if (kw == QLatin1String("mesh") && tok.size() >= 5) {
+            MeshSpec m;
+            m.path = tok[2];
+            m.vertexCount = tok[3].toInt();
+            m.indexCount = tok[4].toInt();
+            m_meshes.insert(tok[1].toInt(), m);
         } else if (kw == QLatin1String("object")) {
             Op op;
             op.kind = Op::BeginObject;
@@ -151,6 +157,10 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             cur.frag = tok[2];
         } else if (kw == QLatin1String("target") && tok.size() >= 2) {
             cur.targetName = tok[1];
+        } else if (kw == QLatin1String("mesh") && tok.size() == 2) {
+            // Dentro de un pase `mesh` lleva solo el id; en la cabecera lleva
+            // ademas ruta y tamanos, y la rama de arriba pide 5 tokens.
+            cur.mesh = tok[1].toInt();
         } else if (kw == QLatin1String("blend") && tok.size() >= 2) {
             const QString &b = tok[1];
             cur.blend = (b == QLatin1String("none") || b == QLatin1String("opaque"))
@@ -441,6 +451,38 @@ bool GlExecutor::initialize(QString *error)
                           reinterpret_cast<void *>(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
 
+    // Mallas puppet. Mismo layout que el quad (vec3 posicion + vec2 UV), asi
+    // que comparten las localizaciones de atributo y los shaders no cambian.
+    for (auto it = m_meshes.begin(); it != m_meshes.end(); ++it) {
+        MeshSpec &m = it.value();
+        const QByteArray data = readAll(m.path);
+        const qsizetype vbytes = qsizetype(m.vertexCount) * 5 * sizeof(float);
+        const qsizetype ibytes = qsizetype(m.indexCount) * sizeof(unsigned short);
+        if (data.size() < vbytes + ibytes) {
+            m_log += QStringLiteral("malla corta: %1\n").arg(m.path);
+            m.indexCount = 0;   // se dibujara el quad
+            continue;
+        }
+
+        glGenVertexArrays(1, &m.vao);
+        glBindVertexArray(m.vao);
+        glGenBuffers(1, &m.vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferData(GL_ARRAY_BUFFER, vbytes, data.constData(), GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                              reinterpret_cast<void *>(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        // El IBO queda registrado en este VAO: basta con enlazar el VAO para
+        // dibujar, sin volver a tocar GL_ELEMENT_ARRAY_BUFFER.
+        glGenBuffers(1, &m.ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, ibytes,
+                     data.constData() + vbytes, GL_STATIC_DRAW);
+    }
+    glBindVertexArray(m_vao);
+
     for (auto it = m_textures.begin(); it != m_textures.end(); ++it) {
         TexSpec &t = it.value();
         const QByteArray data = readAll(t.path);
@@ -576,7 +618,16 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             }
         }
 
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        // Un pase con malla dibuja la geometria puppet; el resto, el quad. La
+        // malla se salta si no llego a subirse (fichero corto).
+        const MeshSpec *mesh = op.mesh >= 0 ? meshFor(op.mesh) : nullptr;
+        if (mesh) {
+            glBindVertexArray(mesh->vao);
+            glDrawElements(GL_TRIANGLES, mesh->indexCount, GL_UNSIGNED_SHORT, nullptr);
+            glBindVertexArray(m_vao);
+        } else {
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
         if (toScreen)
             m_compoCur ^= 1;
     }
@@ -625,6 +676,14 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     }
 }
 
+const GlExecutor::MeshSpec *GlExecutor::meshFor(int id) const
+{
+    const auto it = m_meshes.constFind(id);
+    if (it == m_meshes.constEnd() || it->vao == 0 || it->indexCount <= 0)
+        return nullptr;
+    return &it.value();
+}
+
 void GlExecutor::releaseResources()
 {
     if (!m_ready)
@@ -656,6 +715,12 @@ void GlExecutor::releaseResources()
     m_scene = Target();
     if (m_composite) glDeleteProgram(m_composite);
     m_composite = 0;
+    for (MeshSpec &m : m_meshes) {
+        if (m.vbo) glDeleteBuffers(1, &m.vbo);
+        if (m.ibo) glDeleteBuffers(1, &m.ibo);
+        if (m.vao) glDeleteVertexArrays(1, &m.vao);
+        m.vao = m.vbo = m.ibo = 0;
+    }
     if (m_vbo) glDeleteBuffers(1, &m_vbo);
     if (m_vao) glDeleteVertexArrays(1, &m_vao);
     m_vbo = m_vao = 0;
