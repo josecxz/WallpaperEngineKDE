@@ -201,11 +201,16 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[lis
                 u32     siempre 0
                 u32     TAMANO EN BYTES de la pista
                 float[] las claves
+            u32     siempre 0, cierra la animacion
 
     El par (0, tamano) va POR PISTA, no una vez en la cabecera. Leyendolo una
     sola vez cuadra la primera pista y deja sin consumir el resto; en los
     ficheros con dos animaciones el desajuste se acumula y descarrila la
     segunda. Es el mismo prefijo por registro que ya aparecio en los huesos.
+
+    El u32 de cola solo se nota con dos animaciones: con una sola se lo come el
+    relleno del final y el bloque cuadra igual. Sin el, la segunda animacion
+    arranca cuatro bytes antes y lee el cero de cierre como identificador.
 
     Cada fotograma son 9 float: posicion(3), rotacion(3) y escala(3). Tres
     comprobaciones cruzadas lo sostienen, y ninguna sale del propio bloque:
@@ -216,7 +221,13 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[lis
     """
     ver, p = _cstring(buf, pos)
     if not ver.startswith("MDLA"):
-        raise MdlError(f"{name}: se esperaba MDLA y hay {ver!r}")
+        # Seis mallas del corpus (DRAGON 1-3, WOMEN, SWORD y una Rider) llegan
+        # aqui sin tag y con cientos de bytes que NO son relleno: tras el
+        # esqueleto hay otro bloque sin identificar. No es un fallo del lector
+        # de animaciones, asi que se distingue del caso "tag equivocado".
+        resto = len(buf) - pos
+        raise MdlError(f"{name}: se esperaba MDLA y hay {ver!r} "
+                       f"({resto} b sin identificar tras el esqueleto)")
     _total, count = struct.unpack_from("<II", buf, p)
     p += 8
 
@@ -238,6 +249,8 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[lis
                 raise MdlError(f"{name}: la pista {k} de '{anim_name}' desborda el fichero")
             pistas.append(np.frombuffer(buf, "<f4", tbytes // 4, p).reshape(-1, 9))
             p += tbytes
+
+        p += 4                                  # cierre de la animacion
 
         t = np.stack(pistas) if pistas else np.zeros((0, 0, 9), dtype="<f4")
         anims.append(Animation(name=anim_name, mode=mode, duration=float(duration),
