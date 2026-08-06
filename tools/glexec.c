@@ -57,6 +57,12 @@ static GLuint textures[MAX_TEX];
 static Target compo[2];
 static int compo_cur;
 
+/* Buffer donde se acumulan todos los objetos. Sin el, cada objeto pisaba al
+ * anterior en el par ping-pong y solo sobrevivia la ultima capa. */
+static Target scene_rt;
+static GLuint composite_prog;
+static int object_open;
+
 static GLuint quad_vao, quad_vbo;
 
 /* Mallas puppet. El fichero trae los vertices intercalados (vec3 posicion +
@@ -154,6 +160,13 @@ static Target make_target(const char *name, int w, int h)
 /* WE codifica la resolucion del buffer en su nombre. */
 static Target *find_rt(const char *name)
 {
+    /* Targets incorporados: no son buffers propios sino nombres con los que
+     * un efecto pide leer lo que ya hay dibujado detras. Crearlos como buffer
+     * vacio los dejaba en negro. */
+    if (strcmp(name, "_rt_FullFrameBuffer") == 0
+        || strcmp(name, "_rt_MipMappedFrameBuffer") == 0)
+        return &scene_rt;
+
     for (int i = 0; i < n_rts; i++)
         if (strcmp(rts[i].name, name) == 0)
             return &rts[i];
@@ -217,6 +230,66 @@ static GLuint link_program(const char *vp, const char *fp)
     glDeleteShader(v);
     glDeleteShader(f);
     return prog;
+}
+
+/* Programa interno para volcar el buffer de un objeto sobre la escena. Es el
+ * unico shader que no viene del wallpaper. */
+static void init_composite(void)
+{
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location=0) in vec3 p; layout(location=1) in vec2 t;\n"
+        "out vec2 uv; void main(){ uv=t; gl_Position=vec4(p,1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "in vec2 uv; out vec4 o; uniform sampler2D src;\n"
+        "void main(){ o = texture(src, uv); }\n";
+    GLuint v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
+    GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(f, 1, &fs, NULL); glCompileShader(f);
+    composite_prog = glCreateProgram();
+    glAttachShader(composite_prog, v); glAttachShader(composite_prog, f);
+    glLinkProgram(composite_prog);
+    GLint ok = 0;
+    glGetProgramiv(composite_prog, GL_LINK_STATUS, &ok);
+    if (!ok) fprintf(stderr, "no enlaza el programa de composicion\n");
+    glDeleteShader(v); glDeleteShader(f);
+}
+
+/* Vuelca el objeto en curso sobre la escena. El alfa se mezcla por separado
+ * (ONE, ONE_MINUS_SRC_ALPHA): con la mezcla normal se elevaba al cuadrado y
+ * las capas se iban a transparente al encadenar pases. */
+static void flush_object(void)
+{
+    if (!object_open || !composite_prog)
+        return;
+    object_open = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
+    glViewport(0, 0, scene_rt.w, scene_rt.h);
+    glUseProgram(composite_prog);
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                        GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, compo[compo_cur].tex);
+    glUniform1i(glGetUniformLocation(composite_prog, "src"), 0);
+    glBindVertexArray(quad_vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+/* Cada objeto arranca transparente y aporta solo lo suyo; la mezcla con lo de
+ * detras ocurre una vez, al componerlo. Los efectos que necesitan el fondo lo
+ * leen del buffer de escena por su nombre (_rt_FullFrameBuffer). */
+static void begin_object(void)
+{
+    flush_object();
+    object_open = 1;
+    glClearColor(0, 0, 0, 0);
+    for (int i = 0; i < 2; i++) {
+        glBindFramebuffer(GL_FRAMEBUFFER, compo[i].fbo);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 }
 
 static GLuint cached_program(const char *vp, const char *fp)
@@ -349,6 +422,13 @@ int main(int argc, char **argv)
             sscanf(line, "%*s %d %d", &canvas_w, &canvas_h);
             compo[0] = make_target("_compo_a", canvas_w, canvas_h);
             compo[1] = make_target("_compo_b", canvas_w, canvas_h);
+            scene_rt = make_target("_scene", canvas_w, canvas_h);
+            init_composite();
+            glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        } else if (strcmp(kw, "object") == 0 && !in_pass) {
+            begin_object();
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
             char path[512];
@@ -501,9 +581,14 @@ int main(int argc, char **argv)
     }
     fclose(plan);
 
+    /* El ultimo objeto sigue abierto: sin esto se pierde la capa de arriba. */
+    flush_object();
+
     if (outpath[0]) {
         unsigned char *px = malloc((size_t)canvas_w * canvas_h * 4);
-        glBindFramebuffer(GL_FRAMEBUFFER, compo[compo_cur].fbo);
+        /* Se lee la escena acumulada, no el buffer del ultimo objeto. */
+        glBindFramebuffer(GL_FRAMEBUFFER,
+                          scene_rt.fbo ? scene_rt.fbo : compo[compo_cur].fbo);
         glReadPixels(0, 0, canvas_w, canvas_h, GL_RGBA, GL_UNSIGNED_BYTE, px);
         FILE *o = fopen(outpath, "wb");
         fwrite(px, 1, (size_t)canvas_w * canvas_h * 4, o);
