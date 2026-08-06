@@ -1,0 +1,3 @@
+module org.jose.wallpaperengine.render
+plugin wallpaperenginerender
+classname WallpaperEnginePlugin

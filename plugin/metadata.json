@@ -1,0 +1,21 @@
+{
+    "KPackageStructure": "Plasma/Wallpaper",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "josecxz95@gmail.com",
+                "Name": "Jose"
+            }
+        ],
+        "Category": "",
+        "Description": "Motor de animaciones para el escritorio",
+        "Description[es]": "Motor de animaciones para el escritorio",
+        "Icon": "preferences-desktop-wallpaper",
+        "Id": "org.jose.wallpaperengine",
+        "License": "GPL-3.0-or-later",
+        "Name": "WallpaperEngine (dev)",
+        "Version": "0.1.0"
+    },
+    "Keywords": "",
+    "X-KDE-ParentApp": "org.kde.plasmashell"
+}

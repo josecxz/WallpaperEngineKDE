@@ -1,0 +1,486 @@
+#!/usr/bin/env python3
+"""Renderizador offline: ejecuta una escena de WE y vuelca un PNG.
+
+Une las cuatro piezas ya resueltas -- contenedor, texturas, shaders y grafo --
+y las pasa a `glexec`, que solo ejecuta. Aqui vive lo que hay que decidir:
+
+  * Binding de propiedades. Cada uniform lleva metadatos JSON en su comentario;
+    la clave `material` dice con que entrada de `constantshadervalues` se
+    enlaza, y `default` que valor usar si el pase no la trae. Es el ultimo
+    subsistema del inventario original que faltaba por resolver.
+  * Uniforms del motor: g_Time, g_ModelViewProjectionMatrix,
+    g_TextureNResolution... los pone el motor, no el material.
+  * Resolucion de bindings: `previous` es el buffer acumulado del objeto y
+    los `_rt_*` son buffers intermedios con nombre.
+
+Uso:
+    cc -O2 -o /tmp/glexec tools/glexec.c -lEGL -lGL
+    python3 tools/werender.py <dir_wallpaper> <salida.png> [--time 0.0]
+                              [--only-base] [--exec /tmp/glexec]
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+sys.path.insert(0, str(Path(__file__).parent))
+import wescene
+import weshader
+import wetex
+from wescene import AssetResolver, SceneError, load_scene
+
+WE_ASSETS = Path("/home/jose/wallpapers/steam_library/steamapps/common/wallpaper_engine/assets")
+
+IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
+
+
+def object_mvp(obj, canvas: tuple[int, int]) -> list[float]:
+    """Matriz que coloca el quad del objeto en su sitio del lienzo.
+
+    El quad que sube el ejecutor va de -1 a 1. El objeto declara su centro
+    (`origin`), su tamano en pixeles (`size`) y su `scale`, todo en
+    coordenadas del lienzo; hay que mapear uno al otro y de ahi a clip space.
+
+    El shader hace `mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix)`,
+    que es la convencion de vector-fila de HLSL: en GLSL `v * M` toma columnas,
+    asi que el array plano que se sube es la matriz escrita por filas.
+    """
+    w, h = canvas
+    origin = (_floats(obj.raw.get("origin")) + [w / 2, h / 2, 0])[:3]
+    scale = (_floats(obj.raw.get("scale")) + [1.0, 1.0, 1.0])[:3]
+    size = (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2]
+    angles = (_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
+
+    # Semiextension y centro, normalizados a clip space (-1..1).
+    sx = size[0] * scale[0] / w
+    sy = size[1] * scale[1] / h
+    crop = (_floats(obj.raw.get("_cropoffset")) + [0.0, 0.0])[:2] if APPLY_CROP else [0.0, 0.0]
+    tx = 2.0 * (origin[0] + crop[0]) / w - 1.0
+    ty = 2.0 * (origin[1] + crop[1]) / h - 1.0
+
+    c = math.cos(angles[2])
+    s = math.sin(angles[2])
+    # Rotacion en Z antes de la escala; los angulos vienen en radianes.
+    return [ sx * c, -sy * s, 0.0, tx,
+             sx * s,  sy * c, 0.0, ty,
+             0.0,     0.0,    1.0, 0.0,
+             0.0,     0.0,    0.0, 1.0]
+
+APPLY_CROP = bool(int(os.environ.get("WE_APPLY_CROP", "0")))
+
+COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_\d+_[ab]$")
+
+
+def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
+    """WE codifica el divisor de resolucion en el nombre del render target.
+
+    Tiene que coincidir con lo que hace glexec al crearlos, o los shaders
+    reciben una resolucion que no corresponde a la textura que muestrean.
+    """
+    div = 1
+    if "Half" in name:
+        div = 2
+    elif "Quarter" in name:
+        div = 4
+    elif "Eighth" in name:
+        div = 8
+    return canvas[0] // div, canvas[1] // div
+
+
+def _floats(value) -> list[float]:
+    """Los valores de WE pueden ser numero, bool o cadena '0.5 0.2 0.1'."""
+    if isinstance(value, bool):
+        return [1.0 if value else 0.0]
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, str):
+        try:
+            return [float(x) for x in value.split()]
+        except ValueError:
+            return []
+    if isinstance(value, list):
+        out: list[float] = []
+        for v in value:
+            out.extend(_floats(v))
+        return out
+    return []
+
+
+class Renderer:
+    def __init__(self, wallpaper: Path, exec_path: Path, time: float = 0.0):
+        self.res = AssetResolver.for_wallpaper(wallpaper, WE_ASSETS)
+        self.exec_path = exec_path
+        self.time = time
+        self.tmp = Path(tempfile.mkdtemp(prefix="werender-"))
+        self.tex_ids: dict[str, int] = {}
+        self.lines: list[str] = []   # cabecera: canvas y texturas
+        self.body: list[str] = []    # los pases, repetibles por fotograma
+        self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0}
+        self.dump_dir: Path | None = None
+        self._tex_dims: dict[int, tuple[int, int]] = {}
+
+    # ── texturas ──────────────────────────────────────────────────────────
+    def texture(self, name: str) -> tuple[int, int, int] | None:
+        """Decodifica una textura a RGBA cruda y devuelve (id, ancho, alto)."""
+        if name in self.tex_ids:
+            i = self.tex_ids[name]
+            return i, self._tex_dims[i][0], self._tex_dims[i][1]
+        try:
+            tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
+            mip = tex.images[0][0]
+            rgba = mip.to_rgba(tex.format)
+        except Exception:
+            self.stats["sin_textura"] += 1
+            return None
+
+        # glReadPixels y las UV de GL van de abajo a arriba; las texturas de WE
+        # se guardan con el origen arriba. Se voltea al subir, una sola vez.
+        rgba = np.ascontiguousarray(rgba[::-1])
+        i = len(self.tex_ids)
+        path = self.tmp / f"tex{i:03d}.rgba"
+        path.write_bytes(rgba.tobytes())
+        self.tex_ids[name] = i
+        self._tex_dims[i] = (rgba.shape[1], rgba.shape[0])
+        self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}")
+        return i, rgba.shape[1], rgba.shape[0]
+
+
+    # ── un pase ───────────────────────────────────────────────────────────
+    def emit_pass(self, p, sresolver, canvas: tuple[int, int], obj=None) -> None:
+        # Los metadatos del shader dicen que uniform se enlaza con que
+        # propiedad del material, y con que valor por defecto.
+        meta = weshader.parse_uniform_meta(weshader.normalise_newlines(p.frag))
+        meta.update(weshader.parse_uniform_meta(weshader.normalise_newlines(p.vert)))
+
+        # Un combo declarado en los metadatos de un sampler se activa cuando
+        # ese slot esta realmente enlazado en el pase. Sin esto la mascara de
+        # un efecto se ignora y el efecto se aplica a la imagen entera: el
+        # `pulse` de la escena de referencia hacia oscilar el brillo del
+        # wallpaper completo casi al doble en vez de solo la zona enmascarada.
+        combos = dict(p.combos)
+        for uni_name, m in meta.items():
+            combo = m.get("combo")
+            if not combo or combo in combos:
+                continue
+            mm = re.fullmatch(r"g_Texture(\d+)", uni_name)
+            if mm:
+                slot = int(mm.group(1))
+                bound = slot < len(p.textures) and p.textures[slot]
+                if bound:
+                    combos[combo] = 1
+
+        try:
+            vert = weshader.translate(p.vert, "vert", sresolver, combos=combos)
+            frag = weshader.translate(p.frag, "frag", sresolver, combos=combos)
+        except Exception:
+            self.stats["sin_shader"] += 1
+            return
+
+        n = self.stats["pases"]
+        vp = self.tmp / f"p{n:03d}.vert"
+        fp = self.tmp / f"p{n:03d}.frag"
+        vp.write_text(vert)
+        fp.write_text(frag)
+
+        self.body.append("pass")
+        self.body.append(f"prog {vp} {fp}")
+        self.body.append(f"target {p.target or 'SCREEN'}")
+        # Los pases de efecto son post-proceso: limpian el destino y escriben
+        # la pantalla entera leyendo el resultado anterior. Con la mezcla de GL
+        # activada sobre un destino limpiado a (0,0,0,0) sale dstA = srcA^2, y
+        # el alfa se hunde pase a pase hasta cero. La composicion entre efectos
+        # la hace el propio shader (combo BLENDMODE / ApplyBlending); el
+        # `blending` del material describe eso, no el estado de GL.
+        self.body.append(f"blend {p.blending if p.stage == 'base' else 'none'}")
+
+        bind_by_index = {b["index"]: b["name"] for b in p.binds}
+        for slot in range(8):
+            uni = f"g_Texture{slot}"
+            name = p.textures[slot] if slot < len(p.textures) else None
+            src = None
+            if name:
+                if COMPOSITE_RT_RE.match(name):
+                    # `_rt_imageLayerComposite_<id>_a|_b` no es un buffer
+                    # cualquiera: es el par ping-pong del propio objeto, que el
+                    # ejecutor ya mantiene. Crearlo como buffer nuevo lo deja
+                    # vacio y cualquier efecto que combine con el da negro.
+                    src = "prev"
+                elif name.startswith("_rt_"):
+                    src = f"rt:{name}"
+                else:
+                    t = self.texture(name)
+                    if t:
+                        src = f"tex:{t[0]}"
+                        self.body.append(
+                            f"u4f g_Texture{slot}Resolution {t[1]} {t[2]} {t[1]} {t[2]}")
+            elif slot in bind_by_index or (slot == 0 and p.stage != "base"):
+                b = bind_by_index.get(slot, "previous")
+                src = "prev" if b == "previous" else f"rt:{b}"
+                # La resolucion tiene que ser la del buffer que se lee, no la
+                # del canvas: los pases de blur trabajan a media o a un cuarto
+                # y muestrear con la resolucion equivocada descuadra el kernel.
+                w, h = rt_size(b, canvas)
+                self.body.append(
+                    f"u4f g_Texture{slot}Resolution {w} {h} {w} {h}")
+            if src:
+                self.body.append(f"sampler {uni} {src}")
+
+        # Uniforms que aporta el motor.
+        # Solo el pase base dibuja geometria; los de efecto son post-proceso a
+        # pantalla completa sobre el buffer del objeto y se quedan con la
+        # identidad.
+        mvp = object_mvp(obj, canvas) if (obj is not None and p.stage == "base") else IDENTITY
+        self.body.append("umat4 g_ModelViewProjectionMatrix " +
+                         " ".join(f"{x:.6g}" for x in mvp))
+        self.body.append("u1f g_Time @TIME@")
+        self.body.append(f"u3f g_Screen {canvas[0]} {canvas[1]} "
+                         f"{canvas[0] / max(1, canvas[1])}")
+        self.body.append("u4f g_Texture0Rotation 1 0 0 1")
+        self.body.append("u2f g_Texture0Translation 0 0")
+        self.body.append("u4f g_Color4 1 1 1 1")
+        self.body.append("u1f g_Brightness 1")
+        self.body.append("u1f g_UserAlpha 1")
+        self.body.append("u1f g_Alpha 1")
+
+        # Constantes del material, resueltas via metadatos.
+        for uni_name, m in meta.items():
+            key = m.get("material")
+            value = p.constants.get(key) if key else None
+            if value is None:
+                value = m.get("default")
+            vals = _floats(value)
+            if not vals or len(vals) > 4:
+                continue
+            self.body.append(
+                f"u{len(vals)}f {uni_name} " + " ".join(f"{v:.6g}" for v in vals))
+
+        self.body.append("endpass")
+        if self.dump_dir is not None:
+            self.body.append(f"dump {self.dump_dir}/after{n:03d}.rgba")
+        self.stats["pases"] += 1
+
+    # ── escena completa ───────────────────────────────────────────────────
+    def render_sequence(self, out_dir: Path, count: int, fps: float,
+                        warmup: int = 6) -> dict:
+        """Renderiza `count` fotogramas consecutivos avanzando g_Time.
+
+        Los fotogramas de calentamiento no se guardan: sirven para que los
+        efectos temporales (motion blur) llenen su buffer de historia. Sin
+        ellos los primeros fotogramas salen oscurecidos.
+        """
+        self._build(None)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        w, h = self.stats["canvas"]
+
+        plan = list(self.lines)
+        for i in range(warmup):
+            plan.extend(l.replace("@TIME@", f"{self.time + i / fps:.5f}")
+                        for l in self.body)
+        for i in range(count):
+            t = self.time + (warmup + i) / fps
+            plan.extend(l.replace("@TIME@", f"{t:.5f}") for l in self.body)
+            plan.append(f"dump {out_dir}/f{i:04d}.rgba")
+
+        plan_path = self.tmp / "plan_seq.txt"
+        plan_path.write_text("\n".join(plan) + "\n")
+        r = subprocess.run([str(self.exec_path), str(plan_path)],
+                           capture_output=True, text=True)
+        self.stats["glexec"] = r.stdout.strip()
+        self.stats["fotogramas"] = count
+        if r.returncode != 0:
+            self.stats["error"] = r.stderr[-2000:]
+        return self.stats
+
+    def _build(self, max_passes: int | None) -> tuple[int, int]:
+        scene = load_scene(self.res)
+        general = scene.general
+        proj = general.get("orthogonalprojection")
+        canvas = ((int(proj["width"]), int(proj["height"]))
+                  if isinstance(proj, dict) else (1920, 1080))
+        self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
+        sresolver = weshader.Resolver(
+            overlay=self.res.entries, roots=[WE_ASSETS, WE_ASSETS / "shaders"])
+        for obj in scene.objects:
+            if obj.kind != "image" or not obj.passes:
+                continue
+            # Marca de inicio de objeto. El ejecutor la usa para componer el
+            # objeto anterior sobre la escena en vez de pisarlo. `copybackground`
+            # dice si este objeto arranca desde una copia de lo que hay detras
+            # (lo que necesitan las capas de post-proceso) o desde vacio.
+            copybg = 1 if obj.raw.get("copybackground") else 0
+            self.body.append(f"object {copybg}")
+            for p in obj.passes:
+                if p.command == "copy":
+                    src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
+                        else p.source
+                    dst = "prev" if not p.target or COMPOSITE_RT_RE.match(p.target) \
+                        else p.target
+                    self.body.append(f"copy {src} {dst}")
+                    continue
+                if p.command:
+                    continue
+                if max_passes is not None and self.stats["pases"] >= max_passes:
+                    break
+                self.emit_pass(p, sresolver, canvas, obj)
+        self.stats["canvas"] = canvas
+        return canvas
+
+    def render(self, out_png: Path, only_base: bool = False,
+               max_passes: int | None = None, frames: int = 1) -> dict:
+        scene = load_scene(self.res)
+        general = scene.general
+        canvas = (int(_floats(general.get("orthogonalprojection", {}).get("width", 1920))[0]),
+                  int(_floats(general.get("orthogonalprojection", {}).get("height", 1080))[0])) \
+            if isinstance(general.get("orthogonalprojection"), dict) else (1920, 1080)
+
+        self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
+
+        sresolver = weshader.Resolver(
+            overlay=self.res.entries,
+            roots=[WE_ASSETS, WE_ASSETS / "shaders"])
+
+        for obj in scene.objects:
+            if obj.kind != "image" or not obj.passes:
+                continue
+            # Marca de inicio de objeto. El ejecutor la usa para componer el
+            # objeto anterior sobre la escena en vez de pisarlo. `copybackground`
+            # dice si este objeto arranca desde una copia de lo que hay detras
+            # (lo que necesitan las capas de post-proceso) o desde vacio.
+            copybg = 1 if obj.raw.get("copybackground") else 0
+            self.body.append(f"object {copybg}")
+            for p in obj.passes:
+                if p.command == "copy":
+                    src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
+                        else p.source
+                    dst = "prev" if not p.target or COMPOSITE_RT_RE.match(p.target) \
+                        else p.target
+                    self.body.append(f"copy {src} {dst}")
+                    continue
+                if p.command:
+                    continue
+                if only_base and p.stage != "base":
+                    continue
+                if max_passes is not None and self.stats["pases"] >= max_passes:
+                    break
+                self.emit_pass(p, sresolver, canvas, obj)
+
+        raw = self.tmp / "out.rgba"
+
+        # Los efectos temporales (motion blur) acumulan entre fotogramas: en
+        # una sola pasada su buffer de historia esta vacio por definicion y el
+        # resultado sale oscurecido. Repetir el plan deja que converjan, que es
+        # lo que pasa en ejecucion real. Los render targets se crean una vez y
+        # persisten entre repeticiones, asi que basta con repetir los pases.
+        plan_lines = list(self.lines)
+        for i in range(max(1, frames)):
+            plan_lines.extend(l.replace("@TIME@", f"{self.time:.5f}")
+                              for l in self.body)
+        plan_lines.append(f"output {raw}")
+        self.stats["fotogramas"] = max(1, frames)
+
+        plan = self.tmp / "plan.txt"
+        plan.write_text("\n".join(plan_lines) + "\n")
+
+        r = subprocess.run([str(self.exec_path), str(plan)],
+                           capture_output=True, text=True)
+        self.stats["glexec"] = r.stdout.strip()
+        if r.returncode != 0 or not raw.is_file():
+            self.stats["error"] = r.stderr[-2000:]
+            return self.stats
+
+        px = np.frombuffer(raw.read_bytes(), dtype=np.uint8)
+        px = px.reshape(canvas[1], canvas[0], 4)[::-1]   # deshacer el volteo
+        Image.fromarray(px, "RGBA").save(out_png)
+        self.stats["salida"] = str(out_png)
+        self.stats["canvas"] = canvas
+        self.stats["log"] = r.stderr[-1500:] if r.stderr else ""
+        return self.stats
+
+
+def emit_plan(wallpaper: Path, out_dir: Path) -> dict:
+    """Escribe el plan como plantilla, con @TIME@ sin sustituir.
+
+    Es la interfaz con el motor en C++: Python resuelve el grafo, traduce los
+    shaders y decodifica las texturas una vez; el ejecutor de C++ repite ese
+    mismo plan cada fotograma poniendo el tiempo que toque. Los assets se
+    copian junto al plan para que no dependa de un directorio temporal.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    r = Renderer(wallpaper, Path("/nonexistent"), 0.0)
+    canvas = r._build(None)
+
+    remap: dict[str, str] = {}
+    for src in sorted(r.tmp.iterdir()):
+        if src.suffix in (".rgba", ".vert", ".frag"):
+            dst = out_dir / src.name
+            dst.write_bytes(src.read_bytes())
+            remap[str(src)] = str(dst)
+
+    def fix(line: str) -> str:
+        for a, b in remap.items():
+            line = line.replace(a, b)
+        return line
+
+    # El titulo viaja en el plan para que el HUD no tenga que llevarlo escrito
+    # a mano (y mentir cuando se cambia de wallpaper).
+    title = wallpaper.name
+    pj = wallpaper / "project.json"
+    if pj.is_file():
+        try:
+            title = json.loads(pj.read_text(errors="replace")).get("title", title)
+        except Exception:
+            pass
+    header = [f"title {title} ({wallpaper.name})"]
+    plan = header + [fix(l) for l in r.lines] + [fix(l) for l in r.body]
+    (out_dir / "plan.txt").write_text("\n".join(plan) + "\n")
+    return {"pases": r.stats["pases"], "canvas": canvas,
+            "assets": len(remap), "plan": str(out_dir / "plan.txt")}
+
+
+def main() -> int:
+    if "--emit-plan" in sys.argv:
+        i = sys.argv.index("--emit-plan")
+        for k, v in emit_plan(Path(sys.argv[1]), Path(sys.argv[i + 1])).items():
+            print(f"  {k}: {v}")
+        return 0
+    if len(sys.argv) < 3:
+        print(__doc__)
+        return 1
+    wallpaper = Path(sys.argv[1])
+    out = Path(sys.argv[2])
+    exec_path = Path("/tmp/glexec")
+    if "--exec" in sys.argv:
+        exec_path = Path(sys.argv[sys.argv.index("--exec") + 1])
+    t = 0.0
+    if "--time" in sys.argv:
+        t = float(sys.argv[sys.argv.index("--time") + 1])
+
+    r = Renderer(wallpaper, exec_path, t)
+    mp = None
+    if "--passes" in sys.argv:
+        mp = int(sys.argv[sys.argv.index("--passes") + 1])
+    frames = 1
+    if "--frames" in sys.argv:
+        frames = int(sys.argv[sys.argv.index("--frames") + 1])
+    stats = r.render(out, only_base="--only-base" in sys.argv, max_passes=mp,
+                     frames=frames)
+    for k, v in stats.items():
+        if k == "log" and v:
+            print(f"  log del compilador (cola):\n{v}")
+        else:
+            print(f"  {k}: {v}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

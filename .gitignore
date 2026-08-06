@@ -1,0 +1,30 @@
+# ── artefactos de compilacion ───────────────────────────────────────────────
+obj/
+*.o
+*.d
+*.so
+*.moc
+moc_*.cpp
+
+# Herramientas offline: se compilan a mano desde tools/*.c
+tools/glexec
+tools/glslcheck
+
+__pycache__/
+*.pyc
+
+# ── contenido generado por `make plan` ──────────────────────────────────────
+# NO subir. Son dos cosas a la vez:
+#
+#   1. Derivados de un wallpaper de Steam Workshop -- texturas decodificadas,
+#      shaders traducidos y video extraidos de material con copyright ajeno.
+#      Redistribuirlos no nos corresponde.
+#   2. Salida regenerable: `make plan WALLPAPER=<ruta>` los reconstruye
+#      enteros desde el wallpaper que cada uno tenga en su biblioteca.
+#
+# Son ~200 MB por wallpaper, casi todo .rgba sin comprimir.
+plugin/contents/scene/
+plugin/contents/media/
+
+# ── local de la maquina ─────────────────────────────────────────────────────
+.claude/settings.local.json
