@@ -140,27 +140,27 @@ def _trs(pos, rot, scale) -> np.ndarray:
 def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     """Matriz de skinning de cada hueso en la clave `k`: (huesos, 4, 4).
 
-    Tres pasos: la transformacion local que dan las pistas, la composicion con
-    la del padre, y por delante la inversa de la matriz de reposo.
+    Dos pasos: la transformacion que dan las pistas y, por delante, la inversa
+    de la matriz de reposo. NO se compone con el padre.
 
-    Componer con el padre no es un detalle. Sin ello un hueso hijo solo recibe
-    su rotacion local y pierde la del padre: el estandarte de Jeanne seguia
-    ondeando porque su malla es enorme, pero el brazo que lo sostiene apenas
-    se movia. Medido sobre las cuatro capas, componer casi duplica el
-    desplazamiento (estandarte 415 -> 821, brazo 57 -> 137) y no cambia nada
-    en jdarcjik, cuyos dos huesos son raiz. Ese control es lo que lo confirma.
+    Que no haya que componer es lo contrario de lo que parece, asi que conviene
+    dejar por que. Las pistas ya vienen en espacio global: el `parent` del
+    MDLS describe la jerarquia, pero no hay que aplicarla al evaluar.
 
-    Los padres siempre aparecen antes que sus hijos en el bloque MDLS, asi que
-    un solo recorrido en orden basta.
+    Dos pruebas, y la segunda es la que manda:
+
+      - padre e hijo rotan casi lo mismo (0.2160 y 0.2153 en el estandarte).
+        Con pistas locales, un hijo que acompana a su padre tendria rotacion
+        local casi nula; que iguale al padre significa que ya la lleva dentro.
+      - componer duplica el desplazamiento (415 -> 821, 57 -> 137, 271 -> 545).
+        Un factor dos limpio no es movimiento que faltaba: es el mismo giro
+        aplicado dos veces. En pantalla el estandarte se salia de la mano.
     """
-    glob: list[np.ndarray] = []
     out = np.empty((len(bones), 4, 4))
     for j, bone in enumerate(bones):
         tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
-        local = _trs(tr[0:3], tr[3:6], tr[6:9])
-        # Vector-fila: el hijo va a la izquierda para aplicarse primero.
-        glob.append(local @ glob[bone.parent] if 0 <= bone.parent < j else local)
-        out[j] = np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64)) @ glob[j]
+        out[j] = (np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64))
+                  @ _trs(tr[0:3], tr[3:6], tr[6:9]))
     return out
 
 

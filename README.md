@@ -323,14 +323,26 @@ todavía no está identificado.
 #### Skinning
 
 `v' = Σ_j w_j · (v · inv(B_j) · A_j)`, con matrices de **vector-fila** (`v·M`),
-igual que la MVP. `A_j` se compone con la del padre; los padres siempre
-aparecen antes que sus hijos, así que basta un recorrido en orden.
+igual que la MVP.
 
-Componer con el padre no es opcional. Sin ello un hueso hijo solo recibe su
-rotación local: el estandarte de Jeanne seguía ondeando porque su malla es
-enorme, pero el brazo que lo sostiene apenas se movía. Componer casi duplica
-el desplazamiento (estandarte 415 → 821, brazo 57 → 137) y no cambia nada en
-`jdarcjik`, cuyos dos huesos son raíz — ese control es lo que lo confirma.
+**No hay que componer con el hueso padre.** Es lo contrario de lo que dicta el
+reflejo, así que conviene dejar por qué: las pistas ya vienen en espacio
+global. El `parent` del MDLS describe la jerarquía, pero no se aplica al
+evaluar.
+
+Dos pruebas, y la segunda es la que manda:
+
+- Padre e hijo rotan casi lo mismo (0.2160 y 0.2153 en el estandarte). Con
+  pistas locales, un hijo que acompaña a su padre tendría rotación local casi
+  nula; que iguale al padre significa que ya la lleva dentro.
+- Componer duplica el desplazamiento: 415 → 821, 57 → 137, 271 → 545. Un
+  factor dos limpio no es movimiento que faltaba, es el mismo giro aplicado
+  dos veces. En pantalla el estandarte se salía de la mano.
+
+Ese segundo dato lo leí al revés la primera vez —vi «aparece el movimiento que
+faltaba» donde ponía «se aplica dos veces»— y costó un render roto. Duplicar
+limpio es una firma, no una mejora: si un cambio multiplica una magnitud por
+un entero exacto, sospechar de doble aplicación antes que de acierto.
 
 Las matrices se hornean en `werender.py` y viajan en el plan ya resueltas, 12
 flotantes por hueso y clave (la columna que falta es siempre `(0,0,0,1)`). Los
