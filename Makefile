@@ -119,7 +119,11 @@ uninstall:
 # install-env deja la variable puesta para los proximos inicios de sesion, pero
 # el gestor de usuario ya arrancado no relee environment.d: se la inyectamos
 # tambien aqui para no tener que cerrar sesion.
-reload: install-env
+# reload reinstala TODO antes de reiniciar. Costo aprendido: recargar con un
+# .so viejo instalado ejecuta el plan nuevo con el ejecutor antiguo -- las
+# capas salieron a pantalla completa y el fallo parecia del motor, no del
+# despliegue.
+reload: install-qml install-package install-env
 	@systemctl --user set-environment QML_IMPORT_PATH=$(QMLMOD)
 	@systemctl --user restart plasma-plasmashell.service \
 		|| (kquitapp6 plasmashell && sleep 2 && kstart plasmashell)
