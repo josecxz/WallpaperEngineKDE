@@ -63,6 +63,10 @@ static int compo_cur;
 static Target scene_rt;
 static GLuint composite_prog;
 static int object_open;
+/* Colocacion del objeto en curso: los pases corren en el espacio de la capa
+ * (su buffer representa el rectangulo de la capa) y esta matriz lo lleva al
+ * lienzo una unica vez, al componer. Identidad para planes sin ella. */
+static float obj_mvp[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
 static GLuint quad_vao, quad_vbo;
 
@@ -101,14 +105,24 @@ static void skin_mesh(int id, float t)
     if (meshes[id].nbones <= 0 || meshes[id].nkeys <= 1) return;
 
     /* La ultima clave repite la primera para cerrar el bucle: el periodo son
-     * nkeys-1 intervalos, no nkeys. */
+     * nkeys-1 intervalos, no nkeys. Entre clave y clave se interpola: a 13
+     * claves por segundo, saltar a la mas cercana se ve escalonado. */
     int span = meshes[id].nkeys - 1;
     float dur = meshes[id].duration > 1e-6f ? meshes[id].duration : 1e-6f;
-    int k = (int)lround((double)t / dur * span) % span;
-    if (k < 0) k += span;
+    double fase = fmod((double)t / dur, 1.0);
+    if (fase < 0.0) fase += 1.0;
+    double fk = fase * span;
+    int k0 = (int)fk;
+    if (k0 >= span) k0 = span - 1;
+    float fr = (float)(fk - k0);
 
     int nb = meshes[id].nbones;
-    const float *mats = meshes[id].mats + (size_t)k * nb * 12;
+    const float *m0 = meshes[id].mats + (size_t)k0 * nb * 12;
+    const float *m1 = m0 + (size_t)nb * 12;        /* k0+1 <= nkeys-1 */
+    float *mats = malloc((size_t)nb * 12 * sizeof(float));
+    if (!mats) return;
+    for (size_t i = 0; i < (size_t)nb * 12; i++)
+        mats[i] = m0[i] + (m1[i] - m0[i]) * fr;
     for (int v = 0; v < meshes[id].nvert; v++) {
         const float *p = meshes[id].bind + (size_t)v * 5;
         float acc[3] = {0.0f, 0.0f, 0.0f};
@@ -125,6 +139,7 @@ static void skin_mesh(int id, float t)
         float *d = meshes[id].skinned + (size_t)v * 5;
         d[0] = acc[0]; d[1] = acc[1]; d[2] = acc[2];
     }
+    free(mats);
 
     glBindBuffer(GL_ARRAY_BUFFER, meshes[id].vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0,
@@ -339,7 +354,8 @@ static void init_composite(void)
     static const char *vs =
         "#version 330 core\n"
         "layout(location=0) in vec3 p; layout(location=1) in vec2 t;\n"
-        "out vec2 uv; void main(){ uv=t; gl_Position=vec4(p,1.0); }\n";
+        "uniform mat4 mvp;\n"
+        "out vec2 uv; void main(){ uv=t; gl_Position=vec4(p,1.0)*mvp; }\n";
     static const char *fs =
         "#version 330 core\n"
         "in vec2 uv; out vec4 o; uniform sampler2D src;\n"
@@ -374,6 +390,8 @@ static void flush_object(void)
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, compo[compo_cur].tex);
     glUniform1i(glGetUniformLocation(composite_prog, "src"), 0);
+    glUniformMatrix4fv(glGetUniformLocation(composite_prog, "mvp"),
+                       1, GL_FALSE, obj_mvp);
     glBindVertexArray(quad_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
@@ -528,7 +546,17 @@ int main(int argc, char **argv)
             glClearColor(0, 0, 0, 0);
             glClear(GL_COLOR_BUFFER_BIT);
         } else if (strcmp(kw, "object") == 0 && !in_pass) {
+            /* El flush del objeto anterior usa SU matriz: primero componer,
+             * despues adoptar la del que empieza. */
+            float m[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            int copybg = 0;
+            int n = sscanf(line,
+                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f",
+                &copybg, m+0,m+1,m+2,m+3, m+4,m+5,m+6,m+7,
+                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15);
             begin_object();
+            if (n == 17)
+                memcpy(obj_mvp, m, sizeof m);
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
             char path[512];

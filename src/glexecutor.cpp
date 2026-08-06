@@ -151,6 +151,9 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             Op op;
             op.kind = Op::BeginObject;
             op.copyBackground = tok.size() >= 2 && tok[1] == QLatin1String("1");
+            if (tok.size() >= 18)
+                for (int i = 0; i < 16; ++i)
+                    op.placement[i] = tok[2 + i].toFloat();
             m_ops.append(op);
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
@@ -355,10 +358,13 @@ bool GlExecutor::buildCompositeProgram()
 {
     // Componer con mezcla exige dibujar; glBlitFramebuffer no mezcla. Es el
     // unico shader que el motor lleva dentro: el resto vienen del plan.
+    // El vertice aplica la colocacion del objeto con la misma convencion de
+    // vector-fila que los shaders del plan (v * M, subida con GL_FALSE).
     static const char *vs =
         "#version 330 core\n"
         "in vec3 a_Position; in vec2 a_TexCoord; out vec2 uv;\n"
-        "void main(){ uv = a_TexCoord; gl_Position = vec4(a_Position, 1.0); }\n";
+        "uniform mat4 mvp;\n"
+        "void main(){ uv = a_TexCoord; gl_Position = vec4(a_Position, 1.0) * mvp; }\n";
     static const char *fs =
         "#version 330 core\n"
         "in vec2 uv; out vec4 fragColor; uniform sampler2D src;\n"
@@ -388,6 +394,7 @@ bool GlExecutor::buildCompositeProgram()
         m_composite = 0;
         return false;
     }
+    m_compositeMvp = glGetUniformLocation(m_composite, "mvp");
     return true;
 }
 
@@ -430,6 +437,7 @@ void GlExecutor::flushObjectToScene()
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_compo[m_compoCur].tex);
     glUniform1i(glGetUniformLocation(m_composite, "src"), 0);
+    glUniformMatrix4fv(m_compositeMvp, 1, GL_FALSE, m_placement);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
@@ -590,22 +598,29 @@ void GlExecutor::skinMeshes(float time)
             continue;
 
         // La ultima clave repite la primera para cerrar el bucle, asi que el
-        // periodo son keyCount-1 intervalos. Se toma la clave mas cercana, sin
-        // interpolar.
+        // periodo son keyCount-1 intervalos. Entre clave y clave se
+        // interpola: a 13 claves por segundo, saltar a la mas cercana se ve
+        // escalonado.
         const int span = m.keyCount - 1;
         const float dur = m.duration > 1e-6f ? m.duration : 1e-6f;
-        int k = int(std::lround(double(time) / dur * span)) % span;
-        if (k < 0)
-            k += span;
-        if (k == m.lastKey)
-            continue;           // misma clave que el fotograma anterior
-        m.lastKey = k;
+        double fase = std::fmod(double(time) / dur, 1.0);
+        if (fase < 0.0)
+            fase += 1.0;
+        const double fk = fase * span;
+        int k0 = int(fk);
+        if (k0 >= span)
+            k0 = span - 1;
+        const float fr = float(fk - k0);
 
-        // Las matrices llegan del plan ya resueltas -- inversa de reposo,
-        // compuesta con la del padre y evaluada en cada clave -- asi que aqui
-        // solo queda la suma ponderada: v' = suma_j w_j * (v * M_j). Son 12
-        // floats por hueso, por filas; la columna que falta es (0,0,0,1).
-        const float *mats = m.mats.constData() + qsizetype(k) * m.boneCount * 12;
+        // Las matrices llegan del plan ya resueltas, 12 floats por hueso por
+        // filas (la columna que falta es (0,0,0,1)); aqui solo queda
+        // interpolarlas y hacer la suma ponderada: v' = suma_j w_j * (v * M_j).
+        const float *m0 = m.mats.constData() + qsizetype(k0) * m.boneCount * 12;
+        const float *m1 = m0 + qsizetype(m.boneCount) * 12;   // k0+1 cabe
+        QVarLengthArray<float, 12 * 8> blended(m.boneCount * 12);
+        for (qsizetype i = 0; i < blended.size(); ++i)
+            blended[i] = m0[i] + (m1[i] - m0[i]) * fr;
+        const float *mats = blended.constData();
         for (int v = 0; v < m.vertexCount; ++v) {
             const float *p = m.bind.constData() + qsizetype(v) * 5;
             float acc[3] = {0.0f, 0.0f, 0.0f};
@@ -655,12 +670,18 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
     m_objectOpen = false;
-    if (!m_hasObjectMarks)
+    if (!m_hasObjectMarks) {
+        static const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        memcpy(m_placement, ident, sizeof ident);
         beginObject();   // plan antiguo: todo el plan es un solo objeto
+    }
 
     for (const Op &op : m_ops) {
         if (op.kind == Op::BeginObject) {
+            // El flush del objeto anterior usa SU colocacion: primero
+            // componer, despues adoptar la del que empieza.
             beginObject();
+            memcpy(m_placement, op.placement, sizeof m_placement);
             continue;
         }
         if (op.kind == Op::Copy) {

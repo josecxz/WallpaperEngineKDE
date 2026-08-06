@@ -86,6 +86,12 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
              0.0,     0.0,    1.0, 0.0,
              0.0,     0.0,    0.0, 1.0]
 
+def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
+    """Tamano del rectangulo de la capa en pixeles, sin escala ni colocacion."""
+    size = (_floats(obj.raw.get("size")) + [float(canvas[0]), float(canvas[1])])[:2]
+    return max(size[0], 1.0), max(size[1], 1.0)
+
+
 APPLY_CROP = bool(int(os.environ.get("WE_APPLY_CROP", "0")))
 
 COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_\d+_[ab]$")
@@ -140,48 +146,36 @@ def _trs(pos, rot, scale) -> np.ndarray:
 def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     """Matriz de skinning de cada hueso en la clave `k`: (huesos, 4, 4).
 
-    Dos pasos: la transformacion que dan las pistas y, POR DETRAS, la inversa
-    de la matriz de reposo. NO se compone con el padre.
+    La formula estandar del skinning con vector-fila: `inv(B) · A`, llevar el
+    vertice al espacio del hueso y de ahi a su pose animada. NO se compone con
+    el padre.
 
-    El orden `A · inv(B)` no es el de la formula de libro para vector-fila
-    (`inv(B) · A`, llevar el vertice al espacio del hueso y de ahi al animado).
-    Los dos dan identidad en la clave de reposo, asi que esa prueba no los
-    distingue; lo que los separa es cuanto deforman la malla:
+    Aqui se probo el orden contrario, `A · inv(B)`, y hubo que deshacerlo:
+    como las matrices de reposo son traslaciones puras, ese orden rota la capa
+    entera alrededor de su origen. Deja impecable una capa de tramo unico (el
+    brazo del estandarte quedaba rigido) pero rompe las articuladas: los tres
+    huesos del cuerpo de Jeanne giran de verdad distinto (0.47/0.37/0), el
+    antebrazo giraba alrededor del origen de la capa en vez del codo, y en
+    pantalla el brazo izquierdo se deformaba y el estandarte barria arcos
+    exagerados. Una articulacion necesita rotar sobre su pivote, y eso es
+    exactamente `inv(B) · A`.
 
-        arista estirada, percentiles 1-99   inv(B)·A        A·inv(B)
-        estandarte                          [0.625, 1.633]  [0.946, 1.044]
-        brazo del estandarte                [0.711, 1.200]  [0.991, 1.010]
-        jdarcjik (un hueso por vertice)     [1.000, 1.000]  [1.000, 1.000]
+    La contrapartida, conocida y aceptada: donde dos huesos de pivotes lejanos
+    giran casi solidarios (el brazo del estandarte: correlacion 0.992, pivotes
+    a 880 unidades), los vertices que mezclan ambos interpolan posiciones
+    separadas y la manga flexa (aristas entre 0.71 y 1.20). Es lo que produce
+    el skinning estandar con estas pistas y estos pesos: tela que cede.
 
-    Con `inv(B)·A` cada hueso gira alrededor de SU pivote. Los del brazo estan
-    a 880 unidades, giran solidarios (correlacion 0.992) y aun asi sus dos
-    transformaciones difieren en una traslacion: al mezclarlas los vertices se
-    van al punto medio y la malla encoge hasta 0.686. Es lo que se veia como
-    un brazo que se deforma al bascular el estandarte.
-
-    Como las matrices de reposo son traslaciones puras -- solo el pivote, la
-    parte lineal es identidad -- `A · inv(B)` es rotar sobre el origen de la
-    capa y trasladar por `(a - b)`. La capa bascula rigida, que es el aspecto
-    de un puppet de WE, y de paso el brazo recorre el doble (57.8 -> 116.6).
-
-    Que no haya que componer es lo contrario de lo que parece, asi que conviene
-    dejar por que. Las pistas ya vienen en espacio global: el `parent` del
-    MDLS describe la jerarquia, pero no hay que aplicarla al evaluar.
-
-    Dos pruebas, y la segunda es la que manda:
-
-      - padre e hijo rotan casi lo mismo (0.2160 y 0.2153 en el estandarte).
-        Con pistas locales, un hijo que acompana a su padre tendria rotacion
-        local casi nula; que iguale al padre significa que ya la lleva dentro.
-      - componer duplica el desplazamiento (415 -> 821, 57 -> 137, 271 -> 545).
-        Un factor dos limpio no es movimiento que faltaba: es el mismo giro
-        aplicado dos veces. En pantalla el estandarte se salia de la mano.
+    Sobre el padre: las pistas ya vienen en espacio global. Padre e hijo rotan
+    casi lo mismo (0.2160 y 0.2153 en el estandarte); con pistas locales un
+    hijo que acompana tendria rotacion local casi nula. Componer con el padre
+    duplicaba el desplazamiento -- el mismo giro aplicado dos veces.
     """
     out = np.empty((len(bones), 4, 4))
     for j, bone in enumerate(bones):
         tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
-        out[j] = (_trs(tr[0:3], tr[3:6], tr[6:9])
-                  @ np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64)))
+        out[j] = (np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64))
+                  @ _trs(tr[0:3], tr[3:6], tr[6:9]))
     return out
 
 
@@ -475,7 +469,11 @@ class Renderer:
                 # La resolucion tiene que ser la del buffer que se lee, no la
                 # del canvas: los pases de blur trabajan a media o a un cuarto
                 # y muestrear con la resolucion equivocada descuadra el kernel.
-                w, h = rt_size(b, canvas)
+                # `previous` es el buffer del objeto, que representa la capa.
+                if b == "previous" and obj is not None:
+                    w, h = layer_size(obj, canvas)
+                else:
+                    w, h = rt_size(b, canvas)
                 self.body.append(
                     f"u4f g_Texture{slot}Resolution {w} {h} {w} {h}")
             if src:
@@ -491,8 +489,24 @@ class Renderer:
         if mesh_id is not None:
             self.body.append(f"mesh {mesh_id}")
 
-        mvp = object_mvp(obj, canvas, mesh=mesh_id is not None) \
-            if (obj is not None and p.stage == "base") else IDENTITY
+        # Los pases corren en el ESPACIO DE LA CAPA: el buffer del objeto
+        # representa su rectangulo, no el lienzo. Un quad base lo llena con la
+        # identidad; una malla solo pasa de pixeles de capa a clip. Colocarla
+        # en el lienzo (origin, scale, angulos) ocurre una unica vez, al
+        # componer el objeto sobre la escena con la matriz de `object`.
+        #
+        # La razon de fondo son las mascaras de los efectos: estan pintadas
+        # sobre el rectangulo de la capa y los shaders las muestrean con
+        # a_TexCoord. Con los efectos a pantalla completa la mascara se
+        # estiraba sobre el lienzo: en Jeanne (capa 4200x2227, lienzo
+        # 3840x2160) el parpadeo -- un `shake` cuya mascara son literalmente
+        # los parpados -- caia cerca de los ojos pero descuadrado.
+        if obj is not None and p.stage == "base" and mesh_id is not None:
+            sw, sh = layer_size(obj, canvas)
+            mvp = [2.0 / sw, 0, 0, 0,  0, 2.0 / sh, 0, 0,
+                   0, 0, 1, 0,  0, 0, 0, 1]
+        else:
+            mvp = IDENTITY
         self.body.append("umat4 g_ModelViewProjectionMatrix " +
                          " ".join(f"{x:.6g}" for x in mvp))
         self.body.append("u1f g_Time @TIME@")
@@ -576,7 +590,8 @@ class Renderer:
             # dice si este objeto arranca desde una copia de lo que hay detras
             # (lo que necesitan las capas de post-proceso) o desde vacio.
             copybg = 1 if obj.raw.get("copybackground") else 0
-            self.body.append(f"object {copybg}")
+            place = " ".join(f"{x:.6g}" for x in object_mvp(obj, canvas))
+            self.body.append(f"object {copybg} {place}")
             for p in obj.passes:
                 if p.command == "copy":
                     src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
@@ -620,7 +635,8 @@ class Renderer:
             # dice si este objeto arranca desde una copia de lo que hay detras
             # (lo que necesitan las capas de post-proceso) o desde vacio.
             copybg = 1 if obj.raw.get("copybackground") else 0
-            self.body.append(f"object {copybg}")
+            place = " ".join(f"{x:.6g}" for x in object_mvp(obj, canvas))
+            self.body.append(f"object {copybg} {place}")
             for p in obj.passes:
                 if p.command == "copy":
                     src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \

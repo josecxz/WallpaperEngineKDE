@@ -105,6 +105,10 @@ private:
     struct Op {
         enum Kind { Pass, Copy, BeginObject } kind = Pass;
         bool copyBackground = false;    // BeginObject
+        // Colocacion del objeto en el lienzo (BeginObject). Los pases corren
+        // en el espacio de la capa; esta matriz se aplica una unica vez, al
+        // componer el objeto sobre la escena.
+        float placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         // Pass
         QString vert, frag;             // solo hasta initialize()
         QString targetName;             // idem
@@ -184,6 +188,8 @@ private:
     Target m_compo[2];      // buffer del objeto en curso (ping-pong)
     Target m_scene;         // acumulado de todos los objetos
     GlName m_composite = 0; // programa para componer objeto -> escena
+    GlLocation m_compositeMvp = -1;
+    float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     bool m_objectOpen = false;
     bool m_hasObjectMarks = false;
     int m_compoCur = 0;
