@@ -7,11 +7,15 @@
 #include "glexecutor.h"
 
 #include <QElapsedTimer>
+#include <QVarLengthArray>
 #include <QFile>
 #include <QOpenGLContext>
 
 #include <algorithm>
 #include <QTextStream>
+
+#include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -135,6 +139,13 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             m.path = tok[2];
             m.vertexCount = tok[3].toInt();
             m.indexCount = tok[4].toInt();
+            // Los tres campos de animacion son opcionales: una malla sin
+            // pistas se queda en pose de reposo y se sube una sola vez.
+            if (tok.size() >= 8) {
+                m.boneCount = tok[5].toInt();
+                m.keyCount = tok[6].toInt();
+                m.duration = tok[7].toFloat();
+            }
             m_meshes.insert(tok[1].toInt(), m);
         } else if (kw == QLatin1String("object")) {
             Op op;
@@ -464,11 +475,40 @@ bool GlExecutor::initialize(QString *error)
             continue;
         }
 
+        // Bloque de animacion, si el plan lo anuncio. Se copia a memoria propia
+        // porque hay que deformar cada fotograma; si no cuadra el tamano se
+        // desactiva la animacion y la malla se queda en reposo, que sigue
+        // dibujandose bien.
+        if (m.animated()) {
+            const qsizetype nv = m.vertexCount, nb = m.boneCount, nk = m.keyCount;
+            const qsizetype idxB = nv * 4 * sizeof(quint16);
+            const qsizetype wB = nv * 4 * sizeof(float);
+            const qsizetype matB = nk * nb * 12 * sizeof(float);
+            const char *src = data.constData() + vbytes + ibytes;
+            if (data.size() < vbytes + ibytes + idxB + wB + matB) {
+                m_log += QStringLiteral("malla sin bloque de animacion completo: %1\n")
+                             .arg(m.path);
+                m.boneCount = 0;
+            } else {
+                m.bind.resize(nv * 5);
+                memcpy(m.bind.data(), data.constData(), vbytes);
+                m.skinned = m.bind;
+                m.boneIdx.resize(nv * 4);
+                memcpy(m.boneIdx.data(), src, idxB);            src += idxB;
+                m.weights.resize(nv * 4);
+                memcpy(m.weights.data(), src, wB);              src += wB;
+                m.mats.resize(nk * nb * 12);
+                memcpy(m.mats.data(), src, matB);
+                ++m_meshAnimCount;
+            }
+        }
+
         glGenVertexArrays(1, &m.vao);
         glBindVertexArray(m.vao);
         glGenBuffers(1, &m.vbo);
         glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
-        glBufferData(GL_ARRAY_BUFFER, vbytes, data.constData(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, vbytes, data.constData(),
+                     m.animated() ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), nullptr);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
@@ -542,10 +582,65 @@ bool GlExecutor::initialize(QString *error)
 
 // ── dibujado ────────────────────────────────────────────────────────────────
 
+void GlExecutor::skinMeshes(float time)
+{
+    for (auto it = m_meshes.begin(); it != m_meshes.end(); ++it) {
+        MeshSpec &m = it.value();
+        if (!m.animated() || m.vbo == 0)
+            continue;
+
+        // La ultima clave repite la primera para cerrar el bucle, asi que el
+        // periodo son keyCount-1 intervalos. Se toma la clave mas cercana, sin
+        // interpolar.
+        const int span = m.keyCount - 1;
+        const float dur = m.duration > 1e-6f ? m.duration : 1e-6f;
+        int k = int(std::lround(double(time) / dur * span)) % span;
+        if (k < 0)
+            k += span;
+        if (k == m.lastKey)
+            continue;           // misma clave que el fotograma anterior
+        m.lastKey = k;
+
+        // Las matrices llegan del plan ya resueltas -- inversa de reposo,
+        // compuesta con la del padre y evaluada en cada clave -- asi que aqui
+        // solo queda la suma ponderada: v' = suma_j w_j * (v * M_j). Son 12
+        // floats por hueso, por filas; la columna que falta es (0,0,0,1).
+        const float *mats = m.mats.constData() + qsizetype(k) * m.boneCount * 12;
+        for (int v = 0; v < m.vertexCount; ++v) {
+            const float *p = m.bind.constData() + qsizetype(v) * 5;
+            float acc[3] = {0.0f, 0.0f, 0.0f};
+            for (int s = 0; s < 4; ++s) {
+                const float w = m.weights.at(qsizetype(v) * 4 + s);
+                if (w == 0.0f)
+                    continue;
+                const int j = m.boneIdx.at(qsizetype(v) * 4 + s);
+                if (j < 0 || j >= m.boneCount)
+                    continue;
+                const float *o = mats + qsizetype(j) * 12;
+                for (int c = 0; c < 3; ++c)
+                    acc[c] += w * (p[0] * o[0 * 3 + c] + p[1] * o[1 * 3 + c]
+                                   + p[2] * o[2 * 3 + c] + o[3 * 3 + c]);
+            }
+            float *d = m.skinned.data() + qsizetype(v) * 5;
+            d[0] = acc[0];
+            d[1] = acc[1];
+            d[2] = acc[2];
+            // Las UV no cambian; ya estan copiadas de la pose de reposo.
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        qsizetype(m.vertexCount) * 5 * sizeof(float),
+                        m.skinned.constData());
+    }
+}
+
 void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 {
     if (!m_ready)
         return;
+
+    skinMeshes(time);
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);

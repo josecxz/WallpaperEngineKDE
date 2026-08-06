@@ -65,6 +65,7 @@ public:
     // primero es 0 no llegaron a la GPU.
     int meshCount() const { return m_meshCount; }
     int meshPassCount() const { return m_meshPassCount; }
+    int meshAnimCount() const { return m_meshAnimCount; }
     int canvasWidth() const { return m_canvasW; }
     int canvasHeight() const { return m_canvasH; }
     int liveUniformCount() const { return m_liveUniforms; }
@@ -144,10 +145,27 @@ private:
         int vertexCount = 0;
         int indexCount = 0;
         GlName vao = 0, vbo = 0, ibo = 0;
+
+        // Animacion por huesos. Vacio si la malla va en pose de reposo.
+        int boneCount = 0;
+        int keyCount = 0;
+        float duration = 0.0f;
+        QVector<float> bind;        // (nverts, 5) pose de reposo + UV
+        QVector<quint16> boneIdx;   // (nverts, 4)
+        QVector<float> weights;     // (nverts, 4)
+        QVector<float> mats;        // (nkeys, nbones, 12) ya compuestas
+        QVector<float> skinned;     // destino del skinning, se reusa
+        int lastKey = -1;           // ultima clave subida; -1 fuerza la subida
+
+        bool animated() const { return boneCount > 0 && keyCount > 1; }
     };
 
     // Malla lista para dibujar, o nullptr si el id no existe o no se subio.
     const MeshSpec *meshFor(int id) const;
+
+    // Deforma las mallas animadas y reescribe sus VBO. Una vez por fotograma,
+    // no una por pase: varias pasadas comparten la misma malla.
+    void skinMeshes(float time);
 
     qsizetype targetIndex(const QString &name);   // crea el target si no existe
     bool buildCompositeProgram();
@@ -160,7 +178,7 @@ private:
     QVector<Op> m_ops;
     QHash<int, TexSpec> m_textures;
     QHash<int, MeshSpec> m_meshes;
-    int m_meshCount = 0, m_meshPassCount = 0;
+    int m_meshCount = 0, m_meshPassCount = 0, m_meshAnimCount = 0;
     QVector<Target> m_targets;              // indexable y estable
     QHash<QString, qsizetype> m_targetByName;
     Target m_compo[2];      // buffer del objeto en curso (ping-pong)

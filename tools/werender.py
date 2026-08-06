@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from PIL import Image
@@ -136,6 +137,33 @@ def _trs(pos, rot, scale) -> np.ndarray:
     return m
 
 
+def _skin_matrices(bones, anim, k: int) -> np.ndarray:
+    """Matriz de skinning de cada hueso en la clave `k`: (huesos, 4, 4).
+
+    Tres pasos: la transformacion local que dan las pistas, la composicion con
+    la del padre, y por delante la inversa de la matriz de reposo.
+
+    Componer con el padre no es un detalle. Sin ello un hueso hijo solo recibe
+    su rotacion local y pierde la del padre: el estandarte de Jeanne seguia
+    ondeando porque su malla es enorme, pero el brazo que lo sostiene apenas
+    se movia. Medido sobre las cuatro capas, componer casi duplica el
+    desplazamiento (estandarte 415 -> 821, brazo 57 -> 137) y no cambia nada
+    en jdarcjik, cuyos dos huesos son raiz. Ese control es lo que lo confirma.
+
+    Los padres siempre aparecen antes que sus hijos en el bloque MDLS, asi que
+    un solo recorrido en orden basta.
+    """
+    glob: list[np.ndarray] = []
+    out = np.empty((len(bones), 4, 4))
+    for j, bone in enumerate(bones):
+        tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
+        local = _trs(tr[0:3], tr[3:6], tr[6:9])
+        # Vector-fila: el hijo va a la izquierda para aplicarse primero.
+        glob.append(local @ glob[bone.parent] if 0 <= bone.parent < j else local)
+        out[j] = np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64)) @ glob[j]
+    return out
+
+
 def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
     """Deforma la malla por huesos en el instante WE_PUPPET_TIME.
 
@@ -174,11 +202,7 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
     idx = np.asarray(mesh.bone_indices)
     w = np.asarray(mesh.bone_weights, dtype=np.float64)
 
-    skin = []
-    for j, bone in enumerate(bones):
-        B = np.asarray(bone.matrix, dtype=np.float64)
-        tr = a.tracks[min(j, a.tracks.shape[0] - 1)][k]
-        skin.append(np.linalg.inv(B) @ _trs(tr[0:3], tr[3:6], tr[6:9]))
+    skin = _skin_matrices(bones, a, k)
 
     for slot in range(4):
         wj = w[:, slot]
@@ -190,6 +214,15 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
                 out[sel] += wj[sel, None] * (v[sel] @ skin[j])
     stats["puppet_animado"] += 1
     return out[:, 0:3]
+
+
+class MeshAnim(NamedTuple):
+    """Bloque de animacion listo para escribir tras los indices de la malla."""
+
+    bones: int
+    keys: int
+    duration: float
+    blocks: tuple[bytes, ...]
 
 
 class Renderer:
@@ -245,9 +278,26 @@ class Renderer:
         justo el layout del quad del ejecutor: asi los shaders no cambian y el
         VAO de la malla usa las mismas dos localizaciones de atributo.
 
-        Los pesos y los indices de hueso se decodifican pero todavia no se
-        suben: sin las pistas de animacion (bloque MDLA) no hay nada que
-        deformar, y la pose de reposo ya corrige la colocacion.
+        Tras los indices va, opcional, el bloque de animacion:
+
+            u16[nverts][4]           indices de hueso
+            f32[nverts][4]           pesos
+            f32[nkeys][nbones][12]   matrices de skinning ya compuestas
+
+        Las matrices llegan resueltas del todo: inversa de reposo, compuesta
+        con la del padre y evaluada en cada clave. El ejecutor solo hace la
+        suma ponderada. Asi la trigonometria y la jerarquia viven en un unico
+        sitio y las dos implementaciones no pueden discrepar; es ademas el
+        reparto que ya usa el resto del proyecto, con Python decidiendo y el
+        ejecutor solo ejecutando.
+
+        Son 12 y no 16 floats porque la ultima columna de estas matrices es
+        siempre (0,0,0,1). Las claves van por fotograma y no por hueso para
+        que el ejecutor lea las de un instante seguidas en memoria.
+
+        El skinning lo hace UNO de los dos, nunca los dos: con WE_PUPPET_TIME
+        se hornea aqui (la referencia offline) y no se emite el bloque; sin el
+        se manda la pose de reposo con las pistas y deforma el ejecutor.
         """
         if os.environ.get("WE_NO_PUPPET"):
             return          # para aislar la malla al depurar
@@ -284,13 +334,52 @@ class Renderer:
 
         mid = len(self.mesh_files)
         path = self.tmp / f"mesh{mid:03d}.bin"
+        anim = self._mesh_anim(m, blob, rel)
         with open(path, "wb") as fh:
             fh.write(inter.tobytes())
             fh.write(idx.tobytes())
+            for parte in anim.blocks if anim else ():
+                fh.write(parte)
         self.mesh_files.append(path)
-        self.lines.append(f"mesh {mid} {path} {m.vertex_count} {idx.size}")
+        cola = f" {anim.bones} {anim.keys} {anim.duration:.6f}" if anim else ""
+        self.lines.append(f"mesh {mid} {path} {m.vertex_count} {idx.size}{cola}")
         self.meshes[id(obj)] = mid
         self.stats["puppet"] += 1
+
+    def _mesh_anim(self, m, blob: bytes, rel: str) -> MeshAnim | None:
+        """Empaqueta huesos y pistas para que el ejecutor deforme por fotograma.
+
+        Devuelve None cuando no hay nada que animar, y tambien cuando el
+        skinning ya se horneo en `_skin`: los dos caminos escriben la misma
+        posicion y aplicar ambos deformaria dos veces.
+        """
+        if os.environ.get("WE_PUPPET_TIME") is not None:
+            return None
+        try:
+            bones, p = wemdl.parse_skeleton(blob, m.consumed, rel)
+            anims, _ = wemdl.parse_animations(blob, p, rel)
+        except wemdl.MdlError as e:
+            self.notes.append(f"puppet sin animacion ({rel}): {e}")
+            return None
+        if not bones or not anims:
+            return None
+
+        a = anims[0]
+        keys = int(a.tracks.shape[1])
+        nb = len(bones)
+
+        mats = np.empty((keys, nb, 12), dtype="<f4")
+        for k in range(keys):
+            mats[k] = _skin_matrices(bones, a, k)[:, :, 0:3].reshape(nb, 12)
+
+        # Los indices de hueso son u32 en el .mdl, pero ningun puppet del
+        # corpus pasa de unas decenas de huesos: caben de sobra en u16.
+        idx16 = np.asarray(m.bone_indices, dtype="<u2")
+        pesos = np.asarray(m.bone_weights, dtype="<f4")
+
+        self.stats["puppet_animado"] += 1
+        return MeshAnim(nb, keys, float(a.duration),
+                        (idx16.tobytes(), pesos.tobytes(), mats.tobytes()))
 
     def emit_pass(self, p, sresolver, canvas: tuple[int, int], obj=None) -> None:
         # Los metadatos del shader dicen que uniform se enlaza con que
@@ -451,6 +540,9 @@ class Renderer:
         canvas = ((int(proj["width"]), int(proj["height"]))
                   if isinstance(proj, dict) else (1920, 1080))
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
+        # Instante al que deformar las mallas. Solo lo usa glexec, que no
+        # tiene reloj propio: el motor en vivo pasa su tiempo real.
+        self.lines.append(f"meshtime {self.time:.6f}")
         we = wepaths.we_assets()
         sresolver = weshader.Resolver(
             overlay=self.res.entries, roots=[we, we / "shaders"])
@@ -489,6 +581,9 @@ class Renderer:
             if isinstance(general.get("orthogonalprojection"), dict) else (1920, 1080)
 
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
+        # Instante al que deformar las mallas. Solo lo usa glexec, que no
+        # tiene reloj propio: el motor en vivo pasa su tiempo real.
+        self.lines.append(f"meshtime {self.time:.6f}")
 
         we = wepaths.we_assets()
         sresolver = weshader.Resolver(

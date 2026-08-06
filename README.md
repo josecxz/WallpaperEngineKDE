@@ -291,6 +291,54 @@ máxima 1.19e-07 — el epsilon del `float`.
 vértices y 40 185 triángulos, y las 42 cierran exactamente sobre un bloque
 `MDLS`/`MDLA` — ni un byte de basura tras la geometría.
 
+#### Esqueleto (MDLS) y animación (MDLA)
+
+Detrás de la geometría van los huesos y sus pistas. Los dos bloques repiten el
+mismo patrón que la geometría: un prefijo **por registro**, no uno por bloque.
+
+```
+MDLS: por hueso   u8 relleno, u32 (=1), i32 padre, u32 (=64), float[16], nombre
+MDLA: por animación   u32 id, u32 (=0), nombre, modo, f32 duración,
+                      u32 fotogramas, u32 (=0), u32 pistas
+      por pista       u32 (=0), u32 TAMAÑO EN BYTES, float[]  (9 por clave)
+      u32 (=0) cierra la animación
+```
+
+Las claves son `posición(3)`, `rotación(3)`, `escala(3)`, y siempre hay
+`fotogramas + 1`: la última repite la primera para cerrar el bucle, así que el
+periodo son `claves - 1` intervalos.
+
+Tres errores costaron aquí, y los tres eran el mismo malentendido — leer un
+prefijo una vez cuando iba por registro. El último solo se ve con **dos**
+animaciones: el `u32` de cierre se lo come el relleno final cuando hay una
+sola, y con dos la segunda arranca cuatro bytes antes. Da una duración de
+1e28 y pistas de 4 MB, que es lo que delató el fallo.
+
+**Validación:** 36 de 42 esqueletos tienen animación y las 36 cierran sobre
+relleno a cero, con el número de pistas igual al de huesos y todos los tamaños
+múltiplos exactos de 36. Los 6 restantes tienen esqueleto y ningún `MDLA`:
+llegan al final con cientos de bytes que no son relleno, un bloque más que
+todavía no está identificado.
+
+#### Skinning
+
+`v' = Σ_j w_j · (v · inv(B_j) · A_j)`, con matrices de **vector-fila** (`v·M`),
+igual que la MVP. `A_j` se compone con la del padre; los padres siempre
+aparecen antes que sus hijos, así que basta un recorrido en orden.
+
+Componer con el padre no es opcional. Sin ello un hueso hijo solo recibe su
+rotación local: el estandarte de Jeanne seguía ondeando porque su malla es
+enorme, pero el brazo que lo sostiene apenas se movía. Componer casi duplica
+el desplazamiento (estandarte 415 → 821, brazo 57 → 137) y no cambia nada en
+`jdarcjik`, cuyos dos huesos son raíz — ese control es lo que lo confirma.
+
+Las matrices se hornean en `werender.py` y viajan en el plan ya resueltas, 12
+flotantes por hueso y clave (la columna que falta es siempre `(0,0,0,1)`). Los
+dos ejecutores solo hacen la suma ponderada: sin trigonometría, sin jerarquía
+y sin posibilidad de discrepar entre ellos. Renderizado a `t=15` s, el
+horneado en Python y el de `glexec` dan `max=1/255` de diferencia — el
+redondeo entre `float64` y `float32`, nada más.
+
 **Sin soportar a propósito:** MDLV0017, 0019 y 0023 (42 ficheros) sitúan el
 bloque en otro sitio y usan un stride mayor que el corpus no determina: 40 y
 80 encajan igual de bien y el rango de las UV no desempata. Se rechazan con

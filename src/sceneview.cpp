@@ -166,11 +166,11 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
         m_planLoaded = true;
         qInfo("SceneView: backend %s, plan con %d pases, lienzo %dx%d, "
               "init %d ms, uniforms %d activos / %d descartados, "
-              "mallas %d subidas / %d pases las piden",
+              "mallas %d subidas / %d pases las piden / %d animadas",
               r->backendName(), m_exec.passCount(),
               m_exec.canvasWidth(), m_exec.canvasHeight(), m_exec.initMillis(),
               m_exec.liveUniformCount(), m_exec.droppedUniformCount(),
-              m_exec.meshCount(), m_exec.meshPassCount());
+              m_exec.meshCount(), m_exec.meshPassCount(), m_exec.meshAnimCount());
         if (!m_exec.log().isEmpty())
             qWarning("SceneView: %s", qPrintable(m_exec.log()));
     }

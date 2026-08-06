@@ -33,6 +33,7 @@
 #include <GL/glext.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 #define MAX_TEX 64
@@ -71,19 +72,90 @@ static GLuint quad_vao, quad_vbo;
 static struct {
     GLuint vao, vbo, ibo;
     int index_count;
+    /* Animacion por huesos; nbones == 0 si la malla va en pose de reposo. */
+    int nvert, nbones, nkeys;
+    float duration;
+    float *bind;              /* (nvert, 5) reposo + UV */
+    unsigned short *bone_idx; /* (nvert, 4) */
+    float *weights;           /* (nvert, 4) */
+    float *mats;              /* (nkeys, nbones, 12) ya compuestas */
+    float *skinned;           /* destino, se reusa */
 } meshes[MAX_MESHES];
 static int n_meshes;
+/* Instante al que deformar las mallas. Lo fija la directiva `meshtime`; sin
+ * ella las mallas se quedan en reposo, que es el comportamiento anterior. */
+static float mesh_time = -1.0f;
+static int meshes_skinned;
 
-static void load_mesh(int id, const char *path, int nvert, int nidx)
+/* Deforma una malla en el instante `t` y reescribe su VBO.
+ *
+ * Las matrices llegan del plan ya resueltas -- inversa de reposo, compuesta
+ * con la del padre y evaluada en cada clave -- asi que aqui solo queda la
+ * suma ponderada: v' = suma_j w_j * (v * M_j). Son 12 floats por hueso, por
+ * filas; la columna que falta es siempre (0,0,0,1).
+ *
+ * Se toma la clave mas cercana, sin interpolar. */
+static void skin_mesh(int id, float t)
+{
+    if (id < 0 || id >= MAX_MESHES) return;
+    if (meshes[id].nbones <= 0 || meshes[id].nkeys <= 1) return;
+
+    /* La ultima clave repite la primera para cerrar el bucle: el periodo son
+     * nkeys-1 intervalos, no nkeys. */
+    int span = meshes[id].nkeys - 1;
+    float dur = meshes[id].duration > 1e-6f ? meshes[id].duration : 1e-6f;
+    int k = (int)lround((double)t / dur * span) % span;
+    if (k < 0) k += span;
+
+    int nb = meshes[id].nbones;
+    const float *mats = meshes[id].mats + (size_t)k * nb * 12;
+    for (int v = 0; v < meshes[id].nvert; v++) {
+        const float *p = meshes[id].bind + (size_t)v * 5;
+        float acc[3] = {0.0f, 0.0f, 0.0f};
+        for (int s = 0; s < 4; s++) {
+            float w = meshes[id].weights[(size_t)v * 4 + s];
+            if (w == 0.0f) continue;
+            int j = meshes[id].bone_idx[(size_t)v * 4 + s];
+            if (j < 0 || j >= nb) continue;
+            const float *o = mats + (size_t)j * 12;
+            for (int c = 0; c < 3; c++)
+                acc[c] += w * (p[0] * o[0 * 3 + c] + p[1] * o[1 * 3 + c]
+                               + p[2] * o[2 * 3 + c] + o[3 * 3 + c]);
+        }
+        float *d = meshes[id].skinned + (size_t)v * 5;
+        d[0] = acc[0]; d[1] = acc[1]; d[2] = acc[2];
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, meshes[id].vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                    (GLsizeiptr)meshes[id].nvert * 5 * sizeof(float),
+                    meshes[id].skinned);
+}
+
+static void skin_all(void)
+{
+    if (meshes_skinned || mesh_time < 0.0f) return;
+    meshes_skinned = 1;
+    for (int i = 0; i < n_meshes; i++)
+        skin_mesh(i, mesh_time);
+}
+
+static void load_mesh(int id, const char *path, int nvert, int nidx,
+                      int nbones, int nkeys, float duration)
 {
     if (id < 0 || id >= MAX_MESHES) return;
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "malla no abre: %s\n", path); return; }
     size_t vbytes = (size_t)nvert * 5 * sizeof(float);
     size_t ibytes = (size_t)nidx * sizeof(unsigned short);
-    void *buf = malloc(vbytes + ibytes);
+    size_t abytes = 0;
+    if (nbones > 0 && nkeys > 1)
+        abytes = (size_t)nvert * 4 * sizeof(unsigned short)
+               + (size_t)nvert * 4 * sizeof(float)
+               + (size_t)nkeys * nbones * 12 * sizeof(float);
+    char *buf = malloc(vbytes + ibytes + abytes);
     if (!buf) { fclose(f); return; }
-    if (fread(buf, 1, vbytes + ibytes, f) != vbytes + ibytes) {
+    if (fread(buf, 1, vbytes + ibytes + abytes, f) != vbytes + ibytes + abytes) {
         fprintf(stderr, "malla corta: %s\n", path);
         free(buf); fclose(f); return;
     }
@@ -93,7 +165,8 @@ static void load_mesh(int id, const char *path, int nvert, int nidx)
     glBindVertexArray(meshes[id].vao);
     glGenBuffers(1, &meshes[id].vbo);
     glBindBuffer(GL_ARRAY_BUFFER, meshes[id].vbo);
-    glBufferData(GL_ARRAY_BUFFER, vbytes, buf, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, vbytes, buf,
+                 abytes ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *)0);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
@@ -103,6 +176,33 @@ static void load_mesh(int id, const char *path, int nvert, int nidx)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, meshes[id].ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, ibytes, (char *)buf + vbytes, GL_STATIC_DRAW);
     meshes[id].index_count = nidx;
+    meshes[id].nvert = nvert;
+
+    if (abytes) {
+        const char *src = buf + vbytes + ibytes;
+        size_t ib = (size_t)nvert * 4 * sizeof(unsigned short);
+        size_t wb = (size_t)nvert * 4 * sizeof(float);
+        size_t kb = (size_t)nkeys * nbones * 12 * sizeof(float);
+        meshes[id].bind     = malloc(vbytes);
+        meshes[id].skinned  = malloc(vbytes);
+        meshes[id].bone_idx = malloc(ib);
+        meshes[id].weights  = malloc(wb);
+        meshes[id].mats     = malloc(kb);
+        if (meshes[id].bind && meshes[id].skinned && meshes[id].bone_idx
+            && meshes[id].weights && meshes[id].mats) {
+            memcpy(meshes[id].bind, buf, vbytes);
+            memcpy(meshes[id].skinned, buf, vbytes);   /* copia las UV */
+            memcpy(meshes[id].bone_idx, src, ib);      src += ib;
+            memcpy(meshes[id].weights, src, wb);       src += wb;
+            memcpy(meshes[id].mats, src, kb);
+            meshes[id].nbones = nbones;
+            meshes[id].nkeys = nkeys;
+            meshes[id].duration = duration;
+        } else {
+            fprintf(stderr, "sin memoria para la animacion de %s\n", path);
+        }
+    }
+
     free(buf);
     glBindVertexArray(quad_vao);
     if (id >= n_meshes) n_meshes = id + 1;
@@ -436,11 +536,17 @@ int main(int argc, char **argv)
             if (id >= 0 && id < MAX_TEX) {
                 textures[id] = load_texture(path, w, h);
             }
+        } else if (strcmp(kw, "meshtime") == 0) {
+            sscanf(line, "%*s %f", &mesh_time);
         } else if (strcmp(kw, "mesh") == 0 && !in_pass) {
-            int id, nvert, nidx;
+            int id, nvert, nidx, nbones = 0, nkeys = 0;
+            float dur = 0.0f;
             char path[512];
-            if (sscanf(line, "%*s %d %511s %d %d", &id, path, &nvert, &nidx) == 4)
-                load_mesh(id, path, nvert, nidx);
+            int n = sscanf(line, "%*s %d %511s %d %d %d %d %f",
+                           &id, path, &nvert, &nidx, &nbones, &nkeys, &dur);
+            if (n == 4 || n == 7)
+                load_mesh(id, path, nvert, nidx,
+                          n == 7 ? nbones : 0, n == 7 ? nkeys : 0, dur);
         } else if (strcmp(kw, "dump") == 0) {
             /* Instrumentacion: vuelca el compuesto actual para poder ver en
              * que pase exacto se pierde la imagen. */
@@ -471,6 +577,9 @@ int main(int argc, char **argv)
              * guarda de !in_pass o se pierde silenciosamente. */
             sscanf(line, "%*s %511s", outpath);
         } else if (strcmp(kw, "pass") == 0) {
+            /* Ultimo momento antes de dibujar: ya se leyo toda la cabecera,
+             * asi que `meshtime` y las mallas estan cargadas en cualquier orden. */
+            skin_all();
             in_pass = 1;
             prog = 0;
             n_samplers = n_unis = 0;
