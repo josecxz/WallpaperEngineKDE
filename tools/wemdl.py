@@ -109,6 +109,56 @@ class Mesh:
         return self.positions.min(axis=0), self.positions.max(axis=0)
 
 
+@dataclass(frozen=True)
+class Bone:
+    """Hueso en pose de reposo."""
+
+    parent: int                # -1 si es raiz
+    matrix: np.ndarray         # (4, 4) float32, por filas
+
+
+def parse_skeleton(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[Bone], int]:
+    """Lee el bloque MDLS que sigue a la geometria.
+
+    Estructura, deducida del corpus:
+
+        char[]  magic "MDLS000N" terminado en nul
+        u32     tamano restante
+        u32     numero de huesos
+        por hueso:
+            u8      relleno
+            u32     siempre 1; proposito desconocido
+            i32     indice del padre, -1 si es raiz
+            u32     TAMANO EN BYTES de la matriz (64), no su numero de celdas
+            float[16]  matriz 4x4
+            char[]  nombre del hueso, terminado en nul (casi siempre vacio)
+
+    El relleno y el u32 van por hueso, no en la cabecera: leerlos una sola vez
+    cuadra el primer hueso y descarrila el segundo, que es como se detecto.
+
+    Que el numero de huesos es ese campo se comprueba solo: coincide con
+    max(indice de hueso en los vertices) + 1 en todo el corpus, que es una
+    medida independiente sacada del bloque de geometria.
+    """
+    ver, p = _cstring(buf, pos)
+    if not ver.startswith("MDLS"):
+        raise MdlError(f"{name}: se esperaba MDLS y hay {ver!r}")
+    _total, count = struct.unpack_from("<II", buf, p)
+    p += 8
+    bones: list[Bone] = []
+    for i in range(count):
+        p += 1 + 4                              # relleno + el u32 que vale 1
+        parent, mbytes = struct.unpack_from("<iI", buf, p)
+        p += 8
+        if mbytes != 64:
+            raise MdlError(f"{name}: hueso {i} con matriz de {mbytes} b, se esperaban 64")
+        m = np.frombuffer(buf, "<f4", 16, p).reshape(4, 4)
+        p += 64
+        _bone_name, p = _cstring(buf, p)
+        bones.append(Bone(parent=parent, matrix=m))
+    return bones, p
+
+
 def _cstring(buf: bytes, pos: int) -> tuple[str, int]:
     """Lee una cadena terminada en nul y devuelve tambien la posicion siguiente."""
     end = buf.find(b"\0", pos)
