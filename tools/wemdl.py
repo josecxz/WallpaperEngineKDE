@@ -197,9 +197,15 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[lis
             u32     numero de fotogramas
             u32     siempre 0
             u32     numero de pistas == numero de huesos
-            u32     siempre 0
-            u32     TAMANO EN BYTES de una pista
-            pista[] una por hueso
+            por pista:
+                u32     siempre 0
+                u32     TAMANO EN BYTES de la pista
+                float[] las claves
+
+    El par (0, tamano) va POR PISTA, no una vez en la cabecera. Leyendolo una
+    sola vez cuadra la primera pista y deja sin consumir el resto; en los
+    ficheros con dos animaciones el desajuste se acumula y descarrila la
+    segunda. Es el mismo prefijo por registro que ya aparecio en los huesos.
 
     Cada fotograma son 9 float: posicion(3), rotacion(3) y escala(3). Tres
     comprobaciones cruzadas lo sostienen, y ninguna sale del propio bloque:
@@ -219,16 +225,21 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[lis
         p += 8                                  # identificador + un u32 a 0
         anim_name, p = _cstring(buf, p)
         mode, p = _cstring(buf, p)
-        duration, frames, _z1, ntracks, _z2, tbytes = struct.unpack_from("<fIIIII", buf, p)
-        p += 24
-        if tbytes % 36:
-            raise MdlError(f"{name}: pista de {tbytes} b no es multiplo de 36")
-        keys = tbytes // 36
-        need = ntracks * tbytes
-        if p + need > len(buf):
-            raise MdlError(f"{name}: las pistas de '{anim_name}' desbordan el fichero")
-        t = np.frombuffer(buf, "<f4", ntracks * keys * 9, p).reshape(ntracks, keys, 9)
-        p += need
+        duration, frames, _z1, ntracks = struct.unpack_from("<fIII", buf, p)
+        p += 16
+
+        pistas = []
+        for k in range(ntracks):
+            _z2, tbytes = struct.unpack_from("<II", buf, p)
+            p += 8
+            if tbytes % 36:
+                raise MdlError(f"{name}: pista {k} de {tbytes} b no es multiplo de 36")
+            if p + tbytes > len(buf):
+                raise MdlError(f"{name}: la pista {k} de '{anim_name}' desborda el fichero")
+            pistas.append(np.frombuffer(buf, "<f4", tbytes // 4, p).reshape(-1, 9))
+            p += tbytes
+
+        t = np.stack(pistas) if pistas else np.zeros((0, 0, 9), dtype="<f4")
         anims.append(Animation(name=anim_name, mode=mode, duration=float(duration),
                                frames=int(frames), tracks=t))
     return anims, p
