@@ -30,6 +30,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+import wepaths
+
 # Se apunta a GLSL de escritorio, no a GLSL ES, y no por comodidad: los
 # shaders de WY vienen de HLSL y dependen de conversiones implicitas int->float
 # que GLSL ES prohibe y el de escritorio permite desde la 1.20. Ademas `sample`
@@ -396,7 +399,7 @@ def main() -> int:
         print(__doc__)
         return 1
     src = Path(sys.argv[1])
-    we = Path("/home/jose/wallpapers/steam_library/steamapps/common/wallpaper_engine/assets")
+    we = wepaths.we_assets()
     resolver = Resolver(roots=[src.parent, src.parent.parent, we, we / "shaders"])
     stage = "vert" if src.suffix == ".vert" else "frag"
     out = translate(src.read_text(errors="replace"), stage, resolver)

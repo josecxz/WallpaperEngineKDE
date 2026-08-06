@@ -28,11 +28,9 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
+import wepaths
 import wetex
 from pkg_inspect import read_pkg
-
-WE_ASSETS = "/home/jose/wallpapers/steam_library/steamapps/common/wallpaper_engine/assets"
-WORKSHOP = "/home/jose/wallpapers/steam_library/steamapps/workshop/content/431960"
 
 FOURCC = {wetex.TexFormat.DXT1: b"DXT1",
           wetex.TexFormat.DXT3: b"DXT3",
@@ -97,11 +95,11 @@ def check(name: str, data: bytes, res: Counter, errs: Counter) -> None:
 def main() -> int:
     res, errs = Counter(), Counter()
 
-    for f in sorted(glob.glob(f"{WE_ASSETS}/**/*.tex", recursive=True)):
+    for f in sorted(glob.glob(f"{wepaths.we_assets()}/**/*.tex", recursive=True)):
         check(Path(f).name, Path(f).read_bytes(), res, errs)
 
     if "--workshop" in sys.argv:
-        for p in sorted(glob.glob(f"{WORKSHOP}/*/*.pkg")):
+        for p in sorted(glob.glob(f"{wepaths.we_workshop()}/*/*.pkg")):
             try:
                 _, entries = read_pkg(p)
             except Exception as e:

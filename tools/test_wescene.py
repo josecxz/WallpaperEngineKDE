@@ -26,12 +26,11 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import wepaths
 import weshader
 import wescene
 from wescene import AssetResolver, SceneError, load_scene
 
-WE_ASSETS = Path("/home/jose/wallpapers/steam_library/steamapps/common/wallpaper_engine/assets")
-WORKSHOP = Path("/home/jose/wallpapers/steam_library/steamapps/workshop/content/431960")
 MESA_ENV = {"__EGL_VENDOR_LIBRARY_FILENAMES": "/usr/share/glvnd/egl_vendor.d/50_mesa.json"}
 
 
@@ -41,7 +40,9 @@ def main() -> int:
     if "--limit" in sys.argv:
         limit = int(sys.argv[sys.argv.index("--limit") + 1])
 
-    dirs = sorted(d for d in WORKSHOP.iterdir() if (d / "scene.pkg").is_file())
+    we = wepaths.we_assets()
+    dirs = sorted(d for d in wepaths.we_workshop().iterdir()
+                  if (d / "scene.pkg").is_file())
     if limit:
         dirs = dirs[:limit]
 
@@ -54,7 +55,7 @@ def main() -> int:
 
     for d in dirs:
         try:
-            res = AssetResolver.for_wallpaper(d, WE_ASSETS)
+            res = AssetResolver.for_wallpaper(d, we)
             scene = load_scene(res)
         except SceneError as e:
             stats["escena_err"] += 1
@@ -86,7 +87,7 @@ def main() -> int:
 
         # Traducir cada variante con SUS combos reales.
         sresolver = weshader.Resolver(
-            overlay=res.entries, roots=[d, WE_ASSETS, WE_ASSETS / "shaders"])
+            overlay=res.entries, roots=[d, we, we / "shaders"])
         for p in scene.render_passes:
             if p.command:
                 stats["pases_copy"] += 1

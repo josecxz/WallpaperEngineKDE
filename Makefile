@@ -126,9 +126,19 @@ reload: install-env
 	@echo "plasmashell reiniciado con QML_IMPORT_PATH=$(QMLMOD)"
 
 # ── plan de render ──────────────────────────────────────────────────────────
-WALLPAPER ?= /home/jose/wallpapers/steam_library/steamapps/workshop/content/431960/2626054981
+# Ruta del wallpaper a renderizar. Sin valor por defecto: depende de a que se
+# haya suscrito cada uno. `tools/wepaths.py` localiza la biblioteca de Steam.
+WALLPAPER ?=
 
 plan:
+	@test -n "$(WALLPAPER)" || { \
+		echo "uso: make plan WALLPAPER=<ruta al wallpaper>"; \
+		echo "wallpapers disponibles:"; \
+		python3 -c 'import sys; sys.path.insert(0,"tools"); import wepaths; \
+			print("\n".join(f"  {d}" for d in sorted(wepaths.we_workshop().iterdir()) \
+			if (d/"scene.pkg").is_file()))' 2>/dev/null \
+			|| echo "  (define WE_WORKSHOP; ver tools/wepaths.py)"; \
+		exit 1; }
 	@mkdir -p $(SRC)/contents/scene
 	python3 tools/werender.py $(WALLPAPER) --emit-plan $(SRC)/contents/scene
 	@echo "plan -> $(SRC)/contents/scene/plan.txt"

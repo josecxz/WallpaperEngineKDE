@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import wepaths
 from pkg_inspect import read_pkg
 
 
@@ -349,7 +350,7 @@ def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         return 1
-    we = Path("/home/jose/wallpapers/steam_library/steamapps/common/wallpaper_engine/assets")
+    we = wepaths.we_assets()
     res = AssetResolver.for_wallpaper(Path(sys.argv[1]), we)
     scene = load_scene(res)
 

@@ -91,8 +91,28 @@ repite cada fotograma poniendo el tiempo del `FrameAnimation`.
 ```sh
 sudo pacman -S cmake        # NO hace falta: se compila con make + moc
 make build && make install && make reload
-make plan                   # regenera el plan desde el wallpaper
+make plan WALLPAPER=<ruta>  # genera el plan desde un wallpaper concreto
 ```
+
+### Dónde está Wallpaper Engine
+
+Las herramientas de `tools/` necesitan los assets de WE y el contenido de
+Workshop. `tools/wepaths.py` los busca en este orden: las variables
+`WE_ASSETS` / `WE_WORKSHOP`, luego las bibliotecas declaradas en
+`libraryfolders.vdf`, y por último las ubicaciones habituales de Steam
+(incluido el flatpak).
+
+La detección automática **no siempre basta**: una instalación copiada a mano
+puede no figurar en `libraryfolders.vdf`, que es el caso de la máquina donde
+se desarrolló esto. En ese caso hay que definirlas:
+
+```fish
+set -Ux WE_ASSETS   /ruta/steam_library/steamapps/common/wallpaper_engine/assets
+set -Ux WE_WORKSHOP /ruta/steam_library/steamapps/workshop/content/431960
+```
+
+`python3 tools/wepaths.py` imprime lo que ha encontrado, o qué variable falta.
+`make plan` sin `WALLPAPER` lista los wallpapers disponibles.
 
 Nota: `make install` deja el módulo QML en `~/.local/lib/qt6/qml`, que Qt no
 escanea por defecto. Sin `QML_IMPORT_PATH` plasmashell carga el fondo, falla

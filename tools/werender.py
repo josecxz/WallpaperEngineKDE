@@ -34,12 +34,11 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
+import wepaths
 import wescene
 import weshader
 import wetex
 from wescene import AssetResolver, SceneError, load_scene
-
-WE_ASSETS = Path("/home/jose/wallpapers/steam_library/steamapps/common/wallpaper_engine/assets")
 
 IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
 
@@ -118,7 +117,7 @@ def _floats(value) -> list[float]:
 
 class Renderer:
     def __init__(self, wallpaper: Path, exec_path: Path, time: float = 0.0):
-        self.res = AssetResolver.for_wallpaper(wallpaper, WE_ASSETS)
+        self.res = AssetResolver.for_wallpaper(wallpaper, wepaths.we_assets())
         self.exec_path = exec_path
         self.time = time
         self.tmp = Path(tempfile.mkdtemp(prefix="werender-"))
@@ -308,8 +307,9 @@ class Renderer:
         canvas = ((int(proj["width"]), int(proj["height"]))
                   if isinstance(proj, dict) else (1920, 1080))
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
+        we = wepaths.we_assets()
         sresolver = weshader.Resolver(
-            overlay=self.res.entries, roots=[WE_ASSETS, WE_ASSETS / "shaders"])
+            overlay=self.res.entries, roots=[we, we / "shaders"])
         for obj in scene.objects:
             if obj.kind != "image" or not obj.passes:
                 continue
@@ -345,9 +345,10 @@ class Renderer:
 
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
 
+        we = wepaths.we_assets()
         sresolver = weshader.Resolver(
             overlay=self.res.entries,
-            roots=[WE_ASSETS, WE_ASSETS / "shaders"])
+            roots=[we, we / "shaders"])
 
         for obj in scene.objects:
             if obj.kind != "image" or not obj.passes:

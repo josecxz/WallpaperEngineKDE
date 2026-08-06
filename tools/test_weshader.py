@@ -21,9 +21,9 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import wepaths
 import weshader
 
-WE_ASSETS = Path("/home/jose/wallpapers/steam_library/steamapps/common/wallpaper_engine/assets")
 MESA_ENV = {"__EGL_VENDOR_LIBRARY_FILENAMES": "/usr/share/glvnd/egl_vendor.d/50_mesa.json"}
 
 
@@ -79,8 +79,9 @@ def main() -> int:
             if pkg_root.parent == corpus:
                 break
             pkg_root = pkg_root.parent
+        we = wepaths.we_assets()
         roots = [f.parent, f.parent.parent, f.parent.parent.parent,
-                 WE_ASSETS, WE_ASSETS / "shaders"]
+                 we, we / "shaders"]
         resolver = weshader.Resolver(roots=[r for r in roots if r.is_dir()])
         stage = "vert" if f.suffix == ".vert" else "frag"
         try:
