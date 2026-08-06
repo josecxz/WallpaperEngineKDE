@@ -159,6 +159,81 @@ def parse_skeleton(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[
     return bones, p
 
 
+@dataclass(frozen=True)
+class Animation:
+    """Animacion de huesos ya decodificada."""
+
+    name: str
+    mode: str                  # "loop" en todo el corpus visto
+    duration: float
+    frames: int
+    tracks: np.ndarray         # (huesos, fotogramas+1, 9) float32
+
+    @property
+    def positions(self) -> np.ndarray:
+        return self.tracks[:, :, 0:3]
+
+    @property
+    def rotations(self) -> np.ndarray:
+        return self.tracks[:, :, 3:6]
+
+    @property
+    def scales(self) -> np.ndarray:
+        return self.tracks[:, :, 6:9]
+
+
+def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[Animation], int]:
+    """Lee el bloque MDLA que sigue al esqueleto.
+
+        char[]  magic "MDLA000N"
+        u32     tamano restante
+        u32     numero de animaciones
+        por animacion:
+            u32     identificador
+            u32     siempre 0
+            char[]  nombre
+            char[]  modo ("loop")
+            f32     duracion
+            u32     numero de fotogramas
+            u32     siempre 0
+            u32     numero de pistas == numero de huesos
+            u32     siempre 0
+            u32     TAMANO EN BYTES de una pista
+            pista[] una por hueso
+
+    Cada fotograma son 9 float: posicion(3), rotacion(3) y escala(3). Tres
+    comprobaciones cruzadas lo sostienen, y ninguna sale del propio bloque:
+
+      - el numero de pistas coincide con los huesos que declara el MDLS
+      - el tamano de pista es siempre multiplo exacto de 36
+      - y da siempre `fotogramas + 1` claves: el fotograma que cierra el bucle
+    """
+    ver, p = _cstring(buf, pos)
+    if not ver.startswith("MDLA"):
+        raise MdlError(f"{name}: se esperaba MDLA y hay {ver!r}")
+    _total, count = struct.unpack_from("<II", buf, p)
+    p += 8
+
+    anims: list[Animation] = []
+    for i in range(count):
+        p += 8                                  # identificador + un u32 a 0
+        anim_name, p = _cstring(buf, p)
+        mode, p = _cstring(buf, p)
+        duration, frames, _z1, ntracks, _z2, tbytes = struct.unpack_from("<fIIIII", buf, p)
+        p += 24
+        if tbytes % 36:
+            raise MdlError(f"{name}: pista de {tbytes} b no es multiplo de 36")
+        keys = tbytes // 36
+        need = ntracks * tbytes
+        if p + need > len(buf):
+            raise MdlError(f"{name}: las pistas de '{anim_name}' desbordan el fichero")
+        t = np.frombuffer(buf, "<f4", ntracks * keys * 9, p).reshape(ntracks, keys, 9)
+        p += need
+        anims.append(Animation(name=anim_name, mode=mode, duration=float(duration),
+                               frames=int(frames), tracks=t))
+    return anims, p
+
+
 def _cstring(buf: bytes, pos: int) -> tuple[str, int]:
     """Lee una cadena terminada en nul y devuelve tambien la posicion siguiente."""
     end = buf.find(b"\0", pos)
