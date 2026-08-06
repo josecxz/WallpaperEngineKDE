@@ -125,6 +125,73 @@ def _floats(value) -> list[float]:
     return []
 
 
+def _trs(pos, rot, scale) -> np.ndarray:
+    """Matriz 4x4 en convencion de vector-fila, como las del propio formato."""
+    cz, sz = math.cos(rot[2]), math.sin(rot[2])
+    m = np.eye(4, dtype=np.float64)
+    m[0, 0], m[0, 1] = cz * scale[0], sz * scale[0]
+    m[1, 0], m[1, 1] = -sz * scale[1], cz * scale[1]
+    m[2, 2] = scale[2] if scale[2] else 1.0
+    m[3, 0:3] = pos
+    return m
+
+
+def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
+    """Deforma la malla por huesos en el instante WE_PUPPET_TIME.
+
+    Es skinning en CPU, horneado a un tiempo fijo: sirve para comprobar que
+    las pistas son correctas comparando dos renders a tiempos distintos, sin
+    tocar el motor. La animacion de verdad necesita evaluar los huesos por
+    fotograma en C++ y subirlos como `g_Bones[]`.
+
+    Las matrices del formato son de vector-fila (`v * M`), igual que la MVP.
+    La formula es la de siempre: v' = suma_j peso_j * (v * inv(B_j) * A_j),
+    con B_j la matriz de reposo del hueso y A_j su transformacion animada.
+    """
+    t = os.environ.get("WE_PUPPET_TIME")
+    if t is None:
+        return np.asarray(mesh.positions, dtype=np.float64)
+    try:
+        bones, p = wemdl.parse_skeleton(blob, mesh.consumed, rel)
+        if blob[p:p + 4] != b"MDLA":
+            raise wemdl.MdlError("sin bloque de animacion")
+        anims, _ = wemdl.parse_animations(blob, p, rel)
+    except wemdl.MdlError as e:
+        notes.append(f"puppet sin animacion ({rel}): {e}")
+        return np.asarray(mesh.positions, dtype=np.float64)
+    if not anims:
+        return np.asarray(mesh.positions, dtype=np.float64)
+
+    a = anims[0]
+    keys = a.tracks.shape[1]
+    # El ultimo fotograma repite el primero para cerrar el bucle, asi que el
+    # periodo son `keys - 1` intervalos.
+    k = int(round((float(t) / max(a.duration, 1e-6)) * (keys - 1))) % max(keys - 1, 1)
+
+    v = np.concatenate([np.asarray(mesh.positions, dtype=np.float64),
+                        np.ones((mesh.vertex_count, 1))], axis=1)
+    out = np.zeros((mesh.vertex_count, 4))
+    idx = np.asarray(mesh.bone_indices)
+    w = np.asarray(mesh.bone_weights, dtype=np.float64)
+
+    skin = []
+    for j, bone in enumerate(bones):
+        B = np.asarray(bone.matrix, dtype=np.float64)
+        tr = a.tracks[min(j, a.tracks.shape[0] - 1)][k]
+        skin.append(np.linalg.inv(B) @ _trs(tr[0:3], tr[3:6], tr[6:9]))
+
+    for slot in range(4):
+        wj = w[:, slot]
+        if not wj.any():
+            continue
+        for j in range(len(bones)):
+            sel = (idx[:, slot] == j) & (wj > 0)
+            if sel.any():
+                out[sel] += wj[sel, None] * (v[sel] @ skin[j])
+    stats["puppet_animado"] += 1
+    return out[:, 0:3]
+
+
 class Renderer:
     def __init__(self, wallpaper: Path, exec_path: Path, time: float = 0.0):
         self.res = AssetResolver.for_wallpaper(wallpaper, wepaths.we_assets())
@@ -140,7 +207,7 @@ class Renderer:
         self.mesh_files: list[Path] = []
         self.notes: list[str] = []
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
-                      "puppet": 0, "puppet_omitido": 0}
+                      "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
 
@@ -203,8 +270,10 @@ class Renderer:
             self.notes.append(f"puppet sin malla ({rel}): {e}")
             return
 
+        pos = _skin(m, blob, rel, self.stats, self.notes)
+
         inter = np.empty((m.vertex_count, 5), dtype="<f4")
-        inter[:, 0:3] = m.positions
+        inter[:, 0:3] = pos
         inter[:, 3] = m.uvs[:, 0]
         # Las texturas se suben volteadas (ver _tex), asi que v=0 es el borde
         # de abajo. En la malla la v crece hacia abajo: medido como
