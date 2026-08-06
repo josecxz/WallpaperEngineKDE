@@ -480,8 +480,12 @@ bool GlExecutor::initialize(QString *error)
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, ibytes,
                      data.constData() + vbytes, GL_STATIC_DRAW);
+        ++m_meshCount;
     }
     glBindVertexArray(m_vao);
+    for (const Op &op : m_ops)
+        if (op.kind == Op::Pass && op.mesh >= 0)
+            ++m_meshPassCount;
 
     for (auto it = m_textures.begin(); it != m_textures.end(); ++it) {
         TexSpec &t = it.value();

@@ -60,6 +60,11 @@ public:
 
     // Numeros de solo lectura, para diagnostico.
     int passCount() const { return m_passCount; }
+    // Diagnostico de las mallas puppet: cuantas se subieron y cuantos pases
+    // las referencian. Si el segundo es 0 el plan no las esta pidiendo; si el
+    // primero es 0 no llegaron a la GPU.
+    int meshCount() const { return m_meshCount; }
+    int meshPassCount() const { return m_meshPassCount; }
     int canvasWidth() const { return m_canvasW; }
     int canvasHeight() const { return m_canvasH; }
     int liveUniformCount() const { return m_liveUniforms; }
@@ -155,6 +160,7 @@ private:
     QVector<Op> m_ops;
     QHash<int, TexSpec> m_textures;
     QHash<int, MeshSpec> m_meshes;
+    int m_meshCount = 0, m_meshPassCount = 0;
     QVector<Target> m_targets;              // indexable y estable
     QHash<QString, qsizetype> m_targetByName;
     Target m_compo[2];      // buffer del objeto en curso (ping-pong)
