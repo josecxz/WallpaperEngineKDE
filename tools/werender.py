@@ -171,11 +171,21 @@ def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     hijo que acompana tendria rotacion local casi nula. Componer con el padre
     duplicaba el desplazamiento -- el mismo giro aplicado dos veces.
     """
+    # La componente Y de la traslacion va ESPEJADA respecto al pivote: las
+    # pistas la dan en convencion de pantalla (y hacia abajo) y nuestra malla
+    # vive con y hacia arriba. La rotacion NO se espeja -- comparte signo
+    # visual entre ambas convenciones, medido contra el preview.gif oficial:
+    # nuestro barrido del asta (-23.7 -> +7.7 grados) coincide con el real
+    # (-19.7 -> +14.4) SIN tocar la rotacion, y la altura del asta en la
+    # columna del puno solo aguanta fija (y=202, como el real) espejando la
+    # traslacion. Solo el asta (jdarcjik) traslada en Jeanne; el resto de
+    # capas rotan puro y este espejo no las toca.
     out = np.empty((len(bones), 4, 4))
     for j, bone in enumerate(bones):
-        tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
-        out[j] = (np.linalg.inv(np.asarray(bone.matrix, dtype=np.float64))
-                  @ _trs(tr[0:3], tr[3:6], tr[6:9]))
+        tr = np.array(anim.tracks[min(j, anim.tracks.shape[0] - 1)][k], dtype=np.float64)
+        b = np.asarray(bone.matrix, dtype=np.float64)
+        tr[1] = b[3, 1] - (tr[1] - b[3, 1])
+        out[j] = np.linalg.inv(b) @ _trs(tr[0:3], tr[3:6], tr[6:9])
     return out
 
 
@@ -751,8 +761,18 @@ def main() -> int:
     frames = 1
     if "--frames" in sys.argv:
         frames = int(sys.argv[sys.argv.index("--frames") + 1])
-    stats = r.render(out, only_base="--only-base" in sys.argv, max_passes=mp,
-                     frames=frames)
+    try:
+        stats = r.render(out, only_base="--only-base" in sys.argv, max_passes=mp,
+                         frames=frames)
+    finally:
+        # Cada render deja ~200 MB de texturas RGBA decodificadas; sin esto
+        # una sesion de depuracion llena /tmp. `--keep` lo conserva para
+        # inspeccionar el plan y los shaders generados.
+        if "--keep" in sys.argv:
+            print(f"  temporales: {r.tmp}")
+        else:
+            import shutil
+            shutil.rmtree(r.tmp, ignore_errors=True)
     for k, v in stats.items():
         if k == "log" and v:
             print(f"  log del compilador (cola):\n{v}")
