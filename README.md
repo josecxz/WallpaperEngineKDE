@@ -417,6 +417,42 @@ desactiva), medido como aristas que se estiran o encogen más de un 35%:
 `jdarcjik` es el control: todos sus vértices pesan un único hueso, así que
 suavizar no puede alterarlo, y en efecto no lo altera.
 
+#### Warp MLS: probado y descartado
+
+La hipótesis era que WE no hace skinning por pesos sino un warp suave global
+(*moving least squares* rígido), lo que explicaría un brazo rígido sin
+costuras. Se implementó y se midió. **No se sostiene.**
+
+MLS necesita correspondencias de puntos, y aquí los pivotes no se mueven
+—solo rotan—, así que se generan handles virtuales alrededor de cada pivote y
+se transforman con la matriz del hueso. Por vértice se resuelve el mejor
+ajuste rígido ponderado (Procrustes 2D), que no admite escala y por tanto no
+puede encoger la malla.
+
+Por distorsión de arista parecía ganar de calle: Jeanne pasaba de 39 aristas
+rotas (LBS crudo) y 17 (LBS suavizado) a **0**, con el estirón máximo de
+4.417 → 1.102. Pero esa métrica no distingue "no se deforma" de "se mueve
+todo junto", y era lo segundo:
+
+| punto | LBS suavizado | MLS por distancia |
+|---|---|---|
+| guantelete alzado | 100 px | 67 px |
+| cadera | 4 px | **87 px** |
+| pierna | 0 px | **155 px** |
+| puño bajo | 0 px | **171 px** |
+
+Los pesos por distancia reparten mal porque los tres pivotes de Jeanne están
+apiñados en el hombro: un vértice lejano recibe peso casi igual de los tres y
+acaba con la transformación promedio. La pierna y el puño, que el artista ató
+a un hueso estático, se van con el brazo.
+
+Con los pesos del artista en vez de por distancia, MLS empata con LBS
+suavizado en Jeanne (13 aristas rotas frente a 17) y empeora en el estandarte
+(117 frente a 2). No compensa.
+
+**Conclusión:** la flexión del brazo está en los datos, no en el método. Ningún
+algoritmo de deformación la elimina sin mover lo que debe quedarse quieto.
+
 Lo que **no** arregla: el brazo de Jeanne lo mueven dos huesos con el pivote
 en el hombro, a 124 px uno de otro, rotando cantidades distintas (0.4706 y
 0.3697). Eso es una flexión real en los datos, no un artefacto del método;
