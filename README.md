@@ -314,11 +314,38 @@ animaciones: el `u32` de cierre se lo come el relleno final cuando hay una
 sola, y con dos la segunda arranca cuatro bytes antes. Da una duración de
 1e28 y pistas de 4 MB, que es lo que delató el fallo.
 
-**Validación:** 36 de 42 esqueletos tienen animación y las 36 cierran sobre
-relleno a cero, con el número de pistas igual al de huesos y todos los tamaños
-múltiplos exactos de 36. Los 6 restantes tienen esqueleto y ningún `MDLA`:
-llegan al final con cientos de bytes que no son relleno, un bloque más que
-todavía no está identificado.
+#### El bloque intermedio de MDLA0003
+
+Seis mallas del corpus parecían no tener animación: tras el esqueleto no había
+tag `MDLA` sino cientos de bytes que tampoco eran relleno. Sí la tienen —
+detrás de un bloque intermedio cuyo tamaño sale exacto en las seis:
+
+```
+12 bytes      cabecera
+por hueso     76 b = 3 float + una matriz 4x4 (rotación y traslación,
+              mismo layout de vector-fila que el resto del formato)
+u32[huesos]   lista de índices 0,1,2…
+1 byte        relleno
+              -> aquí empieza "MDLA0003"
+```
+
+El ajuste `offset = 13 + 80·huesos` encaja en los seis ficheros, con recuentos
+de 1 a 5 huesos. No hace falta interpretar el contenido para leer la animación
+que va detrás, y `MDLA0003` resultó tener **exactamente la misma estructura**
+que `MDLA0001`: en `SWORD_puppet.mdl`, duración 60 s, 120 fotogramas y una
+pista de 4356 b = 121 claves = fotogramas + 1.
+
+De ahí sale también un modo de reproducción que no aparecía en el resto del
+corpus: además de `loop`, existe **`mirror`** (5 animaciones).
+
+**Validación:** 41 de 42 esqueletos decodifican su animación y las 41 cierran
+sobre relleno a cero, con el número de pistas igual al de huesos y todos los
+tamaños múltiplos exactos de 36.
+
+El único que falta es `devushka…_puppet.mdl`, y es otro formato: **MDLA0002**,
+que intercala metadatos JSON de eventos entre animaciones
+(`{"hashKey":"object:3287","frame":1,"name":"e"}`). Su primera animación
+decodifica bien (4 pistas de 33 claves); la segunda necesita saltar ese JSON.
 
 #### Skinning
 

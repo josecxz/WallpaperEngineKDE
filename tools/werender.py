@@ -208,7 +208,7 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
         bones, p = wemdl.parse_skeleton(blob, mesh.consumed, rel)
         if blob[p:p + 4] != b"MDLA":
             raise wemdl.MdlError("sin bloque de animacion")
-        anims, _ = wemdl.parse_animations(blob, p, rel)
+        anims, _ = wemdl.parse_animations(blob, p, rel, len(bones))
     except wemdl.MdlError as e:
         notes.append(f"puppet sin animacion ({rel}): {e}")
         return np.asarray(mesh.positions, dtype=np.float64)
@@ -396,7 +396,7 @@ class Renderer:
             return None
         try:
             bones, p = wemdl.parse_skeleton(blob, m.consumed, rel)
-            anims, _ = wemdl.parse_animations(blob, p, rel)
+            anims, _ = wemdl.parse_animations(blob, p, rel, len(bones))
         except wemdl.MdlError as e:
             self.notes.append(f"puppet sin animacion ({rel}): {e}")
             return None

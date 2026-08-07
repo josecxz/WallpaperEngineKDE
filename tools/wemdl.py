@@ -182,7 +182,8 @@ class Animation:
         return self.tracks[:, :, 6:9]
 
 
-def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[Animation], int]:
+def parse_animations(buf: bytes, pos: int, name: str = "<memoria>",
+                     bone_count: int = 0) -> tuple[list[Animation], int]:
     """Lee el bloque MDLA que sigue al esqueleto.
 
         char[]  magic "MDLA000N"
@@ -220,6 +221,24 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[lis
       - y da siempre `fotogramas + 1` claves: el fotograma que cierra el bucle
     """
     ver, p = _cstring(buf, pos)
+    if not ver.startswith("MDLA") and bone_count:
+        # Seis mallas del corpus intercalan un bloque entre el esqueleto y la
+        # animacion. Su tamano sale exacto en las seis: 13 + 80*huesos.
+        #
+        #   12 bytes     cabecera
+        #   por hueso    76 b = 3 float + una matriz 4x4 (rotacion y
+        #                traslacion, mismo layout de vector-fila que el resto)
+        #   u32[huesos]  lista de indices 0,1,2...
+        #   1 byte       relleno
+        #
+        # No hace falta interpretarlo para leer la animacion que va detras, y
+        # sin saltarlo el bloque MDLA0003 queda invisible: eran los 6 unicos
+        # ficheros del corpus que parecian no tener animacion.
+        p2 = pos + 13 + 80 * bone_count
+        if p2 < len(buf):
+            ver2, p3 = _cstring(buf, p2)
+            if ver2.startswith("MDLA"):
+                ver, p = ver2, p3
     if not ver.startswith("MDLA"):
         # Seis mallas del corpus (DRAGON 1-3, WOMEN, SWORD y una Rider) llegan
         # aqui sin tag y con cientos de bytes que NO son relleno: tras el
