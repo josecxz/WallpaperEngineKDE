@@ -143,6 +143,49 @@ def _trs(pos, rot, scale) -> np.ndarray:
     return m
 
 
+def _smooth_weights(mesh, n_bones: int, iters: int) -> np.ndarray:
+    """Difunde los pesos de hueso sobre la conectividad de la malla.
+
+    El .mdl trae pesos casi binarios: en Jeanne, 384 de 431 vertices estan
+    atados a UN solo hueso con peso 1. Esa atadura dura es lo que desgarra la
+    costura entre el brazo (que rota 0.47) y el cuerpo (estatico), y lo que
+    concentra la cizalla del skinning lineal en unas pocas aristas -- el
+    "codo" que en realidad no existe, porque los dos huesos que mueven el
+    brazo tienen su pivote en el hombro, a 124 px uno del otro.
+
+    Suavizar promedia el peso de cada vertice con el de sus vecinos y
+    renormaliza. Conserva las regiones que definio el artista (el centro de
+    cada region apenas cambia) y solo ablanda las fronteras, que es donde
+    esta el problema.
+    """
+    if iters <= 0:
+        return np.asarray(mesh.bone_weights, dtype=np.float64)
+
+    nv = mesh.vertex_count
+    W = np.zeros((nv, n_bones))
+    idx = np.asarray(mesh.bone_indices)
+    w0 = np.asarray(mesh.bone_weights, dtype=np.float64)
+    for slot in range(4):
+        val = np.clip(idx[:, slot], 0, n_bones - 1)
+        np.add.at(W, (np.arange(nv), val), w0[:, slot])
+
+    # Vecindario por aristas de los triangulos.
+    tri = np.asarray(mesh.indices).reshape(-1, 3)
+    a = np.concatenate([tri[:, 0], tri[:, 1], tri[:, 2]])
+    b = np.concatenate([tri[:, 1], tri[:, 2], tri[:, 0]])
+    src = np.concatenate([a, b])
+    dst = np.concatenate([b, a])
+    grado = np.bincount(src, minlength=nv).astype(np.float64)
+    grado[grado == 0] = 1.0
+
+    for _ in range(iters):
+        acum = np.zeros_like(W)
+        np.add.at(acum, src, W[dst])
+        W = 0.5 * W + 0.5 * (acum / grado[:, None])
+        W /= np.maximum(W.sum(axis=1, keepdims=True), 1e-12)
+    return W
+
+
 def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     """Matriz de skinning de cada hueso en la clave `k`: (huesos, 4, 4).
 
@@ -224,19 +267,10 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
     v = np.concatenate([np.asarray(mesh.positions, dtype=np.float64),
                         np.ones((mesh.vertex_count, 1))], axis=1)
     out = np.zeros((mesh.vertex_count, 4))
-    idx = np.asarray(mesh.bone_indices)
-    w = np.asarray(mesh.bone_weights, dtype=np.float64)
-
+    W = _smooth_weights(mesh, len(bones), int(os.environ.get("WE_PUPPET_SMOOTH", "40")))
     skin = _skin_matrices(bones, a, k)
-
-    for slot in range(4):
-        wj = w[:, slot]
-        if not wj.any():
-            continue
-        for j in range(len(bones)):
-            sel = (idx[:, slot] == j) & (wj > 0)
-            if sel.any():
-                out[sel] += wj[sel, None] * (v[sel] @ skin[j])
+    for j in range(len(bones)):
+        out += W[:, j, None] * (v @ skin[j])
     stats["puppet_animado"] += 1
     return out[:, 0:3]
 
@@ -413,8 +447,22 @@ class Renderer:
 
         # Los indices de hueso son u32 en el .mdl, pero ningun puppet del
         # corpus pasa de unas decenas de huesos: caben de sobra en u16.
-        idx16 = np.asarray(m.bone_indices, dtype="<u2")
-        pesos = np.asarray(m.bone_weights, dtype="<f4")
+        # WE_PUPPET_SMOOTH difunde los pesos por la malla antes de subirlos;
+        # ver _smooth_weights. Se queda con las 4 mayores contribuciones por
+        # vertice, que es lo que admite el formato del plan.
+        suav = int(os.environ.get("WE_PUPPET_SMOOTH", "40"))
+        if suav > 0:
+            W = _smooth_weights(m, nb, suav)
+            orden = np.argsort(-W, axis=1)[:, :4]
+            top = np.take_along_axis(W, orden, axis=1)
+            top /= np.maximum(top.sum(axis=1, keepdims=True), 1e-12)
+            idx16 = np.zeros((m.vertex_count, 4), dtype="<u2")
+            pesos = np.zeros((m.vertex_count, 4), dtype="<f4")
+            idx16[:, :orden.shape[1]] = orden
+            pesos[:, :top.shape[1]] = top
+        else:
+            idx16 = np.asarray(m.bone_indices, dtype="<u2")
+            pesos = np.asarray(m.bone_weights, dtype="<f4")
 
         self.stats["puppet_animado"] += 1
         return MeshAnim(nb, keys, float(a.duration),

@@ -392,6 +392,37 @@ faltaba» donde ponía «se aplica dos veces»— y costó un render roto. Dupli
 limpio es una firma, no una mejora: si un cambio multiplica una magnitud por
 un entero exacto, sospechar de doble aplicación antes que de acierto.
 
+#### Pesos suavizados
+
+El `.mdl` trae pesos casi binarios: en Jeanne, **384 de 431 vértices están
+atados a un solo hueso con peso 1**. Esa atadura dura desgarra la costura
+entre una región que rota y otra que no, y concentra toda la cizalla del
+skinning lineal en unas pocas aristas.
+
+`_smooth_weights` difunde el campo de pesos sobre la conectividad de la malla
+—promedia cada vértice con sus vecinos y renormaliza— antes de subirlo. El
+centro de cada región apenas cambia, así que se conserva lo que definió el
+artista; solo se ablandan las fronteras, que es donde está el problema.
+
+Con 40 iteraciones (el valor por defecto; `WE_PUPPET_SMOOTH` lo cambia, 0 lo
+desactiva), medido como aristas que se estiran o encogen más de un 35%:
+
+| capa | sin suavizar | suavizado | percentiles 1–99 |
+|---|---|---|---|
+| estandarte | 170 | **2** | [0.578, 1.915] → [0.892, 1.097] |
+| brazo del estandarte | 42 | **7** | [0.711, 1.200] → [0.786, 1.183] |
+| Jeanne | 63 | **17** | [0.782, 1.677] → [0.905, 1.228] |
+| `jdarcjik` | 0 | 0 | sin cambio |
+
+`jdarcjik` es el control: todos sus vértices pesan un único hueso, así que
+suavizar no puede alterarlo, y en efecto no lo altera.
+
+Lo que **no** arregla: el brazo de Jeanne lo mueven dos huesos con el pivote
+en el hombro, a 124 px uno de otro, rotando cantidades distintas (0.4706 y
+0.3697). Eso es una flexión real en los datos, no un artefacto del método;
+ningún esquema de pesos la elimina. El brazo sigue doblándose donde no hay
+articulación.
+
 Las matrices se hornean en `werender.py` y viajan en el plan ya resueltas, 12
 flotantes por hueso y clave (la columna que falta es siempre `(0,0,0,1)`). Los
 dos ejecutores solo hacen la suma ponderada: sin trigonometría, sin jerarquía
