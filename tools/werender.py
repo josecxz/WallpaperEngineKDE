@@ -189,47 +189,47 @@ def _smooth_weights(mesh, n_bones: int, iters: int) -> np.ndarray:
 def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     """Matriz de skinning de cada hueso en la clave `k`: (huesos, 4, 4).
 
-    La formula estandar del skinning con vector-fila: `inv(B) · A`, llevar el
-    vertice al espacio del hueso y de ahi a su pose animada. NO se compone con
-    el padre.
+    Skinning jerarquico estandar con vector-fila:
 
-    Aqui se probo el orden contrario, `A · inv(B)`, y hubo que deshacerlo:
-    como las matrices de reposo son traslaciones puras, ese orden rota la capa
-    entera alrededor de su origen. Deja impecable una capa de tramo unico (el
-    brazo del estandarte quedaba rigido) pero rompe las articuladas: los tres
-    huesos del cuerpo de Jeanne giran de verdad distinto (0.47/0.37/0), el
-    antebrazo giraba alrededor del origen de la capa en vez del codo, y en
-    pantalla el brazo izquierdo se deformaba y el estandarte barria arcos
-    exagerados. Una articulacion necesita rotar sobre su pivote, y eso es
-    exactamente `inv(B) · A`.
+        G_j = B_j · G_padre        matriz de reposo, compuesta hasta la raiz
+        P_j = A_j · P_padre        pose animada, compuesta igual
+        skin_j = inv(G_j) · P_j
 
-    La contrapartida, conocida y aceptada: donde dos huesos de pivotes lejanos
-    giran casi solidarios (el brazo del estandarte: correlacion 0.992, pivotes
-    a 880 unidades), los vertices que mezclan ambos interpolan posiciones
-    separadas y la manga flexa (aristas entre 0.71 y 1.20). Es lo que produce
-    el skinning estandar con estas pistas y estos pesos: tela que cede.
+    Las matrices del MDLS y las claves del MDLA son LOCALES a su padre, y hay
+    que componer las dos o ninguna. Aqui se probo antes componer solo la pose
+    animada dejando la de reposo sin componer: esa mezcla inconsistente daba
+    un resultado roto y llevo a descartar la jerarquia entera, que era la
+    conclusion equivocada.
 
-    Sobre el padre: las pistas ya vienen en espacio global. Padre e hijo rotan
-    casi lo mismo (0.2160 y 0.2153 en el estandarte); con pistas locales un
-    hijo que acompana tendria rotacion local casi nula. Componer con el padre
-    duplicaba el desplazamiento -- el mismo giro aplicado dos veces.
+    Lo que lo demuestra es anatomico. En el brazo de Jeanne, el hueso 1 es
+    hijo del 0. Sin componer, su anclaje cae en canvas (2243,858), a 124 px
+    del hombro -- dos huesos apilados en el mismo sitio, que cizallan el brazo
+    en vez de articularlo. Compuesto cae en (2465,567): el codo, justo entre
+    el hombro (2142,785) y el guantelete (2406,490).
+
+    Medido sobre las cuatro capas, componer mejora o empata en todas y no
+    mueve ni un pixel lo que debe quedarse quieto (la pierna de Jeanne sigue
+    a 0 px). El brazo del estandarte pasa de 7 aristas rotas a 0, con el
+    estiron maximo de 1.450 a 1.052. jdarcjik no cambia, y es el control:
+    sus dos huesos son raiz, asi que componer no puede alterarlo.
+
+    Los padres siempre aparecen antes que sus hijos en el bloque MDLS, asi que
+    basta un recorrido en orden.
     """
-    # La traslacion se toma TAL CUAL del dato. No hay espejo que aplicar:
-    # medido sobre las cuatro capas de Jeanne, `pos` es identica al pivote de
-    # reposo en todos los huesos salvo uno (jik hueso1, el asta), donde se
-    # separa como mucho 86 px. Es decir, cada hueso gira alrededor de su
-    # propio pivote y la traslacion casi nunca aporta nada.
-    #
-    # Aqui se probaron espejos en X y en Y con justificaciones que despues no
-    # se sostuvieron: al ser el delta nulo en casi todas las capas, esos
-    # espejos solo movian el asta, y las medidas que los apoyaban resultaron
-    # medir otra cosa. Sin una razon derivada del dato, se deja el dato.
-    out = np.empty((len(bones), 4, 4))
-    for j, bone in enumerate(bones):
+    def componer(mats):
+        g: list[np.ndarray] = []
+        for j, bone in enumerate(bones):
+            g.append(mats[j] @ g[bone.parent] if 0 <= bone.parent < j else mats[j])
+        return g
+
+    reposo = [np.asarray(b.matrix, dtype=np.float64) for b in bones]
+    pose = []
+    for j in range(len(bones)):
         tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
-        b = np.asarray(bone.matrix, dtype=np.float64)
-        out[j] = np.linalg.inv(b) @ _trs(tr[0:3], tr[3:6], tr[6:9])
-    return out
+        pose.append(_trs(tr[0:3], tr[3:6], tr[6:9]))
+
+    G, P = componer(reposo), componer(pose)
+    return np.stack([np.linalg.inv(G[j]) @ P[j] for j in range(len(bones))])
 
 
 def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
