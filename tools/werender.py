@@ -270,10 +270,20 @@ class Renderer:
         self._tex_dims: dict[int, tuple[int, int]] = {}
 
     # ── texturas ──────────────────────────────────────────────────────────
-    def texture(self, name: str) -> tuple[int, int, int] | None:
-        """Decodifica una textura a RGBA cruda y devuelve (id, ancho, alto)."""
-        if name in self.tex_ids:
-            i = self.tex_ids[name]
+    def texture(self, name: str, mode: str = "") -> tuple[int, int, int] | None:
+        """Decodifica una textura a RGBA cruda y devuelve (id, ancho, alto).
+
+        `mode` es el modo que declara el sampler en sus metadatos. Los mapas
+        `flowmask` codifican un VECTOR de arrastre por pixel: RG - 0.498 son
+        (dx, dy) en convencion de WE, con v hacia abajo. Nuestro buffer vive
+        con v hacia arriba, asi que ademas de recolocar el mapa (eso lo hace
+        el volteo comun) hay que invertir el VALOR de su componente vertical:
+        sin ello el parpado de Jeanne -- un `shake` cuyo flujo tira del
+        parpado -- arrastraba hacia arriba y el gesto salia al reves.
+        """
+        clave = (name, mode == "flowmask")
+        if clave in self.tex_ids:
+            i = self.tex_ids[clave]
             return i, self._tex_dims[i][0], self._tex_dims[i][1]
         try:
             tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
@@ -286,10 +296,14 @@ class Renderer:
         # glReadPixels y las UV de GL van de abajo a arriba; las texturas de WE
         # se guardan con el origen arriba. Se voltea al subir, una sola vez.
         rgba = np.ascontiguousarray(rgba[::-1])
+        if mode == "flowmask":
+            # G' espeja G alrededor del centro 0.498 (127 en 8 bits).
+            rgba = rgba.copy()
+            rgba[:, :, 1] = 254 - rgba[:, :, 1]
         i = len(self.tex_ids)
         path = self.tmp / f"tex{i:03d}.rgba"
         path.write_bytes(rgba.tobytes())
-        self.tex_ids[name] = i
+        self.tex_ids[clave] = i
         self._tex_dims[i] = (rgba.shape[1], rgba.shape[0])
         self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}")
         return i, rgba.shape[1], rgba.shape[0]
@@ -468,7 +482,8 @@ class Renderer:
                 elif name.startswith("_rt_"):
                     src = f"rt:{name}"
                 else:
-                    t = self.texture(name)
+                    modo = str(meta.get(uni, {}).get("mode", ""))
+                    t = self.texture(name, modo)
                     if t:
                         src = f"tex:{t[0]}"
                         self.body.append(
