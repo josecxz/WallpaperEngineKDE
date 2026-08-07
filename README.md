@@ -90,8 +90,36 @@ repite cada fotograma poniendo el tiempo del `FrameAnimation`.
 
 ```sh
 sudo pacman -S cmake        # NO hace falta: se compila con make + moc
-make build && make install && make reload
-make plan WALLPAPER=<ruta>  # genera el plan desde un wallpaper concreto
+make build && make install
+```
+
+### El CLI — `tools/wectl.py`
+
+El uso diario no pasa por `make`:
+
+```sh
+wectl list [texto]      lista la biblioteca; el * marca la escena preparada
+wectl set <id|texto>    prepara un wallpaper y lo pone en el escritorio
+wectl start / stop      activa o para el motor
+wectl status            que hay puesto y como va
+```
+
+`set` acepta el id de Workshop o parte del título, sin distinguir mayúsculas
+ni acentos; si el texto es ambiguo lista los candidatos en vez de elegir por
+su cuenta.
+
+Todo pasa por la **API de scripting de Plasma via D-Bus**, que aplica el
+cambio en caliente. Es la diferencia con `make reload`, que reinicia
+plasmashell entero: ahí se pierden las ventanas de un vistazo, tarda segundos
+y —probando varios wallpapers seguidos— agota el límite de arranques de
+systemd y deja el escritorio caído. Con D-Bus el PID de plasmashell no cambia.
+
+Cambiar el fichero del plan no basta para que Plasma lo relea: no lo vigila, y
+volver a poner el mismo plugin tampoco dispara nada. `wectl set` sale al
+plugin de imagen y vuelve, que es lo que fuerza la recarga.
+
+```sh
+ln -s "$PWD/tools/wectl.py" ~/.local/bin/wectl    # para tenerlo en el PATH
 ```
 
 ### Dónde está Wallpaper Engine
