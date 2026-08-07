@@ -125,6 +125,11 @@ uninstall:
 # despliegue.
 reload: install-qml install-package install-env
 	@systemctl --user set-environment QML_IMPORT_PATH=$(QMLMOD)
+	@# systemd limita los arranques por ventana de tiempo. Recargar varias
+	@# veces seguidas -- probando wallpapers, por ejemplo -- agota el limite y
+	@# deja el escritorio CAIDO con 'start-limit-hit', que no es un fallo del
+	@# motor pero lo parece. reset-failed limpia el contador antes de pedirlo.
+	@systemctl --user reset-failed plasma-plasmashell.service 2>/dev/null || true
 	@systemctl --user restart plasma-plasmashell.service \
 		|| (kquitapp6 plasmashell && sleep 2 && kstart plasmashell)
 	@echo "plasmashell reiniciado con QML_IMPORT_PATH=$(QMLMOD)"
