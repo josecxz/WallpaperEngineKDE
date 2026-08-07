@@ -417,6 +417,33 @@ desactiva), medido como aristas que se estiran o encogen más de un 35%:
 `jdarcjik` es el control: todos sus vértices pesan un único hueso, así que
 suavizar no puede alterarlo, y en efecto no lo altera.
 
+#### Margen de capa
+
+El buffer de un objeto **es** su rectángulo, así que la geometría que se sale
+al deformarse se recorta contra el borde. Medido, las cuatro mallas de Jeanne
+se salen al animarse:
+
+| capa | rectángulo (medio) | animado | margen |
+|---|---|---|---|
+| brazo del estandarte | 376 × 574 | **604** × 544 | 1.69 |
+| `jdarcjik` | 1758 × 974 | **2100** × 311 | 1.26 |
+| Jeanne | 2100 × 1114 | 1261 × **1247** | 1.18 |
+| estandarte | 2100 × 1114 | **2319** × 868 | 1.16 |
+
+Se veía como el guantelete de Jeanne desapareciendo al llegar el brazo a su
+punto más alto. El margen se **mide** por capa en vez de fijar una constante,
+para no gastar resolución de buffer donde no hace falta, y se aplica en dos
+sitios que se cancelan: dividiendo la MVP del pase base y multiplicando la
+matriz de colocación. La capa acaba en el mismo sitio y del mismo tamaño.
+
+Hay una segunda mitad sin la cual esto rompe el parpadeo: las máscaras de los
+efectos están pintadas sobre el rectángulo de la capa y se muestrean con
+`a_TexCoord` sobre **todo** el buffer. Si el buffer crece, la máscara se
+estira. Se rellenan con el mismo margen —borde a 0 en las de opacidad, a 127
+(el neutro) en las de flujo— para que la parte pintada siga cubriendo
+exactamente la capa. Verificado: a t=0.70 los ojos abiertos, a t=1.00
+cerrados, igual que antes del cambio.
+
 #### Warp MLS: probado y descartado
 
 La hipótesis era que WE no hace skinning por pesos sino un warp suave global

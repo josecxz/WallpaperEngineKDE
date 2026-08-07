@@ -282,6 +282,7 @@ class MeshAnim(NamedTuple):
     keys: int
     duration: float
     blocks: tuple[bytes, ...]
+    extent: tuple[float, float] = (0.0, 0.0)   # |x|,|y| max de la malla deformada
 
 
 class Renderer:
@@ -296,6 +297,9 @@ class Renderer:
         # Malla puppet por objeto. La clave es id(obj) y no el nombre porque
         # dos capas pueden compartirlo; el objeto es el que manda.
         self.meshes: dict[int, int] = {}
+        # Margen de render por objeto; ver _emit_mesh.
+        self.margins: dict[int, float] = {}
+        self.canvas: tuple[int, int] = (1920, 1080)
         self.mesh_files: list[Path] = []
         self.notes: list[str] = []
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
@@ -304,7 +308,8 @@ class Renderer:
         self._tex_dims: dict[int, tuple[int, int]] = {}
 
     # ── texturas ──────────────────────────────────────────────────────────
-    def texture(self, name: str, mode: str = "") -> tuple[int, int, int] | None:
+    def texture(self, name: str, mode: str = "",
+                margin: float = 1.0) -> tuple[int, int, int] | None:
         """Decodifica una textura a RGBA cruda y devuelve (id, ancho, alto).
 
         `mode` es el modo que declara el sampler en sus metadatos. Los mapas
@@ -315,7 +320,7 @@ class Renderer:
         sin ello el parpado de Jeanne -- un `shake` cuyo flujo tira del
         parpado -- arrastraba hacia arriba y el gesto salia al reves.
         """
-        clave = (name, mode == "flowmask")
+        clave = (name, mode == "flowmask", round(margin, 4))
         if clave in self.tex_ids:
             i = self.tex_ids[clave]
             return i, self._tex_dims[i][0], self._tex_dims[i][1]
@@ -334,6 +339,26 @@ class Renderer:
             # G' espeja G alrededor del centro 0.498 (127 en 8 bits).
             rgba = rgba.copy()
             rgba[:, :, 1] = 254 - rgba[:, :, 1]
+
+        # Las mascaras estan pintadas sobre el rectangulo de la capa y los
+        # pases de efecto las muestrean con a_TexCoord sobre TODO el buffer.
+        # Si la capa se renderiza con margen (ver _emit_mesh), el buffer es
+        # mayor que la capa y la mascara se estiraria: el parpadeo de Jeanne
+        # dejaba de caer sobre los ojos. Se rellena con el mismo margen para
+        # que la parte pintada siga cubriendo exactamente la capa.
+        #
+        # El borde va a 0 en las mascaras de opacidad (fuera de la capa el
+        # efecto no actua) y a 127 en las de flujo, que es su valor neutro.
+        if margin > 1.0 and mode in ("opacitymask", "flowmask"):
+            h0, w0 = rgba.shape[:2]
+            w1, h1 = int(round(w0 * margin)), int(round(h0 * margin))
+            relleno = 127 if mode == "flowmask" else 0
+            lienzo = np.full((h1, w1, 4), relleno, dtype=rgba.dtype)
+            if mode == "opacitymask":
+                lienzo[:, :, 3] = 255
+            x0, y0 = (w1 - w0) // 2, (h1 - h0) // 2
+            lienzo[y0:y0 + h0, x0:x0 + w0] = rgba
+            rgba = lienzo
         i = len(self.tex_ids)
         path = self.tmp / f"tex{i:03d}.rgba"
         path.write_bytes(rgba.tobytes())
@@ -417,6 +442,14 @@ class Renderer:
         cola = f" {anim.bones} {anim.keys} {anim.duration:.6f}" if anim else ""
         self.lines.append(f"mesh {mid} {path} {m.vertex_count} {idx.size}{cola}")
         self.meshes[id(obj)] = mid
+        # Margen con que se renderiza esta capa: cuanto hay que agrandar su
+        # rectangulo para que quepa la malla deformada, con un 5% de holgura.
+        # 1.0 si no se sale, para no cambiar nada donde no hace falta.
+        margen = 1.0
+        if anim:
+            sw, sh = layer_size(obj, self.canvas)
+            margen = max(1.0, 2.0 * anim.extent[0] / sw, 2.0 * anim.extent[1] / sh) * 1.05
+        self.margins[id(obj)] = margen
         self.stats["puppet"] += 1
 
     def _mesh_anim(self, m, blob: bytes, rel: str) -> MeshAnim | None:
@@ -464,9 +497,31 @@ class Renderer:
             idx16 = np.asarray(m.bone_indices, dtype="<u2")
             pesos = np.asarray(m.bone_weights, dtype="<f4")
 
+        # Extension maxima de la malla deformada, en unidades locales. El
+        # buffer del objeto ES su rectangulo, asi que la geometria que se sale
+        # se recorta: el guantelete de Jeanne desaparecia al subir el brazo.
+        # Se mide en vez de fijar una constante, para no gastar resolucion de
+        # buffer en capas que no la necesitan.
+        P = np.asarray(m.positions, dtype=np.float64)[:, :2]
+        vh = np.c_[P, np.zeros(len(P)), np.ones(len(P))]
+        Wd = np.zeros((len(P), nb))
+        for sl in range(4):
+            np.add.at(Wd, (np.arange(len(P)), np.clip(idx16[:, sl], 0, nb - 1)),
+                      pesos[:, sl].astype(np.float64))
+        ext = np.abs(P).max(axis=0)
+        paso = max(1, keys // 60)
+        for kk in range(0, keys, paso):
+            M = mats[kk].astype(np.float64).reshape(nb, 4, 3)
+            out = np.zeros((len(P), 3))
+            for j in range(nb):
+                full = np.zeros((4, 4)); full[:, 0:3] = M[j]; full[3, 3] = 1.0
+                out += Wd[:, j, None] * (vh @ full)[:, 0:3]
+            ext = np.maximum(ext, np.abs(out[:, 0:2]).max(axis=0))
+
         self.stats["puppet_animado"] += 1
         return MeshAnim(nb, keys, float(a.duration),
-                        (idx16.tobytes(), pesos.tobytes(), mats.tobytes()))
+                        (idx16.tobytes(), pesos.tobytes(), mats.tobytes()),
+                        (float(ext[0]), float(ext[1])))
 
     def emit_pass(self, p, sresolver, canvas: tuple[int, int], obj=None) -> None:
         # Los metadatos del shader dicen que uniform se enlaza con que
@@ -531,7 +586,12 @@ class Renderer:
                     src = f"rt:{name}"
                 else:
                     modo = str(meta.get(uni, {}).get("mode", ""))
-                    t = self.texture(name, modo)
+                    # Solo los pases de efecto muestrean con a_TexCoord sobre
+                    # el buffer; el pase base usa las UV propias de la malla,
+                    # que el margen no altera.
+                    mg = (self.margins.get(id(obj), 1.0)
+                          if obj is not None and p.stage != "base" else 1.0)
+                    t = self.texture(name, modo, mg)
                     if t:
                         src = f"tex:{t[0]}"
                         self.body.append(
@@ -576,7 +636,12 @@ class Renderer:
         # los parpados -- caia cerca de los ojos pero descuadrado.
         if obj is not None and p.stage == "base" and mesh_id is not None:
             sw, sh = layer_size(obj, canvas)
-            mvp = [2.0 / sw, 0, 0, 0,  0, 2.0 / sh, 0, 0,
+            # El margen agranda el rectangulo que se mapea al buffer, para que
+            # la malla deformada no se recorte contra el borde. La matriz de
+            # colocacion lo deshace al componer, asi que la capa acaba en el
+            # mismo sitio y del mismo tamano.
+            mg = self.margins.get(id(obj), 1.0)
+            mvp = [2.0 / (sw * mg), 0, 0, 0,  0, 2.0 / (sh * mg), 0, 0,
                    0, 0, 1, 0,  0, 0, 0, 1]
         else:
             mvp = IDENTITY
@@ -647,6 +712,7 @@ class Renderer:
         proj = general.get("orthogonalprojection")
         canvas = ((int(proj["width"]), int(proj["height"]))
                   if isinstance(proj, dict) else (1920, 1080))
+        self.canvas = canvas
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
         # Instante al que deformar las mallas. Solo lo usa glexec, que no
         # tiene reloj propio: el motor en vivo pasa su tiempo real.
@@ -663,7 +729,12 @@ class Renderer:
             # dice si este objeto arranca desde una copia de lo que hay detras
             # (lo que necesitan las capas de post-proceso) o desde vacio.
             copybg = 1 if obj.raw.get("copybackground") else 0
-            place = " ".join(f"{x:.6g}" for x in object_mvp(obj, canvas))
+            mvp_obj = object_mvp(obj, canvas)
+            mg = self.margins.get(id(obj), 1.0)
+            if mg != 1.0:
+                for i in (0, 1, 4, 5):     # la parte lineal 2x2
+                    mvp_obj[i] *= mg
+            place = " ".join(f"{x:.6g}" for x in mvp_obj)
             self.body.append(f"object {copybg} {place}")
             for p in obj.passes:
                 if p.command == "copy":
@@ -689,6 +760,7 @@ class Renderer:
                   int(_floats(general.get("orthogonalprojection", {}).get("height", 1080))[0])) \
             if isinstance(general.get("orthogonalprojection"), dict) else (1920, 1080)
 
+        self.canvas = canvas
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
         # Instante al que deformar las mallas. Solo lo usa glexec, que no
         # tiene reloj propio: el motor en vivo pasa su tiempo real.
@@ -708,7 +780,12 @@ class Renderer:
             # dice si este objeto arranca desde una copia de lo que hay detras
             # (lo que necesitan las capas de post-proceso) o desde vacio.
             copybg = 1 if obj.raw.get("copybackground") else 0
-            place = " ".join(f"{x:.6g}" for x in object_mvp(obj, canvas))
+            mvp_obj = object_mvp(obj, canvas)
+            mg = self.margins.get(id(obj), 1.0)
+            if mg != 1.0:
+                for i in (0, 1, 4, 5):     # la parte lineal 2x2
+                    mvp_obj[i] *= mg
+            place = " ".join(f"{x:.6g}" for x in mvp_obj)
             self.body.append(f"object {copybg} {place}")
             for p in obj.passes:
                 if p.command == "copy":
