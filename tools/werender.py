@@ -171,29 +171,20 @@ def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     hijo que acompana tendria rotacion local casi nula. Componer con el padre
     duplicaba el desplazamiento -- el mismo giro aplicado dos veces.
     """
-    # La componente X de la traslacion va ESPEJADA respecto al pivote. Es una
-    # eleccion empirica entre las 8 combinaciones de signo posibles (rotacion
-    # x2, traslacion x4), decidida con dos criterios medibles sobre el asta de
-    # Jeanne, la unica pista con traslacion del corpus:
+    # La traslacion se toma TAL CUAL del dato. No hay espejo que aplicar:
+    # medido sobre las cuatro capas de Jeanne, `pos` es identica al pivote de
+    # reposo en todos los huesos salvo uno (jik hueso1, el asta), donde se
+    # separa como mucho 86 px. Es decir, cada hueso gira alrededor de su
+    # propio pivote y la traslacion casi nunca aporta nada.
     #
-    #   - el centro efectivo de rotacion (el punto fijo de cada clave) debe
-    #     caer SOBRE el asta: un objeto agarrado pivota alrededor de un punto
-    #     de si mismo. Solo dos combinaciones lo cumplen (52 y 60 px de la
-    #     linea del asta); las demas lo hacen orbitar alrededor del aire, a
-    #     160-470 px del rod.
-    #   - de esas dos, la rotacion sin invertir (rot+) mueve el asta ALEJANDOSE
-    #     del guantelete alzado, como el WE real segun el usuario; la invertida
-    #     la hacia subir hasta la mano y despegarse, que era el defecto.
-    #
-    # Con esto el centro queda en la fraccion 0.38 del asta, en su tramo bajo:
-    # bascula anclada a la zona del puno, como en Windows. La rotacion nunca
-    # se toca: su signo visual esta validado por todas las capas de rotacion
-    # pura, que se ven correctas.
+    # Aqui se probaron espejos en X y en Y con justificaciones que despues no
+    # se sostuvieron: al ser el delta nulo en casi todas las capas, esos
+    # espejos solo movian el asta, y las medidas que los apoyaban resultaron
+    # medir otra cosa. Sin una razon derivada del dato, se deja el dato.
     out = np.empty((len(bones), 4, 4))
     for j, bone in enumerate(bones):
-        tr = np.array(anim.tracks[min(j, anim.tracks.shape[0] - 1)][k], dtype=np.float64)
+        tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
         b = np.asarray(bone.matrix, dtype=np.float64)
-        tr[0] = b[3, 0] - (tr[0] - b[3, 0])
         out[j] = np.linalg.inv(b) @ _trs(tr[0:3], tr[3:6], tr[6:9])
     return out
 
