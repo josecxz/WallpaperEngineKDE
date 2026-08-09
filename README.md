@@ -1,4 +1,4 @@
-# WallpaperEngine
+# WallpaperEngine MADE BY FRANCISCO GRANDA M.ENG
 
 Fondos de escritorio animados para **KDE Plasma 6 / Wayland**, capaces de
 ejecutar escenas de [Wallpaper Engine](https://store.steampowered.com/app/431960/)
