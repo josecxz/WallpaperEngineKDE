@@ -154,6 +154,7 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             if (tok.size() >= 18)
                 for (int i = 0; i < 16; ++i)
                     op.placement[i] = tok[2 + i].toFloat();
+            op.additiveCompose = tok.size() >= 19 && tok[18] == QLatin1String("1");
             m_ops.append(op);
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
@@ -433,7 +434,10 @@ void GlExecutor::flushObjectToScene()
     glViewport(0, 0, m_scene.w, m_scene.h);
     glUseProgram(m_composite);
     glEnable(GL_BLEND);
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    if (m_additiveCompose)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    else
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_compo[m_compoCur].tex);
     glUniform1i(glGetUniformLocation(m_composite, "src"), 0);
@@ -673,6 +677,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     if (!m_hasObjectMarks) {
         static const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         memcpy(m_placement, ident, sizeof ident);
+        m_additiveCompose = false;
         beginObject();   // plan antiguo: todo el plan es un solo objeto
     }
 
@@ -682,6 +687,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             // componer, despues adoptar la del que empieza.
             beginObject();
             memcpy(m_placement, op.placement, sizeof m_placement);
+            m_additiveCompose = op.additiveCompose;
             continue;
         }
         if (op.kind == Op::Copy) {

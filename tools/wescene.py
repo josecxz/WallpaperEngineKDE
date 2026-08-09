@@ -172,17 +172,24 @@ def is_visible(value, properties: dict) -> bool:
     if not isinstance(value, dict):
         return value is None or bool(value)
 
+    # `value` NO es una condicion contra la que comparar: es una copia del
+    # valor que tenia la propiedad al guardar la escena. Quien manda es la
+    # propiedad. Leerlo como condicion invierte el resultado justo cuando la
+    # copia vale false: en el wallpaper de Asuka, la capa `Fullscreen` declara
+    # {"user": "flare", "value": false} con `flare` apagado, y se dibujaba
+    # precisamente por estar apagada -- un velo de destellos sobre la escena.
+    #
     # `user` no siempre es el nombre de una propiedad: en algunos wallpapers
-    # es a su vez un objeto. Ante cualquier forma que no se entienda se opta
-    # por dibujar, que es el fallo menos destructivo.
+    # es a su vez un objeto. Ante cualquier forma que no se entienda se usa la
+    # copia, que es lo que el autor tenia en pantalla al guardar.
     key = value.get("user")
-    expected = bool(value.get("value", True))
+    copia = bool(value.get("value", True))
     if not isinstance(key, str):
-        return expected
+        return copia
     prop = properties.get(key)
     if not isinstance(prop, dict) or "value" not in prop:
-        return expected
-    return bool(prop["value"]) == expected
+        return copia
+    return bool(prop["value"])
 
 
 def _object_kind(o: dict) -> str:

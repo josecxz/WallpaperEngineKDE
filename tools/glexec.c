@@ -67,6 +67,8 @@ static int object_open;
  * (su buffer representa el rectangulo de la capa) y esta matriz lo lleva al
  * lienzo una unica vez, al componer. Identidad para planes sin ella. */
 static float obj_mvp[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+/* colorBlendMode 31 del objeto: se compone sumando, no tapando. */
+static int obj_aditivo;
 
 static GLuint quad_vao, quad_vbo;
 
@@ -385,8 +387,11 @@ static void flush_object(void)
     glViewport(0, 0, scene_rt.w, scene_rt.h);
     glUseProgram(composite_prog);
     glEnable(GL_BLEND);
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
-                        GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    if (obj_aditivo)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    else
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                            GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, compo[compo_cur].tex);
     glUniform1i(glGetUniformLocation(composite_prog, "src"), 0);
@@ -549,14 +554,15 @@ int main(int argc, char **argv)
             /* El flush del objeto anterior usa SU matriz: primero componer,
              * despues adoptar la del que empieza. */
             float m[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-            int copybg = 0;
+            int copybg = 0, adit = 0;
             int n = sscanf(line,
-                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f",
+                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d",
                 &copybg, m+0,m+1,m+2,m+3, m+4,m+5,m+6,m+7,
-                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15);
+                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit);
             begin_object();
-            if (n == 17)
+            if (n >= 17)
                 memcpy(obj_mvp, m, sizeof m);
+            obj_aditivo = (n >= 18) ? adit : 0;
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
             char path[512];
