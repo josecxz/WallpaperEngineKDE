@@ -532,6 +532,37 @@ bloque en otro sitio y usan un stride mayor que el corpus no determina: 40 y
 error explícito en vez de adivinar. Las cuatro capas de Jeanne son MDLV0013,
 así que no bloquean.
 
+### Tres fallos que se veían como uno
+
+El wallpaper de Asuka (`2533288714`) salía como un bokeh que tapaba la escena.
+Eran tres causas independientes, y solo la última se parecía al síntoma:
+
+**1. `visible` mal interpretado.** La forma `{"user": "flare", "value": false}`
+no es una condición contra la que comparar: `value` es una **copia** del valor
+que tenía la propiedad al guardar la escena, y quien manda es la propiedad.
+Leerlo como condición invierte el resultado justo cuando la copia vale
+`false`: la capa `Fullscreen` se dibujaba *precisamente por estar apagada*.
+Corregirlo cambia el estado de 124 capas y efectos en el corpus.
+
+**2. `colorBlendMode` ignorado.** Es del objeto y dice cómo se combina la capa
+con lo que hay detrás. El modo 31 —44 de los 91 usos del corpus— es
+`A + B*opacity`: aditivo puro, exactamente `glBlendFunc(GL_SRC_ALPHA, GL_ONE)`.
+La suciedad de lente, un bokeh claro sobre negro, se componía con mezcla
+normal y tapaba la escena entera en vez de aportar solo sus brillos.
+
+Va al **componer** el objeto sobre la escena, no en el pase base: el pase base
+dibuja sobre el buffer vacío del objeto, donde la mezcla no significa nada.
+
+**3. El combo `LIGHTING` sin sistema de luces.** Los objetos `light` de la
+escena no se renderizan ni alimentan uniforms. El material compila igual, pero
+recibe luz cero y sale **negro**: el EVA entero desaparecía. Desactivar el
+combo da la capa plana —sin luces ni reflejos—, que es pobre pero reconocible.
+Afecta a 8 pases de material en todo el corpus.
+
+De paso, `alpha`, `brightness` y `color` del objeto estaban fijos a neutro en
+los uniforms; en el corpus hay 67, 68 y 133 objetos respectivamente que los
+declaran distintos.
+
 ## Uso
 
 ```sh

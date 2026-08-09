@@ -535,6 +535,20 @@ class Renderer:
         # `pulse` de la escena de referencia hacia oscilar el brillo del
         # wallpaper completo casi al doble en vez de solo la zona enmascarada.
         combos = dict(p.combos)
+        # No hay sistema de iluminacion: los objetos `light` de la escena no se
+        # renderizan ni alimentan uniforms. Un material con el combo LIGHTING
+        # activo compila igual, pero recibe luz cero y sale NEGRO -- en el
+        # wallpaper de Asuka el EVA entero desaparecia en una mancha oscura.
+        #
+        # Desactivar el combo da la capa plana, sin luces ni reflejos, que es
+        # una aproximacion pobre pero reconocible; negro no lo es. Afecta a 8
+        # pases de material en todo el corpus (5 wallpapers), asi que el riesgo
+        # de estropear algo que hoy funcione es minimo.
+        #
+        # WE_LIGHTING=1 lo deja pasar, para cuando haya con que iluminar.
+        if not os.environ.get("WE_LIGHTING"):
+            combos.pop("LIGHTING", None)
+            combos.pop("REFLECTION", None)
         for uni_name, m in meta.items():
             combo = m.get("combo")
             if not combo or combo in combos:
@@ -652,10 +666,28 @@ class Renderer:
                          f"{canvas[0] / max(1, canvas[1])}")
         self.body.append("u4f g_Texture0Rotation 1 0 0 1")
         self.body.append("u2f g_Texture0Translation 0 0")
-        self.body.append("u4f g_Color4 1 1 1 1")
-        self.body.append("u1f g_Brightness 1")
+        # Alfa, brillo y color son del OBJETO, no del material: una capa puede
+        # declararse a media opacidad o tenida. Estaban fijos a neutro, asi que
+        # se dibujaban a plena intensidad. En el corpus hay 133 objetos con
+        # color no blanco, 68 con brillo distinto de 1 y 67 con alfa distinto
+        # de 1; el mas visible es la suciedad de lente de Asuka, con alfa 0.45,
+        # que tapaba la escena entera.
+        #
+        # Solo en el pase base: los de efecto trabajan sobre el buffer ya
+        # dibujado, y algunos declaran su propio g_Alpha -- aplicarlo dos veces
+        # oscureceria la capa a cada efecto.
+        if obj is not None and p.stage == "base":
+            col = (_floats(obj.raw.get("color")) + [1.0, 1.0, 1.0])[:3]
+            alfa = obj.raw.get("alpha")
+            brillo = obj.raw.get("brightness")
+            alfa = float(alfa) if isinstance(alfa, (int, float)) else 1.0
+            brillo = float(brillo) if isinstance(brillo, (int, float)) else 1.0
+        else:
+            col, alfa, brillo = [1.0, 1.0, 1.0], 1.0, 1.0
+        self.body.append(f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} 1")
+        self.body.append(f"u1f g_Brightness {brillo:.6g}")
         self.body.append("u1f g_UserAlpha 1")
-        self.body.append("u1f g_Alpha 1")
+        self.body.append(f"u1f g_Alpha {alfa:.6g}")
 
         # Constantes del material, resueltas via metadatos.
         for uni_name, m in meta.items():
@@ -735,7 +767,20 @@ class Renderer:
                 for i in (0, 1, 4, 5):     # la parte lineal 2x2
                     mvp_obj[i] *= mg
             place = " ".join(f"{x:.6g}" for x in mvp_obj)
-            self.body.append(f"object {copybg} {place}")
+            # `colorBlendMode` del objeto: como se combina la capa con lo que
+            # hay detras. Va aqui y no en el pase base porque el pase base
+            # dibuja sobre el buffer VACIO del objeto -- la mezcla con la
+            # escena ocurre al componer, que es esto.
+            #
+            # El 31, 44 de los 91 usos del corpus, es `A + B*opacity`: aditivo
+            # puro, exactamente glBlendFunc(GL_SRC_ALPHA, GL_ONE). Sin el, la
+            # suciedad de lente de Asuka -- bokeh claro sobre negro -- tapaba
+            # la escena entera en vez de solo aportar sus brillos.
+            #
+            # Los demas modos son mezclas tipo Photoshop (multiply, darken...)
+            # sin equivalente en el hardware; se componen como siempre.
+            aditivo = 1 if obj.raw.get("colorBlendMode") == 31 else 0
+            self.body.append(f"object {copybg} {place} {aditivo}")
             for p in obj.passes:
                 if p.command == "copy":
                     src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
@@ -786,7 +831,20 @@ class Renderer:
                 for i in (0, 1, 4, 5):     # la parte lineal 2x2
                     mvp_obj[i] *= mg
             place = " ".join(f"{x:.6g}" for x in mvp_obj)
-            self.body.append(f"object {copybg} {place}")
+            # `colorBlendMode` del objeto: como se combina la capa con lo que
+            # hay detras. Va aqui y no en el pase base porque el pase base
+            # dibuja sobre el buffer VACIO del objeto -- la mezcla con la
+            # escena ocurre al componer, que es esto.
+            #
+            # El 31, 44 de los 91 usos del corpus, es `A + B*opacity`: aditivo
+            # puro, exactamente glBlendFunc(GL_SRC_ALPHA, GL_ONE). Sin el, la
+            # suciedad de lente de Asuka -- bokeh claro sobre negro -- tapaba
+            # la escena entera en vez de solo aportar sus brillos.
+            #
+            # Los demas modos son mezclas tipo Photoshop (multiply, darken...)
+            # sin equivalente en el hardware; se componen como siempre.
+            aditivo = 1 if obj.raw.get("colorBlendMode") == 31 else 0
+            self.body.append(f"object {copybg} {place} {aditivo}")
             for p in obj.passes:
                 if p.command == "copy":
                     src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
