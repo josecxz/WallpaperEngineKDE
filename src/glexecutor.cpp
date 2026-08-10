@@ -778,6 +778,33 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     glBindFramebuffer(GL_FRAMEBUFFER, targetFbo);
     glBindVertexArray(0);
 
+    // Traza de los primeros fotogramas: media RGBA de cada buffer con nombre y
+    // del compuesto. WE_TRACE_FRAMES=N la activa. Sirve para los efectos
+    // temporales, donde el fallo no esta en un fotograma sino en como
+    // evoluciona de uno al siguiente y hacia que punto fijo converge.
+    if (const int traza = qgetenv("WE_TRACE_FRAMES").toInt(); m_frame < traza) {
+        auto media = [](const Target &t) {
+            QByteArray px(qsizetype(t.w) * t.h * 4, '\0');
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, t.fbo);
+            glReadPixels(0, 0, t.w, t.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            double rgb = 0, a = 0;
+            const auto *p = reinterpret_cast<const unsigned char *>(px.constData());
+            for (qsizetype i = 0; i < px.size(); i += 4) {
+                rgb += p[i] + p[i + 1] + p[i + 2];
+                a += p[i + 3];
+            }
+            const double n = double(px.size()) / 4;
+            return QStringLiteral("rgb=%1 a=%2").arg(rgb / (3 * n), 0, 'f', 2)
+                                                .arg(a / n, 0, 'f', 1);
+        };
+        QString linea = QStringLiteral("compo=%1 escena=%2")
+                            .arg(media(m_compo[m_compoCur]), media(m_scene));
+        for (auto it = m_targetByName.constBegin(); it != m_targetByName.constEnd(); ++it)
+            linea += QStringLiteral("  %1=%2").arg(it.key(), media(m_targets.at(it.value())));
+        qInfo("SceneView: t=%.2f f=%d %s", double(time), m_frame, qPrintable(linea));
+    }
+    ++m_frame;
+
     // Diagnostico de una sola vez: comparar el compuesto con lo que acaba en
     // el destino de Qt separa "el motor no dibuja" de "el blit no llega".
     if (!m_diagDone) {
