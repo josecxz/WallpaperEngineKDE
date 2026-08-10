@@ -45,7 +45,55 @@ from wescene import AssetResolver, SceneError, load_scene
 IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
 
 
-def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
+def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[float], list[float]]:
+    """`origin`, `scale` y `angles` compuestos con los del grupo que los contiene.
+
+    Una escena puede agrupar objetos: el hijo declara `parent` y su `origin` es
+    RELATIVO al del grupo.
+
+    Solo heredan la transformacion los GRUPOS: objetos sin nada que dibujar,
+    que existen unicamente para mover a sus hijos. Si el padre es una capa
+    dibujable, el hijo ya viene en coordenadas del lienzo. No es una suposicion
+    de estilo, es lo que separa dos escenas reales: en Cyberpunk
+    Edgerunners-Lucy los padres son grupos vacios y sin componer la Tierra se
+    iba a la esquina inferior; en Lonely Cat el padre es la imagen de fondo a
+    pantalla completa y heredar de ella llevaba tres capas de 1920x1080 al
+    centro, tapando la escena --- de 38.05 de media a 8.01.
+
+    Afecta a 476 objetos de 10 escenas, con hasta 5 niveles de anidamiento.
+    """
+    cadena = []
+    visto = set()
+    cur = obj
+    while cur is not None:
+        if id(cur) in visto:        # ciclo en los datos: se corta
+            break
+        visto.add(id(cur))
+        cadena.append(cur)
+        padre = cur.raw.get("parent")
+        cur = por_id.get(str(padre)) if (por_id and padre) else None
+        if cur is not None and any(cur.raw.get(k)
+                                   for k in ("image", "particle", "model", "text")):
+            cur = None              # el padre dibuja: no es un grupo
+
+    org, esc, ang = [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
+    # De la raiz hacia el objeto: cada nivel aplica su rotacion y escala al
+    # origin del siguiente, que viene expresado en el marco del padre.
+    for nodo in reversed(cadena):
+        o = (_floats(nodo.raw.get("origin")) + [0.0, 0.0, 0.0])[:3]
+        s = (_floats(nodo.raw.get("scale")) + [1.0, 1.0, 1.0])[:3]
+        a = (_floats(nodo.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
+        c, sn = math.cos(ang[2]), math.sin(ang[2])
+        lx, ly = o[0] * esc[0], o[1] * esc[1]
+        org = [org[0] + lx * c - ly * sn, org[1] + lx * sn + ly * c,
+               org[2] + o[2] * esc[2]]
+        esc = [esc[0] * s[0], esc[1] * s[1], esc[2] * s[2]]
+        ang = [ang[0] + a[0], ang[1] + a[1], ang[2] + a[2]]
+    return org, esc, ang
+
+
+def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
+               por_id: dict | None = None) -> list[float]:
     """Matriz que coloca la geometria del objeto en su sitio del lienzo.
 
     El quad que sube el ejecutor va de -1 a 1. El objeto declara su centro
@@ -62,10 +110,10 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
     asi que el array plano que se sube es la matriz escrita por filas.
     """
     w, h = canvas
-    origin = (_floats(obj.raw.get("origin")) + [w / 2, h / 2, 0])[:3]
-    scale = (_floats(obj.raw.get("scale")) + [1.0, 1.0, 1.0])[:3]
+    origin, scale, angles = transform_absoluto(obj, por_id)
+    if not _floats(obj.raw.get("origin")):
+        origin = [w / 2, h / 2, 0.0]      # sin origin declarado: al centro
     size = (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2]
-    angles = (_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
 
     # Semiextension y centro, normalizados a clip space (-1..1).
     if mesh:
@@ -115,6 +163,17 @@ def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
 
 def _floats(value) -> list[float]:
     """Los valores de WE pueden ser numero, bool o cadena '0.5 0.2 0.1'."""
+    if isinstance(value, dict):
+        # Un campo animado por script llega como objeto: `{"script": "...",
+        # "value": "206.97 312.49 0"}`. `value` es la copia que el autor tenia
+        # al guardar, igual que en `visible`. No hay motor de scripts, asi que
+        # esa copia es la mejor aproximacion; devolver [] era lo peor posible,
+        # porque `origin` caia al centro del lienzo y `scale` a 1.
+        #
+        # En Cyberpunk Edgerunners-Lucy eso mandaba al centro la atmosfera, el
+        # reloj y la capa de posicionamiento. En el corpus son 249 objetos de
+        # 21 escenas: 49 origin, 39 scale, 9 angles, 89 color y 63 alpha.
+        return _floats(value.get("value"))
     if isinstance(value, bool):
         return [1.0 if value else 0.0]
     if isinstance(value, (int, float)):
@@ -692,10 +751,10 @@ class Renderer:
         # oscureceria la capa a cada efecto.
         if obj is not None and p.stage == "base":
             col = (_floats(obj.raw.get("color")) + [1.0, 1.0, 1.0])[:3]
-            alfa = obj.raw.get("alpha")
-            brillo = obj.raw.get("brightness")
-            alfa = float(alfa) if isinstance(alfa, (int, float)) else 1.0
-            brillo = float(brillo) if isinstance(brillo, (int, float)) else 1.0
+            # Por _floats, que ademas de numero y cadena entiende el objeto
+            # con `value` de los campos animados por script.
+            alfa = (_floats(obj.raw.get("alpha")) + [1.0])[0]
+            brillo = (_floats(obj.raw.get("brightness")) + [1.0])[0]
         else:
             col, alfa, brillo = [1.0, 1.0, 1.0], 1.0, 1.0
         self.body.append(f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} 1")
@@ -766,6 +825,7 @@ class Renderer:
         we = wepaths.we_assets()
         sresolver = weshader.Resolver(
             overlay=self.res.entries, roots=[we, we / "shaders"])
+        por_id = {str(o.raw.get("id")): o for o in scene.objects}
         for obj in scene.objects:
             if obj.kind != "image" or not obj.passes:
                 continue
@@ -775,7 +835,7 @@ class Renderer:
             # dice si este objeto arranca desde una copia de lo que hay detras
             # (lo que necesitan las capas de post-proceso) o desde vacio.
             copybg = 1 if obj.raw.get("copybackground") else 0
-            mvp_obj = object_mvp(obj, canvas)
+            mvp_obj = object_mvp(obj, canvas, por_id=por_id)
             mg = self.margins.get(id(obj), 1.0)
             if mg != 1.0:
                 for i in (0, 1, 4, 5):     # la parte lineal 2x2
@@ -830,6 +890,7 @@ class Renderer:
             overlay=self.res.entries,
             roots=[we, we / "shaders"])
 
+        por_id = {str(o.raw.get("id")): o for o in scene.objects}
         for obj in scene.objects:
             if obj.kind != "image" or not obj.passes:
                 continue
@@ -839,7 +900,7 @@ class Renderer:
             # dice si este objeto arranca desde una copia de lo que hay detras
             # (lo que necesitan las capas de post-proceso) o desde vacio.
             copybg = 1 if obj.raw.get("copybackground") else 0
-            mvp_obj = object_mvp(obj, canvas)
+            mvp_obj = object_mvp(obj, canvas, por_id=por_id)
             mg = self.margins.get(id(obj), 1.0)
             if mg != 1.0:
                 for i in (0, 1, 4, 5):     # la parte lineal 2x2
