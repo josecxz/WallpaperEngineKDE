@@ -110,6 +110,9 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
     asi que el array plano que se sube es la matriz escrita por filas.
     """
     w, h = canvas
+    # Una capa `passthrough` (composelayer, fullscreenlayer, projectlayer)
+    # trabaja sobre el fotograma completo: su origin y su size describen el
+    # rectangulo que el autor ve en el editor, no donde se dibuja.
     origin, scale, angles = transform_absoluto(obj, por_id)
     if not _floats(obj.raw.get("origin")):
         origin = [w / 2, h / 2, 0.0]      # sin origin declarado: al centro
@@ -721,6 +724,15 @@ class Renderer:
                         src = f"tex:{t[0]}"
                         self.body.append(
                             f"u4f g_Texture{slot}Resolution {t[1]} {t[2]} {t[1]} {t[2]}")
+                if src and src.startswith("rt:"):
+                    # Todo buffer con nombre necesita su resolucion. Para el
+                    # slot 0 no se nota --- el vertice usa la UV base --- pero
+                    # los slots 1 y 2 derivan `v_TexCoord.zw` de ella, y a cero
+                    # muestrean fuera del buffer: el efecto lee transparente y
+                    # se anula.
+                    rw, rh = rt_size(name, canvas)
+                    self.body.append(
+                        f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
             elif slot in bind_by_index or (slot == 0 and p.stage != "base"):
                 b = bind_by_index.get(slot, "previous")
                 src = "prev" if b == "previous" else f"rt:{b}"

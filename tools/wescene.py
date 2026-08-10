@@ -340,6 +340,11 @@ def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
                 # textura a su caja minima y guarda cuanto se desplazo.
                 if model.get("cropoffset"):
                     o["_cropoffset"] = model["cropoffset"]
+                # `passthrough` marca las capas de utilidad --- composelayer,
+                # fullscreenlayer, projectlayer --- que operan sobre el
+                # fotograma entero y no sobre su rectangulo.
+                if model.get("passthrough"):
+                    o["_passthrough"] = True
                 if not model.get("material"):
                     raise SceneError(f"modelo sin material: {o['image']!r}")
                 for mp in _load_material(res, model["material"]):
