@@ -203,6 +203,7 @@ private:
     int m_initMs = 0;
     bool m_diagDone = false;
     int m_frame = 0;            // solo para la traza de WE_TRACE_FRAMES
+    int m_objeto = 0;           // idem
     double m_diagCompoMean = -1;
     int m_diagBlitError = 0;
     int m_diagTargets = 0;

@@ -868,8 +868,16 @@ class Renderer:
         # resultado sale oscurecido. Repetir el plan deja que converjan, que es
         # lo que pasa en ejecucion real. Los render targets se crean una vez y
         # persisten entre repeticiones, asi que basta con repetir los pases.
+        #
+        # Cada repeticion abre con `frame`, que cierra el objeto pendiente y
+        # limpia la escena igual que el motor en vivo. Sin eso la escena
+        # acumulaba una composicion por repeticion y salia mas brillante
+        # cuantas mas se pedian, que es lo contrario de lo que se quiere
+        # observar: escondio durante toda una sesion que 3146507587 se
+        # desvanece a negro.
         plan_lines = list(self.lines)
         for i in range(max(1, frames)):
+            plan_lines.append("frame")
             plan_lines.extend(l.replace("@TIME@", f"{self.time:.5f}")
                               for l in self.body)
         plan_lines.append(f"output {raw}")

@@ -404,9 +404,51 @@ static void flush_object(void)
 /* Cada objeto arranca transparente y aporta solo lo suyo; la mezcla con lo de
  * detras ocurre una vez, al componerlo. Los efectos que necesitan el fondo lo
  * leen del buffer de escena por su nombre (_rt_FullFrameBuffer). */
+/* Espejo de WE_TRACE_FRAMES del motor en vivo: media RGBA de cada buffer al
+ * cerrar el fotograma. Solo asi se pueden comparar los dos ejecutores termino
+ * a termino en vez de por la media final, que es una sola cifra y esconde en
+ * cual de los buffers empieza a torcerse. */
+static int n_frames = 0;
+
+static void media_buffer(const char *nombre, Target *t)
+{
+    unsigned char *px = malloc((size_t)t->w * t->h * 4);
+    if (!px)
+        return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, t->fbo);
+    glReadPixels(0, 0, t->w, t->h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    double rgb = 0, a = 0;
+    long n = (long)t->w * t->h;
+    for (long i = 0; i < n; i++) {
+        rgb += px[4 * i] + px[4 * i + 1] + px[4 * i + 2];
+        a += px[4 * i + 3];
+    }
+    fprintf(stderr, "  %s=rgb=%.2f a=%.1f", nombre, rgb / (3.0 * n), a / n);
+    free(px);
+}
+
+static void traza_buffers(int frame)
+{
+    if (!getenv("WE_TRACE"))
+        return;
+    fprintf(stderr, "f=%d", frame);
+    media_buffer("compo", &compo[compo_cur]);
+    media_buffer("escena", &scene_rt);
+    for (int i = 0; i < n_rts; i++)
+        media_buffer(rts[i].name, &rts[i]);
+    fprintf(stderr, "\n");
+}
+
+static int n_objetos = 0;
+
 static void begin_object(void)
 {
     flush_object();
+    if (getenv("WE_TRACE")) {
+        fprintf(stderr, "   obj %d:", n_objetos++);
+        media_buffer("escena", &scene_rt);
+        fprintf(stderr, "\n");
+    }
     object_open = 1;
     glClearColor(0, 0, 0, 0);
     for (int i = 0; i < 2; i++) {
@@ -570,6 +612,24 @@ int main(int argc, char **argv)
             if (id >= 0 && id < MAX_TEX) {
                 textures[id] = load_texture(path, w, h);
             }
+        } else if (strcmp(kw, "frame") == 0) {
+            /* Abre un fotograma: cierra el objeto que quedara pendiente del
+             * anterior y limpia la escena, exactamente lo que hace render()
+             * en el motor en vivo.
+             *
+             * Sin esto, repetir el cuerpo del plan NO reproduce la ejecucion
+             * real: los render targets persisten -- que es lo que hace falta
+             * para que converjan los efectos temporales -- pero la escena
+             * acumulaba una composicion por repeticion y salia cada vez mas
+             * brillante. Eso tapaba justo lo que se queria observar: en
+             * 3146507587 el motion blur se desvanece a negro en vivo y con 30
+             * repeticiones aqui salia mas claro que con una. */
+            flush_object();
+            traza_buffers(n_frames++);
+            glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
+            glViewport(0, 0, scene_rt.w, scene_rt.h);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
         } else if (strcmp(kw, "meshtime") == 0) {
             sscanf(line, "%*s %f", &mesh_time);
         } else if (strcmp(kw, "mesh") == 0 && !in_pass) {

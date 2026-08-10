@@ -411,6 +411,17 @@ const GlExecutor::Target &GlExecutor::resolveTarget(qsizetype index) const
 void GlExecutor::beginObject()
 {
     flushObjectToScene();
+    if (m_frame < qgetenv("WE_TRACE_FRAMES").toInt()) {
+        QByteArray px(qsizetype(m_scene.w) * m_scene.h * 4, '\0');
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_scene.fbo);
+        glReadPixels(0, 0, m_scene.w, m_scene.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        double rgb = 0;
+        const auto *p = reinterpret_cast<const unsigned char *>(px.constData());
+        for (qsizetype i = 0; i < px.size(); i += 4)
+            rgb += p[i] + p[i + 1] + p[i + 2];
+        qInfo("SceneView:    obj %d f=%d escena=rgb=%.2f", m_objeto++, m_frame,
+              rgb / (0.75 * px.size()));
+    }
     m_objectOpen = true;
     // Cada objeto arranca transparente y aporta solo lo suyo; la mezcla con lo
     // que hay detras ocurre una vez, al componerlo sobre la escena. Antes se
