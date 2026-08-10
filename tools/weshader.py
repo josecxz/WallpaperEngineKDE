@@ -297,7 +297,45 @@ _NODOS_COND = (
     ast.BitAnd, ast.BitOr, ast.BitXor, ast.Invert, ast.LShift, ast.RShift,
 )
 
-REQUIRE_RE = re.compile(r"^[ \t]*#[ \t]*require\b[^\n]*$", re.M)
+PRELUDE_DEFINE_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)")
+# Palabras que pueden abrir una linea seguidas de un identificador y un `(`
+# sin que eso sea la definicion de una funcion: `return mod2(x, y);`.
+_NO_ES_TIPO = {"return", "if", "while", "for", "else", "do", "switch", "case"}
+
+
+def prelude_sin_colisiones(prelude: str, body: str) -> str:
+    """El prelude de compatibilidad, menos lo que el shader ya define.
+
+    Los `#define` de PRELUDE_COMPAT reconstruyen lo que WE inyecta, pero son
+    macros con nombres corrientes y un shader puede declarar el suyo propio.
+    Cuando eso pasa, el macro expande tambien la DECLARACION y la destroza:
+    `float mod2(float x, float y)` se convierte en `float mod((float x), ...)`,
+    que no es GLSL. Se cae el shader entero, y con el la capa.
+
+    Ceder ante la definicion del shader es lo correcto ademas de lo seguro: si
+    el autor se molesto en escribir la funcion, es la que WE compila.
+    """
+    fuera: list[str] = []
+    for linea in prelude.splitlines():
+        m = PRELUDE_DEFINE_RE.match(linea)
+        if m and _define_propia(body, m.group(1)):
+            fuera.append(f"// (omitido: el shader define {m.group(1)})")
+            continue
+        fuera.append(linea)
+    return "\n".join(fuera)
+
+
+def _define_propia(body: str, nombre: str) -> bool:
+    """¿El shader declara ya ese nombre, como macro o como funcion?"""
+    if re.search(rf"^[ \t]*#[ \t]*define[ \t]+{nombre}\b", body, re.M):
+        return True
+    for m in re.finditer(rf"^[ \t]*(\w+)[ \t]+{nombre}[ \t]*\(", body, re.M):
+        if m.group(1) not in _NO_ES_TIPO:
+            return True
+    return False
+
+
+REQUIRE_DIR_RE = re.compile(r"^[ \t]*#[ \t]*require\b[^\n]*$", re.M)
 COND_ABRE_RE = re.compile(r"^[ \t]*#[ \t]*(ifdef|ifndef|if)\b([^\n]*)$")
 COND_ELIF_RE = re.compile(r"^[ \t]*#[ \t]*elif\b([^\n]*)$")
 COND_ELSE_RE = re.compile(r"^[ \t]*#[ \t]*else\b")
@@ -452,7 +490,7 @@ def translate(src: str,
     # sirve para decidir nada: quien decide es el escaneo de UNSUPPORTED sobre
     # las ramas vivas. En el corpus solo aparece `#require LightingV1`, en los
     # 8 shaders con iluminacion.
-    body = REQUIRE_RE.sub("", body)
+    body = REQUIRE_DIR_RE.sub("", body)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
     # segun la etapa.
@@ -523,7 +561,7 @@ def translate(src: str,
     parts = [TARGETS[target]]
     if target == "es320":
         parts.append(PRELUDE_PRECISION)
-    parts.append(PRELUDE_COMPAT)
+    parts.append(prelude_sin_colisiones(PRELUDE_COMPAT, body))
     if values:
         parts.append("\n// ── combos ──")
         for k in sorted(values):
