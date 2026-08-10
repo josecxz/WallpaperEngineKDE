@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import wepaths
+import weglsl
 
 # Se apunta a GLSL de escritorio, no a GLSL ES, y no por comodidad: los
 # shaders de WY vienen de HLSL y dependen de conversiones implicitas int->float
@@ -308,6 +309,59 @@ def equilibrar_condicionales(body: str) -> str:
             continue                # `#else`/`#elif` huerfano, mismo criterio
         fuera.append(linea)
     fuera.extend(["#endif"] * prof)
+    return "\n".join(fuera)
+
+
+_TRUNC_DECL_RE = re.compile(
+    r"^([ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
+    r"(float|int|uint|bool|[iub]?vec[234])[ \t]+\w+[ \t]*=[ \t]*)(.+);[ \t]*$")
+_TRUNC_FUNC_RE = re.compile(r"^[ \t]*(\w+)[ \t]+(\w+)[ \t]*\(([^)]*)\)[ \t]*\{")
+_TRUNC_PARAM_RE = re.compile(r"(?:in|out|inout)?[ \t]*(\w+)[ \t]+(\w+)")
+_SWZ = "xyzw"
+
+
+def truncar_asignaciones(body: str) -> str:
+    """Aplica la truncacion implicita de HLSL a los inicializadores.
+
+    HLSL deja escribir `float mask = texSample2D(...)` o
+    `vec3 albedo = <expr vec4>`: se queda con las primeras componentes. GLSL lo
+    rechaza y se lleva el shader entero.
+
+    El ancho lo da `weglsl`, que es un parser de verdad y devuelve None ante la
+    duda. Eso es lo que hace segura esta funcion: solo se toca la linea cuando
+    el ancho se puede AFIRMAR y es mayor que el declarado. Un intento anterior
+    infirio el ancho barriendo identificadores con una expresion regular y
+    rompio 124 variantes, porque un barrido plano cree que `dot(a, b)` es
+    ancho. La validacion que respalda esto: sobre las 540 variantes que
+    compilan --- ya verificadas por GLSL --- la inferencia acierta 6001
+    declaraciones, deja 2218 sin determinar y no falla ninguna.
+    """
+    glob = weglsl.tabla_global(body)
+    funcs = weglsl.tabla_de_funciones(body)
+    local: dict[str, int] = {}
+    fuera: list[str] = []
+    prof = 0
+    for linea in body.splitlines():
+        if prof == 0:
+            m = _TRUNC_FUNC_RE.match(linea)
+            if m:
+                local = {}
+                for pm in _TRUNC_PARAM_RE.finditer(m.group(3)):
+                    if pm.group(1) in weglsl.ANCHO_TIPO:
+                        local[pm.group(2)] = weglsl.ANCHO_TIPO[pm.group(1)]
+        m = _TRUNC_DECL_RE.match(linea) if prof > 0 else None
+        if m:
+            cabeza, tipo, expr = m.group(1), m.group(2), m.group(3)
+            destino = weglsl.ANCHO_TIPO[tipo]
+            got = weglsl.ancho(expr, {**glob, **local}, funcs)
+            if got is not None and got > destino:
+                linea = f"{cabeza}({expr}).{_SWZ[:destino]};"
+            nombre = re.search(r"(\w+)[ \t]*=", cabeza)
+            if nombre:
+                local[nombre.group(1)] = destino
+        fuera.append(linea)
+        prof += linea.count("{") - linea.count("}")
+        prof = max(prof, 0)
     return "\n".join(fuera)
 
 
@@ -610,6 +664,7 @@ def translate(src: str,
     body = equilibrar_condicionales(body)
     body = bool_a_float(body)
     body = const_no_constante(body)
+    body = truncar_asignaciones(body)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
     # segun la etapa.
