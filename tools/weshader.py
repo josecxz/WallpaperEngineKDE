@@ -281,6 +281,69 @@ def hoist_uniforms(body: str) -> tuple[str, list[str]]:
     return "\n".join(kept), hoisted
 
 
+_COMPARACION_RE = re.compile(r"(?:<=|>=|==|!=|<|>)")
+
+
+def bool_a_float(body: str) -> str:
+    """Envuelve en `float(...)` las comparaciones que se usan como numero.
+
+    HLSL convierte `bool` a float solo (true -> 1.0), asi que
+    `depth *= (depth < limite) * 6.0;` es legal alli. GLSL no lo permite y el
+    driver corta con "invalid operands to *".
+
+    Solo se toca un parentesis que ademas este pegado a un `*`: `if (a < b)` no
+    se toca, y tampoco `(a < b) && c`. Es deliberadamente estrecho -- se busca
+    el caso que aparece en el corpus, no reimplementar la conversion implicita
+    de HLSL.
+
+    Costo de no tenerlo: en 3146507587 los dos pases que calculan el desenfoque
+    de profundidad de campo no compilaban, su buffer `_full2` se quedaba sin
+    escribir, y el pase que lo consume acababa oscureciendo la escena entera.
+    """
+    fuera = []
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c != "(":
+            fuera.append(c)
+            i += 1
+            continue
+        # Buscar el cierre equilibrado.
+        prof, j = 1, i + 1
+        while j < len(body) and prof:
+            if body[j] == "(":
+                prof += 1
+            elif body[j] == ")":
+                prof -= 1
+            j += 1
+        if prof:                       # parentesis sin cerrar: no se toca
+            fuera.append(c)
+            i += 1
+            continue
+        interior = body[i + 1:j - 1]
+        # Comparacion en el nivel superior del grupo, no dentro de otro.
+        plano, prof = [], 0
+        for ch in interior:
+            if ch == "(":
+                prof += 1
+            elif ch == ")":
+                prof -= 1
+            elif prof == 0:
+                plano.append(ch)
+        antes = body[:i].rstrip()
+        despues = body[j:].lstrip()
+        pegado = antes.endswith("*") or despues.startswith("*")
+        # Se recurre siempre en el interior: un grupo que no se convierte
+        # puede contener otro que si, como en `f((a < b) * 2.0)`.
+        dentro = bool_a_float(interior)
+        if pegado and _COMPARACION_RE.search("".join(plano)):
+            fuera.append(f"float({dentro})")
+        else:
+            fuera.append(f"({dentro})")
+        i = j
+    return "".join(fuera)
+
+
 def _strip_comments(src: str) -> str:
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     return re.sub(r"//[^\n]*", "", src)
@@ -491,6 +554,7 @@ def translate(src: str,
     # las ramas vivas. En el corpus solo aparece `#require LightingV1`, en los
     # 8 shaders con iluminacion.
     body = REQUIRE_DIR_RE.sub("", body)
+    body = bool_a_float(body)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
     # segun la etapa.

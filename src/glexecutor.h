@@ -129,6 +129,9 @@ private:
         // Copy: -1 = compuesto del objeto
         qsizetype copySrc = kCompo, copyDst = kCompo;
         QString copySrcName, copyDstName;
+        // "p046.frag -> _downscaled1", solo para WE_TRACE_PASES. Se compone
+        // en resolve() porque targetName se descarta justo despues.
+        QString etiqueta;
     };
 
     struct Target {

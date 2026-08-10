@@ -664,6 +664,20 @@ class Renderer:
         self.body.append("u1f g_Time @TIME@")
         self.body.append(f"u3f g_Screen {canvas[0]} {canvas[1]} "
                          f"{canvas[0] / max(1, canvas[1])}")
+        # Tamano de un texel del buffer al que escribe ESTE pase. Es lo que
+        # usan los shaders de desenfoque para saber cuanto vale un paso:
+        #
+        #   ratio = g_TexelSize * g_Texture0Resolution.xy   -> (1, 1)
+        #   v_PixelSize = 2 * g_TexelSize * vec2(ratio.y / ratio.x, ...)
+        #
+        # Sin emitirlo, GL lo da a cero y ese cociente es 0/0. El resultado es
+        # NaN, y de ahi en adelante manda el driver: NVIDIA lo absorbia y Mesa
+        # -- el del escritorio -- lo propagaba, asi que 3146507587 se veia bien
+        # en el render offline y se desvanecia a negro en vivo. La misma escena,
+        # renderizada offline forzando Mesa, se desvanecia igual.
+        tw, th = rt_size(p.target, canvas) if p.target else canvas
+        self.body.append(f"u2f g_TexelSize {1.0 / max(1, tw):.9g} "
+                         f"{1.0 / max(1, th):.9g}")
         self.body.append("u4f g_Texture0Rotation 1 0 0 1")
         self.body.append("u2f g_Texture0Translation 0 0")
         # Alfa, brillo y color son del OBJETO, no del material: una capa puede

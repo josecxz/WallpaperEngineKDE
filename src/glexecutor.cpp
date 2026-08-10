@@ -350,6 +350,12 @@ void GlExecutor::resolve(Op &op)
     op.samplerNames = {};
     op.samplerSources = {};
     op.uniformNames = {};
+    // El nombre corto sobrevive solo para WE_TRACE_PASES; son 54 cadenas
+    // cortas y sirven para casar pase a pase con la traza de glexec.
+    op.etiqueta = QStringLiteral("%1 -> %2")
+                      .arg(op.frag.section(QLatin1Char('/'), -1),
+                           op.targetName.isEmpty() ? QStringLiteral("SCREEN")
+                                                   : op.targetName);
     op.vert = {};
     op.frag = {};
     op.targetName = {};
@@ -765,6 +771,22 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         } else {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
+        if (m_frame < qgetenv("WE_TRACE_FRAMES").toInt()
+            && !qgetenv("WE_TRACE_PASES").isEmpty()) {
+            QByteArray px(qsizetype(dst.w) * dst.h * 4, '\0');
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, dst.fbo);
+            glReadPixels(0, 0, dst.w, dst.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            double rgb = 0, a = 0;
+            const auto *p = reinterpret_cast<const unsigned char *>(px.constData());
+            for (qsizetype i = 0; i < px.size(); i += 4) {
+                rgb += p[i] + p[i + 1] + p[i + 2];
+                a += p[i + 3];
+            }
+            const double n = double(px.size()) / 4;
+            qInfo("SceneView:     pase %-40s =rgb=%.2f a=%.1f",
+                  qPrintable(op.etiqueta), rgb / (3 * n), a / n);
+        }
+
         if (toScreen)
             m_compoCur ^= 1;
     }

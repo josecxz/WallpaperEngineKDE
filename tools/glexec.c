@@ -568,6 +568,7 @@ int main(int argc, char **argv)
     int in_pass = 0, drawn = 0, skipped = 0, mesh_id = -1;
     GLuint prog = 0;
     char target[128] = "SCREEN";
+    char frag_actual[512] = "";   // solo para WE_TRACE_PASES
     char blend[32] = "normal";
     struct { char uni[64]; char src[128]; } samplers[MAX_SAMPLERS];
     int n_samplers = 0;
@@ -689,6 +690,7 @@ int main(int argc, char **argv)
             char vp[512], fp[512];
             sscanf(line, "%*s %511s %511s", vp, fp);
             prog = cached_program(vp, fp);
+            snprintf(frag_actual, sizeof frag_actual, "%s", strrchr(fp, '/') ? strrchr(fp, '/') + 1 : fp);
         } else if (strcmp(kw, "target") == 0) {
             sscanf(line, "%*s %127s", target);
         } else if (strcmp(kw, "blend") == 0) {
@@ -777,6 +779,15 @@ int main(int argc, char **argv)
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             }
             drawn++;
+
+            /* Traza por pase: que escribe cada uno y con que resultado. La
+             * traza por fotograma dice que un buffer acaba mal, no cual de los
+             * pases que lo tocan lo dejo asi. */
+            if (getenv("WE_TRACE_PASES")) {
+                fprintf(stderr, "    pase %-14s -> %-22s", frag_actual, target);
+                media_buffer("", dst);
+                fprintf(stderr, "\n");
+            }
 
             if (to_screen)
                 compo_cur ^= 1;
