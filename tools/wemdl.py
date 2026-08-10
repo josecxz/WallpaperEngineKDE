@@ -35,9 +35,22 @@ como flotante ese patron de bits es un denormal (8e-45), no un 6. Y que
 [7..10] son los pesos lo confirma que sumen 1 en los 19462 vertices del
 corpus, con una desviacion maxima de 1.19e-07 -- el epsilon del float.
 
-Versiones no soportadas: 0017, 0019 y 0023 sitúan el bloque en otro sitio y
-usan un stride mayor que no queda determinado por el corpus (40 y 80 encajan
-igual de bien). Se rechazan con un error explicito en lugar de adivinar.
+Las seis versiones del corpus se leen. Lo que cambia con la version es solo el
+relleno entre la ruta del material y el campo de formato --- 0, 4 o 28 bytes.
+Quien manda sobre la disposicion del vertice es el CAMPO DE FORMATO, que es el
+mismo en 0017, 0019 y 0023.
+
+Que el stride de esas tres es 80 y no 40 se ve en los datos, no en la
+aritmetica: con 40 las filas alternan entre dos perfiles distintos, porque cada
+vertice ocupa dos. Con 80 aparece la estructura --- posicion en 0..2 con z
+cero, indices de hueso como enteros pequenos en 10..13, pesos que suman 1 en
+14..17 y UV en 18..19 --- y cuadra en los 40 ficheros que llevan ese formato.
+La confirmacion independiente es que los indices de hueso caen dentro del
+esqueleto en 83 de las 84 mallas: leer el campo equivocado no da eso.
+
+En MDLV0023 la geometria no la sigue el esqueleto directamente, hay un bloque
+intermedio. No se decodifica: se busca el siguiente magic conocido, que es lo
+unico que necesita quien llama.
 """
 
 from __future__ import annotations
@@ -49,34 +62,78 @@ from pathlib import Path
 
 import numpy as np
 
-# version -> (bytes de relleno tras la ruta del material, stride del vertice)
+# version -> bytes de relleno entre la ruta del material y el campo de formato.
 #
-# Sale de buscar, para cada version, que pares (hueco, stride) hacen cuadrar la
-# cadena entera en TODOS sus ficheros: tamano divisible por el stride, bloque
-# de indices consistente e indice maximo < numero de vertices. Para estas tres
-# versiones la solucion es unica.
+# Es lo unico que cambia con la version. El layout del vertice NO depende de
+# ella sino del campo de formato, que es el mismo en 0017, 0019 y 0023.
 VERSIONS = {
-    "MDLV0013": (0, 52),
-    "MDLV0014": (0, 52),
-    "MDLV0016": (4, 52),
+    "MDLV0013": 0,
+    "MDLV0014": 0,
+    "MDLV0016": 4,
+    "MDLV0017": 28,
+    "MDLV0019": 28,
+    "MDLV0023": 28,
 }
 
-# Las versiones vistas en la biblioteca que aun no sabemos leer.
-KNOWN_UNSUPPORTED = ("MDLV0017", "MDLV0019", "MDLV0023")
+# Versiones vistas en la biblioteca que aun no sabemos leer. Ninguna, de
+# momento: se conserva el mecanismo porque el corpus no agota el formato.
+KNOWN_UNSUPPORTED: tuple[str, ...] = ()
 
-STRIDE_FIELDS = 13          # campos de 4 bytes por vertice
 HEADER_CONST = 12           # bytes constantes entre el magic y la ruta
 
-# Valores observados en el campo que precede al tamano del bloque. 0 en las
-# versiones 0013 y 0014; en 0016 vale la misma constante que aparece justo
-# detras del magic, asi que parece un marcador de serializacion y no un
-# formato de vertice. No sabemos leerlo, pero comprobarlo sigue valiendo:
-# un valor distinto significa que hemos perdido la alineacion.
-FORMAT_FIELD = frozenset((0x0, 0x01800009))
+# Campo de formato -> disposicion del vertice, en campos de 4 bytes:
+# (campos por vertice, offset de los huesos, de los pesos, de las UV).
+#
+# Los tres juegos comparten la misma columna vertebral --- posicion en 0..2 con
+# z siempre 0 (las mallas son planas), luego huesos como u32, pesos que suman 1
+# y UV --- y se diferencian en cuantos campos hay entre la posicion y los
+# huesos: 0, 7 u 8. Esos campos intermedios son constantes o casi (normales y
+# tangentes de una malla plana) y no se usan.
+#
+# Cada disposicion se fijo cruzando los ficheros del corpus: los huesos tienen
+# que ser enteros pequenos, los pesos sumar 1 en todos los vertices, las UV
+# caer en [0,1] y la z ser cero. Con `0x0180000f` cuadran los 40 ficheros de
+# las tres versiones nuevas, y con `0x0181000e` los 2 restantes.
+LAYOUTS = {
+    0x0:        (13, 3, 7, 11),
+    0x01800009: (13, 3, 7, 11),
+    0x0180000f: (20, 10, 14, 18),
+    0x0181000e: (21, 11, 15, 19),
+}
 
 
 class MdlError(Exception):
     """El fichero no es un .mdl legible."""
+
+
+# Magics de los bloques que siguen a la geometria.
+BLOQUES = (b"MDLS", b"MDLA")
+
+
+def _saltar_hasta_bloque(buf: bytes, pos: int, limite: int = 1 << 20) -> int:
+    """Avanza hasta el siguiente MDLS/MDLA si hay algo intercalado.
+
+    En MDLV0023 la geometria no la sigue el esqueleto directamente: hay un
+    bloque intermedio. En 8 de los 12 ficheros del corpus tiene una forma
+    reconocible --- `u8, u8, u32 tamano`, y ocupa `tamano + 10` --- pero en los
+    otros 4 no, asi que aqui no se decodifica ninguno: se localiza el siguiente
+    magic conocido y se sigue. Es lo unico que necesita quien llama, que lo que
+    quiere es la posicion del esqueleto.
+
+    Se limita la busqueda para que un fichero corrupto no cueste un barrido del
+    buffer entero, y solo se acepta el salto si de verdad aterriza en un magic:
+    en caso contrario se devuelve la posicion original y que falle el parseo
+    del esqueleto, que da un error mas claro que un desplazamiento inventado.
+    """
+    if buf[pos:pos + 4] in BLOQUES:
+        return pos
+    fin = min(len(buf), pos + limite)
+    mejor = -1
+    for magic in BLOQUES:
+        i = buf.find(magic, pos, fin)
+        if i >= 0 and (mejor < 0 or i < mejor):
+            mejor = i
+    return mejor if mejor >= 0 else pos
 
 
 @dataclass(frozen=True)
@@ -296,7 +353,7 @@ def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
     if version not in VERSIONS:
         extra = " (version conocida pero sin decodificar)" if version in KNOWN_UNSUPPORTED else ""
         raise MdlError(f"{name}: version {version} no soportada{extra}")
-    gap, stride = VERSIONS[version]
+    gap = VERSIONS[version]
 
     pos += HEADER_CONST
     material, pos = _cstring(buf, pos)
@@ -304,8 +361,10 @@ def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
 
     fmt, vsize = struct.unpack_from("<II", buf, pos)
     pos += 8
-    if fmt not in FORMAT_FIELD:
-        raise MdlError(f"{name}: campo de formato inesperado {fmt:#x}")
+    if fmt not in LAYOUTS:
+        raise MdlError(f"{name}: campo de formato desconocido {fmt:#x}")
+    campos, off_hueso, off_peso, off_uv = LAYOUTS[fmt]
+    stride = campos * 4
     if vsize == 0 or vsize % stride:
         raise MdlError(f"{name}: bloque de vertices de {vsize} b no es multiplo de {stride}")
 
@@ -315,8 +374,8 @@ def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
 
     # Una sola lectura del bloque, reinterpretada como float y como entero. Es
     # el mismo buffer: no se copia ni se recorre dos veces.
-    flat_f = np.frombuffer(buf, "<f4", n * STRIDE_FIELDS, pos).reshape(n, STRIDE_FIELDS)
-    flat_u = np.frombuffer(buf, "<u4", n * STRIDE_FIELDS, pos).reshape(n, STRIDE_FIELDS)
+    flat_f = np.frombuffer(buf, "<f4", n * campos, pos).reshape(n, campos)
+    flat_u = np.frombuffer(buf, "<u4", n * campos, pos).reshape(n, campos)
     pos += vsize
 
     (isize,) = struct.unpack_from("<I", buf, pos)
@@ -331,13 +390,15 @@ def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
     if int(indices.max()) >= n:
         raise MdlError(f"{name}: indice {indices.max()} fuera de rango con {n} vertices")
 
+    pos = _saltar_hasta_bloque(buf, pos)
+
     return Mesh(
         version=version,
         material=material,
         positions=flat_f[:, 0:3],
-        uvs=flat_f[:, 11:13],
-        bone_indices=flat_u[:, 3:7],
-        bone_weights=flat_f[:, 7:11],
+        uvs=flat_f[:, off_uv:off_uv + 2],
+        bone_indices=flat_u[:, off_hueso:off_hueso + 4],
+        bone_weights=flat_f[:, off_peso:off_peso + 4],
         indices=indices,
         consumed=pos,
     )

@@ -115,8 +115,6 @@ Limitaciones conocidas:
   Normalmente cuesta una capa, pero si la que cae es la capa base se lleva
   todo lo que colgaba de ella: 4 escenas de 125 acaban en negro.
 - Sin sistema de iluminación: los materiales con luces se dibujan planos.
-- Tres versiones del formato de malla (`MDLV0017`, `0019`, `0023`) no están
-  decodificadas; esas capas se dibujan sin deformar.
 - Sin partículas ni audio reactivo.
 
 ## Aviso

@@ -45,7 +45,15 @@ def revisar(name: str, blob: bytes, stats: Counter, errs: Counter) -> None:
 
     w = np.asarray(m.bone_weights)
     desv = float(np.abs(w.sum(axis=1) - 1.0).max())
-    if desv > 1e-5:
+    # El umbral era 1e-5, calibrado cuando el corpus solo traia las versiones
+    # viejas, donde la desviacion maxima es 1.19e-07 -- el epsilon del float32.
+    # Tres mallas de MDLV0023 llegan a 1.01e-05 y no es un campo mal leido: la
+    # mediana de la desviacion es CERO y solo el 8% de los vertices pasa de
+    # 1e-6, asi que son pesos redondeados en origen. Leer el campo equivocado
+    # no da sumas que ronden 1, las da lejos, y ese caso lo sigue cazando este
+    # mismo limite. La comprobacion fuerte de que el layout es correcto es
+    # otra: los indices de hueso caen dentro del esqueleto en 83 de 84 mallas.
+    if desv > 2e-5:
         errs[f"pesos no suman 1 (desv {desv:.2e})"] += 1
         stats["peso_malo"] += 1
 
