@@ -320,6 +320,32 @@ _TRUNC_PARAM_RE = re.compile(r"(?:in|out|inout)?[ \t]*(\w+)[ \t]+(\w+)")
 _SWZ = "xyzw"
 
 
+def _porcentaje_a_mod(expr: str, tabla: dict, funcs: dict) -> str:
+    """`a % b` sobre flotantes pasa a `mod(a, b)`.
+
+    En HLSL `%` vale tambien para flotantes; en GLSL exige enteros y corta con
+    "LHS of operator % must be an integer". No se puede traducir a ciegas: `%`
+    entre enteros es GLSL valido y `mod` devolveria un flotante.
+
+    Se parte por el `%` de nivel superior --- fuera de parentesis --- y solo se
+    cambia si el tipo base de la izquierda se puede AFIRMAR que es flotante.
+    """
+    prof = 0
+    for i, c in enumerate(expr):
+        if c in "([":
+            prof += 1
+        elif c in ")]":
+            prof -= 1
+        elif c == "%" and prof == 0:
+            izq, der = expr[:i].strip(), expr[i + 1:].strip()
+            t = weglsl.tipo(izq, tabla, funcs)
+            if t and t[0] == "float":
+                der = _porcentaje_a_mod(der, tabla, funcs)
+                return f"mod({izq}, float({der}))"
+            break
+    return expr
+
+
 def truncar_asignaciones(body: str) -> str:
     """Aplica la truncacion implicita de HLSL a los inicializadores.
 
@@ -348,17 +374,26 @@ def truncar_asignaciones(body: str) -> str:
                 local = {}
                 for pm in _TRUNC_PARAM_RE.finditer(m.group(3)):
                     if pm.group(1) in weglsl.ANCHO_TIPO:
-                        local[pm.group(2)] = weglsl.ANCHO_TIPO[pm.group(1)]
+                        local[pm.group(2)] = (weglsl.BASE_TIPO[pm.group(1)],
+                                              weglsl.ANCHO_TIPO[pm.group(1)])
         m = _TRUNC_DECL_RE.match(linea) if prof > 0 else None
         if m:
             cabeza, tipo, expr = m.group(1), m.group(2), m.group(3)
             destino = weglsl.ANCHO_TIPO[tipo]
-            got = weglsl.ancho(expr, {**glob, **local}, funcs)
-            if got is not None and got > destino:
-                linea = f"{cabeza}({expr}).{_SWZ[:destino]};"
+            base_destino = weglsl.BASE_TIPO[tipo]
+            visible = {**glob, **local}
+            expr = _porcentaje_a_mod(expr, visible, funcs)
+            got = weglsl.tipo(expr, visible, funcs)
+            if got is not None:
+                if got[1] > destino:
+                    expr = f"({expr}).{_SWZ[:destino]}"
+                # HLSL convierte solo de flotante a entero al asignar; GLSL no.
+                if got[0] == "float" and base_destino in ("int", "uint"):
+                    expr = f"{base_destino}({expr})"
+            linea = f"{cabeza}{expr};"
             nombre = re.search(r"(\w+)[ \t]*=", cabeza)
             if nombre:
-                local[nombre.group(1)] = destino
+                local[nombre.group(1)] = (weglsl.BASE_TIPO[tipo], destino)
         fuera.append(linea)
         prof += linea.count("{") - linea.count("}")
         prof = max(prof, 0)

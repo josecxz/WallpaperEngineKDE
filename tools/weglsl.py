@@ -30,6 +30,33 @@ ANCHO_TIPO = {
     "vec3": 3, "ivec3": 3, "uvec3": 3, "bvec3": 3, "dvec3": 3,
     "vec4": 4, "ivec4": 4, "uvec4": 4, "bvec4": 4, "dvec4": 4,
 }
+
+# Tipo base de cada tipo declarado. Hace falta aparte del ancho porque `%`
+# exige enteros en GLSL y en HLSL vale tambien sobre flotantes.
+BASE_TIPO = {t: ("float" if t in ("float", "double") or t.startswith(("vec", "dvec"))
+                 else "int" if t == "int" or t.startswith("ivec")
+                 else "uint" if t == "uint" or t.startswith("uvec")
+                 else "bool")
+             for t in ANCHO_TIPO}
+
+# Tipo base que devuelven los builtins cuyo resultado no es el de sus
+# argumentos. El resto propaga, igual que con el ancho.
+BASE_FIJA = {
+    "dot": "float", "length": "float", "distance": "float",
+    "determinant": "float", "cross": "float",
+    "texture": "float", "textureLod": "float", "texelFetch": "float",
+    "textureGrad": "float", "textureProj": "float", "textureSize": "int",
+    "all": "bool", "any": "bool", "not": "bool",
+    "greaterThan": "bool", "greaterThanEqual": "bool", "lessThan": "bool",
+    "lessThanEqual": "bool", "equal": "bool", "notEqual": "bool",
+    "texSample2D": "float", "texSample2DLod": "float",
+    "texSample2DBackBuffer": "float", "texSample3D": "float",
+    "texSampleCube": "float", "texLoad2D": "float", "SampleLevel": "float",
+    "texSample2DCompare": "float",
+    "CAST2": "float", "CAST3": "float", "CAST4": "float",
+    "CASTF": "float", "CASTI": "int", "CASTU": "uint",
+    "float": "float", "int": "int", "uint": "uint", "bool": "bool",
+}
 TIPOS_OPACOS = ("mat2", "mat3", "mat4", "mat2x2", "mat3x3", "mat4x4",
                 "sampler2D", "sampler3D", "samplerCube", "void")
 
@@ -86,33 +113,34 @@ def tokenizar(src: str) -> list[str] | None:
 
 
 class _Parser:
-    """Precedencia por escalada. Devuelve anchos, no arboles.
+    """Precedencia por escalada. Devuelve tipos, no arboles.
 
-    Cada metodo devuelve un ancho (1..4) o None. None se propaga: si una
-    subexpresion no se entiende, la expresion entera queda sin determinar.
+    Un tipo es la pareja `(base, ancho)` --- p.ej. `("float", 3)` para vec3 ---
+    o None. None se propaga: si una subexpresion no se entiende, la expresion
+    entera queda sin determinar. Esa distincion entre "no lo se" y un valor
+    concreto es lo que permite ser conservador aguas arriba.
     """
 
-    def __init__(self, tokens: list[str], tabla: dict[str, int],
-                 funciones: dict[str, int]):
+    def __init__(self, tokens, tabla, funciones):
         self.t = tokens
         self.i = 0
         self.tabla = tabla
         self.funciones = funciones
 
-    def ojear(self) -> str | None:
+    def ojear(self):
         return self.t[self.i] if self.i < len(self.t) else None
 
-    def comer(self) -> str | None:
+    def comer(self):
         tok = self.ojear()
         if tok is not None:
             self.i += 1
         return tok
 
     # ── niveles de precedencia, de menor a mayor ──────────────────────────
-    def expresion(self) -> int | None:
+    def expresion(self):
         return self.ternario()
 
-    def ternario(self) -> int | None:
+    def ternario(self):
         cond = self.logico()
         if self.ojear() != "?":
             return cond
@@ -124,87 +152,88 @@ class _Parser:
         b = self.expresion()
         if a is None or b is None:
             return None
-        return max(a, b)
+        return (_base_comun(a[0], b[0]), max(a[1], b[1]))
 
-    def logico(self) -> int | None:
+    def logico(self):
         izq = self.comparacion()
         while self.ojear() in ("&&", "||", "^^"):
             self.comer()
             der = self.comparacion()
             if izq is None or der is None:
                 return None
-            izq = 1                      # los logicos dan un bool escalar
+            izq = ("bool", 1)
         return izq
 
-    def comparacion(self) -> int | None:
+    def comparacion(self):
         izq = self.aditivo()
         while self.ojear() in ("<", ">", "<=", ">=", "==", "!="):
             self.comer()
             der = self.aditivo()
             if izq is None or der is None:
                 return None
-            izq = 1                      # comparar da bool escalar
+            izq = ("bool", 1)
         return izq
 
-    def aditivo(self) -> int | None:
+    def aditivo(self):
         izq = self.multiplicativo()
         while self.ojear() in ("+", "-"):
             self.comer()
-            der = self.multiplicativo()
-            izq = self._combinar(izq, der)
+            izq = self._combinar(izq, self.multiplicativo())
         return izq
 
-    def multiplicativo(self) -> int | None:
+    def multiplicativo(self):
         izq = self.unario()
         while self.ojear() in ("*", "/", "%"):
             self.comer()
-            der = self.unario()
-            izq = self._combinar(izq, der)
+            izq = self._combinar(izq, self.unario())
         return izq
 
     @staticmethod
-    def _combinar(a: int | None, b: int | None) -> int | None:
+    def _combinar(a, b):
         """Escalar con vector da el vector; vector con vector exige igualdad."""
         if a is None or b is None:
             return None
-        if a == 1:
-            return b
-        if b == 1:
-            return a
-        return a if a == b else None
+        base = _base_comun(a[0], b[0])
+        if base is None:
+            return None
+        if a[1] == 1:
+            return (base, b[1])
+        if b[1] == 1:
+            return (base, a[1])
+        return (base, a[1]) if a[1] == b[1] else None
 
-    def unario(self) -> int | None:
+    def unario(self):
         while self.ojear() in ("-", "+", "!", "~", "++", "--"):
             self.comer()
         return self.sufijo()
 
-    def sufijo(self) -> int | None:
+    def sufijo(self):
         val = self.primario()
         while True:
             tok = self.ojear()
             if tok == ".":
                 self.comer()
                 campo = self.comer()
-                if not campo or not set(campo) <= COMPONENTES:
+                if not campo or not set(campo) <= COMPONENTES or val is None:
                     return None          # no es un swizzle: fuera
-                val = len(campo)
+                val = (val[0], len(campo))
             elif tok == "[":
                 self.comer()
                 prof = 1
                 while prof and self.i < len(self.t):
                     c = self.comer()
                     prof += (c == "[") - (c == "]")
-                if prof:
+                if prof or val is None:
                     return None
                 # Indexar un vector da un escalar. Sobre una matriz daria un
                 # vector, pero las matrices no entran en este analisis.
-                val = 1 if val is not None else None
+                val = (val[0], 1)
             elif tok in ("++", "--"):
                 self.comer()
             else:
                 return val
 
-    def primario(self) -> int | None:
+    def primario(self):
         tok = self.comer()
         if tok is None:
             return None
@@ -215,7 +244,11 @@ class _Parser:
             self.comer()
             return val
         if re.fullmatch(r"[\d.].*", tok):
-            return 1                     # literal numerico
+            # `1` es int, `1.0` float y `1u` uint: la distincion importa
+            # porque `%` solo acepta enteros.
+            if tok[-1] in "uU":
+                return ("uint", 1)
+            return ("float", 1) if ("." in tok or "e" in tok or "E" in tok) else ("int", 1)
         if not re.fullmatch(r"[A-Za-z_]\w*", tok):
             return None
         if self.ojear() == "(":          # llamada o constructor
@@ -223,25 +256,30 @@ class _Parser:
             if args is None:
                 return None
             if tok in ANCHO_TIPO:
-                return ANCHO_TIPO[tok]
+                return (BASE_TIPO[tok], ANCHO_TIPO[tok])
             if tok in TIPOS_OPACOS:
                 return None
             if tok in BUILTIN_FIJO:
-                return BUILTIN_FIJO[tok]
+                return (BASE_FIJA.get(tok, "float"), BUILTIN_FIJO[tok])
             if tok in self.funciones:
                 return self.funciones[tok]
             if tok in BUILTIN_PROPAGA:
                 validos = [a for a in args if a is not None]
                 if len(validos) != len(args) or not validos:
                     return None
-                return max(validos)
+                base = BASE_FIJA.get(tok)
+                if base is None:
+                    base = _base_comun(*[a[0] for a in validos]) if validos else None
+                if base is None:
+                    return None
+                return (base, max(a[1] for a in validos))
             return None                  # funcion desconocida
         return self.tabla.get(tok)
 
-    def _argumentos(self) -> list[int | None] | None:
+    def _argumentos(self):
         if self.comer() != "(":
             return None
-        args: list[int | None] = []
+        args = []
         if self.ojear() == ")":
             self.comer()
             return args
@@ -254,15 +292,34 @@ class _Parser:
                 return None
 
 
-def ancho(expr: str, tabla: dict[str, int],
-          funciones: dict[str, int] | None = None) -> int | None:
-    """Ancho de la expresion, o None si no se puede afirmar."""
+def _base_comun(*bases):
+    """Tipo base al que promocionan varios: float gana, luego uint, luego int."""
+    bs = [b for b in bases if b is not None]
+    if len(bs) != len(bases) or not bs:
+        return None
+    if "float" in bs:
+        return "float"
+    if "uint" in bs:
+        return "uint"
+    if "int" in bs:
+        return "int"
+    return "bool"
+
+
+def tipo(expr: str, tabla: dict, funciones: dict | None = None):
+    """`(base, ancho)` de la expresion, o None si no se puede afirmar."""
     tokens = tokenizar(expr)
     if tokens is None:
         return None
     p = _Parser(tokens, tabla, funciones or {})
     val = p.expresion()
     return val if p.i == len(tokens) else None      # sobra texto: no fiarse
+
+
+def ancho(expr: str, tabla: dict, funciones: dict | None = None) -> int | None:
+    """Solo el ancho. Envoltorio sobre `tipo` para el uso mas comun."""
+    t = tipo(expr, tabla, funciones)
+    return t[1] if t else None
 
 
 _FUNC_RE = re.compile(
@@ -274,24 +331,25 @@ _DECL_VAR_RE = re.compile(
     r"(\w+)[ \t]+(\w+)[ \t]*(?:=|;)")
 
 
-def tabla_de_funciones(body: str) -> dict[str, int]:
-    """Ancho de retorno de las funciones que el propio shader declara."""
-    fuera: dict[str, int] = {}
+def tabla_de_funciones(body: str) -> dict[str, tuple[str, int]]:
+    """Tipo de retorno de las funciones que el propio shader declara."""
+    fuera: dict[str, tuple[str, int]] = {}
     for m in _FUNC_RE.finditer(body):
         if m.group(1) in ANCHO_TIPO:
-            fuera[m.group(2)] = ANCHO_TIPO[m.group(1)]
+            fuera[m.group(2)] = (BASE_TIPO[m.group(1)], ANCHO_TIPO[m.group(1)])
     return fuera
 
 
-def tabla_global(body: str) -> dict[str, int]:
+def tabla_global(body: str) -> dict[str, tuple[str, int]]:
     """Uniforms, varyings y globales: lo visible desde cualquier funcion."""
-    fuera: dict[str, int] = {}
+    fuera: dict[str, tuple[str, int]] = {}
     prof = 0
     for linea in body.splitlines():
         if prof == 0:
             m = _DECL_VAR_RE.match(linea)
             if m and m.group(1) in ANCHO_TIPO:
-                fuera.setdefault(m.group(2), ANCHO_TIPO[m.group(1)])
+                fuera.setdefault(m.group(2),
+                                 (BASE_TIPO[m.group(1)], ANCHO_TIPO[m.group(1)]))
         prof += linea.count("{") - linea.count("}")
         prof = max(prof, 0)
     return fuera

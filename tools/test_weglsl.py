@@ -25,7 +25,8 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from weglsl import (ANCHO_TIPO, ancho, tabla_de_funciones, tabla_global)
+from weglsl import (ANCHO_TIPO, BASE_TIPO, ancho, tabla_de_funciones,
+                    tabla_global)
 
 MESA_ENV = {"__EGL_VENDOR_LIBRARY_FILENAMES": "/usr/share/glvnd/egl_vendor.d/50_mesa.json"}
 
@@ -54,12 +55,13 @@ def declaraciones(body: str):
                 local = {}
                 for pm in PARAM_RE.finditer(m.group(3)):
                     if pm.group(1) in ANCHO_TIPO:
-                        local[pm.group(2)] = ANCHO_TIPO[pm.group(1)]
+                        local[pm.group(2)] = (BASE_TIPO[pm.group(1)],
+                                              ANCHO_TIPO[pm.group(1)])
         m = DECL_RE.match(linea)
         if m and prof > 0:
             tipo, nombre, expr = m.groups()
             yield tipo, expr, {**glob, **local}, funcs, linea.strip()
-            local[nombre] = ANCHO_TIPO[tipo]
+            local[nombre] = (BASE_TIPO[tipo], ANCHO_TIPO[tipo])
         prof += linea.count("{") - linea.count("}")
         prof = max(prof, 0)
 
