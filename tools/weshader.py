@@ -281,6 +281,33 @@ def hoist_uniforms(body: str) -> tuple[str, list[str]]:
     return "\n".join(kept), hoisted
 
 
+def equilibrar_condicionales(body: str) -> str:
+    """Quita los `#endif` sobrantes y cierra los `#if` que queden abiertos.
+
+    Tres shaders del corpus traen un `#endif` de mas -- descuido del autor, no
+    del traductor: la fuente ya viene con 7 `#if` y 8 `#endif`. WE los compila
+    igual, asi que su preprocesador lo tolera; el de GLSL no, y corta con
+    "#endif without #if" llevandose el shader entero.
+
+    Se corrige en la direccion de dibujar: sobra un `#endif`, se ignora; falta
+    uno, se anade al final. Sobre una fuente equilibrada no cambia nada.
+    """
+    fuera: list[str] = []
+    prof = 0
+    for linea in body.splitlines():
+        if COND_ABRE_RE.match(linea):
+            prof += 1
+        elif COND_FIN_RE.match(linea):
+            if prof == 0:
+                continue            # sin `#if` que cerrar: se descarta
+            prof -= 1
+        elif (COND_ELIF_RE.match(linea) or COND_ELSE_RE.match(linea)) and prof == 0:
+            continue                # `#else`/`#elif` huerfano, mismo criterio
+        fuera.append(linea)
+    fuera.extend(["#endif"] * prof)
+    return "\n".join(fuera)
+
+
 _COMPARACION_RE = re.compile(r"(?:<=|>=|==|!=|<|>)")
 
 
@@ -554,6 +581,7 @@ def translate(src: str,
     # las ramas vivas. En el corpus solo aparece `#require LightingV1`, en los
     # 8 shaders con iluminacion.
     body = REQUIRE_DIR_RE.sub("", body)
+    body = equilibrar_condicionales(body)
     body = bool_a_float(body)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
