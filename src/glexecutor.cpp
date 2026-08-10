@@ -783,6 +783,21 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     if (!m_diagDone) {
         m_diagDone = true;
         m_diagTargets = m_targets.size();
+        // Volcado del buffer de escena, para comparar pixel a pixel contra el
+        // ejecutor offline sobre el MISMO plan. Se activa con
+        // WE_DUMP_SCENE=/ruta.rgba; sin la variable no cuesta nada.
+        const QByteArray ruta = qgetenv("WE_DUMP_SCENE");
+        if (!ruta.isEmpty()) {
+            QByteArray px(qsizetype(src.w) * src.h * 4, '\0');
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, src.fbo);
+            glReadPixels(0, 0, src.w, src.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            QFile f(QString::fromLocal8Bit(ruta));
+            if (f.open(QIODevice::WriteOnly)) {
+                f.write(px);
+                qInfo("SceneView: escena volcada a %s (%dx%d)",
+                      ruta.constData(), src.w, src.h);
+            }
+        }
         auto muestra = [](GLuint fbo, int x, int y) {
             unsigned char px[16 * 16 * 4] = {};
             glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
