@@ -85,9 +85,12 @@ PRELUDE_COMPAT = r"""
 #define CAST3X3(x) mat3(x)
 #define CAST4X4(x) mat4(x)
 
-#define texSample2D(s, uv) texture((s), (uv))
-#define texSample2DLod(s, uv, lod) textureLod((s), (uv), (lod))
-#define texSample2DBackBuffer(s, uv) texture((s), (uv))
+// El `.xy` no sobra: HLSL trunca solo, y los shaders pasan `v_TexCoord`, que
+// es vec4. `texture(sampler2D, vec4)` no existe y el pase entero se cae. Sobre
+// un vec2 el swizzle es legal y no cambia nada, asi que vale para los dos.
+#define texSample2D(s, uv) texture((s), (uv).xy)
+#define texSample2DLod(s, uv, lod) textureLod((s), (uv).xy, (lod))
+#define texSample2DBackBuffer(s, uv) texture((s), (uv).xy)
 #define texSample3D(s, uv) texture((s), (uv))
 #define texSampleCube(s, uv) texture((s), (uv))
 #define texLoad2D(s, uv) texelFetch((s), ivec2(uv), 0)
@@ -306,6 +309,29 @@ def equilibrar_condicionales(body: str) -> str:
         fuera.append(linea)
     fuera.extend(["#endif"] * prof)
     return "\n".join(fuera)
+
+
+def const_no_constante(body: str) -> str:
+    """Quita `const` cuando el inicializador no lo es.
+
+    `const float FEATHER = u_Feather * 0.5;` es legal en HLSL, donde `const`
+    significa "no lo reasigno". En GLSL exige una expresion constante en tiempo
+    de compilacion y un uniform no lo es. Quitar el calificador conserva el
+    significado que el autor le daba.
+    """
+    tabla = set(re.findall(r"\buniform[ \t]+\w+[ \t]+(\w+)", body))
+    tabla |= set(re.findall(r"^[ \t]*(?:in|out|varying|attribute)[ \t]+\w+[ \t]+(\w+)",
+                            body, re.M))
+    if not tabla:
+        return body
+
+    def repl(m: re.Match) -> str:
+        if any(re.search(rf"\b{re.escape(n)}\b", m.group(2)) for n in tabla):
+            return m.group(1) + m.group(2) + ";"
+        return m.group(0)
+
+    return re.sub(r"^([ \t]*)const[ \t]+(\w+[ \t]+\w+[ \t]*=[ \t]*[^;]+);",
+                  lambda m: repl(m) if True else m.group(0), body, flags=re.M)
 
 
 _COMPARACION_RE = re.compile(r"(?:<=|>=|==|!=|<|>)")
@@ -583,6 +609,7 @@ def translate(src: str,
     body = REQUIRE_DIR_RE.sub("", body)
     body = equilibrar_condicionales(body)
     body = bool_a_float(body)
+    body = const_no_constante(body)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
     # segun la etapa.
