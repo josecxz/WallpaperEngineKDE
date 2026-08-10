@@ -111,8 +111,10 @@ Funciona sobre escenas reales de la biblioteca, incluidas algunas complejas
 
 Limitaciones conocidas:
 
-- Un ~8% de las variantes de shader del corpus no se traducen; los pases
-  afectados se omiten y la escena se dibuja sin ellos.
+- Un ~6% de los pases del corpus no llega a compilar en el driver y se omite.
+  Normalmente cuesta una capa, pero si la que cae es la capa base se lleva
+  todo lo que colgaba de ella: 4 escenas de 125 acaban en negro.
+- Sin sistema de iluminación: los materiales con luces se dibujan planos.
 - Tres versiones del formato de malla (`MDLV0017`, `0019`, `0023`) no están
   decodificadas; esas capas se dibujan sin deformar.
 - Sin partículas ni audio reactivo.

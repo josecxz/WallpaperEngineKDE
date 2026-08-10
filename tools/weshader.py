@@ -24,6 +24,7 @@ por eliminacion, lo que aporta el motor.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -285,6 +286,141 @@ def _strip_comments(src: str) -> str:
     return re.sub(r"//[^\n]*", "", src)
 
 
+# Nodos que puede contener la expresion de un #if una vez sustituidas las
+# macros. No se admite Name ni Call: si algo no se sustituyo, el arbol se
+# rechaza en vez de evaluarse a ciegas.
+_NODOS_COND = (
+    ast.Expression, ast.BoolOp, ast.UnaryOp, ast.BinOp, ast.Compare,
+    ast.Constant, ast.And, ast.Or, ast.Not, ast.USub, ast.UAdd,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.BitAnd, ast.BitOr, ast.BitXor, ast.Invert, ast.LShift, ast.RShift,
+)
+
+REQUIRE_RE = re.compile(r"^[ \t]*#[ \t]*require\b[^\n]*$", re.M)
+COND_ABRE_RE = re.compile(r"^[ \t]*#[ \t]*(ifdef|ifndef|if)\b([^\n]*)$")
+COND_ELIF_RE = re.compile(r"^[ \t]*#[ \t]*elif\b([^\n]*)$")
+COND_ELSE_RE = re.compile(r"^[ \t]*#[ \t]*else\b")
+COND_FIN_RE = re.compile(r"^[ \t]*#[ \t]*endif\b")
+
+
+def eval_conditional(expr: str, definidas: set[str],
+                     values: dict[str, object]) -> bool | None:
+    """Evalua la expresion de un `#if`. None = no se ha podido decidir.
+
+    Reproduce la semantica del GLSL de escritorio, que es la que usa WE: una
+    macro sin definir vale 0 dentro de un `#if`. Ante cualquier forma que no
+    se entienda devuelve None, y quien llama debe dar la rama por viva: es el
+    lado seguro, porque conserva el comportamiento anterior en vez de asumir
+    que el codigo dudoso no se compila.
+    """
+    expr = _strip_comments(expr).strip()
+    if not expr:
+        return None
+
+    expr = re.sub(r"\bdefined\s*\(\s*(\w+)\s*\)",
+                  lambda m: "1" if m.group(1) in definidas else "0", expr)
+    expr = re.sub(r"\bdefined\s+(\w+)",
+                  lambda m: "1" if m.group(1) in definidas else "0", expr)
+
+    fallo = False
+
+    def macro(m: re.Match) -> str:
+        nonlocal fallo
+        v = values.get(m.group(0))
+        if v is None:
+            return "0"                     # sin definir vale 0
+        if isinstance(v, bool):
+            return str(int(v))
+        if isinstance(v, (int, float)):
+            return repr(v)
+        fallo = True                       # una macro con valor no numerico
+        return "0"
+
+    expr = re.sub(r"\b[A-Za-z_]\w*\b", macro, expr)
+    if fallo:
+        return None
+
+    # C -> Python. El `!` se traduce solo cuando no forma parte de `!=`.
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = re.sub(r"!(?!=)", " not ", expr)
+    try:
+        # En modo eval un espacio al principio es IndentationError, y el `!`
+        # traducido deja uno cuando la expresion empieza por negacion.
+        arbol = ast.parse(expr.strip(), mode="eval")
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, _NODOS_COND):
+                return None
+        return bool(eval(compile(arbol, "<combo>", "eval"),
+                         {"__builtins__": {}}, {}))
+    except Exception:
+        return None
+
+
+def strip_dead_branches(body: str, values: dict[str, object]) -> str:
+    """Devuelve el cuerpo sin las ramas que el preprocesador va a descartar.
+
+    Este traductor NO resuelve los `#if`: los deja en el GLSL y los evalua el
+    driver con los `#define` que emitimos delante. Eso esta bien para generar
+    codigo, pero no para decidir si un shader usa algo que no sabemos
+    traducir, porque entonces se mira tambien lo que nunca se va a compilar.
+
+    Coste real de no hacerlo: las llamadas a `PerformLighting_V1` viven dentro
+    de `#if LIGHTING`, un combo que el motor ya desactiva por no tener sistema
+    de luces. Se abortaba el shader entero por una rama condenada, y con el se
+    caia la capa base y todo lo que colgaba de ella: 16 wallpapers del corpus
+    -- uno de cada ocho -- renderizaban completamente negros.
+    """
+    definidas = set(values) | set(DEFINE_RE.findall(body))
+    vivas: list[str] = []
+    pila: list[dict] = []
+
+    for linea in body.splitlines():
+        viva = pila[-1]["viva"] if pila else True
+
+        m = COND_ABRE_RE.match(linea)
+        if m:
+            tipo, resto = m.group(1), m.group(2)
+            if tipo == "if":
+                cond = eval_conditional(resto, definidas, values)
+            else:
+                nombre = resto.strip().split()[0] if resto.strip() else ""
+                cond = (nombre in definidas) if nombre else None
+                if cond is not None and tipo == "ifndef":
+                    cond = not cond
+            dudosa = cond is None
+            pila.append({"padre": viva, "dudosa": dudosa,
+                         "tomada": cond is True,
+                         "viva": viva and (True if dudosa else cond)})
+            continue
+
+        m = COND_ELIF_RE.match(linea)
+        if m and pila:
+            f = pila[-1]
+            cond = eval_conditional(m.group(1), definidas, values)
+            if cond is None:
+                f["dudosa"] = True
+            f["viva"] = f["padre"] and (
+                True if f["dudosa"] else (not f["tomada"] and bool(cond)))
+            f["tomada"] = f["tomada"] or cond is True
+            continue
+
+        if COND_ELSE_RE.match(linea) and pila:
+            f = pila[-1]
+            f["viva"] = f["padre"] and (True if f["dudosa"] else not f["tomada"])
+            f["tomada"] = True
+            continue
+
+        if COND_FIN_RE.match(linea) and pila:
+            pila.pop()
+            continue
+
+        if viva:
+            vivas.append(linea)
+
+    return "\n".join(vivas)
+
+
 def translate(src: str,
               stage: str,
               resolver: Resolver,
@@ -310,9 +446,13 @@ def translate(src: str,
 
     body = _strip_comments(expanded)
 
-    for name, why in UNSUPPORTED.items():
-        if re.search(rf"\b{name}\b", body):
-            raise ShaderError(f"usa {name}: {why}")
+    # `#require X` declara una dependencia de un modulo del motor; no es GLSL y
+    # el driver la rechaza como directiva desconocida. Se emite siempre a nivel
+    # superior, aunque lo que la necesita este dentro de un `#if`, asi que no
+    # sirve para decidir nada: quien decide es el escaneo de UNSUPPORTED sobre
+    # las ramas vivas. En el corpus solo aparece `#require LightingV1`, en los
+    # 8 shaders con iluminacion.
+    body = REQUIRE_RE.sub("", body)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
     # segun la etapa.
@@ -350,6 +490,14 @@ def translate(src: str,
         ifdef_only = set(IFDEF_RE.findall(body)) | set(DEFINED_RE.findall(body))
         values = {k: v for k, v in values.items()
                   if v not in (0, False) or k not in ifdef_only}
+
+    # Lo que no sabemos traducir solo importa si se va a compilar. La revision
+    # va aqui, y no antes, porque necesita `values` ya cerrado: es el juego de
+    # #define que vera el driver y, por tanto, lo que decide que ramas viven.
+    vivo = strip_dead_branches(body, values)
+    for name, why in UNSUPPORTED.items():
+        if re.search(rf"\b{name}\b", vivo):
+            raise ShaderError(f"usa {name}: {why}")
 
     # WE declara los samplers g_TextureN segun los slots enlazados en el pase,
     # asi que hay shaders que los usan sin declararlos. Se declaran los que

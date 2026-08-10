@@ -563,6 +563,44 @@ De paso, `alpha`, `brightness` y `color` del objeto estaban fijos a neutro en
 los uniforms; en el corpus hay 67, 68 y 133 objetos respectivamente que los
 declaran distintos.
 
+### El escaneo de no-soportados corría demasiado pronto
+
+Una regresión sobre las 125 escenas dejó ver la consecuencia mayor de no tener
+iluminación: **17 escenas renderizaban completamente negras**, y 16 de ellas
+por una única causa. Los 108 pases que perdían fallaban todos con
+`PerformLighting_V1: funcion de iluminacion no presente en los assets`.
+
+El traductor **no resuelve los `#if`**: los emite y los evalúa el driver con
+los `#define` que van delante. Está bien para generar código, pero el escaneo
+de `UNSUPPORTED` miraba el texto entero, incluidas las ramas que nunca se iban
+a compilar. Y las llamadas a `PerformLighting_V1` viven dentro de
+`#if LIGHTING`, el combo que el motor **ya desactiva**. Se abortaba el shader
+por una rama condenada; con él se caía la capa base y todo lo que colgaba.
+
+El arreglo es evaluar las condicionales antes de decidir: `eval_conditional`
+reproduce la semántica del GLSL de escritorio —macro sin definir vale 0 dentro
+de un `#if`— y `strip_dead_branches` recorta las ramas muertas. Ante cualquier
+expresión que no se entienda devuelve `None` y la rama se da por viva, que es
+el lado seguro: conserva el comportamiento anterior en vez de suponer que el
+código dudoso no se compila. La expresión se evalúa con `ast`, aceptando solo
+nodos aritméticos y lógicos; sin `Name` ni `Call`, así que lo que no se haya
+sustituido se rechaza en vez de evaluarse a ciegas.
+
+Al traducir, apareció detrás una quinta capa sobre GLSL: `#require LightingV1`,
+que declara una dependencia de un módulo del motor y el driver rechaza como
+directiva desconocida. Se emite siempre a nivel superior aunque lo que la
+necesita esté dentro de un `#if`, así que no sirve para decidir nada y se
+elimina. En el corpus solo existe esa, en 8 shaders.
+
+Resultado sobre las 125 escenas: los pases descartados en traducción pasan de
+**127 a 0**, las escenas negras de **17 a 4**, y ninguna imagen empeora —111
+quedan idénticas byte a byte. Los pases que aún se pierden (154 de 2718, un
+5,7%, en 48 escenas) ya no caen en la traducción sino al compilar en el driver.
+
+Rescatada no es lo mismo que correcta: de las 13, algunas salen bien (Lucy,
+Makima) y otras destapan bugs propios —el de Arknights dibuja las capas en
+mosaico, con costuras rectangulares.
+
 ## Uso
 
 ```sh

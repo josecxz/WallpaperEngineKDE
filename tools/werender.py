@@ -14,7 +14,7 @@ y las pasa a `glexec`, que solo ejecuta. Aqui vive lo que hay que decidir:
     los `_rt_*` son buffers intermedios con nombre.
 
 Uso:
-    cc -O2 -o /tmp/glexec tools/glexec.c -lEGL -lGL
+    cc -O2 -o /tmp/glexec tools/glexec.c -lEGL -lGL -lm
     python3 tools/werender.py <dir_wallpaper> <salida.png> [--time 0.0]
                               [--only-base] [--exec /tmp/glexec]
 """
