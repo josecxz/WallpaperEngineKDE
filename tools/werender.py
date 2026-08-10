@@ -123,8 +123,30 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
         sx = size[0] * scale[0] / w
         sy = size[1] * scale[1] / h
     crop = (_floats(obj.raw.get("_cropoffset")) + [0.0, 0.0])[:2] if APPLY_CROP else [0.0, 0.0]
-    tx = 2.0 * (origin[0] + crop[0]) / w - 1.0
-    ty = 2.0 * (origin[1] + crop[1]) / h - 1.0
+
+    # `alignment` dice a QUE punto del rectangulo se refiere `origin`. El valor
+    # por defecto es `center`, que es lo que asume el resto de este calculo;
+    # los demas desplazan el centro media capa en la direccion que toque.
+    #
+    # Solo se aplica si la capa declara `size`: sin el, `size` cae al lienzo
+    # entero y el desplazamiento seria de media pantalla. En el corpus son 51
+    # objetos de 448 --- los otros 397 dicen `center`, o sea nada.
+    ax, ay = origin[0] + crop[0], origin[1] + crop[1]
+    alin = obj.raw.get("alignment")
+    if isinstance(alin, str) and _floats(obj.raw.get("size")):
+        media_w, media_h = size[0] * scale[0] / 2.0, size[1] * scale[1] / 2.0
+        # El eje Y del lienzo crece hacia arriba, como en clip space.
+        if "left" in alin:
+            ax += media_w
+        elif "right" in alin:
+            ax -= media_w
+        if "bottom" in alin:
+            ay += media_h
+        elif "top" in alin:
+            ay -= media_h
+
+    tx = 2.0 * ax / w - 1.0
+    ty = 2.0 * ay / h - 1.0
 
     c = math.cos(angles[2])
     s = math.sin(angles[2])
