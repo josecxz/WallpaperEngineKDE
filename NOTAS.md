@@ -601,6 +601,50 @@ Rescatada no es lo mismo que correcta: de las 13, algunas salen bien (Lucy,
 Makima) y otras destapan bugs propios —el de Arknights dibuja las capas en
 mosaico, con costuras rectangulares.
 
+## Qué campos del formato leemos y cuáles no
+
+Inventario sobre las 125 escenas, cruzando cada clave que aparece en
+`scene.json` contra lo que el código busca por nombre. Sirve para separar «el
+motor es genérico» —lo es: cero identificadores de wallpaper en código
+ejecutable— de «el motor entiende el formato», que es otra cosa.
+
+Los campos de **efecto y pase están cubiertos**: solo quedan `username`
+(cosmético) y `usertextures` (2 escenas). El hueco está en los objetos.
+
+### Colocación y geometría
+
+Aquí la lección de método es que **el recuento bruto engaña y hay que mirar la
+distribución de valores**. Estos cinco campos suman 4000 apariciones y casi
+todas son el valor por defecto o pertenecen a un subsistema que no existe:
+
+| campo | apariciones | qué resultó ser |
+|---|---|---|
+| `alignment` | 448 | 397 dicen `center`, que es lo que ya hacíamos. **Implementado**: quedan 24 capas visibles reales. |
+| `locktransforms` | 1293 | Aparece en objetos de **sonido** (56) y **luz** (7). Un campo que se aplica a un sonido no es una transformación: es el candado del editor. Nada que hacer. |
+| `instanceoverride` | 725 | 647 partículas y 64 ocultos, **cero imágenes**. Bloqueado tras el sistema de partículas. |
+| `parallaxDepth` | 1425 | También en sonidos (57). Es profundidad relativa a la cámara; sin movimiento de cámara no desplaza nada. Bloqueado tras la cámara. |
+| `perspective` | 425 | **423 son `False`.** Los dos `True` del corpus son las capas de personaje de Jeanne y de Lucy, las dos con malla puppet. Jeanne renderiza bien sin leerlo. |
+| `anchor`, `horizontalalign`, `verticalalign` | 159 cada uno | 153, 152 y 156 son el valor neutro. Además son de **texto**, que no rasterizamos. |
+
+Conclusión: el bloque de colocación **está terminado con `alignment`**. Lo que
+queda no son campos ignorados sino campos cuyo subsistema no existe todavía.
+
+### Lo que sí falta, medido
+
+- **Capas de composición** (`models/util/composelayer.json`): 125 capas en 23
+  escenas. Se alimentan de sus hermanas ocultas, que descartamos. Es lo que
+  hace que en Lucy no haya Tierra.
+- **Mallas puppet sin decodificar**: de las 95 que referencian las escenas,
+  **52 están en formatos que no leemos** --- `MDLV0019` (30 mallas, 2 escenas),
+  `MDLV0023` (13, 5) y `MDLV0017` (9, 4). Es más de la mitad, y es la causa de
+  que la chaqueta de Lucy salga despiezada: su `Lucy_puppet.mdl` es MDLV0023,
+  se omite, y la capa se dibuja como quad plano con la textura en crudo.
+  Decodificamos `MDLV0013` (37), `MDLV0016` (5) y `MDLV0014` (1).
+- **Partículas**: 826 objetos en 106 escenas, sin sistema.
+- **Texto**: 159 objetos en 28 escenas; leemos el campo, no dibujamos glifos.
+- **Shaders**: 31 variantes de 556 no compilan; 21 son conversiones implícitas
+  de HLSL.
+
 ## Uso
 
 ```sh
