@@ -69,6 +69,8 @@ static int object_open;
 static float obj_mvp[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 /* colorBlendMode 31 del objeto: se compone sumando, no tapando. */
 static int obj_aditivo;
+/* colorBlendMode aparte: la capa no se compone, solo deja su buffer. */
+static int obj_solo_buffer;
 
 static GLuint quad_vao, quad_vbo;
 
@@ -383,6 +385,8 @@ static void flush_object(void)
     if (!object_open || !composite_prog)
         return;
     object_open = 0;
+    if (obj_solo_buffer)
+        return;          /* su resultado ya se copio a su buffer con nombre */
     glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
     glViewport(0, 0, scene_rt.w, scene_rt.h);
     glUseProgram(composite_prog);
@@ -597,15 +601,18 @@ int main(int argc, char **argv)
             /* El flush del objeto anterior usa SU matriz: primero componer,
              * despues adoptar la del que empieza. */
             float m[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-            int copybg = 0, adit = 0;
+            int copybg = 0, adit = 0, solo = 0;
             int n = sscanf(line,
-                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d",
+                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d",
                 &copybg, m+0,m+1,m+2,m+3, m+4,m+5,m+6,m+7,
-                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit);
+                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit, &solo);
             begin_object();
             if (n >= 17)
                 memcpy(obj_mvp, m, sizeof m);
             obj_aditivo = (n >= 18) ? adit : 0;
+            /* Capa que solo llena su buffer de composicion: se dibuja pero no
+             * se compone sobre la escena, que la muestreara otra por nombre. */
+            obj_solo_buffer = (n >= 19) ? solo : 0;
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
             char path[512];

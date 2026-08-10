@@ -631,9 +631,19 @@ queda no son campos ignorados sino campos cuyo subsistema no existe todavía.
 
 ### Lo que sí falta, medido
 
-- **Capas de composición** (`models/util/composelayer.json`): 125 capas en 23
-  escenas. Se alimentan de sus hermanas ocultas, que descartamos. Es lo que
-  hace que en Lucy no haya Tierra.
+- ~~Capas de composición~~ **hecho**: una capa puede leer el buffer de otra por
+  `_rt_imageLayerComposite_<id>_a|_b`. Cuando el id es el suyo propio significa
+  su par ping-pong --- 86 de las 122 referencias del corpus, y ya funcionaba.
+  Cuando apunta a otra capa es una composición leyendo a sus fuentes, y esas
+  fuentes suelen estar marcadas invisibles: 36 referencias en 9 escenas, 33 de
+  ellas a capas ocultas. Ahora esas capas se dibujan a su buffer sin componerse
+  sobre la escena. Se ve en True Damage Ahri, cuya esfera pasa de un borrón
+  claro a la orbe con estructura que enseña el preview.
+
+  Queda un cabo suelto: en Lucy la Tierra sigue sin verse, pero no por el
+  mecanismo --- sus fuentes renderizan con contenido real --- sino porque la
+  capa de composición cae casi entera por encima del lienzo (`ty = 1.45` con
+  semialtura 1.39), arrastrada por la escala 2.5 del grupo que la contiene.
 - ~~Mallas puppet sin decodificar~~ **hecho**: las seis versiones del corpus se
   leen. Las mallas que las escenas usan pasan de 43 a 92 y las omitidas de 49 a
   0. Se ve sobre todo en Lucy, que recupera pelo y chaqueta, y en demon-hunter,

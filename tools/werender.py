@@ -164,7 +164,30 @@ def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
 
 APPLY_CROP = bool(int(os.environ.get("WE_APPLY_CROP", "0")))
 
-COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_\d+_[ab]$")
+COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_(\d+)_[ab]$")
+
+
+def _buffers_de_composicion(scene) -> dict[str, list[str]]:
+    """Por id de capa, los buffers `_rt_imageLayerComposite_*` que otra lee.
+
+    Se deduce recorriendo la escena, no de una lista escrita a mano: vale para
+    cualquier wallpaper que use el mecanismo. Las autorreferencias se excluyen
+    --- ahi el nombre significa el par ping-pong del propio objeto.
+    """
+    fuera: dict[str, list[str]] = {}
+    for o in scene.objects:
+        mio = str(o.raw.get("id"))
+        for e in (o.raw.get("effects") or []):
+            if not isinstance(e, dict):
+                continue
+            for ps in (e.get("passes") or []):
+                if not isinstance(ps, dict):
+                    continue
+                for t in (ps.get("textures") or []):
+                    m = COMPOSITE_RT_RE.match(t) if isinstance(t, str) else None
+                    if m and m.group(1) != mio and t not in fuera.get(m.group(1), ()):
+                        fuera.setdefault(m.group(1), []).append(t)
+    return fuera
 
 
 def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
@@ -671,12 +694,19 @@ class Renderer:
             name = p.textures[slot] if slot < len(p.textures) else None
             src = None
             if name:
-                if COMPOSITE_RT_RE.match(name):
-                    # `_rt_imageLayerComposite_<id>_a|_b` no es un buffer
-                    # cualquiera: es el par ping-pong del propio objeto, que el
-                    # ejecutor ya mantiene. Crearlo como buffer nuevo lo deja
-                    # vacio y cualquier efecto que combine con el da negro.
+                m_comp = COMPOSITE_RT_RE.match(name)
+                if m_comp and obj is not None and m_comp.group(1) == str(obj.raw.get("id")):
+                    # `_rt_imageLayerComposite_<id propio>_a|_b` es el par
+                    # ping-pong del propio objeto, que el ejecutor ya mantiene.
+                    # Crearlo como buffer nuevo lo deja vacio y cualquier
+                    # efecto que combine con el da negro. Son 86 de las 122
+                    # referencias del corpus.
                     src = "prev"
+                elif m_comp:
+                    # Apunta a OTRA capa: es una composicion leyendo a sus
+                    # fuentes. Esa capa se dibuja aparte y deja aqui su
+                    # resultado. 36 referencias en 9 escenas.
+                    src = f"rt:{name}"
                 elif name.startswith("_rt_"):
                     src = f"rt:{name}"
                 else:
@@ -848,7 +878,13 @@ class Renderer:
         sresolver = weshader.Resolver(
             overlay=self.res.entries, roots=[we, we / "shaders"])
         por_id = {str(o.raw.get("id")): o for o in scene.objects}
-        for obj in scene.objects:
+        self.buffers_de = _buffers_de_composicion(scene)
+        # Las capas que solo llenan un buffer se dibujan ANTES que nadie: asi
+        # el buffer esta listo cuando la composicion lo muestrea, sin depender
+        # de que el autor las haya puesto en orden dentro de la escena.
+        orden = ([o for o in scene.objects if getattr(o, "solo_buffer", False)]
+                 + [o for o in scene.objects if not getattr(o, "solo_buffer", False)])
+        for obj in orden:
             if obj.kind != "image" or not obj.passes:
                 continue
             self._emit_mesh(obj)
@@ -876,7 +912,11 @@ class Renderer:
             # Los demas modos son mezclas tipo Photoshop (multiply, darken...)
             # sin equivalente en el hardware; se componen como siempre.
             aditivo = 1 if obj.raw.get("colorBlendMode") == 31 else 0
-            self.body.append(f"object {copybg} {place} {aditivo}")
+            # Una capa que solo llena su buffer de composicion no se compone
+            # sobre la escena: otra la muestreara por nombre.
+            solo = 1 if getattr(obj, "solo_buffer", False) else 0
+            self.body.append(f"object {copybg} {place} {aditivo} {solo}")
+            buffers = self.buffers_de.get(str(obj.raw.get("id")), ())
             for p in obj.passes:
                 if p.command == "copy":
                     src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
@@ -890,6 +930,10 @@ class Renderer:
                 if max_passes is not None and self.stats["pases"] >= max_passes:
                     break
                 self.emit_pass(p, sresolver, canvas, obj)
+            # Ya dibujado el objeto entero, su compuesto se vuelca a los
+            # buffers con nombre que otra capa va a muestrear.
+            for nombre in buffers:
+                self.body.append(f"copy prev {nombre}")
         self.stats["canvas"] = canvas
         return canvas
 
@@ -913,7 +957,13 @@ class Renderer:
             roots=[we, we / "shaders"])
 
         por_id = {str(o.raw.get("id")): o for o in scene.objects}
-        for obj in scene.objects:
+        self.buffers_de = _buffers_de_composicion(scene)
+        # Las capas que solo llenan un buffer se dibujan ANTES que nadie: asi
+        # el buffer esta listo cuando la composicion lo muestrea, sin depender
+        # de que el autor las haya puesto en orden dentro de la escena.
+        orden = ([o for o in scene.objects if getattr(o, "solo_buffer", False)]
+                 + [o for o in scene.objects if not getattr(o, "solo_buffer", False)])
+        for obj in orden:
             if obj.kind != "image" or not obj.passes:
                 continue
             self._emit_mesh(obj)
@@ -941,7 +991,11 @@ class Renderer:
             # Los demas modos son mezclas tipo Photoshop (multiply, darken...)
             # sin equivalente en el hardware; se componen como siempre.
             aditivo = 1 if obj.raw.get("colorBlendMode") == 31 else 0
-            self.body.append(f"object {copybg} {place} {aditivo}")
+            # Una capa que solo llena su buffer de composicion no se compone
+            # sobre la escena: otra la muestreara por nombre.
+            solo = 1 if getattr(obj, "solo_buffer", False) else 0
+            self.body.append(f"object {copybg} {place} {aditivo} {solo}")
+            buffers = self.buffers_de.get(str(obj.raw.get("id")), ())
             for p in obj.passes:
                 if p.command == "copy":
                     src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
@@ -957,6 +1011,8 @@ class Renderer:
                 if max_passes is not None and self.stats["pases"] >= max_passes:
                     break
                 self.emit_pass(p, sresolver, canvas, obj)
+            for nombre in buffers:
+                self.body.append(f"copy prev {nombre}")
 
         raw = self.tmp / "out.rgba"
 

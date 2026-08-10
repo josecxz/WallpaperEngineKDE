@@ -29,6 +29,7 @@ particulas ni reproduce audio: eso son subsistemas aparte.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -147,6 +148,10 @@ class SceneObject:
     parallax_depth: str = ""
     passes: list[RenderPass] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+    # El objeto no se compone sobre la escena: se dibuja para dejar su
+    # resultado en `_rt_imageLayerComposite_<id>_a|_b`, donde OTRA capa lo
+    # muestrea. Ver `ids_compuestos`.
+    solo_buffer: bool = False
 
 
 @dataclass
@@ -243,6 +248,33 @@ def _make_pass(res: AssetResolver, owner: str, stage: str, mp: dict,
     )
 
 
+COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_(\d+)_[ab]$")
+
+
+def _ids_de_composicion(data: dict) -> set[str]:
+    """Ids de capas cuyo buffer de composicion lee OTRA capa.
+
+    Se recorre la escena en crudo, no una lista escrita a mano: cualquier
+    wallpaper que use el mecanismo queda cubierto sin tocar el codigo. Se
+    excluyen las autorreferencias, que significan otra cosa --- el par
+    ping-pong del propio objeto --- y que el ejecutor ya resuelve.
+    """
+    fuera: set[str] = set()
+    for o in data.get("objects", []):
+        mio = str(o.get("id"))
+        for eff in o.get("effects", []) or []:
+            if not isinstance(eff, dict):
+                continue
+            for p in eff.get("passes", []) or []:
+                if not isinstance(p, dict):
+                    continue
+                for t in p.get("textures", []) or []:
+                    m = COMPOSITE_RT_RE.match(t) if isinstance(t, str) else None
+                    if m and m.group(1) != mio:
+                        fuera.add(m.group(1))
+    return fuera
+
+
 def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
     data = res.read_json("scene.json")
     scene = Scene(general=data.get("general", {}), camera=data.get("camera", {}))
@@ -255,6 +287,21 @@ def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
         props = {}
     scene.properties = props or {}
 
+    # Capas que otra capa muestrea por su buffer de composicion.
+    #
+    # Un efecto puede leer `_rt_imageLayerComposite_<id>_a|_b`. Cuando el id es
+    # el del propio objeto se refiere a su par ping-pong, que el ejecutor ya
+    # mantiene --- 86 de las 122 referencias del corpus son de estas. Pero
+    # cuando apunta a OTRO objeto es una capa de composicion leyendo a sus
+    # fuentes, y esas fuentes suelen estar marcadas invisibles: son 36
+    # referencias en 9 escenas, 33 de ellas a capas ocultas.
+    #
+    # Descartarlas por invisibles dejaba el buffer vacio y la composicion en
+    # negro: es lo que hacia que en Cyberpunk Edgerunners-Lucy no hubiera
+    # Tierra, aunque sus tres capas --- textura, nubes y cara oculta --- esten
+    # ahi y bien colocadas.
+    ids_compuestos = _ids_de_composicion(data)
+
     for o in data.get("objects", []):
         kind = _object_kind(o)
         obj = SceneObject(
@@ -264,10 +311,17 @@ def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
             parallax_depth=o.get("parallaxDepth", ""), raw=o,
         )
         if not is_visible(o.get("visible", True), scene.properties):
-            obj.kind = "oculto"
+            # Invisible pero muestreada por otra capa: hay que construir sus
+            # pases igual. No se compone sobre la escena, solo llena su buffer.
+            if str(o.get("id")) in ids_compuestos:
+                obj.solo_buffer = True
+                scene.objects.append(obj)
+            else:
+                obj.kind = "oculto"
+                scene.objects.append(obj)
+                continue
+        else:
             scene.objects.append(obj)
-            continue
-        scene.objects.append(obj)
 
         def note(msg: str) -> None:
             if strict:

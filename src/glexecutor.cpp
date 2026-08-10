@@ -155,6 +155,9 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
                 for (int i = 0; i < 16; ++i)
                     op.placement[i] = tok[2 + i].toFloat();
             op.additiveCompose = tok.size() >= 19 && tok[18] == QLatin1String("1");
+            // Capa que solo llena su buffer de composicion: se dibuja pero no
+            // se compone sobre la escena, que la muestreara otra por nombre.
+            op.soloBuffer = tok.size() >= 20 && tok[19] == QLatin1String("1");
             m_ops.append(op);
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
@@ -447,6 +450,8 @@ void GlExecutor::flushObjectToScene()
     if (!m_objectOpen || !m_composite)
         return;
     m_objectOpen = false;
+    if (m_soloBuffer)
+        return;          // su resultado ya se copio a su buffer con nombre
     glBindFramebuffer(GL_FRAMEBUFFER, m_scene.fbo);
     glViewport(0, 0, m_scene.w, m_scene.h);
     glUseProgram(m_composite);
@@ -705,6 +710,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             beginObject();
             memcpy(m_placement, op.placement, sizeof m_placement);
             m_additiveCompose = op.additiveCompose;
+            m_soloBuffer = op.soloBuffer;
             continue;
         }
         if (op.kind == Op::Copy) {

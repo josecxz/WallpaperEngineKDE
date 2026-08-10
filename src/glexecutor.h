@@ -111,6 +111,8 @@ private:
         float placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         // colorBlendMode 31: la capa se compone sumando, no tapando.
         bool additiveCompose = false;
+        // La capa no se compone: solo deja su resultado en un buffer con nombre.
+        bool soloBuffer = false;
         // Pass
         QString vert, frag;             // solo hasta initialize()
         QString targetName;             // idem
@@ -196,6 +198,7 @@ private:
     GlLocation m_compositeMvp = -1;
     float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     bool m_additiveCompose = false;
+    bool m_soloBuffer = false;
     bool m_objectOpen = false;
     bool m_hasObjectMarks = false;
     int m_compoCur = 0;
