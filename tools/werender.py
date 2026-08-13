@@ -778,8 +778,27 @@ class Renderer:
     def emit_pass(self, p, sresolver, canvas: tuple[int, int], obj=None) -> None:
         # Los metadatos del shader dicen que uniform se enlaza con que
         # propiedad del material, y con que valor por defecto.
-        meta = weshader.parse_uniform_meta(weshader.normalise_newlines(p.frag))
-        meta.update(weshader.parse_uniform_meta(weshader.normalise_newlines(p.vert)))
+        #
+        # Hay que leerlos CON LOS INCLUDES EXPANDIDOS. Los uniforms comunes se
+        # declaran en las cabeceras --- `common_composite.h`,
+        # `common_particles.h` --- y mirando solo el fichero de arriba no
+        # existen: no se emiten, GL los deja a cero y el shader multiplica por
+        # ese cero sin que nada falle. `g_CompositeColor` es el caso claro:
+        # `effect.rgb *= g_CompositeColor` con la cabecera diciendo
+        # `default: "1 1 1"`. En `2868108515` el fondo se dibujaba entero
+        # ---la pantalla llegaba a 183 de media--- y el ultimo pase del efecto
+        # de desenfoque lo reescribia a NEGRO con `blend none`. Todo lo que
+        # venia detras quedaba pintando sobre negro.
+        def metadatos(fuente: str) -> dict:
+            texto = weshader.normalise_newlines(fuente)
+            try:
+                texto = weshader.resolve_includes(texto, sresolver)
+            except weshader.ShaderError:
+                pass          # sin el include, al menos los de este fichero
+            return weshader.parse_uniform_meta(texto)
+
+        meta = metadatos(p.frag)
+        meta.update(metadatos(p.vert))
 
         # Un combo declarado en los metadatos de un sampler se activa cuando
         # ese slot esta realmente enlazado en el pase. Sin esto la mascara de

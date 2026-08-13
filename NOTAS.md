@@ -617,6 +617,56 @@ Rescatada no es lo mismo que correcta: de las 13, algunas salen bien (Lucy,
 Makima) y otras destapan bugs propios —el de Arknights dibuja las capas en
 mosaico, con costuras rectangulares.
 
+### Los uniforms de las cabeceras no existían
+
+Un wallpaper salió con **el fondo entero en negro y solo las partículas
+encima**. La traza por objeto lo situó al pase:
+
+```
+obj 18:  escena=rgb=183.81
+obj 19:  escena=rgb=0.00      <-- aqui
+```
+
+El objeto 18 es un efecto a pantalla completa: lee la escena, la desenfoca
+bajando a los buffers de cuarto de resolución y la reescribe con `blend none`.
+Los cuatro pases se veían bien —183, 183, 183— y el último salía en **0**. Su
+última línea:
+
+```glsl
+effect.rgb *= g_CompositeColor;
+```
+
+`g_CompositeColor` no se emitía nunca, así que GL lo daba a cero y el shader
+multiplicaba por cero. No hay error, no hay aviso: hay una pantalla negra.
+
+La causa es de una línea. Los metadatos de los uniforms se leían del `.frag` y
+del `.vert` **sin expandir los `#include`**, y los uniforms comunes se declaran
+en las cabeceras. Si no están en los metadatos no se emiten, y si no se emiten
+GL los deja a cero —que casi nunca es su valor neutro—. Son exactamente cuatro
+en todo Wallpaper Engine:
+
+| uniform | tipo | defecto | cabecera |
+|---|---|---|---|
+| `g_CompositeColor` | vec3 | `1 1 1` | `common_composite.h` |
+| `g_CompositeAlpha` | float | `1` | `common_composite.h` |
+| `g_CompositeOffset` | vec2 | `0 0` | `common_composite.h` |
+| `g_RefractAmount` | float | `0.05` | `common_particles.h` |
+
+Y no era solo el defecto: los tres primeros llevan clave de material
+(`compositecolor`, `compositealpha`, `compositeoffset`), así que **el valor que
+declarara el wallpaper también se estaba ignorando**.
+
+`2868108515` pasa de media 10,64 a 142,76 —de negro con partículas a la escena
+completa—. En el plan de las 125 escenas cambian 105, y solo en líneas `u1f`,
+`u2f` y `u3f`: no se mueve ni un pase ni un sampler. La mayoría no cambia de
+píxel, porque un uniform que el shader no usa es inerte.
+
+Lo que sí cambia de píxel es la refracción: `g_RefractAmount` valía 0, o sea
+que los sprites de refracción no desplazaban nada. Ahora desplazan. En
+`2587542891` aparecen gotas sobre el cristal que antes no estaban, y **si su
+intensidad es la correcta no está verificado**: el preview es una imagen fija y
+no las muestra.
+
 ## Qué campos del formato leemos y cuáles no
 
 Inventario sobre las 125 escenas, cruzando cada clave que aparece en
