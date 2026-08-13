@@ -9,14 +9,17 @@ Motor de animaciones para el escritorio, KDE Plasma 6 / Wayland.
 
 ## Estado
 
-**El motor corre en vivo dentro de plasmashell.** Una escena real de
-Wallpaper Engine (*LoL Warwick*) se ejecuta con OpenGL, 24 pases por
-fotograma, sobre una textura que Qt compone en su scene graph. Verificado en
-Plasma 6.7.3 / Wayland a 166 fps, detrás de los iconos del escritorio.
+**El motor corre en vivo dentro de plasmashell**, partículas incluidas. Una
+escena real de Wallpaper Engine se ejecuta con OpenGL sobre una textura que Qt
+compone en su scene graph, detrás de los iconos del escritorio. Verificado en
+Plasma 6.7.3 / Wayland: primero *LoL Warwick* con 24 pases a 166 fps, y ahora
+*Sentinel Irelia* con 102 pases y 4 sistemas de partículas.
 
 ```
-SceneView: backend OpenGL, plan con 24 pases, lienzo 1920x1080
-SceneView: destino=3 tam=1920x1200 glError=0x0
+SceneView: backend OpenGL, plan con 102 pases, lienzo 2560x1440, init 119 ms,
+uniforms 311 activos / 1376 descartados, mallas 12 subidas / 12 pases las
+piden / 12 animadas, particulas 4 sistemas / 0 piezas sin soporte
+SceneView: destino=17 tam=1920x1200 glError=0x0 compo_medio=85.7 targets=13
 ```
 
 ### El motor en C++ — `src/`
@@ -723,6 +726,35 @@ otras cinco están tapadas por capas negras que ya salían negras antes.
 
 `tools/test_weparticles.py` valida además los 6476 parámetros del corpus contra
 las tablas del `.c`.
+
+### Y luego, en el escritorio
+
+Con todo eso verde, el primer arranque dentro de plasmashell dijo:
+
+```
+particulas 4 sistemas / 17 piezas sin soporte
+```
+
+17 de 42 piezas, y todas soportadas. El mismo `.so`, cargado con `dlopen` desde
+un programa suelto y leyendo los mismos ficheros, decía 0.
+
+La diferencia era **`LC_NUMERIC`**. `strtof` mira la locale, Qt hace
+`setlocale(LC_ALL, "")` al arrancar y este escritorio tiene `es_ES`: con
+separador decimal coma, `0.88235` se lee como `0` y ahí se para. La pieza se
+queda corta de floats y `we_psys_load` la descarta —por diseño, más vale
+descartarla que leer los campos corridos—, así que el fallo salía **contado
+como "sin soporte"**, que es justo lo que uno da por conocido y no mira. Las 17
+eran exactamente las piezas con decimales; las de valores enteros pasaban.
+
+Fuera de plasmashell no se ve: un binario en C que nunca llama a `setlocale` se
+queda en la locale `C`. Por eso el renderizador offline, la regresión de las 125
+escenas y la prueba de contrato daban todos verde. **El único ejecutor afectado
+era el que no se había ejercitado nunca.**
+
+El arreglo es `uselocale` con una locale `C` solo numérica y solo en ese hilo,
+durante el parseo. No sirve `setlocale` global: se llevaría por delante el
+formato de números del resto de plasmashell. La prueba nueva compila el lector y
+lo corre dos veces, con `LC_ALL=C` y con la primera locale de coma instalada.
 
 ### Lo que costó encontrar
 

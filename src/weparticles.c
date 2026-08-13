@@ -1,5 +1,10 @@
+/* newlocale/uselocale son POSIX 2008 y con -std=c11 glibc no las declara sin
+ * esto. Hacen falta para leer los numeros del .psys: ver we_psys_load. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "weparticles.h"
 
+#include <locale.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -242,6 +247,18 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
     s->t_prev = -1.0f;
     for (int i = 0; i < 3; i++) s->dir[i] = 1.0f;
 
+    /* `strtof` mira LC_NUMERIC. Este fichero lo escribe siempre con punto
+     * decimal, pero el motor vive dentro de plasmashell, y Qt hace
+     * setlocale(LC_ALL, "") al arrancar: con LC_NUMERIC=es_ES el punto deja de
+     * ser separador y "0.88235" se lee como 0. La pieza se queda corta de
+     * floats y se descarta como si no estuviera soportada --- 17 de 42 en el
+     * primer wallpaper que se probo en el escritorio, todas las que llevaban
+     * decimales. Fuera de plasmashell no se ve: un binario en C que nunca llama
+     * a setlocale se queda en la locale "C" y lee bien. La C de este hilo, y
+     * solo la numerica, para no tocar el formato del resto de la interfaz. */
+    locale_t loc_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    locale_t loc_previa = loc_c ? uselocale(loc_c) : (locale_t)0;
+
     int desconocidas = 0;
     char linea[1024], nombre[64];
     while (fgets(linea, sizeof linea, f)) {
@@ -315,6 +332,11 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
         }
     }
     fclose(f);
+
+    if (loc_c) {
+        uselocale(loc_previa ? loc_previa : LC_GLOBAL_LOCALE);
+        freelocale(loc_c);
+    }
 
     if (s->maxcount < 1) s->maxcount = 1;
     /* Tope duro. El corpus llega a declarar 50000 particulas, y a 6 vertices de

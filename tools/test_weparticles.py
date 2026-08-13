@@ -13,12 +13,13 @@ que el .py emite, para cada sistema del corpus. Es la misma leccion que la
 inferencia de anchos --- validar contra un oraculo antes de conectar --- con el
 oraculo siendo esta vez la otra mitad de la implementacion.
 
-Se comprueban tres cosas:
+Se comprueban cuatro cosas:
 
   1. Los dos lados conocen exactamente los mismos nombres.
   2. Cada pieza emitida trae los floats que el lector espera.
   3. Los `.psys` del corpus entero se escriben sin excepciones, y las piezas
      que quedan fuera son solo las declaradas como no soportadas.
+  4. El lector en C entiende los decimales con la locale del escritorio puesta.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -26,7 +27,9 @@ Uso:
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -52,6 +55,92 @@ def tablas_del_c() -> tuple[dict[str, int], dict[str, int]]:
         return {m.group(1): int(m.group(3))
                 for m in ENTRADA_RE.finditer(texto[i:j])}
     return bloque("INICIALIZADORES"), bloque("OPERADORES")
+
+
+"""Fichero de prueba para el lector en C: todas las piezas llevan decimales."""
+PSYS_DECIMALES = """\
+maxcount 10
+starttime 0.5
+anim 0 1.5
+emit sphererandom 20.5 0 0 0 750.25 750.25 750.25 1 0.1 1 350.5 750.5 0 0 0 0 0 0
+init lifetimerandom 16.5 20.5
+init alpharandom 0.25 0.75
+oper alphafade 0.1 0.9
+oper movement 0.5 0.25 0.125 0.0625
+"""
+PIEZAS_DECIMALES = 4          # 2 init + 2 oper; ninguna puede quedar fuera
+
+ARNES_C = r"""
+#include <locale.h>
+#include <stdio.h>
+#include "weparticles.h"
+/* Qt adopta la locale del entorno al arrancar; sin esto la prueba no prueba
+ * nada, porque un binario en C se queda en la locale "C" por defecto. */
+int main(int argc, char **argv)
+{
+    setlocale(LC_ALL, "");
+    int desconocidas = -1;
+    WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
+    printf("%d\n", s ? desconocidas : -1);
+    return 0;
+}
+"""
+
+
+def locale_con_coma() -> str | None:
+    """Primera locale instalada cuyo separador decimal NO sea el punto."""
+    try:
+        salida = subprocess.run(["locale", "-a"], capture_output=True,
+                                text=True, check=True).stdout.split()
+    except Exception:
+        return None
+    disponibles = {n.lower() for n in salida}
+    for cand in ("es_es.utf8", "es_es.utf-8", "de_de.utf8", "fr_fr.utf8",
+                 "it_it.utf8", "pt_br.utf8"):
+        if cand in disponibles:
+            return next(n for n in salida if n.lower() == cand)
+    return None
+
+
+def prueba_locale(tmp: Path) -> list[str]:
+    """El punto decimal del `.psys` contra `LC_NUMERIC` del escritorio.
+
+    `strtof` mira `LC_NUMERIC`. Dentro de plasmashell la locale es la del
+    usuario, y con una de coma "0.88235" se lee como 0: la pieza se queda corta
+    de floats y `we_psys_load` la descarta como si no estuviera soportada. El
+    renderizador offline no lo ve --- nunca llama a `setlocale` --- asi que el
+    fallo solo aparecia en el escritorio, y como piezas "sin soporte", que es
+    justo lo que uno no va a mirar dos veces.
+    """
+    loc = locale_con_coma()
+    if loc is None:
+        print("  (sin locale de coma instalada, prueba omitida)")
+        return []
+
+    psys = tmp / "decimales.psys"
+    psys.write_text(PSYS_DECIMALES)
+    fuente, binario = tmp / "arnes.c", tmp / "arnes"
+    fuente.write_text(ARNES_C)
+    raiz = FUENTE_C.parent
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{raiz}", "-o", str(binario),
+                        str(fuente), str(FUENTE_C), "-lm"], check=True,
+                       capture_output=True)
+    except Exception as e:
+        print(f"  (no se pudo compilar el arnes: {e}, prueba omitida)")
+        return []
+
+    fallos = []
+    for etq, entorno in (("C", "C"), (loc, loc)):
+        env = dict(os.environ, LC_ALL=entorno)
+        r = subprocess.run([str(binario), str(psys)], capture_output=True,
+                           text=True, env=env)
+        n = int(r.stdout.strip() or -1)
+        print(f"  LC_ALL={etq:<12} piezas sin soporte: {n}")
+        if n != 0:
+            fallos.append(f"con LC_ALL={etq} el lector en C descarta {n} de "
+                          f"{PIEZAS_DECIMALES} piezas: los decimales no se leen")
+    return fallos
 
 
 def main() -> int:
@@ -82,6 +171,11 @@ def main() -> int:
         dirs = dirs[:limite]
 
     tmp = Path(tempfile.mkdtemp(prefix="wepsys-"))
+
+    # ── 4. el lector en C con la locale del escritorio ──
+    print("\n── locale del lector en C ──")
+    fallos += prueba_locale(tmp)
+
     st = Counter()
     fuera = Counter()
     for d in dirs:
