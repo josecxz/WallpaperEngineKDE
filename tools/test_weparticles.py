@@ -27,6 +27,7 @@ Uso:
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import subprocess
@@ -143,6 +144,32 @@ def prueba_locale(tmp: Path) -> list[str]:
     return fallos
 
 
+# Largo maximo tolerable de una estela, en ANCHOS DE SPRITE --- que es la unidad
+# en la que trabaja `ComputeParticleTrailTangents`. El `maxlength` mas grande que
+# declara el corpus es 100, asi que nada deberia pasar de ahi por su cuenta.
+TOPE_ESTELA = 100.0
+
+
+def _largo_estela(s) -> float | None:
+    """Largo de la estela del sistema, en anchos de sprite.
+
+    Es la cuenta del shader ---  `max(min, min(|v| * length, max))` --- con la
+    velocidad inicial mas rapida que declara `velocityrandom`. `None` si el
+    sistema no lo declara: entonces la velocidad se la dan la turbulencia o los
+    operadores, y de ahi no sale una cota fiable.
+
+    Existe porque un valor por defecto mal elegido no falla: dibuja. Con
+    `maxlength` sin tope, los copos de 16 px de `2868108515` salian con rastros
+    de 4092 px y el render terminaba sin un solo aviso.
+    """
+    v = dict(s.inits).get("velocityrandom")
+    if not v or len(v) < 6:
+        return None
+    largo, tope, suelo = s.estela
+    rapidez = max(math.dist(v[0:3], (0, 0, 0)), math.dist(v[3:6], (0, 0, 0)))
+    return max(suelo, min(rapidez * largo, tope))
+
+
 def main() -> int:
     limite = None
     if "--limit" in sys.argv:
@@ -178,6 +205,7 @@ def main() -> int:
 
     st = Counter()
     fuera = Counter()
+    largos: list[tuple[float, str]] = []
     for d in dirs:
         try:
             res = AssetResolver.for_wallpaper(d, we)
@@ -212,6 +240,14 @@ def main() -> int:
                 fallos.append(f"{d.name}: emit emite {len(s.emit)} floats, "
                               f"el C espera 18")
 
+            if s.estela:
+                st["estelas"] += 1
+                largo = _largo_estela(s)
+                if largo is None:
+                    st["estelas_sin_cota"] += 1
+                else:
+                    largos.append(largo)
+
             for x in s.sin_soporte:
                 fuera[x] += 1
             for x in s.sin_cursor:
@@ -221,8 +257,19 @@ def main() -> int:
                 weparticles.escribir(s, tmp / "x.psys", 1)
 
     print("\n── corpus ──")
-    for k in ("sistemas", "dibujables", "piezas", "error", "escena_err"):
+    for k in ("sistemas", "dibujables", "piezas", "estelas", "error", "escena_err"):
         print(f"  {k:<12} {st[k]}")
+
+    if largos:
+        v = sorted(largos)
+        print("\n── estelas (largo en anchos de sprite) ──")
+        print(f"  acotadas {len(v)}, sin cota {st['estelas_sin_cota']}")
+        print(f"  min {v[0]:g}   mediana {v[len(v)//2]:g}   max {v[-1]:g}")
+        for largo in largos:
+            if largo > TOPE_ESTELA:
+                fallos.append(f"estela de {largo:g} anchos de sprite, por encima "
+                              f"del tope de {TOPE_ESTELA:g}: revisa los valores "
+                              f"por defecto de `_estela`")
     print("\n── piezas fuera de la simulacion ──")
     for k, v in fuera.most_common():
         print(f"  {k:<52} {v}")

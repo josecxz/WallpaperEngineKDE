@@ -123,9 +123,10 @@ Limitaciones conocidas:
   Normalmente cuesta una capa, pero si la que cae es la capa base se lleva
   todo lo que colgaba de ella: 4 escenas de 125 acaban en negro.
 - Sin sistema de iluminación: los materiales con luces se dibujan planos.
-- Las partículas se simulan (821 de los 823 sistemas del corpus), pero las que
-  dejan estela se dibujan como sprites sueltos: salen las partículas, sin el
-  rastro. Los operadores que siguen al cursor quedan inactivos.
+- Las partículas se simulan (821 de los 823 sistemas del corpus). Las estelas de
+  `rope` y `ropetrail` —66 sistemas— se dibujan como sprites sueltos: salen las
+  partículas, sin el rastro. Los operadores que siguen al cursor quedan
+  inactivos.
 - Sin audio reactivo.
 
 ## Aviso

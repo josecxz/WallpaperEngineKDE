@@ -25,6 +25,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -454,11 +455,14 @@ class Renderer:
         self.notes: list[str] = []
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
                       "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0,
-                      "psys": 0, "psys_parcial": 0, "psys_sin_estela": 0}
+                      "psys": 0, "psys_parcial": 0, "psys_estela": 0,
+                      "psys_sin_estela": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
         # Sistema de particulas por objeto, con la misma clave que las mallas.
         self.psys: dict[int, int] = {}
+        # Los tres numeros de `g_RenderVar0` de los objetos con `spritetrail`.
+        self.estelas: dict[int, tuple[float, float, float]] = {}
         self._hojas: dict[str, tuple[int, tuple | None]] = {}
         self.por_id: dict[str, object] = {}
 
@@ -609,7 +613,11 @@ class Renderer:
         self.lines.append(f"psys {i} {destino}")
         self.psys[id(obj)] = i
         self.stats["psys"] += 1
-        if sis.renderer != "sprite":
+        if sis.estela:
+            self.estelas[id(obj)] = sis.estela
+            self.stats["psys_estela"] += 1
+        elif sis.renderer != "sprite":
+            # rope y ropetrail, que son otro shader; ver `weparticles`.
             self.stats["psys_sin_estela"] += 1
 
     # ── un pase ───────────────────────────────────────────────────────────
@@ -800,6 +808,7 @@ class Renderer:
         # que va a llegar, que es decision del ejecutor.
         psys_id = self.psys.get(id(obj)) if obj is not None else None
         particula = psys_id is not None and p.stage == "base"
+        estela = self.estelas.get(id(obj)) if particula else None
         hoja = None
         if particula:
             formato, hoja = self.info_textura(p.textures[0] if p.textures else None)
@@ -812,9 +821,12 @@ class Renderer:
                 # Siempre se manda velocidad y vida en el vertice; declararlo
                 # cuesta 16 bytes por vertice y ahorra una variante de shader.
                 "THICKFORMAT": 1,
-                # Las estelas necesitan el historial de posiciones, que hoy no
-                # se guarda: se dibujan como sprites sueltos.
-                "TRAILRENDERER": 0,
+                # `spritetrail`: el sprite se orienta y se estira a lo largo de
+                # su velocidad en vez de por su rotacion. No hace falta
+                # historial --- lo resuelve el vertex shader con la velocidad
+                # que ya va en el vertice --- y los tres numeros que le faltan
+                # viajan en `g_RenderVar0`.
+                "TRAILRENDERER": 1 if estela else 0,
                 "SPRITESHEET": 1 if hoja else 0,
             })
         for uni_name, m in meta.items():
@@ -998,7 +1010,13 @@ class Renderer:
                                  f"{hoja[2]} {hoja[3]:.6g}")
             else:
                 self.body.append("u4f g_RenderVar1 1 1 1 1")
-            self.body.append("u4f g_RenderVar0 1 1 1 1")
+            if estela:
+                # length, maxlength, minlength: ver `weparticles._estela`. El
+                # cuarto no lo lee nadie.
+                self.body.append("u4f g_RenderVar0 "
+                                 + " ".join(f"{v:.6g}" for v in estela) + " 0")
+            else:
+                self.body.append("u4f g_RenderVar0 1 1 1 1")
         self.body.append("u1f g_Time @TIME@")
         self.body.append(f"u3f g_Screen {canvas[0]} {canvas[1]} "
                          f"{canvas[0] / max(1, canvas[1])}")
@@ -1276,6 +1294,11 @@ def emit_plan(wallpaper: Path, out_dir: Path) -> dict:
     header = [f"title {title} ({wallpaper.name})"]
     plan = header + [fix(l) for l in r.lines] + [fix(l) for l in r.body]
     (out_dir / "plan.txt").write_text("\n".join(plan) + "\n")
+    # Los assets ya estan copiados en `out_dir`: lo que queda en el temporal es
+    # basura, ~60 MB por escena. `render()` lo borra en su `finally` y esto no
+    # lo hacia: generar el plan de las 125 escenas seguidas dejaba 7 GB en /tmp,
+    # que es un tmpfs, y lo llenaba a media pasada.
+    shutil.rmtree(r.tmp, ignore_errors=True)
     return {"pases": r.stats["pases"], "canvas": canvas,
             "assets": len(remap), "plan": str(out_dir / "plan.txt")}
 
@@ -1315,7 +1338,6 @@ def main() -> int:
         if "--keep" in sys.argv:
             print(f"  temporales: {r.tmp}")
         else:
-            import shutil
             shutil.rmtree(r.tmp, ignore_errors=True)
     for k, v in stats.items():
         if k == "log" and v:

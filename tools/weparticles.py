@@ -33,9 +33,14 @@ Lo que NO se simula, y por que:
     sistemas): colocan las particulas a lo largo de una ruta de puntos de
     control, no las emiten al azar. Es otro modelo de emision, no un parametro.
   * `remapvalue` (2 sistemas): remapea un canal arbitrario a otro.
-  * Los renderers de estela (`spritetrail`, `rope`, `ropetrail`) se dibujan como
-    sprites: la geometria de la estela necesita el historial de posiciones de
-    cada particula, que hoy no se guarda. Salen las particulas, sin el rastro.
+  * `rope` y `ropetrail` (66 sistemas) se dibujan como sprites sueltos. Son otro
+    shader --- `genericropeparticle` --- con splines y segmentos, y piden el
+    historial de posiciones de cada particula, que hoy no se guarda.
+
+`spritetrail` (145 sistemas) SI se dibuja, y no necesita historial: el sprite se
+estira a lo largo de su propia velocidad. Lo hace el shader entero, y lo unico
+que hay que darle son los tres numeros de `ComputeParticleTrailTangents`; ver
+`_estela`.
 
 Uso:
     python3 tools/weparticles.py <dir_wallpaper>      # censo de la escena
@@ -209,9 +214,48 @@ OPERADORES = {
     "vortex": _op_vortice,
 }
 
-# Los que dibujan estela se aceptan pero se simulan como sprite; ver el
+# `rope` y `ropetrail` se aceptan pero se dibujan como sprites sueltos; ver el
 # encabezado del modulo.
 RENDERERS = ("sprite", "spritetrail", "rope", "ropetrail")
+
+# `maxlength` por defecto. El valor que sale de `ComputeParticleTrailTangents`
+# no son pixeles: es el largo de la estela EN ANCHOS DE SPRITE, porque
+# `ComputeParticlePosition` multiplica los dos ejes por el tamano de la
+# particula. Asi que 1 significa "tan larga como ancha", que es el unico
+# valor por defecto que deja sano el corpus entero; ver `_estela`.
+MAX_POR_DEFECTO = 1.0
+
+
+def _estela(e: dict) -> tuple[float, float, float]:
+    """Los tres numeros que `ComputeParticleTrailTangents` espera en `g_RenderVar0`.
+
+        up = normalize(v) * max(minlength, min(|v| * length, maxlength))
+
+    y ese `up` lo escala despues el tamano de la particula, asi que las tres
+    cifras son relativas a el, no pixeles.
+
+    Reparto del corpus (145 sistemas): `length` en 131 --- mediana 0.007, con un
+    grupo de 17 en 1.0 ---, `maxlength` en 68 --- de 1 a 100, mediana 6 --- y
+    `minlength` en uno solo.
+
+    Los dos valores por defecto son lecturas, no hechos, y **el que importa es
+    `maxlength`**: sin tope, un sistema con `length: 1` y particulas a 250 px/s
+    pide una estela de 250 anchos de sprite. Medido en *Snow perspective* de
+    `2868108515`: copos de 16 px con rastros de 4092. Con el tope en 1 los tres
+    grupos del corpus caen a la vez en un rango creible --- la lluvia, que
+    declara `length: 0.005` y `maxlength: 100`, se queda en sus 24 px; los copos
+    en 16; las brasas, en un ancho de sprite.
+
+    `length` por defecto vale 1: los 14 sistemas que no lo declaran declaran los
+    tres `maxlength: 6`, y con `length = 1` cualquier particula que se mueva
+    deprisa se pega al tope, que es tener el largo fijo que dice `maxlength`.
+    """
+    def num(clave: str, por_defecto: float) -> float:
+        v = e.get(clave)
+        return float(v) if isinstance(v, (int, float)) else por_defecto
+
+    return (num("length", 1.0), num("maxlength", MAX_POR_DEFECTO),
+            num("minlength", 0.0))
 
 
 def _cursor(op: dict, cursor: set[int]) -> bool:
@@ -249,6 +293,9 @@ class Sistema:
     opers: list[tuple[str, list[float]]] = field(default_factory=list)
     material: str = ""
     renderer: str = "sprite"
+    # `(length, maxlength, minlength)` de un `spritetrail`, tal como los pide
+    # `g_RenderVar0`; None en los demas renderers. Ver `_estela`.
+    estela: tuple[float, float, float] | None = None
     # Recorrido de la hoja de sprites: 0 una pasada por vida, 1 un fotograma
     # fijo al azar por particula. `anim_mult` repite la secuencia.
     anim_modo: int = 0
@@ -348,6 +395,14 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
     for e in pj.get("renderer") or []:
         if isinstance(e, dict) and e.get("name") in RENDERERS:
             s.renderer = e["name"]
+            if s.renderer == "spritetrail":
+                s.estela = _estela(e)
+                # Un solo sistema del corpus pide `orientation: fixed` con un
+                # eje suyo, en vez de la estela girada hacia la camara que
+                # calcula `ComputeParticleTrailTangents`. Se anota en vez de
+                # dibujarlo mal en silencio.
+                if e.get("orientation") not in (None, "camera"):
+                    s.sin_soporte.append(f"estela {e['orientation']}")
         elif isinstance(e, dict):
             s.sin_soporte.append(f"renderer:{e.get('name')}")
 

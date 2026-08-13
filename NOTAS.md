@@ -686,7 +686,7 @@ abordable. Censo de las 125 escenas:
 | emisores | 2 (`sphererandom` 607, `boxrandom` 216) | los 2 |
 | inicializadores | 10 | los 8 mayores = 99% |
 | operadores | 13 | los 12 mayores |
-| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | dibujados como sprite |
+| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | los 2 primeros; `rope*` como sprite |
 | shader | **1**: `genericparticle`, en los 823 | ya compilaba |
 
 29 piezas cubren el 100% de los 823 sistemas. Se simulan **821**; los 2
@@ -803,11 +803,50 @@ Cinco fallos, ninguno en la simulación:
   volteo se cancela con el de las UV; en un sprite que muestrea un *rectángulo*
   de una hoja no se cancela nada.
 
+### Estelas: `spritetrail` no necesitaba historial
+
+Las 211 estelas del corpus parecían un solo problema —guardar por dónde ha
+pasado cada partícula— y no lo eran. El shader lo dice:
+
+```glsl
+#if TRAILRENDERER
+    ComputeParticleTrailTangents(a_Position, in_ParticleVelocity, right, up);
+#else
+    ComputeParticleTangents(in_ParticleRotation, right, up);
+#endif
+```
+
+`spritetrail` —**145 de los 211**— es el mismo quad de siempre, orientado por su
+velocidad en vez de por su rotación y estirado a lo largo de ella:
+
+```glsl
+right = normalize(cross(eyeDirection, v));
+up    = normalize(v) * max(minlength, min(|v| * length, maxlength));
+```
+
+La velocidad ya viajaba en el vértice (`a_TexCoordVec4C1.xyz`, para el combo
+`THICKFORMAT`), así que no hubo que tocar ni el simulador ni el formato del
+vértice: **el combo `TRAILRENDERER` y tres números en `g_RenderVar0`**.
+
+Lo que sí hubo que interpretar es el `maxlength` por defecto, que solo aparece en
+68 de los 145. El valor que sale de ahí no son píxeles: `ComputeParticlePosition`
+escala los dos ejes por el tamaño de la partícula, así que es **el largo de la
+estela en anchos de sprite**. Sin tope, un sistema con `length: 1` y partículas a
+250 px/s pide 250 anchos: los copos de 16 px de `2868108515` salían con rastros
+de 4092. Con el tope por defecto en 1 —«tan larga como ancha»— los tres grupos
+del corpus caen a la vez en un rango creíble, y para los 17 sistemas que declaran
+`length: 1` el único cambio visible pasa a ser la orientación, que es la lectura
+más conservadora posible.
+
+`tools/test_weparticles.py` mide ahora el largo de cada estela del corpus con la
+velocidad que declara `velocityrandom`: 61 acotadas, mediana 13 anchos de sprite,
+máximo 20. Un valor por defecto mal elegido no falla, dibuja.
+
 ### Lo que queda
 
-- Las estelas (`spritetrail`, `rope`, `ropetrail`: 211 sistemas) se dibujan como
-  sprites sueltos. La geometría de la estela pide el historial de posiciones de
-  cada partícula, que hoy no se guarda.
+- `rope` y `ropetrail` (66 sistemas) siguen dibujándose como sprites sueltos.
+  Esos sí son otro shader —`genericropeparticle`, con splines, `subdivision` y
+  segmentos— y sí piden el historial de posiciones.
 - `mapsequencebetweencontrolpoints` y `mapsequencearoundcontrolpoint` (14
   sistemas) reparten las partículas por una ruta de puntos de control: es otro
   modelo de emisión, no un parámetro.
@@ -1136,9 +1175,9 @@ camino caliente del render.
 
 Por orden de lo que más se nota:
 
-1. **Estelas de partículas** — 211 de 823 sistemas (`spritetrail`, `rope`,
-   `ropetrail`) se dibujan como sprites sueltos. Hace falta guardar el historial
-   de posiciones de cada partícula y generar la cinta a partir de él.
+1. **`rope` y `ropetrail`** — 66 de 823 sistemas. Es otro shader,
+   `genericropeparticle`, con splines y segmentos, y sí pide guardar el historial
+   de posiciones de cada partícula. (`spritetrail`, los otros 145, ya está.)
 2. **Las 2 escenas negras y los 26 shaders de 578 que no compilan.** Poca
    anchura, pero cuando cae la capa base se lleva la escena entera.
 3. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
