@@ -31,16 +31,18 @@ CXXFLAGS := -O2 -fPIC -std=c++20 -Wall -Wextra -Wno-unused-parameter -MMD -MP \
 # plugin de QML -- el motor puede descargarlo con objetos aun vivos -- pero que
 # quede claro: NO fue lo que arreglo los SIGBUS. La causa era instalar con `cp`
 # sobre la .so mapeada (ver install-qml).
+CFLAGS   := -O2 -fPIC -std=c11 -Wall -Wextra -MMD -MP
 LDFLAGS  := -shared -Wl,-z,nodelete
 LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL
 
 MOC     := /usr/lib/qt6/moc
 BUILD   := obj
 OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o \
+           $(BUILD)/weparticles.o \
            $(BUILD)/moc_sceneview.o
 
-.PHONY: all build install install-qml install-package install-env uninstall \
-        reload status clean plan
+.PHONY: all build glexec install install-qml install-package install-env \
+        uninstall reload status clean plan
 
 all: build
 
@@ -60,6 +62,11 @@ $(BUILD)/plugin.moc: src/plugin.cpp | $(BUILD)
 $(BUILD)/%.o: src/%.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -I$(BUILD) -Isrc -c $< -o $@
 
+# El simulador de particulas es C, no C++: se compila igual en este modulo y en
+# tools/glexec.c, que es lo que impide que las dos simulaciones diverjan.
+$(BUILD)/%.o: src/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+
 $(BUILD)/moc_sceneview.o: $(BUILD)/moc_sceneview.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
 
@@ -70,6 +77,16 @@ $(BUILD)/plugin.o: $(BUILD)/plugin.moc
 
 $(BUILD)/$(LIB): $(OBJS)
 	$(CXX) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)
+	@echo "construido: $@"
+
+# ── ejecutor offline ────────────────────────────────────────────────────────
+# Enlaza el MISMO src/weparticles.c que el modulo QML: si hubiera que
+# construirlo a mano cada vez, tarde o temprano se compilaria uno sin el otro y
+# el render offline dejaria de predecir lo que hace el escritorio.
+glexec: $(BUILD)/glexec
+
+$(BUILD)/glexec: tools/glexec.c src/weparticles.c src/weparticles.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -o $@ tools/glexec.c src/weparticles.c -lEGL -lGL -lm
 	@echo "construido: $@"
 
 # ── instalacion ─────────────────────────────────────────────────────────────

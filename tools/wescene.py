@@ -353,6 +353,23 @@ def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
             except SceneError as e:
                 note(f"[{obj.name}] base: {e}")
 
+        elif kind == "particle":
+            # Un sistema de particulas llega al material por su propio JSON en
+            # vez de por un modelo, pero de ahi en adelante es un pase normal:
+            # los 823 sistemas del corpus usan el mismo shader,
+            # `genericparticle`. Lo que cambia es la GEOMETRIA --- la generan
+            # los vertices que simula `weparticles`, no un quad --- y eso se
+            # decide en el renderizador, no aqui.
+            try:
+                pdef = res.read_json(o["particle"])
+                if not pdef.get("material"):
+                    raise SceneError(f"sistema sin material: {o['particle']!r}")
+                for mp in _load_material(res, pdef["material"]):
+                    obj.passes.append(_make_pass(res, obj.name, "base", mp,
+                                                 None, None, []))
+            except SceneError as e:
+                note(f"[{obj.name}] particulas: {e}")
+
         # ── cadena de efectos ──
         for eff in o.get("effects", []):
             if not is_visible(eff.get("visible", True), scene.properties):

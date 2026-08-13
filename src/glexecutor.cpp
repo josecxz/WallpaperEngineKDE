@@ -5,6 +5,7 @@
 #include <GL/glext.h>
 
 #include "glexecutor.h"
+#include "weparticles.h"
 
 #include <QElapsedTimer>
 #include <QVarLengthArray>
@@ -110,6 +111,12 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
 
     m_ops.clear();
     m_textures.clear();
+    // Los simuladores son memoria propia, no handles de GL: se pueden soltar
+    // aqui, sin contexto activo.
+    for (PsysSpec &p : m_psys)
+        we_psys_free(p.sys);
+    m_psys.clear();
+    m_psysCount = m_psysUnknownParts = 0;
     m_passCount = 0;
 
     QTextStream in(&f);
@@ -147,6 +154,10 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
                 m.duration = tok[7].toFloat();
             }
             m_meshes.insert(tok[1].toInt(), m);
+        } else if (kw == QLatin1String("psys") && tok.size() >= 3) {
+            PsysSpec p;
+            p.path = tok[2];
+            m_psys.insert(tok[1].toInt(), p);
         } else if (kw == QLatin1String("object")) {
             Op op;
             op.kind = Op::BeginObject;
@@ -154,7 +165,13 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             if (tok.size() >= 18)
                 for (int i = 0; i < 16; ++i)
                     op.placement[i] = tok[2 + i].toFloat();
-            op.additiveCompose = tok.size() >= 19 && tok[18] == QLatin1String("1");
+            if (tok.size() >= 19)
+                switch (tok[18].toInt()) {
+                case 1:  op.compose = Compose::Additive; break;
+                case 2:  op.compose = Compose::PremulOver; break;
+                case 3:  op.compose = Compose::PremulAdd; break;
+                default: op.compose = Compose::Normal; break;
+                }
             // Capa que solo llena su buffer de composicion: se dibuja pero no
             // se compone sobre la escena, que la muestreara otra por nombre.
             op.soloBuffer = tok.size() >= 20 && tok[19] == QLatin1String("1");
@@ -179,11 +196,22 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             // Dentro de un pase `mesh` lleva solo el id; en la cabecera lleva
             // ademas ruta y tamanos, y la rama de arriba pide 5 tokens.
             cur.mesh = tok[1].toInt();
+        } else if (kw == QLatin1String("psys") && tok.size() == 2) {
+            // Dentro de un pase `psys` lleva solo el id; en la cabecera lleva
+            // ademas la ruta, y la rama de arriba pide 3 tokens.
+            cur.psys = tok[1].toInt();
         } else if (kw == QLatin1String("blend") && tok.size() >= 2) {
             const QString &b = tok[1];
-            cur.blend = (b == QLatin1String("none") || b == QLatin1String("opaque"))
-                            ? Blend::None
-                            : (b == QLatin1String("additive") ? Blend::Additive : Blend::Normal);
+            if (b == QLatin1String("none") || b == QLatin1String("opaque"))
+                cur.blend = Blend::None;
+            else if (b == QLatin1String("additive"))
+                cur.blend = Blend::Additive;
+            else if (b == QLatin1String("premul_additive"))
+                cur.blend = Blend::PremulAdditive;
+            else if (b == QLatin1String("premul_alpha"))
+                cur.blend = Blend::PremulAlpha;
+            else
+                cur.blend = Blend::Normal;
         } else if (kw == QLatin1String("sampler") && tok.size() >= 3) {
             cur.samplerNames.append(tok[1].toUtf8());
             cur.samplerSources.append(tok[2].toUtf8());
@@ -266,6 +294,13 @@ bool GlExecutor::buildProgram(Op &op)
     glAttachShader(prog, f);
     glBindAttribLocation(prog, 0, "a_Position");
     glBindAttribLocation(prog, 1, "a_TexCoord");
+    // Las de particula conviven con las del quad: genericparticle.vert no
+    // declara `a_TexCoord` y ningun otro shader declara estas, asi que ningun
+    // programa ve dos nombres en la misma localizacion.
+    glBindAttribLocation(prog, 2, "a_TexCoordVec4");
+    glBindAttribLocation(prog, 3, "a_TexCoordC2");
+    glBindAttribLocation(prog, 4, "a_Color");
+    glBindAttribLocation(prog, 5, "a_TexCoordVec4C1");
     glLinkProgram(prog);
     GLint ok = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
@@ -456,10 +491,18 @@ void GlExecutor::flushObjectToScene()
     glViewport(0, 0, m_scene.w, m_scene.h);
     glUseProgram(m_composite);
     glEnable(GL_BLEND);
-    if (m_additiveCompose)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    else
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    // Los `Premul*` no vuelven a multiplicar por el alfa: el buffer de un
+    // sistema de particulas ya lo trae aplicado, y hacerlo otra vez apaga los
+    // halos, que es donde vive casi todo el brillo de una particula.
+    switch (m_compose) {
+    case Compose::Additive:   glBlendFunc(GL_SRC_ALPHA, GL_ONE); break;
+    case Compose::PremulAdd:  glBlendFunc(GL_ONE, GL_ONE); break;
+    case Compose::PremulOver: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
+    case Compose::Normal:
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                            GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        break;
+    }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_compo[m_compoCur].tex);
     glUniform1i(glGetUniformLocation(m_composite, "src"), 0);
@@ -560,6 +603,35 @@ bool GlExecutor::initialize(QString *error)
     for (const Op &op : m_ops)
         if (op.kind == Op::Pass && op.mesh >= 0)
             ++m_meshPassCount;
+
+    // Sistemas de particulas. El VBO nace vacio y se redimensiona en el primer
+    // fotograma que necesite mas: el numero de particulas vivas sube y baja.
+    for (auto it = m_psys.begin(); it != m_psys.end(); ++it) {
+        PsysSpec &p = it.value();
+        int desconocidas = 0;
+        p.sys = we_psys_load(p.path.toLocal8Bit().constData(), &desconocidas);
+        if (!p.sys) {
+            m_log += QStringLiteral("sistema de particulas no abre: %1\n").arg(p.path);
+            continue;
+        }
+        m_psysUnknownParts += desconocidas;
+        glGenVertexArrays(1, &p.vao);
+        glBindVertexArray(p.vao);
+        glGenBuffers(1, &p.vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
+        // Layout de genericparticle.vert sin geometry shader; ver weparticles.h.
+        const GLsizei paso = WE_PSYS_FLOATS_POR_VERTICE * sizeof(float);
+        static const struct { int loc, n, off; } attr[] = {
+            {0, 3, 0}, {2, 4, 3}, {3, 2, 7}, {4, 4, 9}, {5, 4, 13},
+        };
+        for (const auto &a : attr) {
+            glVertexAttribPointer(a.loc, a.n, GL_FLOAT, GL_FALSE, paso,
+                                  reinterpret_cast<void *>(size_t(a.off) * sizeof(float)));
+            glEnableVertexAttribArray(a.loc);
+        }
+        ++m_psysCount;
+    }
+    glBindVertexArray(m_vao);
 
     for (auto it = m_textures.begin(); it != m_textures.end(); ++it) {
         TexSpec &t = it.value();
@@ -699,7 +771,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     if (!m_hasObjectMarks) {
         static const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         memcpy(m_placement, ident, sizeof ident);
-        m_additiveCompose = false;
+        m_compose = Compose::Normal;
         beginObject();   // plan antiguo: todo el plan es un solo objeto
     }
 
@@ -709,7 +781,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             // componer, despues adoptar la del que empieza.
             beginObject();
             memcpy(m_placement, op.placement, sizeof m_placement);
-            m_additiveCompose = op.additiveCompose;
+            m_compose = op.compose;
             m_soloBuffer = op.soloBuffer;
             continue;
         }
@@ -738,6 +810,15 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         case Blend::Additive: glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE); break;
         case Blend::Normal:   glEnable(GL_BLEND);
                               glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); break;
+        case Blend::PremulAdditive:
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ONE);
+            break;
+        case Blend::PremulAlpha:
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                                GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            break;
         }
 
         for (const Sampler &s : op.samplers) {
@@ -770,7 +851,9 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         // Un pase con malla dibuja la geometria puppet; el resto, el quad. La
         // malla se salta si no llego a subirse (fichero corto).
         const MeshSpec *mesh = op.mesh >= 0 ? meshFor(op.mesh) : nullptr;
-        if (mesh) {
+        if (op.psys >= 0) {
+            drawPsys(op.psys, time);
+        } else if (mesh) {
             glBindVertexArray(mesh->vao);
             glDrawElements(GL_TRIANGLES, mesh->indexCount, GL_UNSIGNED_SHORT, nullptr);
             glBindVertexArray(m_vao);
@@ -891,6 +974,32 @@ const GlExecutor::MeshSpec *GlExecutor::meshFor(int id) const
     return &it.value();
 }
 
+bool GlExecutor::drawPsys(int id, float time)
+{
+    const auto it = m_psys.find(id);
+    if (it == m_psys.end() || !it->sys || !it->vao)
+        return false;
+    PsysSpec &p = it.value();
+    const int nv = we_psys_update(p.sys, time);
+    if (nv <= 0)
+        return false;
+
+    glBindVertexArray(p.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
+    const qsizetype bytes = qsizetype(nv) * WE_PSYS_FLOATS_POR_VERTICE * sizeof(float);
+    // El numero de particulas vivas sube y baja; se reserva por el maximo visto
+    // y a partir de ahi solo se reescribe, sin volver a pedir memoria a GL.
+    if (nv > p.capacidad) {
+        glBufferData(GL_ARRAY_BUFFER, bytes, we_psys_vertices(p.sys), GL_DYNAMIC_DRAW);
+        p.capacidad = nv;
+    } else {
+        glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, we_psys_vertices(p.sys));
+    }
+    glDrawArrays(GL_TRIANGLES, 0, nv);
+    glBindVertexArray(m_vao);
+    return true;
+}
+
 void GlExecutor::releaseResources()
 {
     if (!m_ready)
@@ -928,6 +1037,15 @@ void GlExecutor::releaseResources()
         if (m.vao) glDeleteVertexArrays(1, &m.vao);
         m.vao = m.vbo = m.ibo = 0;
     }
+    for (PsysSpec &p : m_psys) {
+        if (p.vbo) glDeleteBuffers(1, &p.vbo);
+        if (p.vao) glDeleteVertexArrays(1, &p.vao);
+        p.vao = p.vbo = 0;
+        p.capacidad = 0;
+        we_psys_free(p.sys);
+        p.sys = nullptr;
+    }
+    m_psysCount = 0;
     if (m_vbo) glDeleteBuffers(1, &m_vbo);
     if (m_vao) glDeleteVertexArrays(1, &m_vao);
     m_vbo = m_vao = 0;

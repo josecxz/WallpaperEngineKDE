@@ -66,6 +66,9 @@ public:
     int meshCount() const { return m_meshCount; }
     int meshPassCount() const { return m_meshPassCount; }
     int meshAnimCount() const { return m_meshAnimCount; }
+    // Sistemas de particulas cargados y piezas de ellos que no se reconocieron.
+    int psysCount() const { return m_psysCount; }
+    int psysUnknownParts() const { return m_psysUnknownParts; }
     int canvasWidth() const { return m_canvasW; }
     int canvasHeight() const { return m_canvasH; }
     int liveUniformCount() const { return m_liveUniforms; }
@@ -83,8 +86,14 @@ private:
     static constexpr qsizetype kCompo = -1;   // buffer del objeto en curso
     static constexpr qsizetype kScene = -2;   // acumulado de todos los objetos
 
-    enum class Blend { None, Normal, Additive };
+    // Los dos `Premul*` son los de particula: se diferencian de sus homologos
+    // solo en el canal alfa, que acumulan sin elevar al cuadrado. Ver
+    // `set_blend` en tools/glexec.c, que lleva el porque completo.
+    enum class Blend { None, Normal, Additive, PremulAlpha, PremulAdditive };
     enum class Source { Texture, Target, Previous };
+
+    // Como se compone el buffer del objeto sobre la escena.
+    enum class Compose { Normal, Additive, PremulOver, PremulAdd };
 
     // Un sampler ya resuelto: sin cadenas, sin busquedas.
     struct Sampler {
@@ -109,8 +118,10 @@ private:
         // en el espacio de la capa; esta matriz se aplica una unica vez, al
         // componer el objeto sobre la escena.
         float placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-        // colorBlendMode 31: la capa se compone sumando, no tapando.
-        bool additiveCompose = false;
+        // Como se lleva el buffer del objeto a la escena. colorBlendMode 31 da
+        // `Additive`; un sistema de particulas da uno de los `Premul*`, porque
+        // su buffer ya trae el color multiplicado por el alfa.
+        Compose compose = Compose::Normal;
         // La capa no se compone: solo deja su resultado en un buffer con nombre.
         bool soloBuffer = false;
         // Pass
@@ -124,6 +135,9 @@ private:
         // el pase base de un objeto con puppet trae malla; los de efecto son
         // post-proceso y siguen usando el quad.
         int mesh = -1;
+        // Sistema de particulas a dibujar, o -1. Manda sobre `mesh`: son
+        // excluyentes, un objeto es una cosa o la otra.
+        int psys = -1;
         GlName program = 0;
         qsizetype targetIndex = kCompo;
         QVector<Sampler> samplers;
@@ -171,8 +185,19 @@ private:
         bool animated() const { return boneCount > 0 && keyCount > 1; }
     };
 
+    // Sistema de particulas. La simulacion la lleva `src/weparticles.c`,
+    // compartido con el ejecutor offline; aqui solo vive lo que toca GL.
+    struct PsysSpec {
+        QString path;
+        struct WeParticleSystem *sys = nullptr;
+        GlName vao = 0, vbo = 0;
+        int capacidad = 0;      // vertices que caben hoy en el VBO
+    };
+
     // Malla lista para dibujar, o nullptr si el id no existe o no se subio.
     const MeshSpec *meshFor(int id) const;
+    // Simula hasta `time`, sube los vertices y dibuja. false si no hay nada.
+    bool drawPsys(int id, float time);
 
     // Deforma las mallas animadas y reescribe sus VBO. Una vez por fotograma,
     // no una por pase: varias pasadas comparten la misma malla.
@@ -189,7 +214,9 @@ private:
     QVector<Op> m_ops;
     QHash<int, TexSpec> m_textures;
     QHash<int, MeshSpec> m_meshes;
+    QHash<int, PsysSpec> m_psys;
     int m_meshCount = 0, m_meshPassCount = 0, m_meshAnimCount = 0;
+    int m_psysCount = 0, m_psysUnknownParts = 0;
     QVector<Target> m_targets;              // indexable y estable
     QHash<QString, qsizetype> m_targetByName;
     Target m_compo[2];      // buffer del objeto en curso (ping-pong)
@@ -197,7 +224,7 @@ private:
     GlName m_composite = 0; // programa para componer objeto -> escena
     GlLocation m_compositeMvp = -1;
     float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    bool m_additiveCompose = false;
+    Compose m_compose = Compose::Normal;
     bool m_soloBuffer = false;
     bool m_objectOpen = false;
     bool m_hasObjectMarks = false;

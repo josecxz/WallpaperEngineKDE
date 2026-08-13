@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+"""Sistemas de particulas: del JSON de Wallpaper Engine a un fichero `.psys`.
+
+Un sistema de particulas no es una capa mas. El resto del motor resuelve el
+grafo una vez y el ejecutor solo dibuja; aqui hay ESTADO que avanza con el
+reloj, y ese estado no puede vivir en Python porque el plan se genera una sola
+vez y luego se ejecuta miles de veces.
+
+El reparto es el mismo de siempre, con la frontera un paso mas alla:
+
+  * Python (este modulo) lee el JSON, traduce nombres a numeros, aplica los
+    valores por defecto y escribe un `.psys` --- una lista plana de piezas con
+    sus parametros ya resueltos.
+  * `src/weparticles.c` simula. No conoce Wallpaper Engine: solo ejecuta las
+    piezas que le llegan. Se compila en los DOS ejecutores para que la
+    simulacion no pueda divergir entre el render offline y el escritorio.
+
+El orden de los floats de cada pieza es el contrato entre los dos ficheros y
+esta escrito en ambos. El lado C rechaza la pieza si no le llegan los que
+espera, asi que una divergencia sale como un aviso, no como basura dibujada.
+
+Censo del corpus (823 sistemas en 106 escenas) que decide que hay que cubrir:
+
+    emisores       sphererandom 607, boxrandom 216           -> los dos
+    inicializadores 10 nombres, los 8 mas comunes son el 99% -> los 8
+    operadores      13 nombres                               -> los 12 mayores
+    renderers      sprite 586, spritetrail 145, rope 34, ropetrail 32
+    shader         genericparticle, uno solo, en los 823
+
+Lo que NO se simula, y por que:
+
+  * `mapsequencebetweencontrolpoints` / `mapsequencearoundcontrolpoint` (14
+    sistemas): colocan las particulas a lo largo de una ruta de puntos de
+    control, no las emiten al azar. Es otro modelo de emision, no un parametro.
+  * `remapvalue` (2 sistemas): remapea un canal arbitrario a otro.
+  * Los renderers de estela (`spritetrail`, `rope`, `ropetrail`) se dibujan como
+    sprites: la geometria de la estela necesita el historial de posiciones de
+    cada particula, que hoy no se guarda. Salen las particulas, sin el rastro.
+
+Uso:
+    python3 tools/weparticles.py <dir_wallpaper>      # censo de la escena
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import wepaths
+from wescene import AssetResolver, SceneError
+
+
+def _fl(value) -> list[float]:
+    """Numero, bool o cadena '0.5 0.2 0.1' -> lista de floats."""
+    if isinstance(value, dict):
+        return _fl(value.get("value"))
+    if isinstance(value, bool):
+        return [1.0 if value else 0.0]
+    if isinstance(value, (int, float)):
+        return [float(value)]
+    if isinstance(value, str):
+        try:
+            return [float(x) for x in value.split()]
+        except ValueError:
+            return []
+    if isinstance(value, list):
+        out: list[float] = []
+        for v in value:
+            out.extend(_fl(v))
+        return out
+    return []
+
+
+def _v3(value, defecto: float = 0.0) -> list[float]:
+    """Tres componentes. Un escalar se reparte a los tres.
+
+    No es un capricho: `rotationrandom` declara `min: -0.4` tanto como
+    `min: "0 0 3.141"`, y leer el escalar como (x, 0, 0) dejaria la rotacion
+    del sprite --- que es la componente z --- clavada a cero.
+    """
+    v = _fl(value)
+    if not v:
+        return [defecto, defecto, defecto]
+    if len(v) == 1:
+        return [v[0], v[0], v[0]]
+    return (v + [defecto, defecto, defecto])[:3]
+
+
+def _f1(value, defecto: float) -> float:
+    v = _fl(value)
+    return v[0] if v else defecto
+
+
+# ── vocabulario ─────────────────────────────────────────────────────────────
+#
+# Cada entrada devuelve la lista de floats EN EL ORDEN que espera
+# `src/weparticles.c`. Un nombre ausente de estas tablas se cuenta como no
+# soportado y se anota; nunca se emite a medias.
+
+def _init_vida(e):   return [_f1(e.get("min"), 1.0), _f1(e.get("max"), 1.0)]
+def _init_tam(e):    return [_f1(e.get("min"), 32.0), _f1(e.get("max"), 32.0)]
+def _init_alfa(e):   return [_f1(e.get("min"), 1.0), _f1(e.get("max"), 1.0)]
+
+
+def _init_color(e):
+    # Los colores de particula van de 0 a 255; el shader los quiere de 0 a 1.
+    # Sin `max` el color es fijo: 145 sistemas del corpus solo declaran `min`.
+    mn = _v3(e.get("min"), 255.0)
+    mx = _v3(e.get("max"), 255.0) if e.get("max") is not None else list(mn)
+    return [c / 255.0 for c in mn] + [c / 255.0 for c in mx]
+
+
+def _init_vec(e):
+    return _v3(e.get("min")) + _v3(e.get("max"))
+
+
+def _init_turbvel(e):
+    return [_f1(e.get("scale"), 0.01), _f1(e.get("timescale"), 1.0),
+            _f1(e.get("speedmin"), 0.0), _f1(e.get("speedmax"), 0.0),
+            _f1(e.get("phasemax"), 0.0)] + _v3(e.get("offset"))
+
+
+INICIALIZADORES = {
+    "lifetimerandom": _init_vida,
+    "sizerandom": _init_tam,
+    "alpharandom": _init_alfa,
+    "colorrandom": _init_color,
+    "velocityrandom": _init_vec,
+    "rotationrandom": _init_vec,
+    "angularvelocityrandom": _init_vec,
+    "turbulentvelocityrandom": _init_turbvel,
+}
+
+
+def _op_mov(e):
+    return _v3(e.get("gravity")) + [_f1(e.get("drag"), 0.0)]
+
+
+def _op_fade(e):
+    # `fadeouttime` es el instante en que EMPIEZA a apagarse; 1 = no se apaga.
+    return [_f1(e.get("fadeintime"), 0.0), _f1(e.get("fadeouttime"), 1.0)]
+
+
+def _op_rampa(e):
+    # Los tiempos son fracciones de la vida de la particula, no segundos.
+    return [_f1(e.get("starttime"), 0.0), _f1(e.get("endtime"), 1.0),
+            _f1(e.get("startvalue"), 1.0), _f1(e.get("endvalue"), 1.0)]
+
+
+def _op_color(e):
+    return [_f1(e.get("starttime"), 0.0), _f1(e.get("endtime"), 1.0)] \
+        + _v3(e.get("startvalue"), 1.0) + _v3(e.get("endvalue"), 1.0)
+
+
+def _osc(e, esc_min: float = 1.0):
+    fmin = _f1(e.get("frequencymin"), _f1(e.get("frequencymax"), 0.0))
+    fmax = _f1(e.get("frequencymax"), fmin)
+    return [fmin, fmax,
+            _f1(e.get("scalemin"), esc_min), _f1(e.get("scalemax"), 1.0),
+            _f1(e.get("phasemin"), 0.0), _f1(e.get("phasemax"), 0.0)]
+
+
+def _op_oscpos(e):
+    # Aqui `scalemin/max` son la AMPLITUD en pixeles, no un factor: el defecto
+    # neutro es 0, y la mascara decide sobre que ejes se mueve.
+    return [_f1(e.get("frequencymin"), 0.0), _f1(e.get("frequencymax"), 0.0),
+            _f1(e.get("scalemin"), 0.0), _f1(e.get("scalemax"), 0.0),
+            _f1(e.get("phasemin"), 0.0), _f1(e.get("phasemax"), 0.0)] \
+        + _v3(e.get("mask"), 1.0)
+
+
+def _op_angmov(e):
+    return _v3(e.get("force")) + [_f1(e.get("drag"), 0.0)]
+
+
+def _op_turb(e):
+    return [_f1(e.get("scale"), 0.01), _f1(e.get("timescale"), 1.0),
+            _f1(e.get("speedmin"), 0.0), _f1(e.get("speedmax"), 0.0),
+            _f1(e.get("phasemin"), 0.0), _f1(e.get("phasemax"), 0.0)] \
+        + _v3(e.get("mask"), 1.0)
+
+
+def _op_atrae(e):
+    return [_f1(e.get("controlpoint"), 0.0), _f1(e.get("scale"), 0.0),
+            _f1(e.get("threshold"), 0.0)] + _v3(e.get("origin"))
+
+
+def _op_vortice(e):
+    return [_f1(e.get("distanceinner"), 0.0), _f1(e.get("distanceouter"), 1.0),
+            _f1(e.get("speedinner"), 0.0), _f1(e.get("speedouter"), 0.0)] \
+        + _v3(e.get("axis"), 0.0)
+
+
+OPERADORES = {
+    "movement": _op_mov,
+    "alphafade": _op_fade,
+    "sizechange": _op_rampa,
+    "alphachange": _op_rampa,
+    "colorchange": _op_color,
+    "oscillatealpha": lambda e: _osc(e),
+    "oscillatesize": lambda e: _osc(e),
+    "oscillateposition": _op_oscpos,
+    "angularmovement": _op_angmov,
+    "turbulence": _op_turb,
+    "controlpointattract": _op_atrae,
+    "vortex": _op_vortice,
+}
+
+# Los que dibujan estela se aceptan pero se simulan como sprite; ver el
+# encabezado del modulo.
+RENDERERS = ("sprite", "spritetrail", "rope", "ropetrail")
+
+
+def _cursor(op: dict, cursor: set[int]) -> bool:
+    """El operador tira de un punto de control que mueve el CURSOR.
+
+    `flags & 1` en un punto de control lo ata al puntero, y de las 136
+    apariciones de `controlpointattract` del corpus, 106 apuntan justo a ese
+    punto: el preset de luciernagas y sus derivados, que en Wallpaper Engine
+    persiguen al raton.
+
+    Sin puntero, ese punto se queda en el origen del sistema y el operador deja
+    de ser una interaccion para convertirse en un sumidero: con `scale -500` y
+    `drag 2.5` la velocidad terminal hacia el centro son 200 px/s, diez veces la
+    turbulencia que deberia dispersarlas. La nube de 512 px de radio se
+    apelotona en una bola de 64 --- que es el `threshold` --- y el wallpaper
+    pierde justo el efecto por el que se puso.
+
+    Estando el puntero fuera del fondo, lo fiel es que no atraiga nada. Cuando
+    el motor en vivo sepa donde esta el puntero, este es el sitio por donde
+    entra.
+    """
+    if op.get("name") != "controlpointattract":
+        return False
+    return int(_f1(op.get("controlpoint"), 0.0)) in cursor
+
+
+@dataclass
+class Sistema:
+    maxcount: int = 32
+    starttime: float = 0.0
+    emisor: str = ""
+    emit: list[float] = field(default_factory=list)
+    cps: dict[int, list[float]] = field(default_factory=dict)
+    inits: list[tuple[str, list[float]]] = field(default_factory=list)
+    opers: list[tuple[str, list[float]]] = field(default_factory=list)
+    material: str = ""
+    renderer: str = "sprite"
+    # Recorrido de la hoja de sprites: 0 una pasada por vida, 1 un fotograma
+    # fijo al azar por particula. `anim_mult` repite la secuencia.
+    anim_modo: int = 0
+    anim_mult: float = 1.0
+    # Piezas del JSON que este modulo no sabe traducir. Se anotan para que el
+    # renderizador pueda decirlo, en vez de dibujar un sistema incompleto en
+    # silencio.
+    sin_soporte: list[str] = field(default_factory=list)
+    # Operadores que dependen del cursor y por eso quedan inactivos; ver
+    # `_cursor`.
+    sin_cursor: list[str] = field(default_factory=list)
+
+    @property
+    def dibujable(self) -> bool:
+        return bool(self.material and self.emisor)
+
+
+def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Sistema:
+    """Resuelve el JSON de un sistema de particulas.
+
+    `override` es el `instanceoverride` del objeto que lo usa. No es un detalle:
+    lo llevan 725 de los 823 objetos del corpus, porque los sistemas son
+    PRESETS compartidos y cada escena los ajusta desde el editor sin tocar el
+    preset. Los factores llegan hasta 200 en `count` y 50 en `lifetime`, asi que
+    ignorarlos no da un resultado parecido: da uno distinto.
+
+    Se aplican aqui, sobre los valores ya resueltos, y no en el simulador: el
+    fichero `.psys` describe el sistema tal y como esta escena lo quiere, y el
+    lado C no tiene que saber que existe un mecanismo de presets.
+    """
+    pj = res.read_json(ruta)
+    s = Sistema(maxcount=int(_f1(pj.get("maxcount"), 32.0)),
+                starttime=_f1(pj.get("starttime"), 0.0),
+                material=pj.get("material") or "")
+    ov = override if isinstance(override, dict) else {}
+
+    # `randomframe` congela cada particula en un fotograma de la hoja en vez de
+    # recorrerla: son 89 sistemas --- lluvia, escombros, petalos --- donde la
+    # variedad esta entre particulas, no dentro de cada una.
+    s.anim_modo = 1 if pj.get("animationmode") == "randomframe" else 0
+    s.anim_mult = max(1.0, _f1(pj.get("sequencemultiplier"), 1.0))
+
+    # Puntos de control movidos por el cursor. Ver `_cursor`.
+    cursor: set[int] = set()
+    for cp in pj.get("controlpoint") or []:
+        if isinstance(cp, dict):
+            i = int(_f1(cp.get("id"), 0.0))
+            s.cps[i] = _v3(cp.get("offset"))
+            if int(_f1(cp.get("flags"), 0.0)) & 1:
+                cursor.add(i)
+
+    # WE permite varios emisores; el corpus no usa ninguno con mas de uno, y
+    # tomar el primero es preferible a sumarlos mal.
+    for e in pj.get("emitter") or []:
+        if not isinstance(e, dict):
+            continue
+        nombre = e.get("name", "")
+        if nombre not in ("sphererandom", "boxrandom"):
+            s.sin_soporte.append(f"emitter:{nombre}")
+            continue
+        if s.emisor:
+            s.sin_soporte.append(f"emitter extra:{nombre}")
+            continue
+        s.emisor = nombre
+        # `distancemax` es un escalar en la esfera (el radio) y un vector en la
+        # caja (los tres semiejes). `_v3` reparte el escalar a los tres, que es
+        # justo lo que hace falta en los dos casos.
+        s.emit = ([_f1(e.get("rate"), 0.0)]
+                  + _v3(e.get("distancemin"), 0.0)
+                  + _v3(e.get("distancemax"), 0.0)
+                  + _v3(e.get("directions"), 1.0)
+                  + _v3(e.get("origin"), 0.0)
+                  + _v3(e.get("sign"), 0.0)
+                  + [_f1(e.get("instantaneous"), 0.0),
+                     _f1(e.get("duration"), 0.0)])
+
+    for e in pj.get("initializer") or []:
+        if not isinstance(e, dict):
+            continue
+        fn = INICIALIZADORES.get(e.get("name", ""))
+        if fn is None:
+            s.sin_soporte.append(f"initializer:{e.get('name')}")
+        else:
+            s.inits.append((e["name"], fn(e)))
+
+    for e in pj.get("operator") or []:
+        if not isinstance(e, dict):
+            continue
+        fn = OPERADORES.get(e.get("name", ""))
+        if fn is None:
+            s.sin_soporte.append(f"operator:{e.get('name')}")
+        elif _cursor(e, cursor):
+            s.sin_cursor.append(e["name"])
+        else:
+            s.opers.append((e["name"], fn(e)))
+
+    for e in pj.get("renderer") or []:
+        if isinstance(e, dict) and e.get("name") in RENDERERS:
+            s.renderer = e["name"]
+        elif isinstance(e, dict):
+            s.sin_soporte.append(f"renderer:{e.get('name')}")
+
+    _aplicar_override(s, ov)
+    _ritmo_implicito(s)
+    return s
+
+
+def _ritmo_implicito(s: Sistema) -> None:
+    """Sin `rate` declarado, el emisor mantiene el deposito lleno.
+
+    64 sistemas de 35 escenas no declaran ritmo de emision. Tomarlo como cero
+    --- que es lo que dice el JSON --- deja el sistema sin emitir NUNCA: la
+    escena carga, el pase dibuja y no sale nada, sin un solo error por medio.
+
+    La lectura razonable es que quien no fija ritmo esta controlando la densidad
+    con `maxcount`: para sostener N particulas de vida media V hacen falta N/V
+    nacimientos por segundo. Se calcula despues del `instanceoverride`, para que
+    un `count` de 1.5 suba tambien el ritmo y la densidad salga la pedida.
+    """
+    if not s.emisor or s.emit[0] > 0:
+        return
+    vida = dict(s.inits).get("lifetimerandom")
+    media = (vida[0] + vida[1]) / 2.0 if vida else 1.0
+    s.emit[0] = s.maxcount / max(media, 1e-3)
+
+
+def _aplicar_override(s: Sistema, ov: dict) -> None:
+    """Escala el preset con los factores que declara el objeto.
+
+    Todos son FACTORES, no valores absolutos: el rango del corpus
+    --- `size` de 0.01 a 18, `count` de 0.01 a 200 --- solo tiene sentido como
+    multiplicador sobre lo que trae el preset.
+    """
+    if not ov:
+        return
+
+    k = _f1(ov.get("count"), 1.0)
+    if k != 1.0:
+        s.maxcount = max(1, int(round(s.maxcount * k)))
+    k = _f1(ov.get("rate"), 1.0)
+    if k != 1.0 and s.emit:
+        s.emit[0] *= k
+
+    esc = {"lifetimerandom": _f1(ov.get("lifetime"), 1.0),
+           "sizerandom": _f1(ov.get("size"), 1.0),
+           "velocityrandom": _f1(ov.get("speed"), 1.0),
+           "alpharandom": _f1(ov.get("alpha"), 1.0)}
+    nuevos = []
+    for nombre, vals in s.inits:
+        f = esc.get(nombre, 1.0)
+        if f != 1.0:
+            vals = [v * f for v in vals]
+        nuevos.append((nombre, vals))
+    s.inits = nuevos
+
+    # El alfa y el color son del OBJETO aunque el preset no los declare: si no
+    # hay inicializador que escalar, se crea uno. En el corpus hay 345 objetos
+    # con `alpha` y algunos bajan a 0.01 --- son las capas de refraccion, cuyo
+    # albedo es blanco opaco a proposito y solo se ven por lo que deforman.
+    tiene = {n for n, _ in s.inits}
+    a = _f1(ov.get("alpha"), 1.0)
+    if a != 1.0 and "alpharandom" not in tiene:
+        s.inits.append(("alpharandom", [a, a]))
+
+    # `colorn` viene normalizado y `color` de 0 a 255; los dos tinen el color
+    # del preset, y `brightness` lo escala.
+    tinte = _v3(ov.get("colorn"), 1.0) if ov.get("colorn") is not None else None
+    if tinte is None and ov.get("color") is not None:
+        tinte = [c / 255.0 for c in _v3(ov.get("color"), 255.0)]
+    b = _f1(ov.get("brightness"), 1.0)
+    if tinte is not None or b != 1.0:
+        t = tinte or [1.0, 1.0, 1.0]
+        t = [c * b for c in t]
+        if "colorrandom" in tiene:
+            s.inits = [(n, [v * t[i % 3] for i, v in enumerate(vals)])
+                       if n == "colorrandom" else (n, vals)
+                       for n, vals in s.inits]
+        else:
+            s.inits.append(("colorrandom", t + t))
+        # `colorchange` FIJA el color, asi que el tinte tambien tiene que pasar
+        # por sus dos extremos o los 55 sistemas que lo usan lo perderian. Sus
+        # dos primeros floats son tiempos, no color.
+        s.opers = [(n, vals[:2] + [v * t[i % 3] for i, v in enumerate(vals[2:])])
+                   if n == "colorchange" else (n, vals)
+                   for n, vals in s.opers]
+
+    # `controlpointN` coloca un punto de control en coordenadas del sistema.
+    for clave, valor in ov.items():
+        m = re.fullmatch(r"controlpoint(\d+)", str(clave))
+        if m:
+            s.cps[int(m.group(1))] = _v3(valor)
+
+
+def escribir(s: Sistema, destino: Path, semilla: int) -> None:
+    """Vuelca el sistema al formato que lee `we_psys_load`.
+
+    `semilla` fija la aleatoriedad: la misma escena tiene que dar el mismo PNG
+    en dos ejecuciones o la regresion no vale para nada.
+    """
+    def num(v: float) -> str:
+        return f"{v:.6g}"
+
+    lineas = [f"# generado por tools/weparticles.py",
+              f"maxcount {s.maxcount}",
+              f"starttime {num(s.starttime)}",
+              f"seed {semilla & 0x7fffffff}",
+              f"anim {s.anim_modo} {num(s.anim_mult)}"]
+    if s.emisor:
+        lineas.append(f"emit {s.emisor} " + " ".join(num(v) for v in s.emit))
+    for i, off in sorted(s.cps.items()):
+        lineas.append(f"cp {i} " + " ".join(num(v) for v in off))
+    for nombre, vals in s.inits:
+        lineas.append(f"init {nombre} " + " ".join(num(v) for v in vals))
+    for nombre, vals in s.opers:
+        lineas.append(f"oper {nombre} " + " ".join(num(v) for v in vals))
+    destino.write_text("\n".join(lineas) + "\n")
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 1
+    res = AssetResolver.for_wallpaper(Path(sys.argv[1]), wepaths.we_assets())
+    data = res.read_json("scene.json")
+    n = 0
+    for o in data.get("objects", []):
+        if not o.get("particle"):
+            continue
+        n += 1
+        try:
+            s = cargar(res, o["particle"], o.get("instanceoverride"))
+        except SceneError as e:
+            print(f"  {o.get('name')!r}: {e}")
+            continue
+        print(f"  {o.get('name')!r:32} {s.emisor or '(sin emisor)':<14} "
+              f"max={s.maxcount:<5} t0={s.starttime:<5g} {s.renderer}")
+        print(f"      init: {', '.join(k for k, _ in s.inits) or '-'}")
+        print(f"      oper: {', '.join(k for k, _ in s.opers) or '-'}")
+        if s.sin_soporte:
+            print(f"      sin soporte: {', '.join(s.sin_soporte)}")
+    print(f"\nsistemas de particulas: {n}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

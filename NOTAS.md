@@ -219,11 +219,24 @@ tools/
   pkg_inspect.py             lector del contenedor scene.pkg
   wetex.py                   decodificador del formato .tex
   weshader.py                traductor del dialecto de shader a GLSL
+  weglsl.py                  inferencia de tipo y ancho sobre expresiones GLSL
+  wemdl.py                   decodificador de mallas .mdl
   wescene.py                 grafo de escena -> plan de render
+  weparticles.py             sistemas de partículas -> fichero .psys
+  werender.py                renderizador offline (escena -> PNG)
+  glexec.c                   ejecutor de planes headless (EGL surfaceless)
   glslcheck.c                compila shaders con el driver real (EGL surfaceless)
   test_wetex.py              regresión de wetex
+  test_wemdl.py              regresión del decodificador de mallas
+  test_weglsl.py             valida la inferencia contra el corpus que compila
   test_weshader.py           regresión del traductor (combos por defecto)
   test_wescene.py            regresión end-to-end (combos reales)
+  test_weparticles.py        contrato entre weparticles.py y weparticles.c
+src/
+  glexecutor.cpp/.h          ejecutor de planes en vivo (port de glexec.c)
+  weparticles.c/.h           simulador de partículas, COMPARTIDO por los dos
+  sceneview.cpp/.h           QQuickRhiItem que compone la escena
+  plugin.cpp, qmldir         registro del módulo QML
 ```
 
 ## Formatos de Wallpaper Engine
@@ -649,10 +662,124 @@ queda no son campos ignorados sino campos cuyo subsistema no existe todavía.
   0. Se ve sobre todo en Lucy, que recupera pelo y chaqueta, y en demon-hunter,
   donde los rectángulos negros pasan a seguir la silueta del personaje --- esa
   capa sigue saliendo negra, pero ya por otro motivo.
-- **Partículas**: 826 objetos en 106 escenas, sin sistema.
+- ~~Partículas~~ **hecho**: 823 sistemas en 106 escenas, de los que 821 se
+  simulan. Ver la sección siguiente.
 - **Texto**: 159 objetos en 28 escenas; leemos el campo, no dibujamos glifos.
 - **Shaders**: 31 variantes de 556 no compilan; 21 son conversiones implícitas
   de HLSL.
+
+## Sistemas de partículas
+
+Es el primer subsistema con **estado que avanza con el reloj**. El resto del
+motor resuelve el grafo una vez y el ejecutor solo dibuja; aquí hay que
+integrar velocidades fotograma a fotograma, y eso no puede vivir en Python
+porque el plan se genera una vez y se ejecuta miles de veces.
+
+El vocabulario resultó **cerrado y pequeño**, que es lo que hizo el trabajo
+abordable. Censo de las 125 escenas:
+
+| categoría | nombres distintos | cobertura |
+|---|---|---|
+| emisores | 2 (`sphererandom` 607, `boxrandom` 216) | los 2 |
+| inicializadores | 10 | los 8 mayores = 99% |
+| operadores | 13 | los 12 mayores |
+| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | dibujados como sprite |
+| shader | **1**: `genericparticle`, en los 823 | ya compilaba |
+
+29 piezas cubren el 100% de los 823 sistemas. Se simulan **821**; los 2
+restantes no declaran emisor o material.
+
+### El reparto
+
+`tools/weparticles.py` lee el JSON, resuelve nombres y valores por defecto y
+escribe un `.psys`: una lista plana de piezas con sus parámetros ya en números.
+`src/weparticles.c` simula; no conoce Wallpaper Engine, solo ejecuta las piezas
+que le llegan.
+
+**Ese .c se compila tal cual en los dos ejecutores** —`tools/glexec.c` y
+`src/glexecutor.cpp`—, que es la única forma de que la simulación no diverja
+entre el render offline y el escritorio. Es la lección de
+`divergencia-en-vivo-motion-blur` aplicada por construcción en vez de a
+posteriori.
+
+El fichero `.psys` no lleva nombres de campo, solo números en un orden
+convenido. `tools/test_weparticles.py` lee las tablas del propio `.c` y
+comprueba, sobre los 6476 parámetros del corpus, que los dos lados cuentan lo
+mismo. Sin eso una divergencia no falla: rellena con ceros y simula algo
+parecido pero equivocado.
+
+### Verificación
+
+Regresión de render sobre las 125 escenas, comparando contra el árbol anterior:
+**0 fallos, 0 cambios de tamaño**, 98 escenas cambian y 27 quedan idénticas. Lo
+que hay que mirar no es ese reparto sino este: **las 27 escenas sin partículas
+salen byte a byte iguales**. Los modos de mezcla nuevos son exclusivos de las
+partículas justamente para que eso se cumpla.
+
+De las escenas CON partículas, siete tampoco cambian, y las siete están
+explicadas: dos tienen sistemas intermitentes —un rayo de 0,2 s de vida a 2 por
+segundo— que en el instante muestreado no tenían ninguna partícula viva, y las
+otras cinco están tapadas por capas negras que ya salían negras antes.
+
+`tools/test_weparticles.py` valida además los 6476 parámetros del corpus contra
+las tablas del `.c`.
+
+### Lo que costó encontrar
+
+Cinco fallos, ninguno en la simulación:
+
+- **El alfa se elevaba al cubo.** Un sprite se mezcla con los demás dentro del
+  buffer del objeto, y ese buffer se compone después sobre la escena
+  multiplicando otra vez por su alfa. El borde de un halo, con alfa 7/255,
+  acababa en 2·10⁻⁵. Solo sobrevivía el núcleo opaco: las luciérnagas de 80 px
+  se dibujaban como puntos de 2 px, con la geometría perfecta. Se arregla con
+  dos modos de mezcla y dos de composición nuevos (`premul_*`), que **solo usan
+  las partículas**: así el corpus que ya funcionaba no se toca.
+- **`TEX0FORMAT`.** Las texturas `RG88`/`R8` guardan el gris en R y el **alfa en
+  G o en R**, y `ConvertTexture0Format` las desempaqueta si el motor le dice el
+  formato. Sin decírselo, los haces de luz salían como barras rojas macizas
+  cruzando la pantalla. Los `FORMAT_*` del shader coinciden número a número con
+  `wetex.TexFormat`.
+- **`instanceoverride`.** Lo llevan **725 de los 823 objetos**, porque los
+  sistemas son presets compartidos y cada escena los ajusta desde el editor. Son
+  factores, no valores: llegan a 200 en `count` y a 50 en `lifetime`.
+  Ignorarlos no da un resultado parecido, da otro.
+- **El sampler oculto de refracción.** 89 pases activan `REFRACT` y su albedo es
+  blanco opaco **a propósito**: toda la imagen sale de deformar lo que hay
+  detrás, leído de `_rt_FullFrameBuffer` por un sampler que el material no
+  declara y que solo aparece como `default` en los metadatos. Sin enlazarlo, la
+  lluvia de un wallpaper salía como cuadrados blancos macizos.
+- **El recorte en z.** La turbulencia sin máscara empuja también en z, y esa z
+  está en píxeles: valores de 10 o 20 salen del rango de recorte [-1,1] y GL
+  descarta el triángulo entero. Dos antorchas se simulaban perfectamente y no
+  dibujaban un solo píxel, sin un error de por medio. La matriz de partículas
+  aplana z a cero; la prueba de profundidad está desactivada en todo el motor,
+  así que no se pierde nada.
+
+### Decisiones que son lecturas, no hechos
+
+- **`colorrandom` usa un único factor** para las tres componentes, no uno por
+  componente. El preset de luciérnagas declara `min (246,207,135)` y
+  `max (0,0,0)`: por componente salen rojos y verdes puros —parecían luces de
+  navidad—, y con un factor único salen todas del mismo ámbar a distinto brillo.
+- **`controlpointattract` sobre un punto con `flags & 1` no actúa.** Ese bit ata
+  el punto al cursor, y 106 de los 136 usos apuntan justo ahí. Sin puntero el
+  punto se queda en el origen y el operador deja de ser una interacción para
+  ser un sumidero: la nube de 512 px de radio se apelotona en una bola de 64.
+  Cuando el motor en vivo sepa dónde está el puntero, entra por ahí.
+- **Las texturas de partícula se suben sin voltear.** En una capa normal el
+  volteo se cancela con el de las UV; en un sprite que muestrea un *rectángulo*
+  de una hoja no se cancela nada.
+
+### Lo que queda
+
+- Las estelas (`spritetrail`, `rope`, `ropetrail`: 211 sistemas) se dibujan como
+  sprites sueltos. La geometría de la estela pide el historial de posiciones de
+  cada partícula, que hoy no se guarda.
+- `mapsequencebetweencontrolpoints` y `mapsequencearoundcontrolpoint` (14
+  sistemas) reparten las partículas por una ruta de puntos de control: es otro
+  modelo de emisión, no un parámetro.
+- `remapvalue`, 2 sistemas.
 
 ## Uso
 
