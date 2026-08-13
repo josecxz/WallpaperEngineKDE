@@ -14,9 +14,9 @@ y las pasa a `glexec`, que solo ejecuta. Aqui vive lo que hay que decidir:
     los `_rt_*` son buffers intermedios con nombre.
 
 Uso:
-    cc -O2 -o /tmp/glexec tools/glexec.c -lEGL -lGL
+    make glexec        # deja el ejecutor en obj/glexec
     python3 tools/werender.py <dir_wallpaper> <salida.png> [--time 0.0]
-                              [--only-base] [--exec /tmp/glexec]
+                              [--only-base] [--exec obj/glexec]
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 from typing import NamedTuple
 
@@ -36,6 +37,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 import wemdl
+import weparticles
 import wepaths
 import wescene
 import weshader
@@ -45,7 +47,55 @@ from wescene import AssetResolver, SceneError, load_scene
 IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
 
 
-def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
+def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[float], list[float]]:
+    """`origin`, `scale` y `angles` compuestos con los del grupo que los contiene.
+
+    Una escena puede agrupar objetos: el hijo declara `parent` y su `origin` es
+    RELATIVO al del grupo.
+
+    Solo heredan la transformacion los GRUPOS: objetos sin nada que dibujar,
+    que existen unicamente para mover a sus hijos. Si el padre es una capa
+    dibujable, el hijo ya viene en coordenadas del lienzo. No es una suposicion
+    de estilo, es lo que separa dos escenas reales: en Cyberpunk
+    Edgerunners-Lucy los padres son grupos vacios y sin componer la Tierra se
+    iba a la esquina inferior; en Lonely Cat el padre es la imagen de fondo a
+    pantalla completa y heredar de ella llevaba tres capas de 1920x1080 al
+    centro, tapando la escena --- de 38.05 de media a 8.01.
+
+    Afecta a 476 objetos de 10 escenas, con hasta 5 niveles de anidamiento.
+    """
+    cadena = []
+    visto = set()
+    cur = obj
+    while cur is not None:
+        if id(cur) in visto:        # ciclo en los datos: se corta
+            break
+        visto.add(id(cur))
+        cadena.append(cur)
+        padre = cur.raw.get("parent")
+        cur = por_id.get(str(padre)) if (por_id and padre) else None
+        if cur is not None and any(cur.raw.get(k)
+                                   for k in ("image", "particle", "model", "text")):
+            cur = None              # el padre dibuja: no es un grupo
+
+    org, esc, ang = [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
+    # De la raiz hacia el objeto: cada nivel aplica su rotacion y escala al
+    # origin del siguiente, que viene expresado en el marco del padre.
+    for nodo in reversed(cadena):
+        o = (_floats(nodo.raw.get("origin")) + [0.0, 0.0, 0.0])[:3]
+        s = (_floats(nodo.raw.get("scale")) + [1.0, 1.0, 1.0])[:3]
+        a = (_floats(nodo.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
+        c, sn = math.cos(ang[2]), math.sin(ang[2])
+        lx, ly = o[0] * esc[0], o[1] * esc[1]
+        org = [org[0] + lx * c - ly * sn, org[1] + lx * sn + ly * c,
+               org[2] + o[2] * esc[2]]
+        esc = [esc[0] * s[0], esc[1] * s[1], esc[2] * s[2]]
+        ang = [ang[0] + a[0], ang[1] + a[1], ang[2] + a[2]]
+    return org, esc, ang
+
+
+def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
+               por_id: dict | None = None) -> list[float]:
     """Matriz que coloca la geometria del objeto en su sitio del lienzo.
 
     El quad que sube el ejecutor va de -1 a 1. El objeto declara su centro
@@ -62,10 +112,13 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
     asi que el array plano que se sube es la matriz escrita por filas.
     """
     w, h = canvas
-    origin = (_floats(obj.raw.get("origin")) + [w / 2, h / 2, 0])[:3]
-    scale = (_floats(obj.raw.get("scale")) + [1.0, 1.0, 1.0])[:3]
+    # Una capa `passthrough` (composelayer, fullscreenlayer, projectlayer)
+    # trabaja sobre el fotograma completo: su origin y su size describen el
+    # rectangulo que el autor ve en el editor, no donde se dibuja.
+    origin, scale, angles = transform_absoluto(obj, por_id)
+    if not _floats(obj.raw.get("origin")):
+        origin = [w / 2, h / 2, 0.0]      # sin origin declarado: al centro
     size = (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2]
-    angles = (_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
 
     # Semiextension y centro, normalizados a clip space (-1..1).
     if mesh:
@@ -75,8 +128,30 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
         sx = size[0] * scale[0] / w
         sy = size[1] * scale[1] / h
     crop = (_floats(obj.raw.get("_cropoffset")) + [0.0, 0.0])[:2] if APPLY_CROP else [0.0, 0.0]
-    tx = 2.0 * (origin[0] + crop[0]) / w - 1.0
-    ty = 2.0 * (origin[1] + crop[1]) / h - 1.0
+
+    # `alignment` dice a QUE punto del rectangulo se refiere `origin`. El valor
+    # por defecto es `center`, que es lo que asume el resto de este calculo;
+    # los demas desplazan el centro media capa en la direccion que toque.
+    #
+    # Solo se aplica si la capa declara `size`: sin el, `size` cae al lienzo
+    # entero y el desplazamiento seria de media pantalla. En el corpus son 51
+    # objetos de 448 --- los otros 397 dicen `center`, o sea nada.
+    ax, ay = origin[0] + crop[0], origin[1] + crop[1]
+    alin = obj.raw.get("alignment")
+    if isinstance(alin, str) and _floats(obj.raw.get("size")):
+        media_w, media_h = size[0] * scale[0] / 2.0, size[1] * scale[1] / 2.0
+        # El eje Y del lienzo crece hacia arriba, como en clip space.
+        if "left" in alin:
+            ax += media_w
+        elif "right" in alin:
+            ax -= media_w
+        if "bottom" in alin:
+            ay += media_h
+        elif "top" in alin:
+            ay -= media_h
+
+    tx = 2.0 * ax / w - 1.0
+    ty = 2.0 * ay / h - 1.0
 
     c = math.cos(angles[2])
     s = math.sin(angles[2])
@@ -86,6 +161,43 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False) -> list[float]:
              0.0,     0.0,    1.0, 0.0,
              0.0,     0.0,    0.0, 1.0]
 
+
+def particle_mvp(obj, canvas: tuple[int, int],
+                 por_id: dict | None = None) -> list[float]:
+    """Matriz de un sistema de particulas: pixeles del sistema -> clip space.
+
+    Aqui no hay rectangulo de capa que llenar. Las particulas nacen en
+    coordenadas del propio sistema --- el emisor las reparte alrededor del
+    (0,0,0) local --- y el objeto dice donde cae ese origen en el lienzo. Asi
+    que la matriz lleva directamente del espacio del sistema al lienzo entero,
+    y el objeto se compone despues con la identidad.
+
+    Es lo contrario que una capa de imagen, y por una razon concreta: el tamano
+    de cada sprite tambien va en pixeles del sistema, asi que `scale` tiene que
+    afectar por igual a donde caen las particulas y a lo grandes que son. Con
+    una sola matriz sale gratis.
+    """
+    w, h = canvas
+    origin, scale, angles = transform_absoluto(obj, por_id)
+    if not _floats(obj.raw.get("origin")):
+        origin = [w / 2, h / 2, 0.0]
+    c, s = math.cos(angles[2]), math.sin(angles[2])
+    sx, sy = scale[0], scale[1]
+    # La tercera fila va a CERO, no a la identidad. Una particula se mueve en
+    # las tres dimensiones aunque la escena sea plana --- la turbulencia sin
+    # mascara empuja tambien en z --- y su z local esta en pixeles: valores de
+    # 10 o 20 salen del rango de recorte [-1, 1] y GL descarta el triangulo
+    # entero. Dos antorchas de un wallpaper se simulaban perfectamente y no
+    # dibujaban un solo pixel, sin ningun error de por medio.
+    #
+    # Aplanarlas no pierde nada: la prueba de profundidad esta desactivada en
+    # todo el motor y el orden lo decide la secuencia de pases.
+    return [2.0 * sx * c / w, -2.0 * sy * s / w, 0.0, 2.0 * origin[0] / w - 1.0,
+            2.0 * sx * s / h,  2.0 * sy * c / h, 0.0, 2.0 * origin[1] / h - 1.0,
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0]
+
+
 def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
     """Tamano del rectangulo de la capa en pixeles, sin escala ni colocacion."""
     size = (_floats(obj.raw.get("size")) + [float(canvas[0]), float(canvas[1])])[:2]
@@ -94,7 +206,34 @@ def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
 
 APPLY_CROP = bool(int(os.environ.get("WE_APPLY_CROP", "0")))
 
-COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_\d+_[ab]$")
+COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_(\d+)_[ab]$")
+
+# Nombres con los que un shader pide lo que ya hay dibujado detras. No son
+# buffers propios: el ejecutor los resuelve al acumulado de la escena.
+BUFFERS_DEL_MOTOR = ("_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer")
+
+
+def _buffers_de_composicion(scene) -> dict[str, list[str]]:
+    """Por id de capa, los buffers `_rt_imageLayerComposite_*` que otra lee.
+
+    Se deduce recorriendo la escena, no de una lista escrita a mano: vale para
+    cualquier wallpaper que use el mecanismo. Las autorreferencias se excluyen
+    --- ahi el nombre significa el par ping-pong del propio objeto.
+    """
+    fuera: dict[str, list[str]] = {}
+    for o in scene.objects:
+        mio = str(o.raw.get("id"))
+        for e in (o.raw.get("effects") or []):
+            if not isinstance(e, dict):
+                continue
+            for ps in (e.get("passes") or []):
+                if not isinstance(ps, dict):
+                    continue
+                for t in (ps.get("textures") or []):
+                    m = COMPOSITE_RT_RE.match(t) if isinstance(t, str) else None
+                    if m and m.group(1) != mio and t not in fuera.get(m.group(1), ()):
+                        fuera.setdefault(m.group(1), []).append(t)
+    return fuera
 
 
 def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
@@ -115,6 +254,17 @@ def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
 
 def _floats(value) -> list[float]:
     """Los valores de WE pueden ser numero, bool o cadena '0.5 0.2 0.1'."""
+    if isinstance(value, dict):
+        # Un campo animado por script llega como objeto: `{"script": "...",
+        # "value": "206.97 312.49 0"}`. `value` es la copia que el autor tenia
+        # al guardar, igual que en `visible`. No hay motor de scripts, asi que
+        # esa copia es la mejor aproximacion; devolver [] era lo peor posible,
+        # porque `origin` caia al centro del lienzo y `scale` a 1.
+        #
+        # En Cyberpunk Edgerunners-Lucy eso mandaba al centro la atmosfera, el
+        # reloj y la capa de posicionamiento. En el corpus son 249 objetos de
+        # 21 escenas: 49 origin, 39 scale, 9 angles, 89 color y 63 alpha.
+        return _floats(value.get("value"))
     if isinstance(value, bool):
         return [1.0 if value else 0.0]
     if isinstance(value, (int, float)):
@@ -303,13 +453,18 @@ class Renderer:
         self.mesh_files: list[Path] = []
         self.notes: list[str] = []
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
-                      "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0}
+                      "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0,
+                      "psys": 0, "psys_parcial": 0, "psys_sin_estela": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
+        # Sistema de particulas por objeto, con la misma clave que las mallas.
+        self.psys: dict[int, int] = {}
+        self._hojas: dict[str, tuple[int, tuple | None]] = {}
+        self.por_id: dict[str, object] = {}
 
     # ── texturas ──────────────────────────────────────────────────────────
     def texture(self, name: str, mode: str = "",
-                margin: float = 1.0) -> tuple[int, int, int] | None:
+                margin: float = 1.0, flip: bool = True) -> tuple[int, int, int] | None:
         """Decodifica una textura a RGBA cruda y devuelve (id, ancho, alto).
 
         `mode` es el modo que declara el sampler en sus metadatos. Los mapas
@@ -320,7 +475,7 @@ class Renderer:
         sin ello el parpado de Jeanne -- un `shake` cuyo flujo tira del
         parpado -- arrastraba hacia arriba y el gesto salia al reves.
         """
-        clave = (name, mode == "flowmask", round(margin, 4))
+        clave = (name, mode == "flowmask", round(margin, 4), flip)
         if clave in self.tex_ids:
             i = self.tex_ids[clave]
             return i, self._tex_dims[i][0], self._tex_dims[i][1]
@@ -334,7 +489,15 @@ class Renderer:
 
         # glReadPixels y las UV de GL van de abajo a arriba; las texturas de WE
         # se guardan con el origen arriba. Se voltea al subir, una sola vez.
-        rgba = np.ascontiguousarray(rgba[::-1])
+        #
+        # Las de particula NO. En una capa normal el volteo se cancela con el de
+        # las UV, pero un sprite muestrea un RECTANGULO de la textura y ahi no
+        # se cancela nada: la fila 0 de la hoja acabaria abajo y los fotogramas
+        # se reproducirian en orden inverso, cada uno del reves. El quad de la
+        # particula lo construye `weparticles.c` con v=0 arriba, que es
+        # exactamente la orientacion de la textura sin voltear.
+        if flip:
+            rgba = np.ascontiguousarray(rgba[::-1])
         if mode == "flowmask":
             # G' espeja G alrededor del centro 0.498 (127 en 8 bits).
             rgba = rgba.copy()
@@ -367,6 +530,87 @@ class Renderer:
         self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}")
         return i, rgba.shape[1], rgba.shape[0]
 
+
+    # ── particulas ────────────────────────────────────────────────────────
+    def info_textura(self, name: str | None):
+        """`(formato, hoja)` de una textura de particula.
+
+        `formato` es el codigo de `wetex.TexFormat`, que coincide numero a
+        numero con los `FORMAT_*` de `shaders/common_fragment.h`. El shader lo
+        recibe en el combo TEX0FORMAT y con el desempaqueta la muestra:
+        RG88 y RG1616F guardan el gris en R y el ALFA en G, y sin decirselo el
+        shader lee un sprite rojo y completamente opaco. Es lo que convertia los
+        haces de luz de un wallpaper en barras rojas macizas cruzando la
+        pantalla, y la niebla en manchas grises sin bordes.
+
+        `hoja` es `(ancho_uv, alto_uv, n_fotogramas, proporcion)` si la textura
+        es una hoja de sprites, o None. Son 277 de los 823 sistemas del corpus
+        --- niebla, humo, fuego, petalos, casi todas de 64 fotogramas --- y sin
+        el combo SPRITESHEET la particula muestrea la hoja ENTERA: en vez de una
+        voluta de niebla sale la rejilla de 8x8. La rejilla es regular en todo
+        el corpus, que es justo lo que asume `ComputeSpriteFrame`: le basta el
+        tamano de un fotograma en UV.
+        """
+        if not name:
+            return (0, None)
+        if name in self._hojas:
+            return self._hojas[name]
+        info = (0, None)
+        try:
+            tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
+            hoja = None
+            if tex.frames:
+                f = tex.frames[0]
+                # Contra el tamano del MIPMAP, no contra `texture_size`: WE
+                # rellena la textura hasta potencia de dos y guarda el tamano
+                # relleno ahi, pero lo que subimos a GL es la imagen. Una hoja
+                # de 1280x256 declarada como 2048x256 daba fotogramas de 0.125
+                # de ancho en vez de 0.2, y las UV recorrian la hoja a otro
+                # paso que el suyo.
+                mip = tex.images[0][0]
+                tw, th = float(mip.width), float(mip.height)
+                anc, alt = float(f["width"]), float(f["height"])
+                if anc > 0 and alt > 0 and tw > 0 and th > 0:
+                    hoja = (anc / tw, alt / th, len(tex.frames), alt / anc)
+            info = (int(tex.format), hoja)
+        except Exception:
+            info = (0, None)
+        self._hojas[name] = info
+        return info
+
+    def _emit_psys(self, obj) -> None:
+        """Escribe el `.psys` del objeto y lo declara en la cabecera del plan."""
+        ruta = obj.raw.get("particle")
+        if not isinstance(ruta, str) or not ruta:
+            return
+        try:
+            sis = weparticles.cargar(self.res, ruta,
+                                     obj.raw.get("instanceoverride"))
+        except Exception as e:
+            self.notes.append(f"[{obj.name}] particulas: {e}")
+            return
+        if not sis.dibujable:
+            self.notes.append(f"[{obj.name}] particulas sin emisor o sin material")
+            return
+        if sis.sin_soporte:
+            self.stats["psys_parcial"] += 1
+            self.notes.append(f"[{obj.name}] piezas sin soporte: "
+                              + ", ".join(sis.sin_soporte))
+
+        i = len(self.psys)
+        destino = self.tmp / f"s{i:03d}.psys"
+        # La semilla se deriva del id del objeto --- con crc32 y no con hash(),
+        # que Python aleatoriza entre procesos: dos ejecuciones del mismo
+        # wallpaper tienen que dar el mismo PNG o la regresion no compara nada.
+        # Que dependa del id, y no del indice, evita ademas que dos sistemas de
+        # la misma escena caigan en la misma secuencia.
+        semilla = zlib.crc32(str(obj.raw.get("id")).encode()) or 1
+        weparticles.escribir(sis, destino, semilla)
+        self.lines.append(f"psys {i} {destino}")
+        self.psys[id(obj)] = i
+        self.stats["psys"] += 1
+        if sis.renderer != "sprite":
+            self.stats["psys_sin_estela"] += 1
 
     # ── un pase ───────────────────────────────────────────────────────────
     def _emit_mesh(self, obj) -> None:
@@ -549,6 +793,30 @@ class Renderer:
         if not os.environ.get("WE_LIGHTING"):
             combos.pop("LIGHTING", None)
             combos.pop("REFLECTION", None)
+
+        # Un sistema de particulas no dibuja el quad sino los sprites que
+        # simula `weparticles`, y eso lo selecciona el propio shader por combos.
+        # Los pone el motor, no el material: describen el formato del vertice
+        # que va a llegar, que es decision del ejecutor.
+        psys_id = self.psys.get(id(obj)) if obj is not None else None
+        particula = psys_id is not None and p.stage == "base"
+        hoja = None
+        if particula:
+            formato, hoja = self.info_textura(p.textures[0] if p.textures else None)
+            combos.update({
+                # Como viene empaquetada la muestra del slot 0; ver info_textura.
+                "TEX0FORMAT": formato,
+                # Sin geometry shader: el quad de cada particula viene ya
+                # armado desde CPU. Es la ruta que el propio shader contempla.
+                "GS_ENABLED": 0,
+                # Siempre se manda velocidad y vida en el vertice; declararlo
+                # cuesta 16 bytes por vertice y ahorra una variante de shader.
+                "THICKFORMAT": 1,
+                # Las estelas necesitan el historial de posiciones, que hoy no
+                # se guarda: se dibujan como sprites sueltos.
+                "TRAILRENDERER": 0,
+                "SPRITESHEET": 1 if hoja else 0,
+            })
         for uni_name, m in meta.items():
             combo = m.get("combo")
             if not combo or combo in combos:
@@ -582,7 +850,16 @@ class Renderer:
         # el alfa se hunde pase a pase hasta cero. La composicion entre efectos
         # la hace el propio shader (combo BLENDMODE / ApplyBlending); el
         # `blending` del material describe eso, no el estado de GL.
-        self.body.append(f"blend {p.blending if p.stage == 'base' else 'none'}")
+        if particula:
+            # Un sprite de particula se mezcla con los demas sprites DENTRO del
+            # buffer del objeto, y ese buffer se compone despues sobre la
+            # escena. Los modos `premul_*` son los unicos que dejan un alfa
+            # utilizable tras esa doble pasada; ver `set_blend` en glexec.c.
+            self.body.append("blend " + ("premul_additive"
+                                         if p.blending == "additive"
+                                         else "premul_alpha"))
+        else:
+            self.body.append(f"blend {p.blending if p.stage == 'base' else 'none'}")
 
         bind_by_index = {b["index"]: b["name"] for b in p.binds}
         for slot in range(8):
@@ -590,12 +867,19 @@ class Renderer:
             name = p.textures[slot] if slot < len(p.textures) else None
             src = None
             if name:
-                if COMPOSITE_RT_RE.match(name):
-                    # `_rt_imageLayerComposite_<id>_a|_b` no es un buffer
-                    # cualquiera: es el par ping-pong del propio objeto, que el
-                    # ejecutor ya mantiene. Crearlo como buffer nuevo lo deja
-                    # vacio y cualquier efecto que combine con el da negro.
+                m_comp = COMPOSITE_RT_RE.match(name)
+                if m_comp and obj is not None and m_comp.group(1) == str(obj.raw.get("id")):
+                    # `_rt_imageLayerComposite_<id propio>_a|_b` es el par
+                    # ping-pong del propio objeto, que el ejecutor ya mantiene.
+                    # Crearlo como buffer nuevo lo deja vacio y cualquier
+                    # efecto que combine con el da negro. Son 86 de las 122
+                    # referencias del corpus.
                     src = "prev"
+                elif m_comp:
+                    # Apunta a OTRA capa: es una composicion leyendo a sus
+                    # fuentes. Esa capa se dibuja aparte y deja aqui su
+                    # resultado. 36 referencias en 9 escenas.
+                    src = f"rt:{name}"
                 elif name.startswith("_rt_"):
                     src = f"rt:{name}"
                 else:
@@ -605,11 +889,37 @@ class Renderer:
                     # que el margen no altera.
                     mg = (self.margins.get(id(obj), 1.0)
                           if obj is not None and p.stage != "base" else 1.0)
-                    t = self.texture(name, modo, mg)
+                    t = self.texture(name, modo, mg, flip=not particula)
                     if t:
                         src = f"tex:{t[0]}"
                         self.body.append(
                             f"u4f g_Texture{slot}Resolution {t[1]} {t[2]} {t[1]} {t[2]}")
+                if src and src.startswith("rt:"):
+                    # Todo buffer con nombre necesita su resolucion. Para el
+                    # slot 0 no se nota --- el vertice usa la UV base --- pero
+                    # los slots 1 y 2 derivan `v_TexCoord.zw` de ella, y a cero
+                    # muestrean fuera del buffer: el efecto lee transparente y
+                    # se anula.
+                    rw, rh = rt_size(name, canvas)
+                    self.body.append(
+                        f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
+            elif particula and str(meta.get(uni, {}).get("default", "")) in BUFFERS_DEL_MOTOR:
+                # Sampler oculto que el material no declara y cuyo valor por
+                # defecto es el fotograma ya dibujado. Es como `genericparticle`
+                # lo recibe para refractarlo: 89 pases del corpus activan
+                # REFRACT, y su albedo es blanco opaco a proposito --- toda la
+                # imagen sale de deformar lo que hay detras. Sin enlazarlo, el
+                # shader multiplica por lo que haya en la unidad de textura y
+                # las gotas de lluvia salian como cuadrados blancos macizos.
+                #
+                # Solo estos dos nombres, que el ejecutor resuelve al buffer de
+                # escena sin crear nada. Otros defaults ocultos --- el atlas de
+                # sombras, por ejemplo --- pertenecen a subsistemas que no
+                # existen, y enlazarlos solo crearia buffers vacios.
+                b = str(meta[uni]["default"])
+                src = f"rt:{b}"
+                rw, rh = rt_size(b, canvas)
+                self.body.append(f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
             elif slot in bind_by_index or (slot == 0 and p.stage != "base"):
                 b = bind_by_index.get(slot, "previous")
                 src = "prev" if b == "previous" else f"rt:{b}"
@@ -635,6 +945,8 @@ class Renderer:
         mesh_id = self.meshes.get(id(obj)) if (obj is not None and p.stage == "base") else None
         if mesh_id is not None:
             self.body.append(f"mesh {mesh_id}")
+        if particula:
+            self.body.append(f"psys {psys_id}")
 
         # Los pases corren en el ESPACIO DE LA CAPA: el buffer del objeto
         # representa su rectangulo, no el lienzo. Un quad base lo llena con la
@@ -648,7 +960,9 @@ class Renderer:
         # estiraba sobre el lienzo: en Jeanne (capa 4200x2227, lienzo
         # 3840x2160) el parpadeo -- un `shake` cuya mascara son literalmente
         # los parpados -- caia cerca de los ojos pero descuadrado.
-        if obj is not None and p.stage == "base" and mesh_id is not None:
+        if particula:
+            mvp = particle_mvp(obj, canvas, por_id=self.por_id)
+        elif obj is not None and p.stage == "base" and mesh_id is not None:
             sw, sh = layer_size(obj, canvas)
             # El margen agranda el rectangulo que se mapea al buffer, para que
             # la malla deformada no se recorte contra el borde. La matriz de
@@ -661,9 +975,47 @@ class Renderer:
             mvp = IDENTITY
         self.body.append("umat4 g_ModelViewProjectionMatrix " +
                          " ".join(f"{x:.6g}" for x in mvp))
+        if particula:
+            # `ComputeParticleTangents` orienta el sprite con estos tres ejes.
+            # La escena es plana y mira al lienzo de frente, asi que son los
+            # canonicos; sin emitirlos GL los da a cero y el quad colapsa a un
+            # punto --- no se dibuja nada y no hay error que lo diga.
+            self.body.append("u3f g_OrientationRight 1 0 0")
+            self.body.append("u3f g_OrientationUp 0 1 0")
+            self.body.append("u3f g_OrientationForward 0 0 1")
+            self.body.append("u3f g_ViewRight 1 0 0")
+            self.body.append("u3f g_ViewUp 0 1 0")
+            self.body.append("u3f g_EyePosition 0 0 1")
+            self.body.append("umat4 g_ModelMatrix " + " ".join(f"{x:.6g}" for x in mvp))
+            self.body.append("umat4 g_ModelMatrixInverse " +
+                             " ".join(f"{x:.6g}" for x in IDENTITY))
+            if hoja:
+                # Lo que `ComputeSpriteFrame` necesita para recortar la hoja:
+                # tamano de un fotograma en UV, cuantos hay, y la proporcion de
+                # uno solo --- que es la que decide la forma del sprite, no la
+                # de la hoja entera.
+                self.body.append(f"u4f g_RenderVar1 {hoja[0]:.6g} {hoja[1]:.6g} "
+                                 f"{hoja[2]} {hoja[3]:.6g}")
+            else:
+                self.body.append("u4f g_RenderVar1 1 1 1 1")
+            self.body.append("u4f g_RenderVar0 1 1 1 1")
         self.body.append("u1f g_Time @TIME@")
         self.body.append(f"u3f g_Screen {canvas[0]} {canvas[1]} "
                          f"{canvas[0] / max(1, canvas[1])}")
+        # Tamano de un texel del buffer al que escribe ESTE pase. Es lo que
+        # usan los shaders de desenfoque para saber cuanto vale un paso:
+        #
+        #   ratio = g_TexelSize * g_Texture0Resolution.xy   -> (1, 1)
+        #   v_PixelSize = 2 * g_TexelSize * vec2(ratio.y / ratio.x, ...)
+        #
+        # Sin emitirlo, GL lo da a cero y ese cociente es 0/0. El resultado es
+        # NaN, y de ahi en adelante manda el driver: NVIDIA lo absorbia y Mesa
+        # -- el del escritorio -- lo propagaba, asi que 3146507587 se veia bien
+        # en el render offline y se desvanecia a negro en vivo. La misma escena,
+        # renderizada offline forzando Mesa, se desvanecia igual.
+        tw, th = rt_size(p.target, canvas) if p.target else canvas
+        self.body.append(f"u2f g_TexelSize {1.0 / max(1, tw):.9g} "
+                         f"{1.0 / max(1, th):.9g}")
         self.body.append("u4f g_Texture0Rotation 1 0 0 1")
         self.body.append("u2f g_Texture0Translation 0 0")
         # Alfa, brillo y color son del OBJETO, no del material: una capa puede
@@ -678,10 +1030,10 @@ class Renderer:
         # oscureceria la capa a cada efecto.
         if obj is not None and p.stage == "base":
             col = (_floats(obj.raw.get("color")) + [1.0, 1.0, 1.0])[:3]
-            alfa = obj.raw.get("alpha")
-            brillo = obj.raw.get("brightness")
-            alfa = float(alfa) if isinstance(alfa, (int, float)) else 1.0
-            brillo = float(brillo) if isinstance(brillo, (int, float)) else 1.0
+            # Por _floats, que ademas de numero y cadena entiende el objeto
+            # con `value` de los campos animados por script.
+            alfa = (_floats(obj.raw.get("alpha")) + [1.0])[0]
+            brillo = (_floats(obj.raw.get("brightness")) + [1.0])[0]
         else:
             col, alfa, brillo = [1.0, 1.0, 1.0], 1.0, 1.0
         self.body.append(f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} 1")
@@ -738,11 +1090,15 @@ class Renderer:
             self.stats["error"] = r.stderr[-2000:]
         return self.stats
 
-    def _build(self, max_passes: int | None) -> tuple[int, int]:
+    def _build(self, max_passes: int | None,
+               only_base: bool = False) -> tuple[int, int]:
         scene = load_scene(self.res)
         general = scene.general
         proj = general.get("orthogonalprojection")
-        canvas = ((int(proj["width"]), int(proj["height"]))
+        # El tamano puede venir como numero o como cadena, y hasta como campo
+        # animado por script; `_floats` entiende las tres formas.
+        canvas = ((int(_floats(proj.get("width", 1920))[0]),
+                   int(_floats(proj.get("height", 1080))[0]))
                   if isinstance(proj, dict) else (1920, 1080))
         self.canvas = canvas
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
@@ -752,16 +1108,39 @@ class Renderer:
         we = wepaths.we_assets()
         sresolver = weshader.Resolver(
             overlay=self.res.entries, roots=[we, we / "shaders"])
-        for obj in scene.objects:
-            if obj.kind != "image" or not obj.passes:
+        por_id = {str(o.raw.get("id")): o for o in scene.objects}
+        # Lo necesita `emit_pass` para colocar las particulas, que se resuelven
+        # pase a pase y no en este bucle.
+        self.por_id = por_id
+        self.buffers_de = _buffers_de_composicion(scene)
+        # Las capas que solo llenan un buffer se dibujan ANTES que nadie: asi
+        # el buffer esta listo cuando la composicion lo muestrea, sin depender
+        # de que el autor las haya puesto en orden dentro de la escena.
+        orden = ([o for o in scene.objects if getattr(o, "solo_buffer", False)]
+                 + [o for o in scene.objects if not getattr(o, "solo_buffer", False)])
+        for obj in orden:
+            if obj.kind not in ("image", "particle") or not obj.passes:
                 continue
+            if obj.kind == "particle":
+                self._emit_psys(obj)
+                # Sin sistema simulable no hay geometria: el pase se quedaria
+                # sin `psys` y dibujaria el quad a pantalla completa con la
+                # textura de la particula estirada por todo el lienzo.
+                if id(obj) not in self.psys:
+                    continue
             self._emit_mesh(obj)
             # Marca de inicio de objeto. El ejecutor la usa para componer el
             # objeto anterior sobre la escena en vez de pisarlo. `copybackground`
             # dice si este objeto arranca desde una copia de lo que hay detras
             # (lo que necesitan las capas de post-proceso) o desde vacio.
             copybg = 1 if obj.raw.get("copybackground") else 0
-            mvp_obj = object_mvp(obj, canvas)
+            if obj.kind == "particle":
+                # Las particulas ya se dibujan en coordenadas del lienzo: su
+                # matriz lleva del espacio del sistema al lienzo entero, asi que
+                # componer su buffer es una copia 1:1.
+                mvp_obj = list(IDENTITY)
+            else:
+                mvp_obj = object_mvp(obj, canvas, por_id=por_id)
             mg = self.margins.get(id(obj), 1.0)
             if mg != 1.0:
                 for i in (0, 1, 4, 5):     # la parte lineal 2x2
@@ -780,71 +1159,17 @@ class Renderer:
             # Los demas modos son mezclas tipo Photoshop (multiply, darken...)
             # sin equivalente en el hardware; se componen como siempre.
             aditivo = 1 if obj.raw.get("colorBlendMode") == 31 else 0
-            self.body.append(f"object {copybg} {place} {aditivo}")
-            for p in obj.passes:
-                if p.command == "copy":
-                    src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
-                        else p.source
-                    dst = "prev" if not p.target or COMPOSITE_RT_RE.match(p.target) \
-                        else p.target
-                    self.body.append(f"copy {src} {dst}")
-                    continue
-                if p.command:
-                    continue
-                if max_passes is not None and self.stats["pases"] >= max_passes:
-                    break
-                self.emit_pass(p, sresolver, canvas, obj)
-        self.stats["canvas"] = canvas
-        return canvas
-
-    def render(self, out_png: Path, only_base: bool = False,
-               max_passes: int | None = None, frames: int = 1) -> dict:
-        scene = load_scene(self.res)
-        general = scene.general
-        canvas = (int(_floats(general.get("orthogonalprojection", {}).get("width", 1920))[0]),
-                  int(_floats(general.get("orthogonalprojection", {}).get("height", 1080))[0])) \
-            if isinstance(general.get("orthogonalprojection"), dict) else (1920, 1080)
-
-        self.canvas = canvas
-        self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
-        # Instante al que deformar las mallas. Solo lo usa glexec, que no
-        # tiene reloj propio: el motor en vivo pasa su tiempo real.
-        self.lines.append(f"meshtime {self.time:.6f}")
-
-        we = wepaths.we_assets()
-        sresolver = weshader.Resolver(
-            overlay=self.res.entries,
-            roots=[we, we / "shaders"])
-
-        for obj in scene.objects:
-            if obj.kind != "image" or not obj.passes:
-                continue
-            self._emit_mesh(obj)
-            # Marca de inicio de objeto. El ejecutor la usa para componer el
-            # objeto anterior sobre la escena en vez de pisarlo. `copybackground`
-            # dice si este objeto arranca desde una copia de lo que hay detras
-            # (lo que necesitan las capas de post-proceso) o desde vacio.
-            copybg = 1 if obj.raw.get("copybackground") else 0
-            mvp_obj = object_mvp(obj, canvas)
-            mg = self.margins.get(id(obj), 1.0)
-            if mg != 1.0:
-                for i in (0, 1, 4, 5):     # la parte lineal 2x2
-                    mvp_obj[i] *= mg
-            place = " ".join(f"{x:.6g}" for x in mvp_obj)
-            # `colorBlendMode` del objeto: como se combina la capa con lo que
-            # hay detras. Va aqui y no en el pase base porque el pase base
-            # dibuja sobre el buffer VACIO del objeto -- la mezcla con la
-            # escena ocurre al componer, que es esto.
-            #
-            # El 31, 44 de los 91 usos del corpus, es `A + B*opacity`: aditivo
-            # puro, exactamente glBlendFunc(GL_SRC_ALPHA, GL_ONE). Sin el, la
-            # suciedad de lente de Asuka -- bokeh claro sobre negro -- tapaba
-            # la escena entera en vez de solo aportar sus brillos.
-            #
-            # Los demas modos son mezclas tipo Photoshop (multiply, darken...)
-            # sin equivalente en el hardware; se componen como siempre.
-            aditivo = 1 if obj.raw.get("colorBlendMode") == 31 else 0
-            self.body.append(f"object {copybg} {place} {aditivo}")
+            if obj.kind == "particle":
+                # El buffer de un sistema de particulas ya viene premultiplicado
+                # por el alfa de cada sprite; componerlo multiplicando otra vez
+                # apagaria justo los halos, que es donde vive casi todo el
+                # brillo de una particula.
+                aditivo = 3 if obj.passes[0].blending == "additive" else 2
+            # Una capa que solo llena su buffer de composicion no se compone
+            # sobre la escena: otra la muestreara por nombre.
+            solo = 1 if getattr(obj, "solo_buffer", False) else 0
+            self.body.append(f"object {copybg} {place} {aditivo} {solo}")
+            buffers = self.buffers_de.get(str(obj.raw.get("id")), ())
             for p in obj.passes:
                 if p.command == "copy":
                     src = "prev" if not p.source or COMPOSITE_RT_RE.match(p.source) \
@@ -860,6 +1185,19 @@ class Renderer:
                 if max_passes is not None and self.stats["pases"] >= max_passes:
                     break
                 self.emit_pass(p, sresolver, canvas, obj)
+            # Ya dibujado el objeto entero, su compuesto se vuelca a los
+            # buffers con nombre que otra capa va a muestrear.
+            for nombre in buffers:
+                self.body.append(f"copy prev {nombre}")
+        self.stats["canvas"] = canvas
+        return canvas
+
+    def render(self, out_png: Path, only_base: bool = False,
+               max_passes: int | None = None, frames: int = 1) -> dict:
+        # Mismo armado que `render_sequence`: un unico sitio decide como se
+        # recorre la escena. Tenerlo duplicado costo que las particulas
+        # funcionaran por un camino y no por el otro.
+        canvas = self._build(max_passes, only_base)
 
         raw = self.tmp / "out.rgba"
 
@@ -868,8 +1206,16 @@ class Renderer:
         # resultado sale oscurecido. Repetir el plan deja que converjan, que es
         # lo que pasa en ejecucion real. Los render targets se crean una vez y
         # persisten entre repeticiones, asi que basta con repetir los pases.
+        #
+        # Cada repeticion abre con `frame`, que cierra el objeto pendiente y
+        # limpia la escena igual que el motor en vivo. Sin eso la escena
+        # acumulaba una composicion por repeticion y salia mas brillante
+        # cuantas mas se pedian, que es lo contrario de lo que se quiere
+        # observar: escondio durante toda una sesion que 3146507587 se
+        # desvanece a negro.
         plan_lines = list(self.lines)
         for i in range(max(1, frames)):
+            plan_lines.append("frame")
             plan_lines.extend(l.replace("@TIME@", f"{self.time:.5f}")
                               for l in self.body)
         plan_lines.append(f"output {raw}")
@@ -908,7 +1254,7 @@ def emit_plan(wallpaper: Path, out_dir: Path) -> dict:
 
     remap: dict[str, str] = {}
     for src in sorted(r.tmp.iterdir()):
-        if src.suffix in (".rgba", ".vert", ".frag", ".bin"):
+        if src.suffix in (".rgba", ".vert", ".frag", ".bin", ".psys"):
             dst = out_dir / src.name
             dst.write_bytes(src.read_bytes())
             remap[str(src)] = str(dst)

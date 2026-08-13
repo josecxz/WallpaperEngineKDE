@@ -5,21 +5,29 @@
  * contexto EGL surfaceless con OpenGL 3.3 core -- el mismo dialecto al que
  * apunta el traductor.
  *
- *   cc -O2 -o glexec glexec.c -lEGL -lGL
+ *   make glexec        (o: cc -O2 -Isrc -o glexec tools/glexec.c
+ *                            src/weparticles.c -lEGL -lGL -lm)
  *   ./glexec plan.txt
  *
  * Formato del plan (una directiva por linea, sin anidamiento):
  *
  *   canvas <w> <h>
  *   tex <id> <ruta.rgba> <w> <h>       textura RGBA8 cruda ya decodificada
+ *   mesh <id> <ruta.bin> <nvert> <nidx> [<nhuesos> <nclaves> <duracion>]
+ *   psys <id> <ruta.psys>              sistema de particulas a simular
+ *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
  *   pass                               abre un pase
  *     prog <vert> <frag>
  *     target <nombre|SCREEN>           SCREEN = buffer acumulado del objeto
+ *     mesh <id>                        dibuja una malla en vez del quad
+ *     psys <id>                        dibuja un sistema de particulas
  *     sampler <uniform> tex:<id>|rt:<nombre>|prev
  *     u1f/u2f/u3f/u4f <uniform> <floats>
  *     umat4 <uniform> <16 floats>
- *     blend <normal|translucent|additive|none>
+ *     blend <normal|translucent|additive|none|premul_additive|premul_alpha>
  *   endpass
+ *   copy <origen> <destino>
+ *   frame                              cierra el fotograma y limpia la escena
  *   output <ruta.rgba>
  *
  * Los render targets se crean bajo demanda; la resolucion sale del nombre,
@@ -35,6 +43,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+
+#include "weparticles.h"
 
 #define MAX_TEX 64
 #define MAX_RT 64
@@ -67,8 +77,16 @@ static int object_open;
  * (su buffer representa el rectangulo de la capa) y esta matriz lo lleva al
  * lienzo una unica vez, al componer. Identidad para planes sin ella. */
 static float obj_mvp[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-/* colorBlendMode 31 del objeto: se compone sumando, no tapando. */
+/* Como se compone el objeto sobre la escena:
+ *   0  normal        el buffer trae alfa recta y se multiplica al componer
+ *   1  aditivo       colorBlendMode 31: suma en vez de tapar
+ *   2  premul sobre  el buffer ya viene premultiplicado (particulas)
+ *   3  premul suma   idem, y ademas se suma
+ * Los dos ultimos existen porque un buffer de particulas ya lleva el color
+ * multiplicado por su alfa: volver a multiplicarlo lo apagaria. */
 static int obj_aditivo;
+/* colorBlendMode aparte: la capa no se compone, solo deja su buffer. */
+static int obj_solo_buffer;
 
 static GLuint quad_vao, quad_vbo;
 
@@ -225,6 +243,74 @@ static void load_mesh(int id, const char *path, int nvert, int nidx,
     if (id >= n_meshes) n_meshes = id + 1;
 }
 
+/* Sistemas de particulas. La simulacion vive en src/weparticles.c, compartida
+ * con el motor en vivo; aqui solo esta lo que toca GL: un VBO dinamico por
+ * sistema que se reescribe cada fotograma con los vertices que devuelve. */
+/* Una escena del corpus declara 96 sistemas de particulas y otra 46. Con el
+ * limite en 32 los que sobraban se cargaban a medias --- sin aviso, porque
+ * `load_psys` simplemente volvia --- y sus pases dibujaban el vacio. */
+#define MAX_PSYS 128
+static struct {
+    WeParticleSystem *sys;
+    GLuint vao, vbo;
+    int capacidad;              /* vertices que caben en el VBO */
+} psys[MAX_PSYS];
+
+static void load_psys(int id, const char *path)
+{
+    if (id < 0 || id >= MAX_PSYS)
+        return;
+    int desconocidas = 0;
+    psys[id].sys = we_psys_load(path, &desconocidas);
+    if (!psys[id].sys) {
+        fprintf(stderr, "sistema de particulas no abre: %s\n", path);
+        return;
+    }
+    if (desconocidas)
+        fprintf(stderr, "%s: %d piezas sin soporte\n", path, desconocidas);
+
+    glGenVertexArrays(1, &psys[id].vao);
+    glBindVertexArray(psys[id].vao);
+    glGenBuffers(1, &psys[id].vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, psys[id].vbo);
+    /* Layout de genericparticle.vert sin geometry shader; ver weparticles.h. */
+    const GLsizei paso = WE_PSYS_FLOATS_POR_VERTICE * sizeof(float);
+    const struct { int loc, n, off; } attr[] = {
+        {0, 3, 0}, {2, 4, 3}, {3, 2, 7}, {4, 4, 9}, {5, 4, 13},
+    };
+    for (unsigned i = 0; i < sizeof attr / sizeof *attr; i++) {
+        glVertexAttribPointer(attr[i].loc, attr[i].n, GL_FLOAT, GL_FALSE, paso,
+                              (void *)(size_t)(attr[i].off * sizeof(float)));
+        glEnableVertexAttribArray(attr[i].loc);
+    }
+    glBindVertexArray(quad_vao);
+}
+
+/* Simula hasta `t`, sube los vertices y dibuja. Devuelve 0 si no hay nada. */
+static int draw_psys(int id, float t)
+{
+    if (id < 0 || id >= MAX_PSYS || !psys[id].sys)
+        return 0;
+    int nv = we_psys_update(psys[id].sys, t);
+    if (nv <= 0)
+        return 0;
+    glBindVertexArray(psys[id].vao);
+    glBindBuffer(GL_ARRAY_BUFFER, psys[id].vbo);
+    size_t bytes = (size_t)nv * WE_PSYS_FLOATS_POR_VERTICE * sizeof(float);
+    /* El numero de particulas vivas sube y baja; se reserva por el maximo visto
+     * y despues solo se reescribe, sin volver a pedir memoria a GL. */
+    if (nv > psys[id].capacidad) {
+        glBufferData(GL_ARRAY_BUFFER, bytes, we_psys_vertices(psys[id].sys),
+                     GL_DYNAMIC_DRAW);
+        psys[id].capacidad = nv;
+    } else {
+        glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, we_psys_vertices(psys[id].sys));
+    }
+    glDrawArrays(GL_TRIANGLES, 0, nv);
+    glBindVertexArray(quad_vao);
+    return 1;
+}
+
 /* Cache de programas: renderizar una secuencia repite el mismo plan una vez
  * por fotograma, y recompilar 24 programas por fotograma domina el tiempo
  * total. La clave es el par de rutas, que ya identifica la variante. */
@@ -332,9 +418,16 @@ static GLuint link_program(const char *vp, const char *fp)
     GLuint prog = glCreateProgram();
     glAttachShader(prog, v);
     glAttachShader(prog, f);
-    /* Localizaciones fijas: el ejecutor siempre manda el mismo quad. */
+    /* Localizaciones fijas: el ejecutor siempre manda el mismo quad. Las de
+     * particula conviven porque genericparticle.vert no declara `a_TexCoord`
+     * y ningun otro shader declara las de particula; enlazar un nombre que el
+     * shader no tiene no cuesta nada. */
     glBindAttribLocation(prog, 0, "a_Position");
     glBindAttribLocation(prog, 1, "a_TexCoord");
+    glBindAttribLocation(prog, 2, "a_TexCoordVec4");
+    glBindAttribLocation(prog, 3, "a_TexCoordC2");
+    glBindAttribLocation(prog, 4, "a_Color");
+    glBindAttribLocation(prog, 5, "a_TexCoordVec4C1");
     glLinkProgram(prog);
     GLint ok = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
@@ -383,11 +476,17 @@ static void flush_object(void)
     if (!object_open || !composite_prog)
         return;
     object_open = 0;
+    if (obj_solo_buffer)
+        return;          /* su resultado ya se copio a su buffer con nombre */
     glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
     glViewport(0, 0, scene_rt.w, scene_rt.h);
     glUseProgram(composite_prog);
     glEnable(GL_BLEND);
-    if (obj_aditivo)
+    if (obj_aditivo == 3)
+        glBlendFunc(GL_ONE, GL_ONE);
+    else if (obj_aditivo == 2)
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    else if (obj_aditivo)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     else
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
@@ -404,9 +503,51 @@ static void flush_object(void)
 /* Cada objeto arranca transparente y aporta solo lo suyo; la mezcla con lo de
  * detras ocurre una vez, al componerlo. Los efectos que necesitan el fondo lo
  * leen del buffer de escena por su nombre (_rt_FullFrameBuffer). */
+/* Espejo de WE_TRACE_FRAMES del motor en vivo: media RGBA de cada buffer al
+ * cerrar el fotograma. Solo asi se pueden comparar los dos ejecutores termino
+ * a termino en vez de por la media final, que es una sola cifra y esconde en
+ * cual de los buffers empieza a torcerse. */
+static int n_frames = 0;
+
+static void media_buffer(const char *nombre, Target *t)
+{
+    unsigned char *px = malloc((size_t)t->w * t->h * 4);
+    if (!px)
+        return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, t->fbo);
+    glReadPixels(0, 0, t->w, t->h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    double rgb = 0, a = 0;
+    long n = (long)t->w * t->h;
+    for (long i = 0; i < n; i++) {
+        rgb += px[4 * i] + px[4 * i + 1] + px[4 * i + 2];
+        a += px[4 * i + 3];
+    }
+    fprintf(stderr, "  %s=rgb=%.2f a=%.1f", nombre, rgb / (3.0 * n), a / n);
+    free(px);
+}
+
+static void traza_buffers(int frame)
+{
+    if (!getenv("WE_TRACE"))
+        return;
+    fprintf(stderr, "f=%d", frame);
+    media_buffer("compo", &compo[compo_cur]);
+    media_buffer("escena", &scene_rt);
+    for (int i = 0; i < n_rts; i++)
+        media_buffer(rts[i].name, &rts[i]);
+    fprintf(stderr, "\n");
+}
+
+static int n_objetos = 0;
+
 static void begin_object(void)
 {
     flush_object();
+    if (getenv("WE_TRACE")) {
+        fprintf(stderr, "   obj %d:", n_objetos++);
+        media_buffer("escena", &scene_rt);
+        fprintf(stderr, "\n");
+    }
     object_open = 1;
     glClearColor(0, 0, 0, 0);
     for (int i = 0; i < 2; i++) {
@@ -482,8 +623,27 @@ static void set_blend(const char *mode)
         return;
     }
     glEnable(GL_BLEND);
+    /* Los dos modos `premul_*` son los de particula. Se diferencian de los
+     * normales SOLO en el canal alfa: acumulan `srcA` en vez de `srcA*srcA`,
+     * que es lo que deja el buffer del objeto en premultiplicado de verdad.
+     *
+     * Con la mezcla corriente el alfa se eleva al cuadrado, y al componer el
+     * objeto sobre la escena se vuelve a multiplicar por el: tres veces en
+     * total. Un sprite de halo, cuyo borde vale alfa 7/255, salia a
+     * 0.027^3 = 2e-5 y desaparecia. Solo sobrevivia el nucleo opaco, asi que
+     * las luciernagas de 80 px se dibujaban como puntos de 2 px --- geometria
+     * correcta, brillo aniquilado.
+     *
+     * No se cambian `additive` ni `translucent` porque los usa todo el resto
+     * del motor; que las particulas estrenen sus propios modos deja el corpus
+     * intacto salvo donde hay particulas. */
     if (strcmp(mode, "additive") == 0)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    else if (strcmp(mode, "premul_additive") == 0)
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE, GL_ONE, GL_ONE);
+    else if (strcmp(mode, "premul_alpha") == 0)
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
+                            GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     else
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
@@ -523,9 +683,10 @@ int main(int argc, char **argv)
     }
 
     char line[4096];
-    int in_pass = 0, drawn = 0, skipped = 0, mesh_id = -1;
+    int in_pass = 0, drawn = 0, skipped = 0, mesh_id = -1, psys_id = -1;
     GLuint prog = 0;
     char target[128] = "SCREEN";
+    char frag_actual[512] = "";   // solo para WE_TRACE_PASES
     char blend[32] = "normal";
     struct { char uni[64]; char src[128]; } samplers[MAX_SAMPLERS];
     int n_samplers = 0;
@@ -554,15 +715,18 @@ int main(int argc, char **argv)
             /* El flush del objeto anterior usa SU matriz: primero componer,
              * despues adoptar la del que empieza. */
             float m[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-            int copybg = 0, adit = 0;
+            int copybg = 0, adit = 0, solo = 0;
             int n = sscanf(line,
-                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d",
+                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d",
                 &copybg, m+0,m+1,m+2,m+3, m+4,m+5,m+6,m+7,
-                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit);
+                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit, &solo);
             begin_object();
             if (n >= 17)
                 memcpy(obj_mvp, m, sizeof m);
             obj_aditivo = (n >= 18) ? adit : 0;
+            /* Capa que solo llena su buffer de composicion: se dibuja pero no
+             * se compone sobre la escena, que la muestreara otra por nombre. */
+            obj_solo_buffer = (n >= 19) ? solo : 0;
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
             char path[512];
@@ -570,8 +734,31 @@ int main(int argc, char **argv)
             if (id >= 0 && id < MAX_TEX) {
                 textures[id] = load_texture(path, w, h);
             }
+        } else if (strcmp(kw, "frame") == 0) {
+            /* Abre un fotograma: cierra el objeto que quedara pendiente del
+             * anterior y limpia la escena, exactamente lo que hace render()
+             * en el motor en vivo.
+             *
+             * Sin esto, repetir el cuerpo del plan NO reproduce la ejecucion
+             * real: los render targets persisten -- que es lo que hace falta
+             * para que converjan los efectos temporales -- pero la escena
+             * acumulaba una composicion por repeticion y salia cada vez mas
+             * brillante. Eso tapaba justo lo que se queria observar: en
+             * 3146507587 el motion blur se desvanece a negro en vivo y con 30
+             * repeticiones aqui salia mas claro que con una. */
+            flush_object();
+            traza_buffers(n_frames++);
+            glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
+            glViewport(0, 0, scene_rt.w, scene_rt.h);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
         } else if (strcmp(kw, "meshtime") == 0) {
             sscanf(line, "%*s %f", &mesh_time);
+        } else if (strcmp(kw, "psys") == 0 && !in_pass) {
+            int id;
+            char path[512];
+            if (sscanf(line, "%*s %d %511s", &id, path) == 2)
+                load_psys(id, path);
         } else if (strcmp(kw, "mesh") == 0 && !in_pass) {
             int id, nvert, nidx, nbones = 0, nkeys = 0;
             float dur = 0.0f;
@@ -618,6 +805,7 @@ int main(int argc, char **argv)
             prog = 0;
             n_samplers = n_unis = 0;
             mesh_id = -1;
+            psys_id = -1;
             snprintf(target, sizeof target, "SCREEN");
             snprintf(blend, sizeof blend, "normal");
         } else if (!in_pass) {
@@ -625,10 +813,13 @@ int main(int argc, char **argv)
         } else if (strcmp(kw, "mesh") == 0) {
             /* Dentro de un pase `mesh` lleva solo el id. */
             sscanf(line, "%*s %d", &mesh_id);
+        } else if (strcmp(kw, "psys") == 0) {
+            sscanf(line, "%*s %d", &psys_id);
         } else if (strcmp(kw, "prog") == 0) {
             char vp[512], fp[512];
             sscanf(line, "%*s %511s %511s", vp, fp);
             prog = cached_program(vp, fp);
+            snprintf(frag_actual, sizeof frag_actual, "%s", strrchr(fp, '/') ? strrchr(fp, '/') + 1 : fp);
         } else if (strcmp(kw, "target") == 0) {
             sscanf(line, "%*s %127s", target);
         } else if (strcmp(kw, "blend") == 0) {
@@ -707,7 +898,16 @@ int main(int argc, char **argv)
                 }
             }
 
-            if (mesh_id >= 0 && mesh_id < MAX_MESHES && meshes[mesh_id].index_count > 0) {
+            if (psys_id >= 0) {
+                /* El instante sale del propio pase: `g_Time` ya viene resuelto
+                 * en el plan y asi la simulacion no necesita un reloj aparte
+                 * que pudiera desincronizarse del que ven los shaders. */
+                float t = 0.0f;
+                for (int i = 0; i < n_unis; i++)
+                    if (strcmp(unis[i].uni, "g_Time") == 0)
+                        t = unis[i].v[0];
+                draw_psys(psys_id, t);
+            } else if (mesh_id >= 0 && mesh_id < MAX_MESHES && meshes[mesh_id].index_count > 0) {
                 glBindVertexArray(meshes[mesh_id].vao);
                 glDrawElements(GL_TRIANGLES, meshes[mesh_id].index_count,
                                GL_UNSIGNED_SHORT, (void *)0);
@@ -717,6 +917,15 @@ int main(int argc, char **argv)
                 glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             }
             drawn++;
+
+            /* Traza por pase: que escribe cada uno y con que resultado. La
+             * traza por fotograma dice que un buffer acaba mal, no cual de los
+             * pases que lo tocan lo dejo asi. */
+            if (getenv("WE_TRACE_PASES")) {
+                fprintf(stderr, "    pase %-14s -> %-22s", frag_actual, target);
+                media_buffer("", dst);
+                fprintf(stderr, "\n");
+            }
 
             if (to_screen)
                 compo_cur ^= 1;

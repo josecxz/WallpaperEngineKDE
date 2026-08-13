@@ -24,6 +24,7 @@ por eliminacion, lo que aporta el motor.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -32,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import wepaths
+import weglsl
 
 # Se apunta a GLSL de escritorio, no a GLSL ES, y no por comodidad: los
 # shaders de WY vienen de HLSL y dependen de conversiones implicitas int->float
@@ -84,9 +86,12 @@ PRELUDE_COMPAT = r"""
 #define CAST3X3(x) mat3(x)
 #define CAST4X4(x) mat4(x)
 
-#define texSample2D(s, uv) texture((s), (uv))
-#define texSample2DLod(s, uv, lod) textureLod((s), (uv), (lod))
-#define texSample2DBackBuffer(s, uv) texture((s), (uv))
+// El `.xy` no sobra: HLSL trunca solo, y los shaders pasan `v_TexCoord`, que
+// es vec4. `texture(sampler2D, vec4)` no existe y el pase entero se cae. Sobre
+// un vec2 el swizzle es legal y no cambia nada, asi que vale para los dos.
+#define texSample2D(s, uv) texture((s), (uv).xy)
+#define texSample2DLod(s, uv, lod) textureLod((s), (uv).xy, (lod))
+#define texSample2DBackBuffer(s, uv) texture((s), (uv).xy)
 #define texSample3D(s, uv) texture((s), (uv))
 #define texSampleCube(s, uv) texture((s), (uv))
 #define texLoad2D(s, uv) texelFetch((s), ivec2(uv), 0)
@@ -280,9 +285,383 @@ def hoist_uniforms(body: str) -> tuple[str, list[str]]:
     return "\n".join(kept), hoisted
 
 
+def equilibrar_condicionales(body: str) -> str:
+    """Quita los `#endif` sobrantes y cierra los `#if` que queden abiertos.
+
+    Tres shaders del corpus traen un `#endif` de mas -- descuido del autor, no
+    del traductor: la fuente ya viene con 7 `#if` y 8 `#endif`. WE los compila
+    igual, asi que su preprocesador lo tolera; el de GLSL no, y corta con
+    "#endif without #if" llevandose el shader entero.
+
+    Se corrige en la direccion de dibujar: sobra un `#endif`, se ignora; falta
+    uno, se anade al final. Sobre una fuente equilibrada no cambia nada.
+    """
+    fuera: list[str] = []
+    prof = 0
+    for linea in body.splitlines():
+        if COND_ABRE_RE.match(linea):
+            prof += 1
+        elif COND_FIN_RE.match(linea):
+            if prof == 0:
+                continue            # sin `#if` que cerrar: se descarta
+            prof -= 1
+        elif (COND_ELIF_RE.match(linea) or COND_ELSE_RE.match(linea)) and prof == 0:
+            continue                # `#else`/`#elif` huerfano, mismo criterio
+        fuera.append(linea)
+    fuera.extend(["#endif"] * prof)
+    return "\n".join(fuera)
+
+
+_TRUNC_DECL_RE = re.compile(
+    r"^([ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
+    r"(float|int|uint|bool|[iub]?vec[234])[ \t]+\w+[ \t]*=[ \t]*)(.+);[ \t]*$")
+_TRUNC_FUNC_RE = re.compile(r"^[ \t]*(\w+)[ \t]+(\w+)[ \t]*\(([^)]*)\)[ \t]*\{")
+_TRUNC_PARAM_RE = re.compile(r"(?:in|out|inout)?[ \t]*(\w+)[ \t]+(\w+)")
+_SWZ = "xyzw"
+
+
+def _porcentaje_a_mod(expr: str, tabla: dict, funcs: dict) -> str:
+    """`a % b` sobre flotantes pasa a `mod(a, b)`.
+
+    En HLSL `%` vale tambien para flotantes; en GLSL exige enteros y corta con
+    "LHS of operator % must be an integer". No se puede traducir a ciegas: `%`
+    entre enteros es GLSL valido y `mod` devolveria un flotante.
+
+    Se parte por el `%` de nivel superior --- fuera de parentesis --- y solo se
+    cambia si el tipo base de la izquierda se puede AFIRMAR que es flotante.
+    """
+    prof = 0
+    for i, c in enumerate(expr):
+        if c in "([":
+            prof += 1
+        elif c in ")]":
+            prof -= 1
+        elif c == "%" and prof == 0:
+            izq, der = expr[:i].strip(), expr[i + 1:].strip()
+            t = weglsl.tipo(izq, tabla, funcs)
+            if t and t[0] == "float":
+                der = _porcentaje_a_mod(der, tabla, funcs)
+                return f"mod({izq}, float({der}))"
+            break
+    return expr
+
+
+def truncar_asignaciones(body: str) -> str:
+    """Aplica la truncacion implicita de HLSL a los inicializadores.
+
+    HLSL deja escribir `float mask = texSample2D(...)` o
+    `vec3 albedo = <expr vec4>`: se queda con las primeras componentes. GLSL lo
+    rechaza y se lleva el shader entero.
+
+    El ancho lo da `weglsl`, que es un parser de verdad y devuelve None ante la
+    duda. Eso es lo que hace segura esta funcion: solo se toca la linea cuando
+    el ancho se puede AFIRMAR y es mayor que el declarado. Un intento anterior
+    infirio el ancho barriendo identificadores con una expresion regular y
+    rompio 124 variantes, porque un barrido plano cree que `dot(a, b)` es
+    ancho. La validacion que respalda esto: sobre las 540 variantes que
+    compilan --- ya verificadas por GLSL --- la inferencia acierta 6001
+    declaraciones, deja 2218 sin determinar y no falla ninguna.
+    """
+    glob = weglsl.tabla_global(body)
+    funcs = weglsl.tabla_de_funciones(body)
+    local: dict[str, int] = {}
+    fuera: list[str] = []
+    prof = 0
+    for linea in body.splitlines():
+        if prof == 0:
+            m = _TRUNC_FUNC_RE.match(linea)
+            if m:
+                local = {}
+                for pm in _TRUNC_PARAM_RE.finditer(m.group(3)):
+                    if pm.group(1) in weglsl.ANCHO_TIPO:
+                        local[pm.group(2)] = (weglsl.BASE_TIPO[pm.group(1)],
+                                              weglsl.ANCHO_TIPO[pm.group(1)])
+        m = _TRUNC_DECL_RE.match(linea) if prof > 0 else None
+        if m:
+            cabeza, tipo, expr = m.group(1), m.group(2), m.group(3)
+            destino = weglsl.ANCHO_TIPO[tipo]
+            base_destino = weglsl.BASE_TIPO[tipo]
+            visible = {**glob, **local}
+            expr = _porcentaje_a_mod(expr, visible, funcs)
+            got = weglsl.tipo(expr, visible, funcs)
+            if got is not None:
+                if got[1] > destino:
+                    expr = f"({expr}).{_SWZ[:destino]}"
+                # HLSL convierte solo de flotante a entero al asignar; GLSL no.
+                if got[0] == "float" and base_destino in ("int", "uint"):
+                    expr = f"{base_destino}({expr})"
+            linea = f"{cabeza}{expr};"
+            nombre = re.search(r"(\w+)[ \t]*=", cabeza)
+            if nombre:
+                local[nombre.group(1)] = (weglsl.BASE_TIPO[tipo], destino)
+        fuera.append(linea)
+        prof += linea.count("{") - linea.count("}")
+        prof = max(prof, 0)
+    return "\n".join(fuera)
+
+
+def const_no_constante(body: str) -> str:
+    """Quita `const` cuando el inicializador no lo es.
+
+    `const float FEATHER = u_Feather * 0.5;` es legal en HLSL, donde `const`
+    significa "no lo reasigno". En GLSL exige una expresion constante en tiempo
+    de compilacion y un uniform no lo es. Quitar el calificador conserva el
+    significado que el autor le daba.
+    """
+    tabla = set(re.findall(r"\buniform[ \t]+\w+[ \t]+(\w+)", body))
+    tabla |= set(re.findall(r"^[ \t]*(?:in|out|varying|attribute)[ \t]+\w+[ \t]+(\w+)",
+                            body, re.M))
+    if not tabla:
+        return body
+
+    def repl(m: re.Match) -> str:
+        if any(re.search(rf"\b{re.escape(n)}\b", m.group(2)) for n in tabla):
+            return m.group(1) + m.group(2) + ";"
+        return m.group(0)
+
+    return re.sub(r"^([ \t]*)const[ \t]+(\w+[ \t]+\w+[ \t]*=[ \t]*[^;]+);",
+                  lambda m: repl(m) if True else m.group(0), body, flags=re.M)
+
+
+_COMPARACION_RE = re.compile(r"(?:<=|>=|==|!=|<|>)")
+
+
+def bool_a_float(body: str) -> str:
+    """Envuelve en `float(...)` las comparaciones que se usan como numero.
+
+    HLSL convierte `bool` a float solo (true -> 1.0), asi que
+    `depth *= (depth < limite) * 6.0;` es legal alli. GLSL no lo permite y el
+    driver corta con "invalid operands to *".
+
+    Solo se toca un parentesis que ademas este pegado a un `*`: `if (a < b)` no
+    se toca, y tampoco `(a < b) && c`. Es deliberadamente estrecho -- se busca
+    el caso que aparece en el corpus, no reimplementar la conversion implicita
+    de HLSL.
+
+    Costo de no tenerlo: en 3146507587 los dos pases que calculan el desenfoque
+    de profundidad de campo no compilaban, su buffer `_full2` se quedaba sin
+    escribir, y el pase que lo consume acababa oscureciendo la escena entera.
+    """
+    fuera = []
+    i = 0
+    while i < len(body):
+        c = body[i]
+        if c != "(":
+            fuera.append(c)
+            i += 1
+            continue
+        # Buscar el cierre equilibrado.
+        prof, j = 1, i + 1
+        while j < len(body) and prof:
+            if body[j] == "(":
+                prof += 1
+            elif body[j] == ")":
+                prof -= 1
+            j += 1
+        if prof:                       # parentesis sin cerrar: no se toca
+            fuera.append(c)
+            i += 1
+            continue
+        interior = body[i + 1:j - 1]
+        # Comparacion en el nivel superior del grupo, no dentro de otro.
+        plano, prof = [], 0
+        for ch in interior:
+            if ch == "(":
+                prof += 1
+            elif ch == ")":
+                prof -= 1
+            elif prof == 0:
+                plano.append(ch)
+        antes = body[:i].rstrip()
+        despues = body[j:].lstrip()
+        pegado = antes.endswith("*") or despues.startswith("*")
+        # Se recurre siempre en el interior: un grupo que no se convierte
+        # puede contener otro que si, como en `f((a < b) * 2.0)`.
+        dentro = bool_a_float(interior)
+        if pegado and _COMPARACION_RE.search("".join(plano)):
+            fuera.append(f"float({dentro})")
+        else:
+            fuera.append(f"({dentro})")
+        i = j
+    return "".join(fuera)
+
+
 def _strip_comments(src: str) -> str:
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     return re.sub(r"//[^\n]*", "", src)
+
+
+# Nodos que puede contener la expresion de un #if una vez sustituidas las
+# macros. No se admite Name ni Call: si algo no se sustituyo, el arbol se
+# rechaza en vez de evaluarse a ciegas.
+_NODOS_COND = (
+    ast.Expression, ast.BoolOp, ast.UnaryOp, ast.BinOp, ast.Compare,
+    ast.Constant, ast.And, ast.Or, ast.Not, ast.USub, ast.UAdd,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.BitAnd, ast.BitOr, ast.BitXor, ast.Invert, ast.LShift, ast.RShift,
+)
+
+PRELUDE_DEFINE_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)")
+# Palabras que pueden abrir una linea seguidas de un identificador y un `(`
+# sin que eso sea la definicion de una funcion: `return mod2(x, y);`.
+_NO_ES_TIPO = {"return", "if", "while", "for", "else", "do", "switch", "case"}
+
+
+def prelude_sin_colisiones(prelude: str, body: str) -> str:
+    """El prelude de compatibilidad, menos lo que el shader ya define.
+
+    Los `#define` de PRELUDE_COMPAT reconstruyen lo que WE inyecta, pero son
+    macros con nombres corrientes y un shader puede declarar el suyo propio.
+    Cuando eso pasa, el macro expande tambien la DECLARACION y la destroza:
+    `float mod2(float x, float y)` se convierte en `float mod((float x), ...)`,
+    que no es GLSL. Se cae el shader entero, y con el la capa.
+
+    Ceder ante la definicion del shader es lo correcto ademas de lo seguro: si
+    el autor se molesto en escribir la funcion, es la que WE compila.
+    """
+    fuera: list[str] = []
+    for linea in prelude.splitlines():
+        m = PRELUDE_DEFINE_RE.match(linea)
+        if m and _define_propia(body, m.group(1)):
+            fuera.append(f"// (omitido: el shader define {m.group(1)})")
+            continue
+        fuera.append(linea)
+    return "\n".join(fuera)
+
+
+def _define_propia(body: str, nombre: str) -> bool:
+    """¿El shader declara ya ese nombre, como macro o como funcion?"""
+    if re.search(rf"^[ \t]*#[ \t]*define[ \t]+{nombre}\b", body, re.M):
+        return True
+    for m in re.finditer(rf"^[ \t]*(\w+)[ \t]+{nombre}[ \t]*\(", body, re.M):
+        if m.group(1) not in _NO_ES_TIPO:
+            return True
+    return False
+
+
+REQUIRE_DIR_RE = re.compile(r"^[ \t]*#[ \t]*require\b[^\n]*$", re.M)
+COND_ABRE_RE = re.compile(r"^[ \t]*#[ \t]*(ifdef|ifndef|if)\b([^\n]*)$")
+COND_ELIF_RE = re.compile(r"^[ \t]*#[ \t]*elif\b([^\n]*)$")
+COND_ELSE_RE = re.compile(r"^[ \t]*#[ \t]*else\b")
+COND_FIN_RE = re.compile(r"^[ \t]*#[ \t]*endif\b")
+
+
+def eval_conditional(expr: str, definidas: set[str],
+                     values: dict[str, object]) -> bool | None:
+    """Evalua la expresion de un `#if`. None = no se ha podido decidir.
+
+    Reproduce la semantica del GLSL de escritorio, que es la que usa WE: una
+    macro sin definir vale 0 dentro de un `#if`. Ante cualquier forma que no
+    se entienda devuelve None, y quien llama debe dar la rama por viva: es el
+    lado seguro, porque conserva el comportamiento anterior en vez de asumir
+    que el codigo dudoso no se compila.
+    """
+    expr = _strip_comments(expr).strip()
+    if not expr:
+        return None
+
+    expr = re.sub(r"\bdefined\s*\(\s*(\w+)\s*\)",
+                  lambda m: "1" if m.group(1) in definidas else "0", expr)
+    expr = re.sub(r"\bdefined\s+(\w+)",
+                  lambda m: "1" if m.group(1) in definidas else "0", expr)
+
+    fallo = False
+
+    def macro(m: re.Match) -> str:
+        nonlocal fallo
+        v = values.get(m.group(0))
+        if v is None:
+            return "0"                     # sin definir vale 0
+        if isinstance(v, bool):
+            return str(int(v))
+        if isinstance(v, (int, float)):
+            return repr(v)
+        fallo = True                       # una macro con valor no numerico
+        return "0"
+
+    expr = re.sub(r"\b[A-Za-z_]\w*\b", macro, expr)
+    if fallo:
+        return None
+
+    # C -> Python. El `!` se traduce solo cuando no forma parte de `!=`.
+    expr = expr.replace("&&", " and ").replace("||", " or ")
+    expr = re.sub(r"!(?!=)", " not ", expr)
+    try:
+        # En modo eval un espacio al principio es IndentationError, y el `!`
+        # traducido deja uno cuando la expresion empieza por negacion.
+        arbol = ast.parse(expr.strip(), mode="eval")
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, _NODOS_COND):
+                return None
+        return bool(eval(compile(arbol, "<combo>", "eval"),
+                         {"__builtins__": {}}, {}))
+    except Exception:
+        return None
+
+
+def strip_dead_branches(body: str, values: dict[str, object]) -> str:
+    """Devuelve el cuerpo sin las ramas que el preprocesador va a descartar.
+
+    Este traductor NO resuelve los `#if`: los deja en el GLSL y los evalua el
+    driver con los `#define` que emitimos delante. Eso esta bien para generar
+    codigo, pero no para decidir si un shader usa algo que no sabemos
+    traducir, porque entonces se mira tambien lo que nunca se va a compilar.
+
+    Coste real de no hacerlo: las llamadas a `PerformLighting_V1` viven dentro
+    de `#if LIGHTING`, un combo que el motor ya desactiva por no tener sistema
+    de luces. Se abortaba el shader entero por una rama condenada, y con el se
+    caia la capa base y todo lo que colgaba de ella: 16 wallpapers del corpus
+    -- uno de cada ocho -- renderizaban completamente negros.
+    """
+    definidas = set(values) | set(DEFINE_RE.findall(body))
+    vivas: list[str] = []
+    pila: list[dict] = []
+
+    for linea in body.splitlines():
+        viva = pila[-1]["viva"] if pila else True
+
+        m = COND_ABRE_RE.match(linea)
+        if m:
+            tipo, resto = m.group(1), m.group(2)
+            if tipo == "if":
+                cond = eval_conditional(resto, definidas, values)
+            else:
+                nombre = resto.strip().split()[0] if resto.strip() else ""
+                cond = (nombre in definidas) if nombre else None
+                if cond is not None and tipo == "ifndef":
+                    cond = not cond
+            dudosa = cond is None
+            pila.append({"padre": viva, "dudosa": dudosa,
+                         "tomada": cond is True,
+                         "viva": viva and (True if dudosa else cond)})
+            continue
+
+        m = COND_ELIF_RE.match(linea)
+        if m and pila:
+            f = pila[-1]
+            cond = eval_conditional(m.group(1), definidas, values)
+            if cond is None:
+                f["dudosa"] = True
+            f["viva"] = f["padre"] and (
+                True if f["dudosa"] else (not f["tomada"] and bool(cond)))
+            f["tomada"] = f["tomada"] or cond is True
+            continue
+
+        if COND_ELSE_RE.match(linea) and pila:
+            f = pila[-1]
+            f["viva"] = f["padre"] and (True if f["dudosa"] else not f["tomada"])
+            f["tomada"] = True
+            continue
+
+        if COND_FIN_RE.match(linea) and pila:
+            pila.pop()
+            continue
+
+        if viva:
+            vivas.append(linea)
+
+    return "\n".join(vivas)
 
 
 def translate(src: str,
@@ -310,9 +689,17 @@ def translate(src: str,
 
     body = _strip_comments(expanded)
 
-    for name, why in UNSUPPORTED.items():
-        if re.search(rf"\b{name}\b", body):
-            raise ShaderError(f"usa {name}: {why}")
+    # `#require X` declara una dependencia de un modulo del motor; no es GLSL y
+    # el driver la rechaza como directiva desconocida. Se emite siempre a nivel
+    # superior, aunque lo que la necesita este dentro de un `#if`, asi que no
+    # sirve para decidir nada: quien decide es el escaneo de UNSUPPORTED sobre
+    # las ramas vivas. En el corpus solo aparece `#require LightingV1`, en los
+    # 8 shaders con iluminacion.
+    body = REQUIRE_DIR_RE.sub("", body)
+    body = equilibrar_condicionales(body)
+    body = bool_a_float(body)
+    body = const_no_constante(body)
+    body = truncar_asignaciones(body)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
     # segun la etapa.
@@ -351,6 +738,14 @@ def translate(src: str,
         values = {k: v for k, v in values.items()
                   if v not in (0, False) or k not in ifdef_only}
 
+    # Lo que no sabemos traducir solo importa si se va a compilar. La revision
+    # va aqui, y no antes, porque necesita `values` ya cerrado: es el juego de
+    # #define que vera el driver y, por tanto, lo que decide que ramas viven.
+    vivo = strip_dead_branches(body, values)
+    for name, why in UNSUPPORTED.items():
+        if re.search(rf"\b{name}\b", vivo):
+            raise ShaderError(f"usa {name}: {why}")
+
     # WE declara los samplers g_TextureN segun los slots enlazados en el pase,
     # asi que hay shaders que los usan sin declararlos. Se declaran los que
     # falten, junto con los uniforms de tamano que WE genera en paralelo.
@@ -375,7 +770,7 @@ def translate(src: str,
     parts = [TARGETS[target]]
     if target == "es320":
         parts.append(PRELUDE_PRECISION)
-    parts.append(PRELUDE_COMPAT)
+    parts.append(prelude_sin_colisiones(PRELUDE_COMPAT, body))
     if values:
         parts.append("\n// ── combos ──")
         for k in sorted(values):

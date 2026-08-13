@@ -80,6 +80,11 @@ uniforms ya resueltos y las mallas ya deformadas.
 **C++ ejecuta.** `src/` carga ese plan una vez y lo repite cada fotograma. No
 parsea nada, no reserva memoria, no busca por nombre. Solo enlaza y dibuja.
 
+La única excepción son las partículas, que llevan estado propio y hay que
+integrarlas en cada fotograma. Ahí el reparto se mantiene igual —Python resuelve
+el sistema a números en un fichero `.psys`— y la simulación vive en un `.c`
+**compartido por los dos ejecutores**, para que no puedan divergir.
+
 La ventaja práctica es que casi todo se puede depurar sin tocar el escritorio:
 `tools/werender.py` ejecuta el mismo plan headless y vuelca un PNG.
 
@@ -88,11 +93,14 @@ scene.pkg ─┬─ pkg_inspect ─ contenedor
            ├─ wetex ─────── texturas
            ├─ weshader ──── shaders → GLSL
            ├─ wemdl ─────── mallas y huesos
+           ├─ weparticles ─ sistemas de partículas
            └─ wescene ───── grafo de la escena
                               ↓
                          plan de render
                               ↓
                    glexec (offline)  /  glexecutor (en vivo)
+                              └── src/weparticles.c ──┘
+                                  (el mismo simulador en los dos)
 ```
 
 ## Estructura
@@ -111,11 +119,14 @@ Funciona sobre escenas reales de la biblioteca, incluidas algunas complejas
 
 Limitaciones conocidas:
 
-- Un ~8% de las variantes de shader del corpus no se traducen; los pases
-  afectados se omiten y la escena se dibuja sin ellos.
-- Tres versiones del formato de malla (`MDLV0017`, `0019`, `0023`) no están
-  decodificadas; esas capas se dibujan sin deformar.
-- Sin partículas ni audio reactivo.
+- Un ~6% de los pases del corpus no llega a compilar en el driver y se omite.
+  Normalmente cuesta una capa, pero si la que cae es la capa base se lleva
+  todo lo que colgaba de ella: 4 escenas de 125 acaban en negro.
+- Sin sistema de iluminación: los materiales con luces se dibujan planos.
+- Las partículas se simulan (821 de los 823 sistemas del corpus), pero las que
+  dejan estela se dibujan como sprites sueltos: salen las partículas, sin el
+  rastro. Los operadores que siguen al cursor quedan inactivos.
+- Sin audio reactivo.
 
 ## Aviso
 

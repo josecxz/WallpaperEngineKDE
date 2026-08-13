@@ -9,14 +9,17 @@ Motor de animaciones para el escritorio, KDE Plasma 6 / Wayland.
 
 ## Estado
 
-**El motor corre en vivo dentro de plasmashell.** Una escena real de
-Wallpaper Engine (*LoL Warwick*) se ejecuta con OpenGL, 24 pases por
-fotograma, sobre una textura que Qt compone en su scene graph. Verificado en
-Plasma 6.7.3 / Wayland a 166 fps, detrás de los iconos del escritorio.
+**El motor corre en vivo dentro de plasmashell**, partículas incluidas. Una
+escena real de Wallpaper Engine se ejecuta con OpenGL sobre una textura que Qt
+compone en su scene graph, detrás de los iconos del escritorio. Verificado en
+Plasma 6.7.3 / Wayland: primero *LoL Warwick* con 24 pases a 166 fps, y ahora
+*Sentinel Irelia* con 102 pases y 4 sistemas de partículas.
 
 ```
-SceneView: backend OpenGL, plan con 24 pases, lienzo 1920x1080
-SceneView: destino=3 tam=1920x1200 glError=0x0
+SceneView: backend OpenGL, plan con 102 pases, lienzo 2560x1440, init 119 ms,
+uniforms 311 activos / 1376 descartados, mallas 12 subidas / 12 pases las
+piden / 12 animadas, particulas 4 sistemas / 0 piezas sin soporte
+SceneView: destino=17 tam=1920x1200 glError=0x0 compo_medio=85.7 targets=13
 ```
 
 ### El motor en C++ — `src/`
@@ -219,11 +222,24 @@ tools/
   pkg_inspect.py             lector del contenedor scene.pkg
   wetex.py                   decodificador del formato .tex
   weshader.py                traductor del dialecto de shader a GLSL
+  weglsl.py                  inferencia de tipo y ancho sobre expresiones GLSL
+  wemdl.py                   decodificador de mallas .mdl
   wescene.py                 grafo de escena -> plan de render
+  weparticles.py             sistemas de partículas -> fichero .psys
+  werender.py                renderizador offline (escena -> PNG)
+  glexec.c                   ejecutor de planes headless (EGL surfaceless)
   glslcheck.c                compila shaders con el driver real (EGL surfaceless)
   test_wetex.py              regresión de wetex
+  test_wemdl.py              regresión del decodificador de mallas
+  test_weglsl.py             valida la inferencia contra el corpus que compila
   test_weshader.py           regresión del traductor (combos por defecto)
   test_wescene.py            regresión end-to-end (combos reales)
+  test_weparticles.py        contrato entre weparticles.py y weparticles.c
+src/
+  glexecutor.cpp/.h          ejecutor de planes en vivo (port de glexec.c)
+  weparticles.c/.h           simulador de partículas, COMPARTIDO por los dos
+  sceneview.cpp/.h           QQuickRhiItem que compone la escena
+  plugin.cpp, qmldir         registro del módulo QML
 ```
 
 ## Formatos de Wallpaper Engine
@@ -562,6 +578,240 @@ Afecta a 8 pases de material en todo el corpus.
 De paso, `alpha`, `brightness` y `color` del objeto estaban fijos a neutro en
 los uniforms; en el corpus hay 67, 68 y 133 objetos respectivamente que los
 declaran distintos.
+
+### El escaneo de no-soportados corría demasiado pronto
+
+Una regresión sobre las 125 escenas dejó ver la consecuencia mayor de no tener
+iluminación: **17 escenas renderizaban completamente negras**, y 16 de ellas
+por una única causa. Los 108 pases que perdían fallaban todos con
+`PerformLighting_V1: funcion de iluminacion no presente en los assets`.
+
+El traductor **no resuelve los `#if`**: los emite y los evalúa el driver con
+los `#define` que van delante. Está bien para generar código, pero el escaneo
+de `UNSUPPORTED` miraba el texto entero, incluidas las ramas que nunca se iban
+a compilar. Y las llamadas a `PerformLighting_V1` viven dentro de
+`#if LIGHTING`, el combo que el motor **ya desactiva**. Se abortaba el shader
+por una rama condenada; con él se caía la capa base y todo lo que colgaba.
+
+El arreglo es evaluar las condicionales antes de decidir: `eval_conditional`
+reproduce la semántica del GLSL de escritorio —macro sin definir vale 0 dentro
+de un `#if`— y `strip_dead_branches` recorta las ramas muertas. Ante cualquier
+expresión que no se entienda devuelve `None` y la rama se da por viva, que es
+el lado seguro: conserva el comportamiento anterior en vez de suponer que el
+código dudoso no se compila. La expresión se evalúa con `ast`, aceptando solo
+nodos aritméticos y lógicos; sin `Name` ni `Call`, así que lo que no se haya
+sustituido se rechaza en vez de evaluarse a ciegas.
+
+Al traducir, apareció detrás una quinta capa sobre GLSL: `#require LightingV1`,
+que declara una dependencia de un módulo del motor y el driver rechaza como
+directiva desconocida. Se emite siempre a nivel superior aunque lo que la
+necesita esté dentro de un `#if`, así que no sirve para decidir nada y se
+elimina. En el corpus solo existe esa, en 8 shaders.
+
+Resultado sobre las 125 escenas: los pases descartados en traducción pasan de
+**127 a 0**, las escenas negras de **17 a 4**, y ninguna imagen empeora —111
+quedan idénticas byte a byte. Los pases que aún se pierden (154 de 2718, un
+5,7%, en 48 escenas) ya no caen en la traducción sino al compilar en el driver.
+
+Rescatada no es lo mismo que correcta: de las 13, algunas salen bien (Lucy,
+Makima) y otras destapan bugs propios —el de Arknights dibuja las capas en
+mosaico, con costuras rectangulares.
+
+## Qué campos del formato leemos y cuáles no
+
+Inventario sobre las 125 escenas, cruzando cada clave que aparece en
+`scene.json` contra lo que el código busca por nombre. Sirve para separar «el
+motor es genérico» —lo es: cero identificadores de wallpaper en código
+ejecutable— de «el motor entiende el formato», que es otra cosa.
+
+Los campos de **efecto y pase están cubiertos**: solo quedan `username`
+(cosmético) y `usertextures` (2 escenas). El hueco está en los objetos.
+
+### Colocación y geometría
+
+Aquí la lección de método es que **el recuento bruto engaña y hay que mirar la
+distribución de valores**. Estos cinco campos suman 4000 apariciones y casi
+todas son el valor por defecto o pertenecen a un subsistema que no existe:
+
+| campo | apariciones | qué resultó ser |
+|---|---|---|
+| `alignment` | 448 | 397 dicen `center`, que es lo que ya hacíamos. **Implementado**: quedan 24 capas visibles reales. |
+| `locktransforms` | 1293 | Aparece en objetos de **sonido** (56) y **luz** (7). Un campo que se aplica a un sonido no es una transformación: es el candado del editor. Nada que hacer. |
+| `instanceoverride` | 725 | 647 partículas y 64 ocultos, **cero imágenes**. Bloqueado tras el sistema de partículas. |
+| `parallaxDepth` | 1425 | También en sonidos (57). Es profundidad relativa a la cámara; sin movimiento de cámara no desplaza nada. Bloqueado tras la cámara. |
+| `perspective` | 425 | **423 son `False`.** Los dos `True` del corpus son las capas de personaje de Jeanne y de Lucy, las dos con malla puppet. Jeanne renderiza bien sin leerlo. |
+| `anchor`, `horizontalalign`, `verticalalign` | 159 cada uno | 153, 152 y 156 son el valor neutro. Además son de **texto**, que no rasterizamos. |
+
+Conclusión: el bloque de colocación **está terminado con `alignment`**. Lo que
+queda no son campos ignorados sino campos cuyo subsistema no existe todavía.
+
+### Lo que sí falta, medido
+
+- ~~Capas de composición~~ **hecho**: una capa puede leer el buffer de otra por
+  `_rt_imageLayerComposite_<id>_a|_b`. Cuando el id es el suyo propio significa
+  su par ping-pong --- 86 de las 122 referencias del corpus, y ya funcionaba.
+  Cuando apunta a otra capa es una composición leyendo a sus fuentes, y esas
+  fuentes suelen estar marcadas invisibles: 36 referencias en 9 escenas, 33 de
+  ellas a capas ocultas. Ahora esas capas se dibujan a su buffer sin componerse
+  sobre la escena. Se ve en True Damage Ahri, cuya esfera pasa de un borrón
+  claro a la orbe con estructura que enseña el preview.
+
+  Queda un cabo suelto: en Lucy la Tierra sigue sin verse, pero no por el
+  mecanismo --- sus fuentes renderizan con contenido real --- sino porque la
+  capa de composición cae casi entera por encima del lienzo (`ty = 1.45` con
+  semialtura 1.39), arrastrada por la escala 2.5 del grupo que la contiene.
+- ~~Mallas puppet sin decodificar~~ **hecho**: las seis versiones del corpus se
+  leen. Las mallas que las escenas usan pasan de 43 a 92 y las omitidas de 49 a
+  0. Se ve sobre todo en Lucy, que recupera pelo y chaqueta, y en demon-hunter,
+  donde los rectángulos negros pasan a seguir la silueta del personaje --- esa
+  capa sigue saliendo negra, pero ya por otro motivo.
+- ~~Partículas~~ **hecho**: 823 sistemas en 106 escenas, de los que 821 se
+  simulan. Ver la sección siguiente.
+- **Texto**: 159 objetos en 28 escenas; leemos el campo, no dibujamos glifos.
+- **Shaders**: 31 variantes de 556 no compilan; 21 son conversiones implícitas
+  de HLSL.
+
+## Sistemas de partículas
+
+Es el primer subsistema con **estado que avanza con el reloj**. El resto del
+motor resuelve el grafo una vez y el ejecutor solo dibuja; aquí hay que
+integrar velocidades fotograma a fotograma, y eso no puede vivir en Python
+porque el plan se genera una vez y se ejecuta miles de veces.
+
+El vocabulario resultó **cerrado y pequeño**, que es lo que hizo el trabajo
+abordable. Censo de las 125 escenas:
+
+| categoría | nombres distintos | cobertura |
+|---|---|---|
+| emisores | 2 (`sphererandom` 607, `boxrandom` 216) | los 2 |
+| inicializadores | 10 | los 8 mayores = 99% |
+| operadores | 13 | los 12 mayores |
+| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | dibujados como sprite |
+| shader | **1**: `genericparticle`, en los 823 | ya compilaba |
+
+29 piezas cubren el 100% de los 823 sistemas. Se simulan **821**; los 2
+restantes no declaran emisor o material.
+
+### El reparto
+
+`tools/weparticles.py` lee el JSON, resuelve nombres y valores por defecto y
+escribe un `.psys`: una lista plana de piezas con sus parámetros ya en números.
+`src/weparticles.c` simula; no conoce Wallpaper Engine, solo ejecuta las piezas
+que le llegan.
+
+**Ese .c se compila tal cual en los dos ejecutores** —`tools/glexec.c` y
+`src/glexecutor.cpp`—, que es la única forma de que la simulación no diverja
+entre el render offline y el escritorio. Es la lección de
+`divergencia-en-vivo-motion-blur` aplicada por construcción en vez de a
+posteriori.
+
+El fichero `.psys` no lleva nombres de campo, solo números en un orden
+convenido. `tools/test_weparticles.py` lee las tablas del propio `.c` y
+comprueba, sobre los 6476 parámetros del corpus, que los dos lados cuentan lo
+mismo. Sin eso una divergencia no falla: rellena con ceros y simula algo
+parecido pero equivocado.
+
+### Verificación
+
+Regresión de render sobre las 125 escenas, comparando contra el árbol anterior:
+**0 fallos, 0 cambios de tamaño**, 98 escenas cambian y 27 quedan idénticas. Lo
+que hay que mirar no es ese reparto sino este: **las 27 escenas sin partículas
+salen byte a byte iguales**. Los modos de mezcla nuevos son exclusivos de las
+partículas justamente para que eso se cumpla.
+
+De las escenas CON partículas, siete tampoco cambian, y las siete están
+explicadas: dos tienen sistemas intermitentes —un rayo de 0,2 s de vida a 2 por
+segundo— que en el instante muestreado no tenían ninguna partícula viva, y las
+otras cinco están tapadas por capas negras que ya salían negras antes.
+
+`tools/test_weparticles.py` valida además los 6476 parámetros del corpus contra
+las tablas del `.c`.
+
+### Y luego, en el escritorio
+
+Con todo eso verde, el primer arranque dentro de plasmashell dijo:
+
+```
+particulas 4 sistemas / 17 piezas sin soporte
+```
+
+17 de 42 piezas, y todas soportadas. El mismo `.so`, cargado con `dlopen` desde
+un programa suelto y leyendo los mismos ficheros, decía 0.
+
+La diferencia era **`LC_NUMERIC`**. `strtof` mira la locale, Qt hace
+`setlocale(LC_ALL, "")` al arrancar y este escritorio tiene `es_ES`: con
+separador decimal coma, `0.88235` se lee como `0` y ahí se para. La pieza se
+queda corta de floats y `we_psys_load` la descarta —por diseño, más vale
+descartarla que leer los campos corridos—, así que el fallo salía **contado
+como "sin soporte"**, que es justo lo que uno da por conocido y no mira. Las 17
+eran exactamente las piezas con decimales; las de valores enteros pasaban.
+
+Fuera de plasmashell no se ve: un binario en C que nunca llama a `setlocale` se
+queda en la locale `C`. Por eso el renderizador offline, la regresión de las 125
+escenas y la prueba de contrato daban todos verde. **El único ejecutor afectado
+era el que no se había ejercitado nunca.**
+
+El arreglo es `uselocale` con una locale `C` solo numérica y solo en ese hilo,
+durante el parseo. No sirve `setlocale` global: se llevaría por delante el
+formato de números del resto de plasmashell. La prueba nueva compila el lector y
+lo corre dos veces, con `LC_ALL=C` y con la primera locale de coma instalada.
+
+### Lo que costó encontrar
+
+Cinco fallos, ninguno en la simulación:
+
+- **El alfa se elevaba al cubo.** Un sprite se mezcla con los demás dentro del
+  buffer del objeto, y ese buffer se compone después sobre la escena
+  multiplicando otra vez por su alfa. El borde de un halo, con alfa 7/255,
+  acababa en 2·10⁻⁵. Solo sobrevivía el núcleo opaco: las luciérnagas de 80 px
+  se dibujaban como puntos de 2 px, con la geometría perfecta. Se arregla con
+  dos modos de mezcla y dos de composición nuevos (`premul_*`), que **solo usan
+  las partículas**: así el corpus que ya funcionaba no se toca.
+- **`TEX0FORMAT`.** Las texturas `RG88`/`R8` guardan el gris en R y el **alfa en
+  G o en R**, y `ConvertTexture0Format` las desempaqueta si el motor le dice el
+  formato. Sin decírselo, los haces de luz salían como barras rojas macizas
+  cruzando la pantalla. Los `FORMAT_*` del shader coinciden número a número con
+  `wetex.TexFormat`.
+- **`instanceoverride`.** Lo llevan **725 de los 823 objetos**, porque los
+  sistemas son presets compartidos y cada escena los ajusta desde el editor. Son
+  factores, no valores: llegan a 200 en `count` y a 50 en `lifetime`.
+  Ignorarlos no da un resultado parecido, da otro.
+- **El sampler oculto de refracción.** 89 pases activan `REFRACT` y su albedo es
+  blanco opaco **a propósito**: toda la imagen sale de deformar lo que hay
+  detrás, leído de `_rt_FullFrameBuffer` por un sampler que el material no
+  declara y que solo aparece como `default` en los metadatos. Sin enlazarlo, la
+  lluvia de un wallpaper salía como cuadrados blancos macizos.
+- **El recorte en z.** La turbulencia sin máscara empuja también en z, y esa z
+  está en píxeles: valores de 10 o 20 salen del rango de recorte [-1,1] y GL
+  descarta el triángulo entero. Dos antorchas se simulaban perfectamente y no
+  dibujaban un solo píxel, sin un error de por medio. La matriz de partículas
+  aplana z a cero; la prueba de profundidad está desactivada en todo el motor,
+  así que no se pierde nada.
+
+### Decisiones que son lecturas, no hechos
+
+- **`colorrandom` usa un único factor** para las tres componentes, no uno por
+  componente. El preset de luciérnagas declara `min (246,207,135)` y
+  `max (0,0,0)`: por componente salen rojos y verdes puros —parecían luces de
+  navidad—, y con un factor único salen todas del mismo ámbar a distinto brillo.
+- **`controlpointattract` sobre un punto con `flags & 1` no actúa.** Ese bit ata
+  el punto al cursor, y 106 de los 136 usos apuntan justo ahí. Sin puntero el
+  punto se queda en el origen y el operador deja de ser una interacción para
+  ser un sumidero: la nube de 512 px de radio se apelotona en una bola de 64.
+  Cuando el motor en vivo sepa dónde está el puntero, entra por ahí.
+- **Las texturas de partícula se suben sin voltear.** En una capa normal el
+  volteo se cancela con el de las UV; en un sprite que muestrea un *rectángulo*
+  de una hoja no se cancela nada.
+
+### Lo que queda
+
+- Las estelas (`spritetrail`, `rope`, `ropetrail`: 211 sistemas) se dibujan como
+  sprites sueltos. La geometría de la estela pide el historial de posiciones de
+  cada partícula, que hoy no se guarda.
+- `mapsequencebetweencontrolpoints` y `mapsequencearoundcontrolpoint` (14
+  sistemas) reparten las partículas por una ruta de puntos de control: es otro
+  modelo de emisión, no un parámetro.
+- `remapvalue`, 2 sistemas.
 
 ## Uso
 
