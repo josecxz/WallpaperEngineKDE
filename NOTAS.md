@@ -1132,10 +1132,63 @@ CPU y el filtrado lo hace el sampler. Lo que hay que portar a C++ es el
 decodificadores BC de `wetex.py` son para tooling y validación, no para el
 camino caliente del render.
 
-## Siguiente: hito 1-2
+## Lo siguiente
 
-Sustituir el `Rectangle` por un `QQuickRhiItem` en C++ (Qt 6.7+) con
-pipeline propio, y exponer uniforms compatibles con ShaderToy
-(`iTime`, `iResolution`, `iMouse`, `iChannel0..3`).
+Por orden de lo que más se nota:
 
-Falta instalar: `cmake`, `extra-cmake-modules`.
+1. **Estelas de partículas** — 211 de 823 sistemas (`spritetrail`, `rope`,
+   `ropetrail`) se dibujan como sprites sueltos. Hace falta guardar el historial
+   de posiciones de cada partícula y generar la cinta a partir de él.
+2. **Las 2 escenas negras y los 26 shaders de 578 que no compilan.** Poca
+   anchura, pero cuando cae la capa base se lleva la escena entera.
+3. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
+   glifos.
+4. **Elegir la GPU que renderiza** (ver abajo).
+5. **Iluminación**: los materiales con luces se dibujan planos.
+6. `mapsequence*` (14 sistemas) y `remapvalue` (2).
+
+`controlpointattract` sobre puntos atados al cursor (106 de 136 usos) entra solo
+en cuanto el motor en vivo sepa dónde está el puntero; no es trabajo aparte.
+
+### Elegir la GPU que renderiza
+
+En un portátil híbrido el fondo se dibuja hoy en la iGPU, que es la que lleva el
+panel. Medido con `/proc/<pid>/fdinfo` del i915, sobre *Sentinel Irelia* a
+2560×1440 con 102 pases:
+
+```
+plasmashell: 2.99 s de GPU en 6.0 s  ->  49.6 % del motor de render Intel
+```
+
+La mitad de la iGPU ocupada en continuo, compitiendo con todo lo demás y
+comiendo ancho de banda de memoria compartida con la CPU.
+
+Que la dedicada acepta el trabajo está comprobado en el arnés, forzándolo con
+`__NV_PRIME_RENDER_OFFLOAD=1` y el ICD de NVIDIA en
+`__EGL_VENDOR_LIBRARY_FILENAMES`:
+
+```
+sin arnés   0 %,  2.6 W,  41 MiB
+con arnés  37 %, 27.4 W, 443 MiB     (3 fds sobre /dev/dri/renderD128)
+```
+
+Un cliente Qt/Wayland se puede forzar a la dedicada y KWin lo compone desde la
+integrada sin caerse. Falta comprobar que los píxeles salen bien: los `qInfo`
+del `SceneView` no llegan a la terminal en el arnés.
+
+**La restricción de diseño:** la GPU se elige *por proceso* —la escoge libglvnd
+al cargar el driver EGL— y el `SceneView` dibuja dentro del contexto de
+plasmashell con `beginExternal()`. Así que hay dos caminos y no son variantes
+del mismo:
+
+- **Conmutador de proceso.** `wectl gpu intel|nvidia` escribe un drop-in de
+  systemd para `plasma-plasmashell.service` con esas variables y lo reinicia; el
+  mismo ajuste desde el config del plugin. Un día de trabajo. Mueve plasmashell
+  **entero** a la dedicada y cuesta ~24 W constantes, que en batería no salen.
+- **Renderizador aparte.** `glexec` ya renderiza offscreen con EGL surfaceless:
+  que dibuje sobre un buffer GBM de la dedicada, exporte el fd dmabuf y
+  plasmashell lo importe como textura con `EGL_EXT_image_dma_buf_import`. Solo
+  se mueve el fondo, el shell se queda donde está y la dedicada duerme cuando el
+  fondo no se ve. Semana larga, y **con un riesgo que puede tumbarlo**: que Mesa
+  no pueda importar el dmabuf que exporta NVIDIA. Se resuelve con una sonda de
+  ~150 líneas antes de comprometerse.
