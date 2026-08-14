@@ -22,6 +22,22 @@
  *
  * Seis vertices por particula, `GL_TRIANGLES`, sin indices: con 512 particulas
  * como maximo en el corpus el ahorro de un IBO no compensa su complejidad.
+ *
+ * Los renderers de cinta --- `rope` y `ropetrail` --- usan OTRO shader,
+ * `genericropeparticle.vert`, y por tanto otro vertice (26 floats). No dibujan
+ * un sprite por particula sino un quad por SEGMENTO de la cola, y cada quad
+ * lleva sus dos extremos y los dos vecinos que dan la tangente:
+ *
+ *   loc 0  a_PositionVec4    vec4   (inicio xyz, tamano en el inicio)
+ *   loc 2  a_TexCoordVec4    vec4   (fin xyz, cuantos puntos tiene la cola)
+ *   loc 4  a_Color           vec4   color y alfa en el inicio
+ *   loc 5  a_TexCoordVec4C1  vec4   (control 0 xyz, indice del segmento)
+ *   loc 6  a_TexCoordVec4C2  vec4   (control 1 xyz, tamano en el fin)
+ *   loc 7  a_TexCoordVec4C3  vec4   color y alfa en el fin
+ *   loc 8  a_TexCoordC4      vec2   esquina del quad (u cruza, v recorre)
+ *
+ * `we_psys_cinta` dice cual de los dos formatos toca ANTES de montar el VAO, y
+ * `we_psys_floats_por_vertice` el paso. El resto de la API no cambia.
  */
 
 #ifndef WE_PARTICLES_H
@@ -32,6 +48,7 @@ extern "C" {
 #endif
 
 #define WE_PSYS_FLOATS_POR_VERTICE 17
+#define WE_PSYS_FLOATS_CINTA 26
 #define WE_PSYS_VERTICES_POR_PARTICULA 6
 
 typedef struct WeParticleSystem WeParticleSystem;
@@ -52,6 +69,11 @@ void we_psys_free(WeParticleSystem *s);
 int we_psys_update(WeParticleSystem *s, float t);
 
 const float *we_psys_vertices(const WeParticleSystem *s);
+
+/* 0 = sprites sueltos, 1 = `rope`, 2 = `ropetrail`. Decide el layout del
+ * vertice y, con el, como montar el VAO. */
+int we_psys_cinta(const WeParticleSystem *s);
+int we_psys_floats_por_vertice(const WeParticleSystem *s);
 
 #ifdef __cplusplus
 }

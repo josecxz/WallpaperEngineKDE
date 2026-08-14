@@ -315,9 +315,34 @@ def equilibrar_condicionales(body: str) -> str:
 _TRUNC_DECL_RE = re.compile(
     r"^([ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
     r"(float|int|uint|bool|[iub]?vec[234])[ \t]+\w+[ \t]*=[ \t]*)(.+);[ \t]*$")
+# `for (int i = <expr>; ...)`: el inicializador de un bucle es una declaracion
+# como cualquier otra y sufre la misma conversion implicita.
+_TRUNC_FOR_RE = re.compile(
+    r"^([ \t]*for[ \t]*\([ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
+    r"(float|int|uint|bool|[iub]?vec[234])[ \t]+\w+[ \t]*=[ \t]*)([^;]+);")
 _TRUNC_FUNC_RE = re.compile(r"^[ \t]*(\w+)[ \t]+(\w+)[ \t]*\(([^)]*)\)[ \t]*\{")
 _TRUNC_PARAM_RE = re.compile(r"(?:in|out|inout)?[ \t]*(\w+)[ \t]+(\w+)")
 _SWZ = "xyzw"
+
+
+def _sin_uint(expr: str, tabla: dict) -> str:
+    """Pasa a `int` los identificadores `uint` de una expresion.
+
+    GLSL no mezcla `uint` con `int` ni siquiera con un literal: en las barras de
+    audio del corpus, `(barFreq1 + 1) % RESOLUTION` no compila porque `barFreq1`
+    es `uint`, el `1` es `int` y `RESOLUTION` una macro. HLSL convierte solo.
+
+    Se hace al reves de lo que parece --- bajar el `uint` a `int` en vez de
+    subir los enteros --- porque el literal y la macro pueden estar en cualquier
+    sitio de la expresion y el identificador se sabe donde esta. El destino de
+    la asignacion vuelve a envolver en `uint(...)`, asi que el tipo final no
+    cambia; y los valores son indices de espectro, muy lejos de desbordar.
+    """
+    def repl(m: re.Match) -> str:
+        t = tabla.get(m.group(0))
+        return f"int({m.group(0)})" if t and t[0] == "uint" and t[1] == 1 else m.group(0)
+
+    return re.sub(r"\b[A-Za-z_]\w*\b(?![ \t]*\()", repl, expr)
 
 
 def _porcentaje_a_mod(expr: str, tabla: dict, funcs: dict) -> str:
@@ -377,6 +402,12 @@ def truncar_asignaciones(body: str) -> str:
                         local[pm.group(2)] = (weglsl.BASE_TIPO[pm.group(1)],
                                               weglsl.ANCHO_TIPO[pm.group(1)])
         m = _TRUNC_DECL_RE.match(linea) if prof > 0 else None
+        cola = ";"
+        if m is None and prof > 0:
+            mf = _TRUNC_FOR_RE.match(linea)
+            if mf:
+                m = mf
+                cola = ";" + linea[mf.end():]
         if m:
             cabeza, tipo, expr = m.group(1), m.group(2), m.group(3)
             destino = weglsl.ANCHO_TIPO[tipo]
@@ -387,10 +418,27 @@ def truncar_asignaciones(body: str) -> str:
             if got is not None:
                 if got[1] > destino:
                     expr = f"({expr}).{_SWZ[:destino]}"
+                elif got[1] == 1 and destino > 1 and got[0] == base_destino:
+                    # Difusion de escalar: `vec3 color = 0.0;` reparte el valor
+                    # a las tres componentes en HLSL, y en GLSL hay que
+                    # escribirlo.
+                    tipo_vec = {"float": "vec", "int": "ivec",
+                                "uint": "uvec", "bool": "bvec"}[base_destino]
+                    expr = f"{tipo_vec}{destino}({expr})"
                 # HLSL convierte solo de flotante a entero al asignar; GLSL no.
                 if got[0] == "float" and base_destino in ("int", "uint"):
                     expr = f"{base_destino}({expr})"
-            linea = f"{cabeza}{expr};"
+            elif destino == 1 and base_destino in ("int", "uint"):
+                expr = _sin_uint(expr, visible)
+                # Sin poder afirmar el tipo, un destino entero se envuelve
+                # igualmente: `uint(x)` e `int(x)` valen para cualquier escalar
+                # numerico, y si la expresion fuera ancha la declaracion ya
+                # estaba rota. Es lo que arregla las barras de audio ---
+                # `uint b = (a + 1) % RESOLUTION`, donde el 1 es int y
+                # RESOLUTION una macro --- y los bucles cuyo indice arranca en
+                # un uniform flotante.
+                expr = f"{base_destino}({expr})"
+            linea = f"{cabeza}{expr}{cola}"
             nombre = re.search(r"(\w+)[ \t]*=", cabeza)
             if nombre:
                 local[nombre.group(1)] = (weglsl.BASE_TIPO[tipo], destino)
@@ -484,6 +532,249 @@ def bool_a_float(body: str) -> str:
             fuera.append(f"({dentro})")
         i = j
     return "".join(fuera)
+
+
+_COND_IF_RE = re.compile(r"\bif[ \t]*\(")
+_LOGICO_RE = re.compile(r"(?:<=|>=|==|!=|<|>|&&|\|\||(?<![\w.])!(?!=))")
+
+
+def _grupo(body: str, abre: int) -> int:
+    """Indice justo detras del parentesis que cierra el de `abre`, o -1."""
+    prof, j = 0, abre
+    while j < len(body):
+        if body[j] == "(":
+            prof += 1
+        elif body[j] == ")":
+            prof -= 1
+            if prof == 0:
+                return j + 1
+        j += 1
+    return -1
+
+
+def condicion_a_bool(body: str) -> str:
+    """Envuelve en `bool(...)` las condiciones que no son booleanas.
+
+    En HLSL cualquier escalar vale de condicion --- distinto de cero es cierto
+    --- y en GLSL no: `if (u_userInvertDepthMap)` con un uniform float, o
+    `INVERT ? 1 - mask : mask` con un combo, cortan la compilacion con
+    "condition must be scalar boolean".
+
+    `bool(x)` es valido para bool, int, uint y float, asi que envolver de mas no
+    rompe nada: por eso solo se mira si la condicion lleva ya un operador de
+    comparacion o logico, en cuyo caso se deja como esta. Lo que NO se puede
+    envolver es un vector, y ahi la condicion la da el parser: si `weglsl` puede
+    afirmar que la expresion es ancha, no se toca.
+    """
+    glob = weglsl.tabla_global(body)
+    funcs = weglsl.tabla_de_funciones(body)
+
+    def envolver(expr: str) -> str:
+        limpio = expr.strip()
+        if not limpio or _LOGICO_RE.search(limpio):
+            return expr
+        t = weglsl.tipo(limpio, glob, funcs)
+        if t and (t[0] == "bool" or t[1] > 1):
+            return expr
+        return f"bool({limpio})"
+
+    # `if (...)`
+    fuera, i = [], 0
+    while True:
+        m = _COND_IF_RE.search(body, i)
+        if not m:
+            fuera.append(body[i:])
+            break
+        fin = _grupo(body, m.end() - 1)
+        if fin < 0:
+            fuera.append(body[i:])
+            break
+        fuera.append(body[i:m.end()])
+        fuera.append(envolver(body[m.end():fin - 1]))
+        fuera.append(")")
+        i = fin
+    body = "".join(fuera)
+
+    # `cond ? a : b`, con la condicion en la misma linea y sin parentesis suelto.
+    def ternario(m: re.Match) -> str:
+        return f"{m.group(1)}{envolver(m.group(2))} ?"
+
+    return re.sub(r"(^|[=(,]\s*)([A-Za-z_][\w.]*)\s*\?", ternario, body, flags=re.M)
+
+
+# Funciones de GLSL cuyo parametro es un `genType`: si un argumento es flotante,
+# un literal entero en otro argumento tiene que serlo tambien.
+_GENTIPO = ("max", "min", "clamp", "mix", "pow", "step", "smoothstep", "mod",
+            "atan", "reflect", "distance", "dot", "cross", "faceforward")
+_LITERAL_ENTERO_RE = re.compile(r"^[+-]?\d+$")
+
+
+def _argumentos(texto: str) -> list[str]:
+    """Parte por comas de primer nivel."""
+    partes, prof, actual = [], 0, []
+    for c in texto:
+        if c in "([":
+            prof += 1
+        elif c in ")]":
+            prof -= 1
+        if c == "," and prof == 0:
+            partes.append("".join(actual))
+            actual = []
+        else:
+            actual.append(c)
+    partes.append("".join(actual))
+    return partes
+
+
+def literales_de_llamada(body: str) -> str:
+    """`max(0, albedo.rgb)` -> `max(0.0, albedo.rgb)`.
+
+    HLSL promociona el literal entero al tipo del otro argumento; GLSL busca una
+    sobrecarga `max(int, vec3)` que no existe y corta. Solo se toca un argumento
+    que sea un literal entero PELADO, y solo si otro argumento de la misma
+    llamada es de base flotante --- eso lo afirma el parser, no una heuristica.
+    """
+    # Aqui se miran TODAS las declaraciones, tambien las locales de cualquier
+    # funcion: la tabla global no basta porque `albedo` se declara dentro de
+    # `main`. Mezclar ambitos podria dar un tipo equivocado, pero lo unico que
+    # se decide con el es si un literal entero pasa a flotante, y solo cuando
+    # otro argumento de la MISMA llamada es flotante.
+    glob = dict(weglsl.tabla_global(body))
+    for m in re.finditer(r"^[ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
+                         r"(\w+)[ \t]+(\w+)[ \t]*(?:=|;)", body, re.M):
+        if m.group(1) in weglsl.ANCHO_TIPO:
+            glob.setdefault(m.group(2), (weglsl.BASE_TIPO[m.group(1)],
+                                         weglsl.ANCHO_TIPO[m.group(1)]))
+    funcs = weglsl.tabla_de_funciones(body)
+    fuera, i = [], 0
+    patron = re.compile(r"\b(" + "|".join(_GENTIPO) + r")[ \t]*\(")
+    while True:
+        m = patron.search(body, i)
+        if not m:
+            fuera.append(body[i:])
+            break
+        fin = _grupo(body, m.end() - 1)
+        if fin < 0:
+            fuera.append(body[i:m.end()])
+            i = m.end()
+            continue
+        args = _argumentos(body[m.end():fin - 1])
+        bases = [weglsl.tipo(a.strip(), glob, funcs) for a in args]
+        anchos = [b[1] for b in bases if b and b[0] == "float"]
+        if anchos:
+            # El literal toma el ANCHO del argumento flotante, no solo su base:
+            # `max(0, albedo.rgb)` tiene que salir como `max(vec3(0.0), ...)`.
+            # `max(0.0, vec3)` sigue sin compilar, porque la sobrecarga que
+            # existe es `max(genType, float)` y no al reves.
+            ancho = max(anchos)
+            def flota(a: str) -> str:
+                # Solo el argumento que ES un literal pelado. Tocar los enteros
+                # de DENTRO de la expresion se probo y se descarto: hace falta
+                # saber que no son un indice de array ni el exponente de un
+                # `1e-5`, y un barrido con expresion regular no lo sabe --- se
+                # llevo por delante 6 variantes que ya compilaban.
+                a = a.strip()
+                if not _LITERAL_ENTERO_RE.match(a):
+                    return a
+                return f"{a}.0" if ancho == 1 else f"vec{ancho}({a}.0)"
+            args = [flota(a) for a in args]
+            # HLSL trunca el argumento mas ancho al mas estrecho:
+            # `mix(vec4, vec3, float)` es `mix(vec4.rgb, vec3, float)`.
+            estrecho = min(a for a in anchos if a > 1) if any(a > 1 for a in anchos) else 1
+            if estrecho > 1:
+                nuevos = []
+                for a, b in zip(args, bases):
+                    if b and b[0] == "float" and b[1] > estrecho:
+                        a = f"({a.strip()}).{_SWZ[:estrecho]}"
+                    nuevos.append(a)
+                args = nuevos
+        fuera.append(body[i:m.end()])
+        fuera.append(",".join(args))
+        fuera.append(")")
+        i = fin
+    return "".join(fuera)
+
+
+_RETURN_RE = re.compile(r"^([ \t]*return[ \t]+)([+-]?\d+)[ \t]*;", re.M)
+
+
+def literales_de_return(body: str) -> str:
+    """`return 0;` dentro de una funcion `float` -> `return 0.0;`."""
+    funcs = weglsl.tabla_de_funciones(body)
+    if not funcs:
+        return body
+    lineas = body.splitlines()
+    actual = None
+    prof = 0
+    for n, linea in enumerate(lineas):
+        if prof == 0:
+            mf = _TRUNC_FUNC_RE.match(linea)
+            if mf:
+                actual = funcs.get(mf.group(2))
+        m = _RETURN_RE.match(linea)
+        if m and actual and actual[0] == "float" and actual[1] == 1:
+            lineas[n] = f"{m.group(1)}{m.group(2)}.0;"
+        prof += linea.count("{") - linea.count("}")
+        prof = max(prof, 0)
+    return "\n".join(lineas)
+
+
+_ESCRIBE_VARYING_RE = re.compile(
+    r"^[ \t]*(\w+)(?:\.[xyzwrgba]+)?[ \t]*(?:\+|-|\*|/)?=[^=]", re.M)
+
+
+def varying_escribible(body: str, stage: str) -> str:
+    """Da una copia local, DENTRO de `main`, a los varying sobre los que escribe.
+
+    En HLSL la entrada de un pixel shader es un parametro por valor y el codigo
+    la modifica sin mas: `v_TexCoord += ...`. En GLSL un `in` es de solo lectura
+    y el driver corta con "assignment to read-only variable".
+
+    La copia va dentro de `main` y la DECLARACION NO SE TOCA. Renombrar el
+    varying parecia mas simple y es justo lo que no se puede hacer: las etapas
+    se casan POR NOMBRE, asi que un `v_TexCoord_in` en el fragment deja de
+    recibir lo que el vertex escribe en `v_TexCoord` y el shader compila,
+    ejecuta y muestrea en (0,0). En `3555933181` eso borro el personaje y las
+    vidrieras dejando solo la lluvia, sin un solo aviso.
+    """
+    if stage != "frag":
+        return body
+    escritos = {m.group(1) for m in _ESCRIBE_VARYING_RE.finditer(body)}
+    if not escritos:
+        return body
+    tipos = {}
+    for m in re.finditer(r"^[ \t]*(?:varying|in)[ \t]+(\w+)[ \t]+(\w+)[ \t]*;",
+                         body, re.M):
+        if m.group(2) in escritos:
+            tipos[m.group(2)] = m.group(1)
+    if not tipos:
+        return body
+
+    m = re.search(r"\bvoid[ \t]+main[ \t]*\([^)]*\)[ \t]*\{", body)
+    if not m:
+        return body
+    fin = _grupo_llaves(body, m.end() - 1)
+    if fin < 0:
+        return body
+    cuerpo = body[m.end():fin - 1]
+    for nombre in tipos:
+        cuerpo = re.sub(rf"\b{re.escape(nombre)}\b", f"{nombre}_rw", cuerpo)
+    copias = "".join(f"\n\t{t} {n}_rw = {n};" for n, t in tipos.items())
+    return body[:m.end()] + copias + cuerpo + body[fin - 1:]
+
+
+def _grupo_llaves(body: str, abre: int) -> int:
+    """Indice justo detras de la llave que cierra la de `abre`, o -1."""
+    prof, j = 0, abre
+    while j < len(body):
+        if body[j] == "{":
+            prof += 1
+        elif body[j] == "}":
+            prof -= 1
+            if prof == 0:
+                return j + 1
+        j += 1
+    return -1
 
 
 def _strip_comments(src: str) -> str:
@@ -700,6 +991,10 @@ def translate(src: str,
     body = bool_a_float(body)
     body = const_no_constante(body)
     body = truncar_asignaciones(body)
+    body = condicion_a_bool(body)
+    body = literales_de_llamada(body)
+    body = literales_de_return(body)
+    body = varying_escribible(body, stage)
 
     # GLSL ES 3 sustituye varying/attribute por in/out, con sentido opuesto
     # segun la etapa.
@@ -768,6 +1063,11 @@ def translate(src: str,
         body = re.sub(r"\bsample\b", "wpSample", body)
 
     parts = [TARGETS[target]]
+    if target == "gl330":
+        # HLSL inicializa arrays con llaves --- `vec2 v[3] = { vec2(0, 0), ... }`
+        # --- y en GLSL 330 eso es la extension 420pack. Mesa y NVIDIA la tienen;
+        # con `enable` el driver que no la tenga avisa y sigue, en vez de cortar.
+        parts.append("#extension GL_ARB_shading_language_420pack : enable")
     if target == "es320":
         parts.append(PRELUDE_PRECISION)
     parts.append(prelude_sin_colisiones(PRELUDE_COMPAT, body))

@@ -119,13 +119,12 @@ Funciona sobre escenas reales de la biblioteca, incluidas algunas complejas
 
 Limitaciones conocidas:
 
-- Un ~6% de los pases del corpus no llega a compilar en el driver y se omite.
-  Normalmente cuesta una capa, pero si la que cae es la capa base se lleva
-  todo lo que colgaba de ella: 4 escenas de 125 acaban en negro.
+- 11 de 578 variantes de shader no llegan a compilar en el driver y su pase se
+  omite. Normalmente cuesta una capa, pero si la que cae es la capa base se
+  lleva todo lo que colgaba de ella.
 - Sin sistema de iluminación: los materiales con luces se dibujan planos.
-- Las partículas se simulan (821 de los 823 sistemas del corpus), pero las que
-  dejan estela se dibujan como sprites sueltos: salen las partículas, sin el
-  rastro. Los operadores que siguen al cursor quedan inactivos.
+- Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
+  incluidas. Los operadores que siguen al cursor quedan inactivos.
 - Sin audio reactivo.
 
 ## Aviso

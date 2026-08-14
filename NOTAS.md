@@ -617,6 +617,97 @@ Rescatada no es lo mismo que correcta: de las 13, algunas salen bien (Lucy,
 Makima) y otras destapan bugs propios —el de Arknights dibuja las capas en
 mosaico, con costuras rectangulares.
 
+### Los uniforms de las cabeceras no existían
+
+Un wallpaper salió con **el fondo entero en negro y solo las partículas
+encima**. La traza por objeto lo situó al pase:
+
+```
+obj 18:  escena=rgb=183.81
+obj 19:  escena=rgb=0.00      <-- aqui
+```
+
+El objeto 18 es un efecto a pantalla completa: lee la escena, la desenfoca
+bajando a los buffers de cuarto de resolución y la reescribe con `blend none`.
+Los cuatro pases se veían bien —183, 183, 183— y el último salía en **0**. Su
+última línea:
+
+```glsl
+effect.rgb *= g_CompositeColor;
+```
+
+`g_CompositeColor` no se emitía nunca, así que GL lo daba a cero y el shader
+multiplicaba por cero. No hay error, no hay aviso: hay una pantalla negra.
+
+La causa es de una línea. Los metadatos de los uniforms se leían del `.frag` y
+del `.vert` **sin expandir los `#include`**, y los uniforms comunes se declaran
+en las cabeceras. Si no están en los metadatos no se emiten, y si no se emiten
+GL los deja a cero —que casi nunca es su valor neutro—. Son exactamente cuatro
+en todo Wallpaper Engine:
+
+| uniform | tipo | defecto | cabecera |
+|---|---|---|---|
+| `g_CompositeColor` | vec3 | `1 1 1` | `common_composite.h` |
+| `g_CompositeAlpha` | float | `1` | `common_composite.h` |
+| `g_CompositeOffset` | vec2 | `0 0` | `common_composite.h` |
+| `g_RefractAmount` | float | `0.05` | `common_particles.h` |
+
+Y no era solo el defecto: los tres primeros llevan clave de material
+(`compositecolor`, `compositealpha`, `compositeoffset`), así que **el valor que
+declarara el wallpaper también se estaba ignorando**.
+
+`2868108515` pasa de media 10,64 a 142,76 —de negro con partículas a la escena
+completa—. En el plan de las 125 escenas cambian 105, y solo en líneas `u1f`,
+`u2f` y `u3f`: no se mueve ni un pase ni un sampler. La mayoría no cambia de
+píxel, porque un uniform que el shader no usa es inerte.
+
+Lo que sí cambia de píxel es la refracción: `g_RefractAmount` valía 0, o sea
+que los sprites de refracción no desplazaban nada. Ahora desplazan. En
+`2587542891` aparecen gotas sobre el cristal que antes no estaban, y **si su
+intensidad es la correcta no está verificado**: el preview es una imagen fija y
+no las muestra.
+
+### Las conversiones implícitas que quedaban
+
+De 578 variantes reales compilaban 552. Las 26 que no eran **todas** el mismo
+tipo de cosa: HLSL convierte solo y GLSL no. Agrupadas por causa, y con el
+arreglo al lado:
+
+| casos | qué pasaba | qué se hace |
+|---|---|---|
+| 4 | `if (u_flag)`, `INVERT ? a : b` con un escalar | envolver en `bool(...)` |
+| 5 | `uint b = (a + 1) % RESOLUTION` | bajar los `uint` a `int` dentro de la expresión |
+| 4 | `max(0, albedo.rgb)` | el literal toma el ancho: `max(vec3(0.0), …)` |
+| 2 | `mix(vec4, vec3, float)` | truncar el argumento más ancho |
+| 2 | `for (int i = u_MinFreq; …)` | el init de un `for` es una declaración más |
+| 2 | `v_TexCoord += …` sobre un varying | copia local dentro de `main` |
+| 1 | `vec3 color = 0.0` | difusión de escalar |
+| 1 | `return 0` en función `float` | literal a flotante |
+| 1 | `vec2 v[] = { … }` | `#extension GL_ARB_shading_language_420pack` |
+
+Quedan **11**: seis piden truncar el operando más ancho de una operación
+aritmética —`v_TexCoord` es `vec4` y el shader lo resta a un `vec2`—, que es la
+regla general de HLSL y necesita reescribir la expresión, no solo el borde; y
+cinco son casos sueltos.
+
+Dos cosas que costaron, las dos por lo mismo —tocar texto sin mirar lo que
+significa—:
+
+- **Renombrar el varying para poder escribirlo.** Parecía lo simple: declarar
+  `v_TexCoord_in` y copiarlo. Pero las etapas se casan **por nombre**, así que
+  el fragment dejó de recibir lo que el vertex escribía, compiló igual y
+  muestreó en (0, 0). En `3555933181` eso borró el personaje y las vidrieras y
+  dejó solo la lluvia. La copia va dentro de `main` y la declaración no se toca.
+- **Promocionar los enteros dentro de una expresión** con una expresión regular.
+  Se llevó por delante 6 variantes que ya compilaban: convertía el exponente de
+  un `1e-5` y los índices de array, y dejaba `None.0` donde el grupo no casaba.
+  Solo se toca el argumento que **es** un literal pelado.
+
+Resultado: **567 de 578 en Mesa, 568 en NVIDIA**. De nueve escenas
+renderizadas antes y después, ocho salen idénticas al píxel y la novena
+—`3597772384`— pierde una **banda negra** que le cruzaba la imagen: era un pase
+que no compilaba y dejaba su buffer sin escribir.
+
 ## Qué campos del formato leemos y cuáles no
 
 Inventario sobre las 125 escenas, cruzando cada clave que aparece en
@@ -686,7 +777,7 @@ abordable. Censo de las 125 escenas:
 | emisores | 2 (`sphererandom` 607, `boxrandom` 216) | los 2 |
 | inicializadores | 10 | los 8 mayores = 99% |
 | operadores | 13 | los 12 mayores |
-| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | dibujados como sprite |
+| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | los 2 primeros; `rope*` como sprite |
 | shader | **1**: `genericparticle`, en los 823 | ya compilaba |
 
 29 piezas cubren el 100% de los 823 sistemas. Se simulan **821**; los 2
@@ -803,15 +894,141 @@ Cinco fallos, ninguno en la simulación:
   volteo se cancela con el de las UV; en un sprite que muestrea un *rectángulo*
   de una hoja no se cancela nada.
 
+### Estelas: `spritetrail` no necesitaba historial
+
+Las 211 estelas del corpus parecían un solo problema —guardar por dónde ha
+pasado cada partícula— y no lo eran. El shader lo dice:
+
+```glsl
+#if TRAILRENDERER
+    ComputeParticleTrailTangents(a_Position, in_ParticleVelocity, right, up);
+#else
+    ComputeParticleTangents(in_ParticleRotation, right, up);
+#endif
+```
+
+`spritetrail` —**145 de los 211**— es el mismo quad de siempre, orientado por su
+velocidad en vez de por su rotación y estirado a lo largo de ella:
+
+```glsl
+right = normalize(cross(eyeDirection, v));
+up    = normalize(v) * max(minlength, min(|v| * length, maxlength));
+```
+
+La velocidad ya viajaba en el vértice (`a_TexCoordVec4C1.xyz`, para el combo
+`THICKFORMAT`), así que no hubo que tocar ni el simulador ni el formato del
+vértice: **el combo `TRAILRENDERER` y tres números en `g_RenderVar0`**.
+
+Lo que sí hubo que interpretar es el `maxlength` por defecto, que solo aparece en
+68 de los 145. El valor que sale de ahí no son píxeles: `ComputeParticlePosition`
+escala los dos ejes por el tamaño de la partícula, así que es **el largo de la
+estela en anchos de sprite**. Sin tope, un sistema con `length: 1` y partículas a
+250 px/s pide 250 anchos: los copos de 16 px de `2868108515` salían con rastros
+de 4092. Con el tope por defecto en 1 —«tan larga como ancha»— los tres grupos
+del corpus caen a la vez en un rango creíble, y para los 17 sistemas que declaran
+`length: 1` el único cambio visible pasa a ser la orientación, que es la lectura
+más conservadora posible.
+
+`tools/test_weparticles.py` mide ahora el largo de cada estela del corpus con la
+velocidad que declara `velocityrandom`: 61 acotadas, mediana 13 anchos de sprite,
+máximo 20. Un valor por defecto mal elegido no falla, dibuja.
+
+### `rope` y `ropetrail`: la cinta sí pide historial
+
+Los otros 66 son lo que parecía el problema entero: una cinta cosida por donde
+ha pasado cada partícula. Van por **otro shader**, `genericropeparticle`, y ese
+detalle no está en el material —los 66 declaran `genericparticle`, igual que los
+sprites—, así que **quien elige el shader es el renderer, no el material**.
+
+El shader pide un elemento por segmento, no por partícula:
+
+```glsl
+vec3 CPStart = startPosition - a_TexCoordVec4C1.xyz;
+vec3 trailRightStart = cross(eyeDirection, trailDelta + CPStart);
+position = mix(startPosition, endPosition, uvs.y) + right * ...
+```
+
+Es decir: cada quad lleva sus dos extremos **y los dos vecinos de fuera**, que
+son los que dan la tangente en cada punto y hacen que la cinta gire suave en vez
+de quebrarse. De ahí sale el formato de vértice nuevo, de 26 floats
+(`weparticles.h`), y el historial en el simulador: un punto cada
+`length / segments` segundos, guardando posición, tamaño, color y alfa **tal como
+estaban al pasar por ahí** —si se calculan al dibujar, la cola sale de color
+uniforme y se apaga de golpe—. Por eso la modulación de los operadores se
+extrajo a `modula()`, que ahora usan los dos caminos.
+
+Dos cosas se pierden por usar la ruta sin geometry shader, y las dos dejaron de
+importar al guardar un punto por paso de simulación —lo de abajo—: **la curva**
+(el geometry shader subdivide cada segmento con una Bézier, `subdivision`, y sin
+él los puntos se unen con quads rectos) y **el deslizamiento de la textura**
+(`g_RenderVar0.z` es un valor por fotograma y el plan solo lleva constantes, así
+que la cinta avanza a saltos de un segmento). Con segmentos de 1/60 de segundo,
+ni la flecha de la cuerda ni el salto llegan a un píxel.
+
+Se ve en la escena de descargas de `1927028828`: antes salían **dos barras
+blancas rectas y macizas** cruzando el mecha —cada partícula estirada por su
+cuenta, geometría perfecta y resultado absurdo— y ahora son arcos que siguen el
+recorrido.
+
+Verificación sobre las 125 escenas: cambian **25 planes, y las 25 tienen cintas**;
+de las 28 con `rope*`, las 3 que no cambian están explicadas —dos las traen
+desactivadas por una opción del usuario (`trail`, `mousetrail`) y en la tercera el
+renderer efectivo es otro—. Renderizadas seis de las más cargadas, ninguna se
+mueve más de un 1% de sus píxeles salvo `3219398263`.
+
+**Y esa destapó dos lecturas equivocadas**, las dos sobre cuánto se mueve una
+partícula, que como sprite no se notaban y como cinta saltan a la vista.
+
+**El `vortex` estaba inerte en 9 de sus 12 usos.** El operador gira la partícula
+alrededor de un eje con un producto vectorial, y `axis` no se declara casi
+nunca: con el eje a cero no mueve nada. Los 2 que sí lo declaran escriben
+`0 0 1`, y la escena es plana, así que el eje por defecto es Z.
+
+Pero ponerle el eje no bastaba: sumado a la velocidad, la partícula acumula
+tangencial sin nada que la retenga y la órbita se abre en espiral —las cintas
+de `3219398263` acababan cruzando el cielo entero—. Y **fijar** la velocidad
+tampoco vale: con `speedouter: 0`, que es lo que declaran los pétalos de
+`2788036464`, congelaría todo lo que cae fuera del radio. La lectura que
+sostiene los cuatro grupos del corpus a la vez es **arrastre**: mueve la
+posición y deja la velocidad como estaba.
+
+Aquí conviene decir cómo casi se descarta. La versión de arrastre subía la media
+de la escena de 85 a 110 y la di por peor sin mirarla; la imagen tenía las
+estelas rodeando la esfera igual que el preview, y la media era más alta
+justamente porque se concentran en un halo en vez de repartirse por el cielo.
+La media es una cifra y una escena es una imagen.
+
+**`length` no es el espaciado entre puntos de la cola.** Repartirlo
+—`length / segments`— da 3 segundos por segmento en las `star trail` de
+`3238423642`, que declaran `length: 30`: cada segmento se vuelve una cuerda
+recta de cientos de píxeles y la escena se llena de líneas quebradas de colores
+que su preview no tiene. Con **un punto por paso de simulación** las tres
+escenas de referencia caen a la vez donde su preview dice: las estelas de
+`3219398263` rodean la esfera, las descargas de `1927028828` siguen sus arcos y
+las estrellas desaparecen. `length` queda como tope de la duración de la cola,
+que en este corpus no llega a recortar a nadie.
+
+Sobre los 821 sistemas: **754 quedan idénticos** y los 67 que cambian son los 66
+de cinta más los del vórtice.
+
+### Repartir por puestos: el rayo
+
+`mapsequencebetweencontrolpoints` no es un parámetro, es otro modelo de
+colocación: en vez de dejar la partícula donde cayó el emisor, la pone en un
+**puesto** del camino que trazan los puntos de control. Los 11 usos del corpus
+son el mismo preset —la `Discharge` de cinco escenas— con `count: 10` y
+`limitbehavior: mirror`, y con cp0 en el origen y cp1 a (512, 512).
+
+Sin él, las partículas se apelotonaban en los 64 px del emisor; con él salen
+repartidas de esquina a esquina, que es lo que hace que un rayo parezca un rayo.
+Lo que el emisor sorteó se conserva como sacudida alrededor del puesto.
+
 ### Lo que queda
 
-- Las estelas (`spritetrail`, `rope`, `ropetrail`: 211 sistemas) se dibujan como
-  sprites sueltos. La geometría de la estela pide el historial de posiciones de
-  cada partícula, que hoy no se guarda.
-- `mapsequencebetweencontrolpoints` y `mapsequencearoundcontrolpoint` (14
-  sistemas) reparten las partículas por una ruta de puntos de control: es otro
-  modelo de emisión, no un parámetro.
-- `remapvalue`, 2 sistemas.
+- `mapsequencearoundcontrolpoint`, 3 sistemas. Coloca alrededor de un punto y
+  con velocidad propia; uno de ellos apunta a (0, −9999, 0), así que conviene
+  entenderlo antes de conectarlo.
+- `remapvalue`, 2 sistemas: remapea un canal por una función de ruido.
 
 ## Uso
 
@@ -1132,10 +1349,71 @@ CPU y el filtrado lo hace el sampler. Lo que hay que portar a C++ es el
 decodificadores BC de `wetex.py` son para tooling y validación, no para el
 camino caliente del render.
 
-## Siguiente: hito 1-2
+## Lo siguiente
 
-Sustituir el `Rectangle` por un `QQuickRhiItem` en C++ (Qt 6.7+) con
-pipeline propio, y exponer uniforms compatibles con ShaderToy
-(`iTime`, `iResolution`, `iMouse`, `iChannel0..3`).
+Por orden de lo que más se nota:
 
-Falta instalar: `cmake`, `extra-cmake-modules`.
+1. **Las 2 escenas negras y los 26 shaders de 578 que no compilan.** Poca
+   anchura, pero cuando cae la capa base se lleva la escena entera.
+2. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
+   glifos.
+3. **Elegir la GPU que renderiza** (ver abajo).
+4. **Iluminación**: los materiales con luces se dibujan planos.
+
+De partículas quedan cuatro cabos, todos pequeños y ninguno bloqueante:
+
+- `mapsequencearoundcontrolpoint`, **3 sistemas**. Coloca alrededor de un punto
+  de control y con velocidad propia; uno apunta a (0, −9999, 0), así que hay que
+  entenderlo antes de conectarlo.
+- `remapvalue`, **2 sistemas**: remapea un canal por ruido simplex a la
+  velocidad. Es un mini sistema de expresiones.
+- Un `spritetrail` con `orientation: fixed` y eje propio, **1 sistema**: la
+  estela se orienta a la cámara y ese la quiere clavada.
+- `controlpointattract` sobre puntos atados al cursor (**111 usos**): entra solo
+  en cuanto el motor en vivo sepa dónde está el puntero. No es trabajo aparte.
+
+`controlpointattract` sobre puntos atados al cursor (106 de 136 usos) entra solo
+en cuanto el motor en vivo sepa dónde está el puntero; no es trabajo aparte.
+
+### Elegir la GPU que renderiza
+
+En un portátil híbrido el fondo se dibuja hoy en la iGPU, que es la que lleva el
+panel. Medido con `/proc/<pid>/fdinfo` del i915, sobre *Sentinel Irelia* a
+2560×1440 con 102 pases:
+
+```
+plasmashell: 2.99 s de GPU en 6.0 s  ->  49.6 % del motor de render Intel
+```
+
+La mitad de la iGPU ocupada en continuo, compitiendo con todo lo demás y
+comiendo ancho de banda de memoria compartida con la CPU.
+
+Que la dedicada acepta el trabajo está comprobado en el arnés, forzándolo con
+`__NV_PRIME_RENDER_OFFLOAD=1` y el ICD de NVIDIA en
+`__EGL_VENDOR_LIBRARY_FILENAMES`:
+
+```
+sin arnés   0 %,  2.6 W,  41 MiB
+con arnés  37 %, 27.4 W, 443 MiB     (3 fds sobre /dev/dri/renderD128)
+```
+
+Un cliente Qt/Wayland se puede forzar a la dedicada y KWin lo compone desde la
+integrada sin caerse. Falta comprobar que los píxeles salen bien: los `qInfo`
+del `SceneView` no llegan a la terminal en el arnés.
+
+**La restricción de diseño:** la GPU se elige *por proceso* —la escoge libglvnd
+al cargar el driver EGL— y el `SceneView` dibuja dentro del contexto de
+plasmashell con `beginExternal()`. Así que hay dos caminos y no son variantes
+del mismo:
+
+- **Conmutador de proceso.** `wectl gpu intel|nvidia` escribe un drop-in de
+  systemd para `plasma-plasmashell.service` con esas variables y lo reinicia; el
+  mismo ajuste desde el config del plugin. Un día de trabajo. Mueve plasmashell
+  **entero** a la dedicada y cuesta ~24 W constantes, que en batería no salen.
+- **Renderizador aparte.** `glexec` ya renderiza offscreen con EGL surfaceless:
+  que dibuje sobre un buffer GBM de la dedicada, exporte el fd dmabuf y
+  plasmashell lo importe como textura con `EGL_EXT_image_dma_buf_import`. Solo
+  se mueve el fondo, el shell se queda donde está y la dedicada duerme cuando el
+  fondo no se ve. Semana larga, y **con un riesgo que puede tumbarlo**: que Mesa
+  no pueda importar el dmabuf que exporta NVIDIA. Se resuelve con una sonda de
+  ~150 líneas antes de comprometerse.

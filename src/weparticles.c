@@ -30,7 +30,8 @@
 enum { EM_ESFERA, EM_CAJA };
 
 enum {
-    IN_VIDA, IN_TAM, IN_ALFA, IN_COLOR, IN_VEL, IN_ROT, IN_ANGVEL, IN_TURBVEL
+    IN_VIDA, IN_TAM, IN_ALFA, IN_COLOR, IN_VEL, IN_ROT, IN_ANGVEL, IN_TURBVEL,
+    IN_SECUENCIA
 };
 enum {
     OP_MOV, OP_FADE, OP_TAM, OP_ALFA, OP_COLOR, OP_OSCALFA, OP_OSCTAM,
@@ -50,6 +51,8 @@ static const Entrada INICIALIZADORES[] = {
     {"angularvelocityrandom",   IN_ANGVEL,  6},
     /* escala, escalatiempo, velmin, velmax, fasemax, desplazamiento[3] */
     {"turbulentvelocityrandom", IN_TURBVEL, 8},
+    /* estaciones, 0 repite / 1 rebota */
+    {"mapsequencebetweencontrolpoints", IN_SECUENCIA, 2},
     {NULL, 0, 0},
 };
 
@@ -80,7 +83,15 @@ typedef struct {
     float vida, edad;
     unsigned int semilla;
     int viva;
+    /* Solo para las cintas: cuantos puntos de historial tiene ya y cuanto
+     * falta para el siguiente. Ver `guarda_punto`. */
+    int n_hist;
+    float t_hist;
 } Particula;
+
+/* Un punto del historial de una cinta: posicion, tamano, color y alfa TAL COMO
+ * estaban al pasar por ahi. */
+#define WE_HIST_FLOATS 8
 
 struct WeParticleSystem {
     int maxcount;
@@ -100,12 +111,20 @@ struct WeParticleSystem {
     int anim_modo;
     float anim_mult;
 
+    /* Cinta: 0 sprite suelto, 1 `rope`, 2 `ropetrail`. Los dos ultimos comparten
+     * geometria y solo cambian el reparto de UV, que decide un combo. */
+    int cinta;
+    int puntos;                     /* longitud del historial de cada cinta */
+    float intervalo;                /* segundos entre puntos del historial */
+    float *hist;
+
     Particula *p;
     float *verts;
     int n_verts;
 
     float t_prev;
     float credito;                  /* particulas pendientes de emitir */
+    int estacion;                   /* siguiente puesto de `mapsequence...` */
     int cursor;                     /* por donde seguir buscando hueco */
     float vivido;                   /* segundos simulados, para `duracion` */
     unsigned int rng;
@@ -276,6 +295,12 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
             lee_floats(resto, v, 2);
             s->anim_modo = (int)v[0];
             s->anim_mult = v[1];
+        } else if (strcmp(kw, "cinta") == 0) {
+            float v[3] = {0.0f, 8.0f, 0.05f};
+            lee_floats(resto, v, 3);
+            s->cinta = (int)v[0];
+            s->puntos = (int)v[1];
+            s->intervalo = v[2];
         } else if (strcmp(kw, "seed") == 0) {
             s->rng = (unsigned int)strtoul(resto, NULL, 10);
             if (!s->rng) s->rng = 0x1234567u;
@@ -345,9 +370,26 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
      * Recorta la densidad de un par de sistemas; quedarse sin ancho de banda de
      * memoria en el escritorio seria peor. */
     if (s->maxcount > 8192) s->maxcount = 8192;
+
+    size_t v_por_particula = WE_PSYS_VERTICES_POR_PARTICULA;
+    size_t floats = WE_PSYS_FLOATS_POR_VERTICE;
+    if (s->cinta) {
+        if (s->puntos < 2) s->puntos = 2;
+        if (s->puntos > 32) s->puntos = 32;
+        if (s->intervalo < PASO) s->intervalo = PASO;
+        /* Una cinta cuesta (puntos-1) quads por particula, no uno. Con el tope
+         * de 8192 y 8 puntos serian 35 MB de VBO reescritos por fotograma; el
+         * corpus no pasa de 512 particulas en un sistema de cinta. */
+        if (s->maxcount > 1024) s->maxcount = 1024;
+        v_por_particula *= (size_t)(s->puntos - 1);
+        floats = WE_PSYS_FLOATS_CINTA;
+        s->hist = calloc((size_t)s->maxcount * s->puntos * WE_HIST_FLOATS,
+                         sizeof *s->hist);
+        if (!s->hist) { we_psys_free(s); return NULL; }
+    }
     s->p = calloc((size_t)s->maxcount, sizeof *s->p);
-    s->verts = calloc((size_t)s->maxcount * WE_PSYS_VERTICES_POR_PARTICULA
-                      * WE_PSYS_FLOATS_POR_VERTICE, sizeof *s->verts);
+    s->verts = calloc((size_t)s->maxcount * v_por_particula * floats,
+                      sizeof *s->verts);
     if (!s->p || !s->verts) { we_psys_free(s); return NULL; }
 
     if (piezas_desconocidas)
@@ -360,6 +402,7 @@ void we_psys_free(WeParticleSystem *s)
     if (!s) return;
     free(s->p);
     free(s->verts);
+    free(s->hist);
     free(s);
 }
 
@@ -398,6 +441,49 @@ static void emite(WeParticleSystem *s, Particula *q)
         if (s->signo[i] > 0.0f && d[i] < 0.0f) d[i] = -d[i];
         else if (s->signo[i] < 0.0f && d[i] > 0.0f) d[i] = -d[i];
         q->pos[i] = s->org[i] + d[i];
+    }
+
+    /* `mapsequencebetweencontrolpoints` reparte las particulas por PUESTOS a lo
+     * largo del camino que forman los puntos de control, en vez de dejarlas
+     * donde cayeron. Es lo que convierte la nube del emisor en un rayo: los 11
+     * usos del corpus son el mismo preset ---una `Discharge` con cp0 en el
+     * origen y cp1 a 512,512--- y sin esto las particulas se apelotonaban en
+     * los 64 px del emisor. Lo que el emisor sorteo se conserva como sacudida
+     * alrededor del puesto. */
+    for (int i = 0; i < s->n_init; i++) {
+        if (s->init[i].codigo != IN_SECUENCIA)
+            continue;
+        int puestos = (int)s->init[i].f[0];
+        if (puestos < 2)
+            puestos = 2;
+        int n = s->estacion++;
+        int idx;
+        if (s->init[i].f[1] >= 0.5f) {
+            /* `mirror`: va y vuelve, sin repetir los extremos. */
+            int periodo = 2 * (puestos - 1);
+            int m = n % periodo;
+            idx = m < puestos ? m : periodo - m;
+        } else {
+            idx = n % puestos;
+        }
+        /* El camino llega hasta el ultimo punto de control con posicion
+         * propia; con uno solo puesto ---el caso del corpus--- es el segmento
+         * origen -> cp1. */
+        int ultimo = 0;
+        for (int k = MAX_CP - 1; k > 0; k--) {
+            if (s->cp[k][0] != 0.0f || s->cp[k][1] != 0.0f || s->cp[k][2] != 0.0f) {
+                ultimo = k;
+                break;
+            }
+        }
+        float u = (float)idx / (float)(puestos - 1) * (float)ultimo;
+        int seg = (int)u;
+        if (seg >= ultimo) seg = ultimo > 0 ? ultimo - 1 : 0;
+        float f = u - (float)seg;
+        for (int k = 0; k < 3; k++) {
+            float base = mezcla(s->cp[seg][k], s->cp[seg + 1][k], f);
+            q->pos[k] = base + (q->pos[k] - s->org[k]);
+        }
     }
 
     for (int i = 0; i < s->n_init; i++) {
@@ -452,6 +538,9 @@ static void emite(WeParticleSystem *s, Particula *q)
 }
 
 /* ── un paso de simulacion ─────────────────────────────────────────────── */
+
+/* Vive mas abajo, con los vertices, porque necesita la modulacion. */
+static void guarda_punto(WeParticleSystem *s, int i, const Particula *q);
 
 static void paso(WeParticleSystem *s, float dt)
 {
@@ -550,9 +639,19 @@ static void paso(WeParticleSystem *s, float dt)
                                    e[2] * d[0] - e[0] * d[2],
                                    e[0] * d[1] - e[1] * d[0]};
                     float tn = sqrtf(tg[0] * tg[0] + tg[1] * tg[1] + tg[2] * tg[2]);
+                    /* ARRASTRA, no empuja: mueve la posicion y deja la
+                     * velocidad como estaba. Sumandolo a la velocidad, la
+                     * particula acumula tangencial sin nada que la retenga y
+                     * la orbita se abre en espiral --- en `3219398263` las
+                     * cintas acababan cruzando el cielo entero, y el preview
+                     * las tiene cortas y pegadas al contorno de la esfera.
+                     * Fijar la velocidad tampoco vale: con `speedouter: 0`
+                     * ---los petalos de `2788036464`--- congelaria todo lo que
+                     * cae fuera del radio. Como campo de arrastre los cuatro
+                     * grupos del corpus se sostienen a la vez. */
                     if (tn > 1e-4f)
                         for (int k = 0; k < 3; k++)
-                            q->vel[k] += tg[k] / tn * vel * dt;
+                            q->pos[k] += tg[k] / tn * vel * dt;
                 }
                 break;
             }
@@ -563,6 +662,16 @@ static void paso(WeParticleSystem *s, float dt)
         for (int k = 0; k < 3; k++) {
             q->pos[k] += q->vel[k] * dt;
             q->rot[k] += q->angvel[k] * dt;
+        }
+
+        if (s->cinta) {
+            /* El primer punto se guarda al nacer, para que una particula
+             * recien emitida tenga ya cinta --- corta, pero cinta. */
+            q->t_hist -= dt;
+            if (q->n_hist == 0 || q->t_hist <= 0.0f) {
+                q->t_hist = s->intervalo;
+                guarda_punto(s, (int)(q - s->p), q);
+            }
         }
     }
 }
@@ -576,8 +685,173 @@ static float rampa(float vn, float t0, float t1, float v0, float v1)
     return mezcla(v0, v1, sujeta((vn - t0) / (t1 - t0), 0.0f, 1.0f));
 }
 
+/* Estado visible de una particula en este instante: lo que los operadores de
+ * modulacion hacen con su tamano, su color, su alfa y su posicion.
+ *
+ * Esta aparte porque lo necesitan dos sitios y con la misma cuenta: el
+ * constructor de vertices, y el muestreo del historial de las estelas. Un
+ * punto de la cola tiene que guardar el tamano y el color que tenia CUANDO
+ * paso por ahi; calcularlo al dibujar daria una cinta de color uniforme que se
+ * apaga de golpe. */
+typedef struct { float tam, alfa, col[3], desp[3]; } Modulado;
+
+static void modula(const WeParticleSystem *s, const Particula *q, Modulado *m)
+{
+    float vn = sujeta(q->edad / q->vida, 0.0f, 0.999999f);
+    m->tam = q->tam_base;
+    m->alfa = q->alfa_base;
+    for (int k = 0; k < 3; k++) {
+        m->col[k] = q->color_base[k];
+        m->desp[k] = 0.0f;
+    }
+
+    for (int j = 0; j < s->n_oper; j++) {
+        const float *v = s->oper[j].f;
+        switch (s->oper[j].codigo) {
+        case OP_FADE:
+            /* fadeintime y fadeouttime son fracciones de la vida: sube
+             * hasta la primera y baja a partir de la segunda. */
+            if (v[0] > 0.0f && vn < v[0])
+                m->alfa *= vn / v[0];
+            if (v[1] > 0.0f && v[1] < 1.0f && vn > v[1])
+                m->alfa *= 1.0f - (vn - v[1]) / (1.0f - v[1]);
+            break;
+        case OP_TAM:
+            m->tam *= rampa(vn, v[0], v[1], v[2], v[3]);
+            break;
+        case OP_ALFA:
+            m->alfa *= rampa(vn, v[0], v[1], v[2], v[3]);
+            break;
+        case OP_COLOR:
+            /* FIJA el color, no lo modula. Se ve en una antorcha del
+             * corpus: su preset nace en cian --- (0, 0.91, 1) --- y el
+             * operador va de naranja (1, 0.75, 0) a rojo. Multiplicando,
+             * las dos componentes que el operador pone a cero anulan las
+             * del preset y la llama sale NEGRA; el sistema simulaba bien y
+             * no se veia nada. Fijando, sale la llama que el autor pinto.
+             *
+             * El tinte del objeto no se pierde: `weparticles.py` lo aplica
+             * tambien sobre estos valores, no solo sobre `colorrandom`. */
+            for (int k = 0; k < 3; k++)
+                m->col[k] = rampa(vn, v[0], v[1], v[2 + k], v[5 + k]);
+            break;
+        case OP_OSCALFA:
+        case OP_OSCTAM:
+        case OP_OSCPOS: {
+            float fr = mezcla(v[0], v[1], azar_fijo(q->semilla, j * 4));
+            float fa = mezcla(v[4], v[5], azar_fijo(q->semilla, j * 4 + 1));
+            float o = sinf(q->edad * fr + fa);
+            if (s->oper[j].codigo == OP_OSCPOS) {
+                float amp = mezcla(v[2], v[3], azar_fijo(q->semilla, j * 4 + 2));
+                for (int k = 0; k < 3; k++)
+                    m->desp[k] += o * amp * v[6 + k];
+            } else {
+                float e = mezcla(v[2], v[3], 0.5f + 0.5f * o);
+                if (s->oper[j].codigo == OP_OSCALFA) m->alfa *= e;
+                else m->tam *= e;
+            }
+            break;
+        }
+        default: break;
+        }
+    }
+    m->alfa = sujeta(m->alfa, 0.0f, 1.0f);
+}
+
+/* ── estelas de cinta ──────────────────────────────────────────────────────
+ *
+ * `rope` y `ropetrail` no dibujan un sprite por particula sino una CINTA por
+ * particula, cosida por donde ha pasado. Cada segmento de la cinta es un
+ * elemento con sus dos extremos y dos puntos de control --- asi lo pide
+ * `genericropeparticle.vert`, que en la ruta sin geometry shader los une con un
+ * quad recto (la curva Bezier solo la evalua el geometry shader, con
+ * `subdivision`, y esa ruta no la usamos).
+ *
+ * De ahi que haga falta guardar el historial: un punto cada `intervalo`
+ * segundos, hasta `puntos`. El indice 0 es el mas reciente. */
+static float *punto(WeParticleSystem *s, int particula, int i)
+{
+    return s->hist + ((size_t)particula * s->puntos + i) * WE_HIST_FLOATS;
+}
+
+static void guarda_punto(WeParticleSystem *s, int i, const Particula *q)
+{
+    Modulado m;
+    modula(s, q, &m);
+    float *h = punto(s, i, 0);
+    /* El mas reciente entra por delante; los demas corren un puesto. Con 8
+     * puntos de 8 floats el desplazamiento es mas barato que llevar un anillo
+     * con su indice, y el constructor de vertices queda legible. */
+    if (s->p[i].n_hist > 0)
+        memmove(h + WE_HIST_FLOATS, h,
+                (size_t)(s->puntos - 1) * WE_HIST_FLOATS * sizeof *h);
+    for (int k = 0; k < 3; k++)
+        h[k] = q->pos[k] + m.desp[k];
+    h[3] = m.tam;
+    h[4] = m.col[0]; h[5] = m.col[1]; h[6] = m.col[2]; h[7] = m.alfa;
+    if (s->p[i].n_hist < s->puntos)
+        s->p[i].n_hist++;
+}
+
+static int construye_cinta(WeParticleSystem *s)
+{
+    float *w = s->verts;
+    int n = 0;
+    /* Las cuatro esquinas del quad del segmento. `u` cruza la cinta y `v` la
+     * recorre; el shader las usa para las dos cosas a la vez --- posicion y
+     * coordenada de textura --- asi que tienen que ir en [0, 1]. */
+    static const float esq[6][2] = {
+        {0, 0}, {1, 0}, {0, 1},
+        {0, 1}, {1, 0}, {1, 1},
+    };
+
+    for (int i = 0; i < s->maxcount; i++) {
+        Particula *q = &s->p[i];
+        if (!q->viva || q->n_hist < 2)
+            continue;
+
+        for (int seg = 0; seg + 1 < q->n_hist; seg++) {
+            const float *a = punto(s, i, seg);       /* mas nuevo */
+            const float *b = punto(s, i, seg + 1);   /* mas viejo */
+            /* Los puntos de control son los vecinos de fuera del segmento; en
+             * los extremos de la cinta no hay vecino y se refleja el propio
+             * segmento, que da la misma tangente que tendria una prolongacion
+             * recta. El shader hace `CP = extremo - control`. */
+            const float *ca = seg > 0 ? punto(s, i, seg - 1) : NULL;
+            const float *cb = seg + 2 < q->n_hist ? punto(s, i, seg + 2) : NULL;
+            float cp0[3], cp1[3];
+            for (int k = 0; k < 3; k++) {
+                cp0[k] = ca ? ca[k] : 2.0f * a[k] - b[k];
+                cp1[k] = cb ? cb[k] : 2.0f * b[k] - a[k];
+            }
+
+            for (int k = 0; k < 6; k++) {
+                w[0] = a[0]; w[1] = a[1]; w[2] = a[2];
+                w[3] = a[3];                                  /* tamano inicio */
+                w[4] = b[0]; w[5] = b[1]; w[6] = b[2];
+                w[7] = (float)q->n_hist;                      /* trailLength */
+                w[8] = a[4]; w[9] = a[5]; w[10] = a[6]; w[11] = a[7];
+                w[12] = cp0[0]; w[13] = cp0[1]; w[14] = cp0[2];
+                w[15] = (float)seg;                           /* trailPosition */
+                w[16] = cp1[0]; w[17] = cp1[1]; w[18] = cp1[2];
+                w[19] = b[3];                                 /* tamano fin */
+                w[20] = b[4]; w[21] = b[5]; w[22] = b[6]; w[23] = b[7];
+                w[24] = esq[k][0];
+                w[25] = esq[k][1];
+                w += WE_PSYS_FLOATS_CINTA;
+                n++;
+            }
+        }
+    }
+    s->n_verts = n;
+    return n;
+}
+
 static int construye(WeParticleSystem *s)
 {
+    if (s->cinta)
+        return construye_cinta(s);
+
     float *w = s->verts;
     int n = 0;
     /* Las cuatro esquinas del sprite. La UV va directa al muestreo y ademas
@@ -595,61 +869,10 @@ static int construye(WeParticleSystem *s)
             continue;
         float vn = sujeta(q->edad / q->vida, 0.0f, 0.999999f);
 
-        float tam = q->tam_base, alfa = q->alfa_base;
-        float col[3] = {q->color_base[0], q->color_base[1], q->color_base[2]};
-        float desp[3] = {0, 0, 0};
-
-        for (int j = 0; j < s->n_oper; j++) {
-            const float *v = s->oper[j].f;
-            switch (s->oper[j].codigo) {
-            case OP_FADE:
-                /* fadeintime y fadeouttime son fracciones de la vida: sube
-                 * hasta la primera y baja a partir de la segunda. */
-                if (v[0] > 0.0f && vn < v[0])
-                    alfa *= vn / v[0];
-                if (v[1] > 0.0f && v[1] < 1.0f && vn > v[1])
-                    alfa *= 1.0f - (vn - v[1]) / (1.0f - v[1]);
-                break;
-            case OP_TAM:
-                tam *= rampa(vn, v[0], v[1], v[2], v[3]);
-                break;
-            case OP_ALFA:
-                alfa *= rampa(vn, v[0], v[1], v[2], v[3]);
-                break;
-            case OP_COLOR:
-                /* FIJA el color, no lo modula. Se ve en una antorcha del
-                 * corpus: su preset nace en cian --- (0, 0.91, 1) --- y el
-                 * operador va de naranja (1, 0.75, 0) a rojo. Multiplicando,
-                 * las dos componentes que el operador pone a cero anulan las
-                 * del preset y la llama sale NEGRA; el sistema simulaba bien y
-                 * no se veia nada. Fijando, sale la llama que el autor pinto.
-                 *
-                 * El tinte del objeto no se pierde: `weparticles.py` lo aplica
-                 * tambien sobre estos valores, no solo sobre `colorrandom`. */
-                for (int k = 0; k < 3; k++)
-                    col[k] = rampa(vn, v[0], v[1], v[2 + k], v[5 + k]);
-                break;
-            case OP_OSCALFA:
-            case OP_OSCTAM:
-            case OP_OSCPOS: {
-                float fr = mezcla(v[0], v[1], azar_fijo(q->semilla, j * 4));
-                float fa = mezcla(v[4], v[5], azar_fijo(q->semilla, j * 4 + 1));
-                float o = sinf(q->edad * fr + fa);
-                if (s->oper[j].codigo == OP_OSCPOS) {
-                    float amp = mezcla(v[2], v[3], azar_fijo(q->semilla, j * 4 + 2));
-                    for (int k = 0; k < 3; k++)
-                        desp[k] += o * amp * v[6 + k];
-                } else {
-                    float e = mezcla(v[2], v[3], 0.5f + 0.5f * o);
-                    if (s->oper[j].codigo == OP_OSCALFA) alfa *= e;
-                    else tam *= e;
-                }
-                break;
-            }
-            default: break;
-            }
-        }
-        alfa = sujeta(alfa, 0.0f, 1.0f);
+        Modulado m;
+        modula(s, q, &m);
+        const float tam = m.tam, alfa = m.alfa;
+        const float *col = m.col, *desp = m.desp;
         if (tam <= 0.0f || alfa <= 0.001f)
             continue;
 
@@ -723,4 +946,14 @@ int we_psys_update(WeParticleSystem *s, float t)
 const float *we_psys_vertices(const WeParticleSystem *s)
 {
     return s ? s->verts : NULL;
+}
+
+int we_psys_cinta(const WeParticleSystem *s)
+{
+    return s ? s->cinta : 0;
+}
+
+int we_psys_floats_por_vertice(const WeParticleSystem *s)
+{
+    return s && s->cinta ? WE_PSYS_FLOATS_CINTA : WE_PSYS_FLOATS_POR_VERTICE;
 }
