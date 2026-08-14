@@ -108,6 +108,7 @@ El uso diario no pasa por `make`:
 ```sh
 wectl list [texto]      lista la biblioteca; el * marca la escena preparada
 wectl set <id|texto>    prepara un wallpaper y lo pone en el escritorio
+wectl shuffle           pone uno al azar de toda la biblioteca
 wectl start / stop      activa o para el motor
 wectl status            que hay puesto y como va
 ```
@@ -115,6 +116,50 @@ wectl status            que hay puesto y como va
 `set` acepta el id de Workshop o parte del título, sin distinguir mayúsculas
 ni acentos; si el texto es ambiguo lista los candidatos en vez de elegir por
 su cuenta.
+
+### Rotación: por qué es un temporizador y no una opción del plugin
+
+`wectl shuffle --cada 30m` pone uno al azar y deja la rotación andando; con
+`--parar` se apaga.
+
+El sitio natural para un «cada x tiempo» sería la configuración del fondo, y no
+puede estar ahí: **el QML no sabe generar planes**. Cambiar de wallpaper es
+traducir shaders y decodificar texturas, o sea Python —entre 0,3 y 1,1 s por
+escena, con hasta 108 MB de `.rgba`—, y el plugin solo sabe ejecutar un plan ya
+resuelto. Así que la rotación es un temporizador de systemd **de usuario** que
+llama a este mismo `wectl`; el plugin ni se entera, ve un plan nuevo y lo carga
+igual que con `set`. Es de usuario y no del sistema porque sin sesión no hay
+plasmashell a quien pedirle nada: `PartOf=graphical-session.target` lo para al
+cerrar sesión y `OnUnitActiveSec` cuenta desde el cambio anterior, así que un
+`set` a mano por medio no descuadra el reloj.
+
+Dos decisiones que no son obvias:
+
+- **Bolsa, no sorteo.** Sortear cada vez sobre las 125 escenas es lo evidente y
+  lo peor: se repiten unas cuantas mientras otras no salen nunca. Con una bolsa
+  que se rellena al vaciarse salen **todas** antes de repetirse ninguna, y al
+  cambiar de vuelta se comprueba la costura para no ver dos veces seguidas la
+  misma. La bolsa vive en `XDG_STATE_HOME` porque cada cambio es un proceso
+  nuevo que lanza el temporizador y muere.
+- **Sin lista negra.** Si una escena no se deja preparar se pasa a la siguiente
+  —el usuario pidió un cambio— pero no se apunta como rota: una lista negra en
+  disco envejece mal y se llevaría por delante lo que falló un día porque el
+  disco estaba lleno. Volverá a intentarse dentro de 125 cambios.
+
+El plan **no se escribe encima del que hay**. `emit_plan` numera los ficheros
+por índice y no borra lo que sobra, así que un wallpaper de 20 pases sobre uno
+de 113 dejaría 93 sin usar: con `set` a mano se nota poco, rotando por la
+biblioteca entera el directorio crece hasta la unión de todas. Y si la
+generación falla a medias, el escritorio se queda con medio plan. Se genera en
+un directorio hermano y se cambia por un `rename`, igual que `install-qml` con
+la biblioteca y por lo mismo.
+
+Eso obligó a un cambio en `emit_plan`: el plan nombra sus assets por **ruta
+absoluta**, así que hay que decirle dónde van a acabar y no dónde se están
+escribiendo. Sin eso el motor arranca sin encontrar una sola textura —el primer
+`shuffle` de verdad salió con `sistema de particulas no abre:
+.../scene.nueva/s001.psys` y un lienzo vacío—, y es un fallo que ninguna prueba
+offline habría visto, porque offline el directorio no se mueve nunca.
 
 Todo pasa por la **API de scripting de Plasma via D-Bus**, que aplica el
 cambio en caliente. Es la diferencia con `make reload`, que reinicia

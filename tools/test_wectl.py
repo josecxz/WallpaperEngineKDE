@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Valida la rotacion de wallpapers de `wectl` sin tocar el escritorio.
+
+Las tres piezas que pueden fallar en silencio, y por que cada una:
+
+  - **la bolsa**: si repite, el usuario ve dos veces la misma escena mientras
+    otras no salen nunca, y eso solo se nota tras muchas vueltas
+  - **el cambio de plan**: se hace con un rename para que un fallo a medias no
+    deje el escritorio sin fondo; hay que comprobar los DOS caminos, el que sale
+    bien y el que revienta
+  - **el intervalo**: `30m` y `2h` tienen que dar lo que parece
+
+Lo que si toca plasmashell ---aplicar el plan--- no se prueba aqui: eso es
+`wectl shuffle` a mano, y esta comprobado que un fallo ahi se ve al momento en
+`wectl status`.
+
+Uso:  python3 tools/test_wectl.py
+"""
+
+from __future__ import annotations
+
+import random
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import wectl
+
+
+def prueba_intervalo(fallos: list[str]) -> None:
+    print("── intervalos ──")
+    for texto, esperado in (("30m", 1800), ("2h", 7200), ("90s", 90),
+                            ("1d", 86400), ("45", 2700), ("0.5h", 1800)):
+        try:
+            visto = wectl._intervalo(texto)
+        except wectl.CtlError as e:
+            fallos.append(f"intervalo {texto!r} rechazado: {e}")
+            continue
+        marca = "ok" if visto == esperado else "MAL"
+        if visto != esperado:
+            fallos.append(f"intervalo {texto!r} da {visto}, esperaba {esperado}")
+        print(f"  {texto:>5} -> {visto:>6} s   {marca}")
+
+    for malo in ("hola", "", "10s", "-5m"):
+        try:
+            wectl._intervalo(malo)
+            fallos.append(f"intervalo {malo!r} deberia rechazarse")
+            print(f"  {malo!r:>7} -> ACEPTADO (mal)")
+        except wectl.CtlError:
+            print(f"  {malo!r:>7} -> rechazado   ok")
+
+
+def prueba_bolsa(fallos: list[str]) -> None:
+    """Cuatro vueltas completas sobre una biblioteca de 125, como la real."""
+    print("\n── bolsa ──")
+    random.seed(20260814)
+    entradas = [(f"id{i:03}", f"escena {i}") for i in range(125)]
+    estado: dict = {}
+    salidas = []
+    for _ in range(len(entradas) * 4):
+        elegido = wectl._sacar_de_la_bolsa(estado, entradas)
+        estado["puesto"] = elegido
+        salidas.append(elegido)
+
+    for v in range(4):
+        vuelta = salidas[v * 125:(v + 1) * 125]
+        if len(set(vuelta)) != 125:
+            fallos.append(f"la vuelta {v} repite: "
+                          f"{125 - len(set(vuelta))} escenas de mas")
+    seguidas = sum(1 for i in range(1, len(salidas))
+                   if salidas[i] == salidas[i - 1])
+    if seguidas:
+        fallos.append(f"{seguidas} veces la misma escena dos veces seguidas")
+    print(f"  4 vueltas de 125: {len(set(salidas))} escenas distintas, "
+          f"{seguidas} repeticiones seguidas")
+
+    # La biblioteca cambia debajo: un id que ya no esta se cae de la bolsa en
+    # vez de intentar prepararse y fallar.
+    estado = {"bolsa": ["id001", "ya-no-existe"], "puesto": "id000"}
+    elegido = wectl._sacar_de_la_bolsa(estado, entradas)
+    if elegido not in dict(entradas):
+        fallos.append(f"la bolsa devolvio {elegido!r}, que no esta en la "
+                      f"biblioteca")
+    print(f"  con un id borrado en la bolsa -> {elegido}   ok")
+
+    # Bolsa vacia y biblioteca de uno: no hay donde elegir, pero no puede
+    # caerse ni devolver None.
+    estado = {}
+    unico = wectl._sacar_de_la_bolsa(estado, [("solo", "la unica")])
+    if unico != "solo":
+        fallos.append(f"con una sola escena devolvio {unico!r}")
+    print(f"  con una sola escena -> {unico}   ok")
+
+
+def prueba_cambio_de_plan(fallos: list[str]) -> None:
+    """El plan se cambia entero o no se cambia."""
+    print("\n── cambio de plan ──")
+    tmp = Path(tempfile.mkdtemp(prefix="wectl-"))
+    escena_real, emit_real = wectl.ESCENA, wectl.emit_plan
+    try:
+        wectl.ESCENA = tmp / "scene"
+        wectl.ESCENA.mkdir(parents=True)
+        (wectl.ESCENA / "plan.txt").write_text("title VIEJO\n")
+        # Sobrante de un wallpaper con mas pases que el que viene.
+        (wectl.ESCENA / "p099.frag").write_text("sobra\n")
+
+        def emit_ok(ruta, out, ruta_final=None):
+            out.mkdir(parents=True, exist_ok=True)
+            destino = ruta_final if ruta_final is not None else out
+            (out / "plan.txt").write_text(
+                f"title {ruta.name}\ntex {destino / 'tex000.rgba'}\n")
+            (out / "tex000.rgba").write_bytes(b"\0")
+            return {"pases": 1}
+
+        wectl.emit_plan = emit_ok
+        wectl.preparar(Path("/tmp/NUEVO"))
+        quedan = sorted(p.name for p in wectl.ESCENA.iterdir())
+        plan = (wectl.ESCENA / "plan.txt").read_text()
+        if "p099.frag" in quedan:
+            fallos.append("el sobrante del wallpaper anterior sigue ahi")
+        if "VIEJO" in plan:
+            fallos.append("el plan no se cambio")
+        # La razon de pasar `ruta_final`: el plan tiene que nombrar donde ACABAN
+        # los assets, no el directorio de trabajo.
+        if ".nueva" in plan:
+            fallos.append("el plan apunta al directorio de trabajo, "
+                          "no al definitivo")
+        print(f"  tras cambiar: {quedan}")
+        print(f"  el plan nombra el directorio definitivo: "
+              f"{'no' if '.nueva' in plan else 'si'}")
+
+        def emit_revienta(ruta, out, ruta_final=None):
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "plan.txt").write_text("a medias\n")
+            raise RuntimeError("escena rota")
+
+        wectl.emit_plan = emit_revienta
+        try:
+            wectl.preparar(Path("/tmp/ROTO"))
+            fallos.append("una escena rota no levanto el error")
+        except RuntimeError:
+            pass
+        plan = (wectl.ESCENA / "plan.txt").read_text()
+        if "NUEVO" not in plan:
+            fallos.append("tras un fallo, el escritorio se quedo sin su plan")
+        hermanos = sorted(p.name for p in tmp.iterdir())
+        if hermanos != ["scene"]:
+            fallos.append(f"quedaron directorios sueltos: {hermanos}")
+        print(f"  tras un fallo: plan intacto, hermanos {hermanos}   ok")
+    finally:
+        wectl.ESCENA, wectl.emit_plan = escena_real, emit_real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def prueba_unidades(fallos: list[str]) -> None:
+    """Las unidades de systemd se escriben donde toca y con lo que toca."""
+    print("\n── unidades de systemd ──")
+    tmp = Path(tempfile.mkdtemp(prefix="wectl-unidades-"))
+    unidades_real, systemctl_real = wectl.UNIDADES, wectl._systemctl
+    ordenes: list[tuple] = []
+    try:
+        wectl.UNIDADES = tmp
+        wectl._systemctl = lambda *a, **k: ordenes.append(a) or ""
+        wectl.rotacion_encender(1800)
+        servicio = (tmp / f"{wectl.UNIDAD}.service").read_text()
+        timer = (tmp / f"{wectl.UNIDAD}.timer").read_text()
+        if "OnUnitActiveSec=1800" not in timer:
+            fallos.append("el temporizador no lleva el intervalo pedido")
+        if "shuffle" not in servicio or str(Path(wectl.__file__).resolve()) \
+                not in servicio:
+            fallos.append("el servicio no llama a este wectl")
+        if not any("enable" in o for o in ordenes):
+            fallos.append("no se arranco el temporizador")
+        print(f"  systemctl: {[' '.join(o) for o in ordenes]}")
+
+        wectl.rotacion_apagar()
+        if list(tmp.iterdir()):
+            fallos.append("apagar la rotacion dejo unidades sueltas")
+        print(f"  tras apagar quedan {len(list(tmp.iterdir()))} unidades   ok")
+    finally:
+        wectl.UNIDADES, wectl._systemctl = unidades_real, systemctl_real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main() -> int:
+    fallos: list[str] = []
+    prueba_intervalo(fallos)
+    prueba_bolsa(fallos)
+    prueba_cambio_de_plan(fallos)
+    prueba_unidades(fallos)
+
+    if fallos:
+        print("\n── fallos ──")
+        for f in fallos:
+            print(f"  {f}")
+    print("\n" + ("OK" if not fallos else f"FALLO: {len(fallos)}"))
+    return 1 if fallos else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
