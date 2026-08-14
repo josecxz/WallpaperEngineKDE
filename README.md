@@ -51,6 +51,7 @@ set -Ux WE_WORKSHOP /ruta/steam_library/steamapps/workshop/content/431960
 ```sh
 wectl list [texto]      lista tus wallpapers; el * marca el preparado
 wectl set <id|texto>    prepara uno y lo pone en el escritorio
+wectl shuffle           pone uno al azar de toda la biblioteca
 wectl start / stop      activa o para el motor
 wectl status            qué hay puesto y cómo va
 ```
@@ -65,6 +66,24 @@ puesto en el escritorio: Jeanne d'Arc | Fate Series
 
 `set` acepta el id de Workshop o parte del título, sin distinguir mayúsculas
 ni acentos. Si el texto es ambiguo, lista los candidatos.
+
+### Cambiar de fondo solo
+
+```
+$ wectl shuffle --cada 30m
+al azar: Cyberpunk Fantasy  (2396319149)
+quedan 124 de 125 antes de repetir
+rotación activada: otro cada 30 min
+```
+
+`--cada` acepta `90s`, `30m`, `2h` o `1d` —un número suelto son minutos— e
+instala un temporizador de usuario de systemd que sigue funcionando tras
+reiniciar. `wectl shuffle --parar` lo apaga y `wectl status` dice cuánto queda
+para el próximo.
+
+No es un sorteo cada vez: las escenas se reparten en una bolsa, así que **salen
+todas antes de repetirse ninguna**. Si una no se deja preparar, pasa a la
+siguiente en vez de dejarte sin cambio.
 
 También se puede elegir desde *Clic derecho en el escritorio → Configurar
 escritorio → Tipo de fondo: WallpaperEngine*.

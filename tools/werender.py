@@ -1315,15 +1315,24 @@ class Renderer:
         return self.stats
 
 
-def emit_plan(wallpaper: Path, out_dir: Path) -> dict:
+def emit_plan(wallpaper: Path, out_dir: Path,
+              ruta_final: Path | None = None) -> dict:
     """Escribe el plan como plantilla, con @TIME@ sin sustituir.
 
     Es la interfaz con el motor en C++: Python resuelve el grafo, traduce los
     shaders y decodifica las texturas una vez; el ejecutor de C++ repite ese
     mismo plan cada fotograma poniendo el tiempo que toque. Los assets se
     copian junto al plan para que no dependa de un directorio temporal.
+
+    El plan nombra sus assets por ruta ABSOLUTA, asi que quien lo genere en un
+    sitio para moverlo a otro ---`wectl.preparar`, que lo escribe aparte y lo
+    cambia por un rename para no dejar el escritorio a medias--- tiene que decir
+    en `ruta_final` donde van a acabar. Sin eso el plan sale apuntando al
+    directorio de trabajo y el motor no encuentra ni una textura en cuanto se
+    mueve.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    destino = ruta_final if ruta_final is not None else out_dir
     r = Renderer(wallpaper, Path("/nonexistent"), 0.0)
     canvas = r._build(None)
 
@@ -1332,7 +1341,7 @@ def emit_plan(wallpaper: Path, out_dir: Path) -> dict:
         if src.suffix in (".rgba", ".vert", ".frag", ".bin", ".psys"):
             dst = out_dir / src.name
             dst.write_bytes(src.read_bytes())
-            remap[str(src)] = str(dst)
+            remap[str(src)] = str(destino / src.name)
 
     def fix(line: str) -> str:
         for a, b in remap.items():
@@ -1357,7 +1366,7 @@ def emit_plan(wallpaper: Path, out_dir: Path) -> dict:
     # que es un tmpfs, y lo llenaba a media pasada.
     shutil.rmtree(r.tmp, ignore_errors=True)
     return {"pases": r.stats["pases"], "canvas": canvas,
-            "assets": len(remap), "plan": str(out_dir / "plan.txt")}
+            "assets": len(remap), "plan": str(destino / "plan.txt")}
 
 
 def main() -> int:
