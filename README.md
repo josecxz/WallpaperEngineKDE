@@ -124,8 +124,7 @@ Limitaciones conocidas:
   todo lo que colgaba de ella: 4 escenas de 125 acaban en negro.
 - Sin sistema de iluminación: los materiales con luces se dibujan planos.
 - Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
-  incluidas. De las cintas (`rope`, `ropetrail`) se pierde la curva: sus
-  segmentos salen rectos. Los operadores que siguen al cursor quedan inactivos.
+  incluidas. Los operadores que siguen al cursor quedan inactivos.
 - Sin audio reactivo.
 
 ## Aviso

@@ -30,7 +30,8 @@
 enum { EM_ESFERA, EM_CAJA };
 
 enum {
-    IN_VIDA, IN_TAM, IN_ALFA, IN_COLOR, IN_VEL, IN_ROT, IN_ANGVEL, IN_TURBVEL
+    IN_VIDA, IN_TAM, IN_ALFA, IN_COLOR, IN_VEL, IN_ROT, IN_ANGVEL, IN_TURBVEL,
+    IN_SECUENCIA
 };
 enum {
     OP_MOV, OP_FADE, OP_TAM, OP_ALFA, OP_COLOR, OP_OSCALFA, OP_OSCTAM,
@@ -50,6 +51,8 @@ static const Entrada INICIALIZADORES[] = {
     {"angularvelocityrandom",   IN_ANGVEL,  6},
     /* escala, escalatiempo, velmin, velmax, fasemax, desplazamiento[3] */
     {"turbulentvelocityrandom", IN_TURBVEL, 8},
+    /* estaciones, 0 repite / 1 rebota */
+    {"mapsequencebetweencontrolpoints", IN_SECUENCIA, 2},
     {NULL, 0, 0},
 };
 
@@ -121,6 +124,7 @@ struct WeParticleSystem {
 
     float t_prev;
     float credito;                  /* particulas pendientes de emitir */
+    int estacion;                   /* siguiente puesto de `mapsequence...` */
     int cursor;                     /* por donde seguir buscando hueco */
     float vivido;                   /* segundos simulados, para `duracion` */
     unsigned int rng;
@@ -437,6 +441,49 @@ static void emite(WeParticleSystem *s, Particula *q)
         if (s->signo[i] > 0.0f && d[i] < 0.0f) d[i] = -d[i];
         else if (s->signo[i] < 0.0f && d[i] > 0.0f) d[i] = -d[i];
         q->pos[i] = s->org[i] + d[i];
+    }
+
+    /* `mapsequencebetweencontrolpoints` reparte las particulas por PUESTOS a lo
+     * largo del camino que forman los puntos de control, en vez de dejarlas
+     * donde cayeron. Es lo que convierte la nube del emisor en un rayo: los 11
+     * usos del corpus son el mismo preset ---una `Discharge` con cp0 en el
+     * origen y cp1 a 512,512--- y sin esto las particulas se apelotonaban en
+     * los 64 px del emisor. Lo que el emisor sorteo se conserva como sacudida
+     * alrededor del puesto. */
+    for (int i = 0; i < s->n_init; i++) {
+        if (s->init[i].codigo != IN_SECUENCIA)
+            continue;
+        int puestos = (int)s->init[i].f[0];
+        if (puestos < 2)
+            puestos = 2;
+        int n = s->estacion++;
+        int idx;
+        if (s->init[i].f[1] >= 0.5f) {
+            /* `mirror`: va y vuelve, sin repetir los extremos. */
+            int periodo = 2 * (puestos - 1);
+            int m = n % periodo;
+            idx = m < puestos ? m : periodo - m;
+        } else {
+            idx = n % puestos;
+        }
+        /* El camino llega hasta el ultimo punto de control con posicion
+         * propia; con uno solo puesto ---el caso del corpus--- es el segmento
+         * origen -> cp1. */
+        int ultimo = 0;
+        for (int k = MAX_CP - 1; k > 0; k--) {
+            if (s->cp[k][0] != 0.0f || s->cp[k][1] != 0.0f || s->cp[k][2] != 0.0f) {
+                ultimo = k;
+                break;
+            }
+        }
+        float u = (float)idx / (float)(puestos - 1) * (float)ultimo;
+        int seg = (int)u;
+        if (seg >= ultimo) seg = ultimo > 0 ? ultimo - 1 : 0;
+        float f = u - (float)seg;
+        for (int k = 0; k < 3; k++) {
+            float base = mezcla(s->cp[seg][k], s->cp[seg + 1][k], f);
+            q->pos[k] = base + (q->pos[k] - s->org[k]);
+        }
     }
 
     for (int i = 0; i < s->n_init; i++) {

@@ -29,10 +29,13 @@ Censo del corpus (823 sistemas en 106 escenas) que decide que hay que cubrir:
 
 Lo que NO se simula, y por que:
 
-  * `mapsequencebetweencontrolpoints` / `mapsequencearoundcontrolpoint` (14
-    sistemas): colocan las particulas a lo largo de una ruta de puntos de
-    control, no las emiten al azar. Es otro modelo de emision, no un parametro.
-  * `remapvalue` (2 sistemas): remapea un canal arbitrario a otro.
+  * `mapsequencearoundcontrolpoint` (3 sistemas): coloca alrededor de un punto
+    de control y con velocidad propia. Uno de los tres apunta a (0, -9999, 0),
+    asi que mas vale entenderlo antes de conectarlo.
+  * `remapvalue` (2 sistemas): remapea un canal arbitrario a otro por una
+    funcion de ruido.
+
+`mapsequencebetweencontrolpoints` (11) SI se coloca: ver `_init_secuencia`.
 
 Los tres renderers de estela SI se dibujan, por dos caminos distintos:
 
@@ -134,6 +137,18 @@ def _init_turbvel(e):
             _f1(e.get("phasemax"), 0.0)] + _v3(e.get("offset"))
 
 
+def _init_secuencia(e):
+    """Puestos a lo largo del camino de puntos de control, y como recorrerlos.
+
+    Los 11 usos del corpus son el mismo preset ---la `Discharge` de cinco
+    escenas--- con `count: 10` y `limitbehavior: mirror`. Reparte las particulas
+    por el camino en vez de dejarlas donde las puso el emisor: es lo que
+    convierte una nube de 64 px en un rayo de esquina a esquina.
+    """
+    return [_f1(e.get("count"), 2.0),
+            1.0 if str(e.get("limitbehavior", "")) == "mirror" else 0.0]
+
+
 INICIALIZADORES = {
     "lifetimerandom": _init_vida,
     "sizerandom": _init_tam,
@@ -143,6 +158,7 @@ INICIALIZADORES = {
     "rotationrandom": _init_vec,
     "angularvelocityrandom": _init_vec,
     "turbulentvelocityrandom": _init_turbvel,
+    "mapsequencebetweencontrolpoints": _init_secuencia,
 }
 
 
