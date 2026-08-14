@@ -240,6 +240,8 @@ def main() -> int:
                 fallos.append(f"{d.name}: emit emite {len(s.emit)} floats, "
                               f"el C espera 18")
 
+            if s.cinta:
+                st["cintas"] += 1
             if s.estela:
                 st["estelas"] += 1
                 largo = _largo_estela(s)
@@ -257,7 +259,8 @@ def main() -> int:
                 weparticles.escribir(s, tmp / "x.psys", 1)
 
     print("\n── corpus ──")
-    for k in ("sistemas", "dibujables", "piezas", "estelas", "error", "escena_err"):
+    for k in ("sistemas", "dibujables", "piezas", "estelas", "cintas",
+              "error", "escena_err"):
         print(f"  {k:<12} {st[k]}")
 
     if largos:

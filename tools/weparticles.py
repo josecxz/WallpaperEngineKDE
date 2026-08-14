@@ -33,14 +33,20 @@ Lo que NO se simula, y por que:
     sistemas): colocan las particulas a lo largo de una ruta de puntos de
     control, no las emiten al azar. Es otro modelo de emision, no un parametro.
   * `remapvalue` (2 sistemas): remapea un canal arbitrario a otro.
-  * `rope` y `ropetrail` (66 sistemas) se dibujan como sprites sueltos. Son otro
-    shader --- `genericropeparticle` --- con splines y segmentos, y piden el
-    historial de posiciones de cada particula, que hoy no se guarda.
 
-`spritetrail` (145 sistemas) SI se dibuja, y no necesita historial: el sprite se
-estira a lo largo de su propia velocidad. Lo hace el shader entero, y lo unico
-que hay que darle son los tres numeros de `ComputeParticleTrailTangents`; ver
-`_estela`.
+Los tres renderers de estela SI se dibujan, por dos caminos distintos:
+
+  * `spritetrail` (145) no necesita historial: el sprite se orienta y se estira
+    a lo largo de su propia velocidad, y eso lo hace el vertex shader entero.
+    Solo hay que darle los tres numeros de `ComputeParticleTrailTangents`; ver
+    `_estela`.
+  * `rope` y `ropetrail` (66) son otro shader --- `genericropeparticle` --- y
+    una cinta cosida por donde ha pasado la particula: ahi si hace falta
+    guardar el historial, que lleva `src/weparticles.c`. Ver `_cinta`.
+
+De `rope` y `ropetrail` se pierde la curva: el geometry shader subdivide cada
+segmento con una Bezier (`subdivision`), y la ruta sin geometry shader ---la que
+usamos--- une los puntos con quads rectos.
 
 Uso:
     python3 tools/weparticles.py <dir_wallpaper>      # censo de la escena
@@ -194,6 +200,14 @@ def _op_atrae(e):
 
 
 def _op_vortice(e):
+    # OJO con `axis`: sin declarar queda a cero, y con el eje a cero el producto
+    # vectorial del operador es cero y no mueve NADA --- 9 de los 12 vortices del
+    # corpus estan asi. Ponerle el eje Z (que es lo que escriben los 2 que si lo
+    # declaran) los hace girar, pero en `3219398263` sale una malla de cintas
+    # blancas por todo el cielo que el preview no tiene, y leer el operador como
+    # velocidad en vez de como aceleracion lo empeora. Es un hilo aparte: la
+    # magnitud del operador, no su eje. Se deja como estaba hasta tener con que
+    # decidir.
     return [_f1(e.get("distanceinner"), 0.0), _f1(e.get("distanceouter"), 1.0),
             _f1(e.get("speedinner"), 0.0), _f1(e.get("speedouter"), 0.0)] \
         + _v3(e.get("axis"), 0.0)
@@ -224,6 +238,30 @@ RENDERERS = ("sprite", "spritetrail", "rope", "ropetrail")
 # particula. Asi que 1 significa "tan larga como ancha", que es el unico
 # valor por defecto que deja sano el corpus entero; ver `_estela`.
 MAX_POR_DEFECTO = 1.0
+
+
+# Cuantos puntos tiene la cola de una cinta y cada cuanto se muestrea, cuando
+# el JSON no lo dice. `segments` solo aparece en 6 de los 66 sistemas ---con 8 y
+# con 10--- y `length` en 30, casi siempre entre 0.2 y 0.5 s.
+CINTA_PUNTOS = 8
+CINTA_SEGUNDOS = 0.4
+
+
+def _cinta(e: dict) -> tuple[int, int, float]:
+    """`(modo, puntos, intervalo)` de un `rope` o un `ropetrail`.
+
+    El modo lo lee `we_psys_load` y decide el layout del vertice; los otros dos
+    son cuanta cola guarda cada particula. `subdivision` NO entra aqui: es la
+    suavidad de la curva Bezier y la evalua el geometry shader, que en esta ruta
+    no se usa --- los segmentos salen rectos.
+    """
+    modo = 1 if e.get("name") == "rope" else 2
+    puntos = e.get("segments")
+    puntos = int(puntos) if isinstance(puntos, (int, float)) else CINTA_PUNTOS
+    puntos = max(2, min(32, puntos))
+    largo = e.get("length")
+    largo = float(largo) if isinstance(largo, (int, float)) else CINTA_SEGUNDOS
+    return (modo, puntos, max(1.0 / 60.0, largo / puntos))
 
 
 def _estela(e: dict) -> tuple[float, float, float]:
@@ -296,6 +334,9 @@ class Sistema:
     # `(length, maxlength, minlength)` de un `spritetrail`, tal como los pide
     # `g_RenderVar0`; None en los demas renderers. Ver `_estela`.
     estela: tuple[float, float, float] | None = None
+    # `(modo, puntos, intervalo)` de un `rope` o un `ropetrail`; None si el
+    # renderer dibuja sprites sueltos. Ver `_cinta`.
+    cinta: tuple[int, int, float] | None = None
     # Recorrido de la hoja de sprites: 0 una pasada por vida, 1 un fotograma
     # fijo al azar por particula. `anim_mult` repite la secuencia.
     anim_modo: int = 0
@@ -397,6 +438,8 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
             s.renderer = e["name"]
             if s.renderer == "spritetrail":
                 s.estela = _estela(e)
+            elif s.renderer in ("rope", "ropetrail"):
+                s.cinta = _cinta(e)
                 # Un solo sistema del corpus pide `orientation: fixed` con un
                 # eje suyo, en vez de la estela girada hacia la camara que
                 # calcula `ComputeParticleTrailTangents`. Se anota en vez de
@@ -511,6 +554,8 @@ def escribir(s: Sistema, destino: Path, semilla: int) -> None:
               f"starttime {num(s.starttime)}",
               f"seed {semilla & 0x7fffffff}",
               f"anim {s.anim_modo} {num(s.anim_mult)}"]
+    if s.cinta:
+        lineas.append(f"cinta {s.cinta[0]} {s.cinta[1]} {num(s.cinta[2])}")
     if s.emisor:
         lineas.append(f"emit {s.emisor} " + " ".join(num(v) for v in s.emit))
     for i, off in sorted(s.cps.items()):

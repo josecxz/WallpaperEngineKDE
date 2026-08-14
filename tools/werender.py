@@ -456,13 +456,15 @@ class Renderer:
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
                       "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0,
                       "psys": 0, "psys_parcial": 0, "psys_estela": 0,
-                      "psys_sin_estela": 0}
+                      "psys_cinta": 0, "psys_sin_estela": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
         # Sistema de particulas por objeto, con la misma clave que las mallas.
         self.psys: dict[int, int] = {}
         # Los tres numeros de `g_RenderVar0` de los objetos con `spritetrail`.
         self.estelas: dict[int, tuple[float, float, float]] = {}
+        # `(modo, puntos, intervalo)` de los objetos con `rope` o `ropetrail`.
+        self.cintas: dict[int, tuple[int, int, float]] = {}
         self._hojas: dict[str, tuple[int, tuple | None]] = {}
         self.por_id: dict[str, object] = {}
 
@@ -616,8 +618,10 @@ class Renderer:
         if sis.estela:
             self.estelas[id(obj)] = sis.estela
             self.stats["psys_estela"] += 1
+        elif sis.cinta:
+            self.cintas[id(obj)] = sis.cinta
+            self.stats["psys_cinta"] += 1
         elif sis.renderer != "sprite":
-            # rope y ropetrail, que son otro shader; ver `weparticles`.
             self.stats["psys_sin_estela"] += 1
 
     # ── un pase ───────────────────────────────────────────────────────────
@@ -776,6 +780,19 @@ class Renderer:
                         (float(ext[0]), float(ext[1])))
 
     def emit_pass(self, p, sresolver, canvas: tuple[int, int], obj=None) -> None:
+        # Un sistema de particulas no dibuja el quad de la capa sino lo que
+        # simula `weparticles`. Se resuelve lo primero porque decide hasta el
+        # shader: las cintas usan otro.
+        psys_id = self.psys.get(id(obj)) if obj is not None else None
+        particula = psys_id is not None and p.stage == "base"
+        estela = self.estelas.get(id(obj)) if particula else None
+        cinta = self.cintas.get(id(obj)) if particula else None
+
+        fuente_v, fuente_f = p.vert, p.frag
+        if cinta:
+            fuente_v = sresolver.read("genericropeparticle.vert")
+            fuente_f = sresolver.read("genericropeparticle.frag")
+
         # Los metadatos del shader dicen que uniform se enlaza con que
         # propiedad del material, y con que valor por defecto.
         #
@@ -797,8 +814,8 @@ class Renderer:
                 pass          # sin el include, al menos los de este fichero
             return weshader.parse_uniform_meta(texto)
 
-        meta = metadatos(p.frag)
-        meta.update(metadatos(p.vert))
+        meta = metadatos(fuente_f)
+        meta.update(metadatos(fuente_v))
 
         # Un combo declarado en los metadatos de un sampler se activa cuando
         # ese slot esta realmente enlazado en el pase. Sin esto la mascara de
@@ -821,13 +838,8 @@ class Renderer:
             combos.pop("LIGHTING", None)
             combos.pop("REFLECTION", None)
 
-        # Un sistema de particulas no dibuja el quad sino los sprites que
-        # simula `weparticles`, y eso lo selecciona el propio shader por combos.
-        # Los pone el motor, no el material: describen el formato del vertice
-        # que va a llegar, que es decision del ejecutor.
-        psys_id = self.psys.get(id(obj)) if obj is not None else None
-        particula = psys_id is not None and p.stage == "base"
-        estela = self.estelas.get(id(obj)) if particula else None
+        # Los combos del vertice los pone el motor, no el material: describen
+        # el formato que va a llegar, que es decision del ejecutor.
         hoja = None
         if particula:
             formato, hoja = self.info_textura(p.textures[0] if p.textures else None)
@@ -848,6 +860,21 @@ class Renderer:
                 "TRAILRENDERER": 1 if estela else 0,
                 "SPRITESHEET": 1 if hoja else 0,
             })
+        if cinta:
+            # Las cintas son OTRO shader. Los 66 sistemas `rope`/`ropetrail` del
+            # corpus declaran `genericparticle` en su material, igual que los
+            # sprites: quien decide el shader es el renderer, no el material.
+            #
+            # `TRAILRENDERER` distingue los dos repartos de UV que trae
+            # `genericropeparticle.vert`: `ropetrail` cuenta desde la cabeza y
+            # alarga la cinta mientras nacen segmentos; `rope` la recorre al
+            # reves. `SPRITESHEET` no existe aqui --- una cinta no muestrea una
+            # hoja de fotogramas --- y la hoja se descarta para que no se emita
+            # un combo que ese shader no declara.
+            hoja = None
+            combos["SPRITESHEET"] = 0
+            combos["TRAILRENDERER"] = 1 if cinta[0] == 2 else 0
+            combos["TRAILSCROLLALPHA"] = 0
         for uni_name, m in meta.items():
             combo = m.get("combo")
             if not combo or combo in combos:
@@ -860,8 +887,8 @@ class Renderer:
                     combos[combo] = 1
 
         try:
-            vert = weshader.translate(p.vert, "vert", sresolver, combos=combos)
-            frag = weshader.translate(p.frag, "frag", sresolver, combos=combos)
+            vert = weshader.translate(fuente_v, "vert", sresolver, combos=combos)
+            frag = weshader.translate(fuente_f, "frag", sresolver, combos=combos)
         except Exception:
             self.stats["sin_shader"] += 1
             return
@@ -1029,7 +1056,18 @@ class Renderer:
                                  f"{hoja[2]} {hoja[3]:.6g}")
             else:
                 self.body.append("u4f g_RenderVar1 1 1 1 1")
-            if estela:
+            if cinta:
+                # `genericropeparticle.vert` lee en `g_RenderVar0` cuantos
+                # segmentos tiene la cinta (.x y .w) y cuanto ha avanzado el
+                # reloj desde el ultimo punto del historial (.z).
+                #
+                # Ese .z es un valor POR FOTOGRAMA y aqui solo hay constantes;
+                # con 1 la cuenta se simplifica a `posicion / (puntos - 1)`, que
+                # es un reparto de UV estable. Lo que se pierde es el
+                # deslizamiento suave de la textura mientras nace un segmento:
+                # la cinta avanza a saltos de un segmento.
+                self.body.append(f"u4f g_RenderVar0 {cinta[1]} 0 1 {cinta[1]}")
+            elif estela:
                 # length, maxlength, minlength: ver `weparticles._estela`. El
                 # cuarto no lo lee nadie.
                 self.body.append("u4f g_RenderVar0 "

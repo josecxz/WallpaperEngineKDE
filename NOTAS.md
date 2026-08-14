@@ -892,11 +892,65 @@ más conservadora posible.
 velocidad que declara `velocityrandom`: 61 acotadas, mediana 13 anchos de sprite,
 máximo 20. Un valor por defecto mal elegido no falla, dibuja.
 
+### `rope` y `ropetrail`: la cinta sí pide historial
+
+Los otros 66 son lo que parecía el problema entero: una cinta cosida por donde
+ha pasado cada partícula. Van por **otro shader**, `genericropeparticle`, y ese
+detalle no está en el material —los 66 declaran `genericparticle`, igual que los
+sprites—, así que **quien elige el shader es el renderer, no el material**.
+
+El shader pide un elemento por segmento, no por partícula:
+
+```glsl
+vec3 CPStart = startPosition - a_TexCoordVec4C1.xyz;
+vec3 trailRightStart = cross(eyeDirection, trailDelta + CPStart);
+position = mix(startPosition, endPosition, uvs.y) + right * ...
+```
+
+Es decir: cada quad lleva sus dos extremos **y los dos vecinos de fuera**, que
+son los que dan la tangente en cada punto y hacen que la cinta gire suave en vez
+de quebrarse. De ahí sale el formato de vértice nuevo, de 26 floats
+(`weparticles.h`), y el historial en el simulador: un punto cada
+`length / segments` segundos, guardando posición, tamaño, color y alfa **tal como
+estaban al pasar por ahí** —si se calculan al dibujar, la cola sale de color
+uniforme y se apaga de golpe—. Por eso la modulación de los operadores se
+extrajo a `modula()`, que ahora usan los dos caminos.
+
+Dos cosas que se pierden, las dos por usar la ruta sin geometry shader:
+
+- **La curva.** El geometry shader subdivide cada segmento con una Bézier
+  (`subdivision`, que llega a 100 en el corpus); sin él los puntos se unen con
+  quads rectos.
+- **El deslizamiento de la textura.** `g_RenderVar0.z` es cuánto ha avanzado el
+  reloj desde el último punto, un valor por fotograma, y el plan solo lleva
+  constantes. Con 1 el reparto de UV es estable y la cinta avanza a saltos de un
+  segmento.
+
+Se ve en la escena de descargas de `1927028828`: antes salían **dos barras
+blancas rectas y macizas** cruzando el mecha —cada partícula estirada por su
+cuenta, geometría perfecta y resultado absurdo— y ahora son arcos que siguen el
+recorrido.
+
+Verificación sobre las 125 escenas: cambian **25 planes, y las 25 tienen cintas**;
+de las 28 con `rope*`, las 3 que no cambian están explicadas —dos las traen
+desactivadas por una opción del usuario (`trail`, `mousetrail`) y en la tercera el
+renderer efectivo es otro—. Renderizadas seis de las más cargadas, ninguna se
+mueve más de un 1% de sus píxeles salvo `3219398263`.
+
+**Y esa destapa un hilo suelto.** Sus tres sistemas de cinta no dibujan nada,
+porque sus partículas no se mueven: el operador `vortex` que deberían tener
+girando declara `speedouter: 2500` pero **no declara `axis`**, y el eje a cero
+hace que el producto vectorial del operador sea cero. Antes no se notaba —cada
+partícula quieta se dibujaba igual como sprite—; una cinta de largo cero no se
+dibuja. Poner el eje por defecto a Z (que es lo que escriben los 2 vórtices del
+corpus que sí lo declaran) los hace girar, pero entonces salen cintas blancas
+por todo el cielo que el preview no tiene, y leer el operador como velocidad en
+vez de como aceleración lo empeora todavía más. El eje no es el problema: lo es
+la magnitud del operador, y eso es otra investigación.
+
 ### Lo que queda
 
-- `rope` y `ropetrail` (66 sistemas) siguen dibujándose como sprites sueltos.
-  Esos sí son otro shader —`genericropeparticle`, con splines, `subdivision` y
-  segmentos— y sí piden el historial de posiciones.
+- La curva de las cintas y su deslizamiento de textura, arriba.
 - `mapsequencebetweencontrolpoints` y `mapsequencearoundcontrolpoint` (14
   sistemas) reparten las partículas por una ruta de puntos de control: es otro
   modelo de emisión, no un parámetro.
@@ -1225,16 +1279,17 @@ camino caliente del render.
 
 Por orden de lo que más se nota:
 
-1. **`rope` y `ropetrail`** — 66 de 823 sistemas. Es otro shader,
-   `genericropeparticle`, con splines y segmentos, y sí pide guardar el historial
-   de posiciones de cada partícula. (`spritetrail`, los otros 145, ya está.)
-2. **Las 2 escenas negras y los 26 shaders de 578 que no compilan.** Poca
+1. **Las 2 escenas negras y los 26 shaders de 578 que no compilan.** Poca
    anchura, pero cuando cae la capa base se lleva la escena entera.
-3. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
+2. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
    glifos.
-4. **Elegir la GPU que renderiza** (ver abajo).
-5. **Iluminación**: los materiales con luces se dibujan planos.
-6. `mapsequence*` (14 sistemas) y `remapvalue` (2).
+3. **Elegir la GPU que renderiza** (ver abajo).
+4. **Iluminación**: los materiales con luces se dibujan planos.
+5. `mapsequence*` (14 sistemas) y `remapvalue` (2).
+
+Las partículas quedan completas salvo dos detalles de las cintas ---la curva de
+la Bézier y el deslizamiento de la textura, los dos por usar la ruta sin
+geometry shader--- que están en la sección de partículas.
 
 `controlpointattract` sobre puntos atados al cursor (106 de 136 usos) entra solo
 en cuanto el motor en vivo sepa dónde está el puntero; no es trabajo aparte.

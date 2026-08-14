@@ -301,6 +301,13 @@ bool GlExecutor::buildProgram(Op &op)
     glBindAttribLocation(prog, 3, "a_TexCoordC2");
     glBindAttribLocation(prog, 4, "a_Color");
     glBindAttribLocation(prog, 5, "a_TexCoordVec4C1");
+    // Los de la cinta (genericropeparticle.vert). Conviven con los de arriba
+    // porque cada shader declara solo los suyos: a_PositionVec4 y a_Position
+    // nunca estan los dos en el mismo programa.
+    glBindAttribLocation(prog, 0, "a_PositionVec4");
+    glBindAttribLocation(prog, 6, "a_TexCoordVec4C2");
+    glBindAttribLocation(prog, 7, "a_TexCoordVec4C3");
+    glBindAttribLocation(prog, 8, "a_TexCoordC4");
     glLinkProgram(prog);
     GLint ok = 0;
     glGetProgramiv(prog, GL_LINK_STATUS, &ok);
@@ -619,15 +626,23 @@ bool GlExecutor::initialize(QString *error)
         glBindVertexArray(p.vao);
         glGenBuffers(1, &p.vbo);
         glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
-        // Layout de genericparticle.vert sin geometry shader; ver weparticles.h.
-        const GLsizei paso = WE_PSYS_FLOATS_POR_VERTICE * sizeof(float);
-        static const struct { int loc, n, off; } attr[] = {
+        // Dos layouts, uno por shader; ver weparticles.h. El sistema dice cual.
+        struct Attr { int loc, n, off; };
+        static const Attr sprite[] = {
             {0, 3, 0}, {2, 4, 3}, {3, 2, 7}, {4, 4, 9}, {5, 4, 13},
         };
-        for (const auto &a : attr) {
-            glVertexAttribPointer(a.loc, a.n, GL_FLOAT, GL_FALSE, paso,
-                                  reinterpret_cast<void *>(size_t(a.off) * sizeof(float)));
-            glEnableVertexAttribArray(a.loc);
+        static const Attr cinta[] = {
+            {0, 4, 0}, {2, 4, 4}, {4, 4, 8}, {5, 4, 12}, {6, 4, 16}, {7, 4, 20},
+            {8, 2, 24},
+        };
+        const bool esCinta = we_psys_cinta(p.sys) != 0;
+        const GLsizei paso = we_psys_floats_por_vertice(p.sys) * sizeof(float);
+        const Attr *attr = esCinta ? cinta : sprite;
+        const int n_attr = esCinta ? int(std::size(cinta)) : int(std::size(sprite));
+        for (int i = 0; i < n_attr; ++i) {
+            glVertexAttribPointer(attr[i].loc, attr[i].n, GL_FLOAT, GL_FALSE, paso,
+                                  reinterpret_cast<void *>(size_t(attr[i].off) * sizeof(float)));
+            glEnableVertexAttribArray(attr[i].loc);
         }
         ++m_psysCount;
     }
@@ -986,7 +1001,8 @@ bool GlExecutor::drawPsys(int id, float time)
 
     glBindVertexArray(p.vao);
     glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
-    const qsizetype bytes = qsizetype(nv) * WE_PSYS_FLOATS_POR_VERTICE * sizeof(float);
+    const qsizetype bytes = qsizetype(nv)
+                          * we_psys_floats_por_vertice(it->sys) * sizeof(float);
     // El numero de particulas vivas sube y baja; se reserva por el maximo visto
     // y a partir de ahi solo se reescribe, sin volver a pedir memoria a GL.
     if (nv > p.capacidad) {
