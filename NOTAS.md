@@ -685,10 +685,21 @@ arreglo al lado:
 | 1 | `return 0` en función `float` | literal a flotante |
 | 1 | `vec2 v[] = { … }` | `#extension GL_ARB_shading_language_420pack` |
 
-Quedan **11**: seis piden truncar el operando más ancho de una operación
-aritmética —`v_TexCoord` es `vec4` y el shader lo resta a un `vec2`—, que es la
-regla general de HLSL y necesita reescribir la expresión, no solo el borde; y
-cinco son casos sueltos.
+Las seis siguientes pedían **truncar el operando más ancho de una operación
+aritmética** —`v_TexCoord` es `vec4` y el shader lo resta a un `vec2`—, que es
+la regla general de HLSL. Esa no se puede hacer por los bordes: hay que saber
+dónde empieza y acaba cada operando, y eso lo sabe el parser y no una búsqueda
+plana. `weglsl` gana un modo permisivo que, en vez de responder «no lo sé» ante
+anchos distintos, anota **qué tramo de tokens** habría que recortar y sigue con
+el ancho menor; `truncar()` reescribe con esos tramos. El modo va tras una
+bandera a propósito: el `tipo()` de siempre tiene que seguir siendo estricto,
+porque es lo que hace seguro todo lo que se apoya en él.
+
+Quedan **4**: dos `1 - u_BarSpacing` (un literal entero dentro de la expresión
+de un argumento), dos `pixelSize` que es una **macro** —`#define pixelSize
+(1.0 / g_Texture0Resolution)`, así que su tipo no está en ninguna tabla— y un
+`in vec4 v_Size.xy;` que **generamos nosotros** y huele a bug propio del izado
+de varyings.
 
 Dos cosas que costaron, las dos por lo mismo —tocar texto sin mirar lo que
 significa—:
@@ -703,7 +714,7 @@ significa—:
   un `1e-5` y los índices de array, y dejaba `None.0` donde el grupo no casaba.
   Solo se toca el argumento que **es** un literal pelado.
 
-Resultado: **567 de 578 en Mesa, 568 en NVIDIA**. De nueve escenas
+Resultado: **572 de 578 en Mesa, 573 en NVIDIA**. De nueve escenas
 renderizadas antes y después, ocho salen idénticas al píxel y la novena
 —`3597772384`— pierde una **banda negra** que le cruzaba la imagen: era un pase
 que no compilaba y dejaba su buffer sin escribir.
