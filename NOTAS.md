@@ -695,11 +695,31 @@ el ancho menor; `truncar()` reescribe con esos tramos. El modo va tras una
 bandera a propósito: el `tipo()` de siempre tiene que seguir siendo estricto,
 porque es lo que hace seguro todo lo que se apoya en él.
 
-Quedan **4**: dos `1 - u_BarSpacing` (un literal entero dentro de la expresión
-de un argumento), dos `pixelSize` que es una **macro** —`#define pixelSize
-(1.0 / g_Texture0Resolution)`, así que su tipo no está en ninguna tabla— y un
-`in vec4 v_Size.xy;` que **generamos nosotros** y huele a bug propio del izado
-de varyings.
+Las seis siguientes cayeron en una tanda, y una de ellas no era nuestra:
+
+- **`in vec4 v_Size.xy;` lo escribe el autor.** `frame_builder` de `3562154287`
+  declara `varying vec4 v_Size.xy;`, con swizzle en el nombre, que no es válido
+  ni en HLSL ni en GLSL; el compilador de WE se lo traga. Se sanea la
+  declaración: el tipo manda y el swizzle sobra.
+- **Las macros no tenían tipo.** `#define pixelSize (1.0 / g_Texture0Resolution)`
+  y luego `vec2 pixelStep = saturate(depth) * pixelSize`. Sin saber que
+  `pixelSize` es vec4 no hay forma de ver que falta una truncación. `weglsl`
+  tipa ahora las macros sin parámetros, en dos vueltas porque unas se apoyan en
+  otras.
+- **Asignaciones compuestas y con swizzle.** `albedo.rgb += …` manda tres
+  componentes aunque `albedo` sea vec4, y `bar *= 0.7` con `bar` entero es
+  `bar = int(float(bar) * 0.7)`: hacer la cuenta en entero dejaría la barra
+  entera en vez de atenuada.
+- **`pow` no tiene sobrecarga escalar.** `max(vec3, 0.0)` compila y
+  `pow(vec3, 0.5)` no: hay que difundir el escalar.
+- **Literales enteros dentro de la expresión.** El mismo modo permisivo del
+  parser que anota recortes anota ahora promociones: `1 - u_BarSpacing` sale
+  como `float(1) - u_BarSpacing`. Con expresión regular ya se intentó y costó 6
+  variantes; con el parser se sabe qué operando es.
+
+Queda **1**: `maskBokeh(v_TexCoord, …)` pasa un `vec4` donde la función declara
+`vec2`. Truncarlo pide las firmas de los parámetros, y hoy la tabla de funciones
+solo guarda el tipo de retorno.
 
 Dos cosas que costaron, las dos por lo mismo —tocar texto sin mirar lo que
 significa—:
@@ -714,7 +734,8 @@ significa—:
   un `1e-5` y los índices de array, y dejaba `None.0` donde el grupo no casaba.
   Solo se toca el argumento que **es** un literal pelado.
 
-Resultado: **572 de 578 en Mesa, 573 en NVIDIA**. De nueve escenas
+Resultado: **577 de 578 en Mesa, 576 en NVIDIA** (los drivers no fallan en la
+misma). De nueve escenas
 renderizadas antes y después, ocho salen idénticas al píxel y la novena
 —`3597772384`— pierde una **banda negra** que le cruzaba la imagen: era un pase
 que no compilaba y dejaba su buffer sin escribir.

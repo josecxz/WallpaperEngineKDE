@@ -320,7 +320,10 @@ _TRUNC_DECL_RE = re.compile(
 _TRUNC_FOR_RE = re.compile(
     r"^([ \t]*for[ \t]*\([ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
     r"(float|int|uint|bool|[iub]?vec[234])[ \t]+\w+[ \t]*=[ \t]*)([^;]+);")
-_TRUNC_ASIG_RE = re.compile(r"^([ \t]*(\w+)[ \t]*=[ \t]*)(.+);[ \t]*$")
+# Asignacion a algo que ya existe, con o sin swizzle y con o sin operador:
+# `v_NoiseCoord = ...`, `albedo.rgb += ...`. El `(?!=)` deja fuera `==`.
+_TRUNC_ASIG_RE = re.compile(
+    r"^([ \t]*)(\w+)(\.[xyzwrgba]+)?[ \t]*([-+*/]?)=(?!=)[ \t]*(.+);[ \t]*$")
 _TRUNC_FUNC_RE = re.compile(r"^[ \t]*(\w+)[ \t]+(\w+)[ \t]*\(([^)]*)\)[ \t]*\{")
 _TRUNC_PARAM_RE = re.compile(r"(?:in|out|inout)?[ \t]*(\w+)[ \t]+(\w+)")
 _SWZ = "xyzw"
@@ -426,10 +429,12 @@ def truncar_asignaciones(body: str) -> str:
             if got is not None:
                 if got[1] > destino:
                     expr = f"({expr}).{_SWZ[:destino]}"
-                elif got[1] == 1 and destino > 1 and got[0] == base_destino:
-                    # Difusion de escalar: `vec3 color = 0.0;` reparte el valor
-                    # a las tres componentes en HLSL, y en GLSL hay que
-                    # escribirlo.
+                elif got[1] == 1 and destino > 1:
+                    # Difusion de escalar: `vec3 color = 0;` reparte el valor a
+                    # las tres componentes en HLSL, y en GLSL hay que
+                    # escribirlo. La base no importa: un constructor convierte
+                    # ---`vec3(0)` es legal--- asi que tambien vale para el
+                    # entero que el autor escribio sin punto.
                     tipo_vec = {"float": "vec", "int": "ivec",
                                 "uint": "uvec", "bool": "bvec"}[base_destino]
                     expr = f"{tipo_vec}{destino}({expr})"
@@ -457,17 +462,33 @@ def truncar_asignaciones(body: str) -> str:
             # que buscarlo en la tabla en vez de leerlo en la linea.
             ma = _TRUNC_ASIG_RE.match(linea)
             if ma:
-                destino_t = {**glob, **local}.get(ma.group(2))
+                sangria, nombre_d, swz, op, expr = ma.groups()
+                destino_t = {**glob, **local}.get(nombre_d)
                 if destino_t:
-                    expr = ma.group(3)
+                    # Con swizzle manda el swizzle: `albedo.rgb += ...` pide
+                    # tres componentes aunque `albedo` sea vec4.
+                    ancho_destino = (len(swz) - 1) if swz else destino_t[1]
                     visible = {**glob, **local}
                     recortada = weglsl.truncar(expr, visible, funcs)
                     if recortada is not None:
                         expr = recortada
                     got = weglsl.tipo(expr, visible, funcs)
-                    if got is not None and got[1] > destino_t[1]:
-                        expr = f"({expr}).{_SWZ[:destino_t[1]]}"
-                    linea = f"{ma.group(1)}{expr};"
+                    if got is not None and got[1] > ancho_destino:
+                        expr = f"({expr}).{_SWZ[:ancho_destino]}"
+                    if (got is not None and got[0] == "float"
+                            and destino_t[0] in ("int", "uint") and not swz):
+                        # Destino entero, valor flotante. En una compuesta hay
+                        # que hacer la cuenta EN FLOTANTE y convertir al final:
+                        # `bar *= 0.7` con bar entero vale 0 en HLSL, y
+                        # `bar *= int(0.7)` lo dejaria en bar --- la barra de
+                        # la escena se veria entera en vez de atenuada.
+                        conv = destino_t[0]
+                        if op:
+                            expr = (f"{conv}(float({nombre_d}) {op} ({expr}))")
+                            op = ""
+                        else:
+                            expr = f"{conv}({expr})"
+                    linea = f"{sangria}{nombre_d}{swz or ''} {op}= {expr};"
         fuera.append(linea)
         prof += linea.count("{") - linea.count("}")
         prof = max(prof, 0)
@@ -632,6 +653,10 @@ def condicion_a_bool(body: str) -> str:
 # un literal entero en otro argumento tiene que serlo tambien.
 _GENTIPO = ("max", "min", "clamp", "mix", "pow", "step", "smoothstep", "mod",
             "atan", "reflect", "distance", "dot", "cross", "faceforward")
+# De todas ellas, estas NO tienen sobrecarga `(genType, float)`: si un argumento
+# es vector, los demas tienen que serlo tambien. `max(vec3, 0.0)` compila;
+# `pow(vec3, 0.5)` no.
+_SIN_ESCALAR = ("pow", "atan", "reflect", "faceforward")
 _LITERAL_ENTERO_RE = re.compile(r"^[+-]?\d+$")
 
 
@@ -706,6 +731,18 @@ def literales_de_llamada(body: str) -> str:
             args = [flota(a) for a in args]
             # HLSL trunca el argumento mas ancho al mas estrecho:
             # `mix(vec4, vec3, float)` es `mix(vec4.rgb, vec3, float)`.
+            if m.group(1) in _SIN_ESCALAR and max(anchos) > 1:
+                # Difundir el escalar al ancho del vector.
+                ancho_v = max(anchos)
+                nuevos = []
+                for a, b in zip(args, bases):
+                    if b and b[0] == "float" and b[1] == 1:
+                        a = f"vec{ancho_v}({a.strip()})"
+                    nuevos.append(a)
+                args = nuevos
+                bases = [(b[0], ancho_v) if b and b[0] == "float" and b[1] == 1 else b
+                         for b in bases]
+                anchos = [b[1] for b in bases if b and b[0] == "float"]
             estrecho = min(a for a in anchos if a > 1) if any(a > 1 for a in anchos) else 1
             if estrecho > 1:
                 nuevos = []
@@ -801,6 +838,28 @@ def _grupo_llaves(body: str, abre: int) -> int:
                 return j + 1
         j += 1
     return -1
+
+
+# `varying vec4 v_Size.xy;` --- con swizzle en el NOMBRE de la declaracion.
+_DECL_SWIZZLE_RE = re.compile(
+    r"^([ \t]*(?:varying|attribute|in|out)[ \t]+\w+[ \t]+\w+)\.[xyzwrgba]+[ \t]*;",
+    re.M)
+
+
+def declaracion_sin_swizzle(body: str) -> str:
+    """Quita el swizzle pegado al nombre en una declaracion.
+
+    No es un error de traduccion: lo escribe asi el autor. `frame_builder` de
+    `3562154287` declara
+
+        varying vec4 v_Size.xy; // xy = size, zw = alignment coord
+
+    que no es valido ni en HLSL ni en GLSL --- el compilador de WE se lo traga y
+    el del driver corta con "syntax error, unexpected DOT_TOK". El tipo
+    declarado manda; el swizzle sobra, y los usos ya escriben `v_Size.xy` donde
+    toca.
+    """
+    return _DECL_SWIZZLE_RE.sub(r"\1;", body)
 
 
 def _strip_comments(src: str) -> str:
@@ -1014,6 +1073,7 @@ def translate(src: str,
     # 8 shaders con iluminacion.
     body = REQUIRE_DIR_RE.sub("", body)
     body = equilibrar_condicionales(body)
+    body = declaracion_sin_swizzle(body)
     body = bool_a_float(body)
     body = const_no_constante(body)
     body = truncar_asignaciones(body)
