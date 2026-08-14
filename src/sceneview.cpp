@@ -48,6 +48,11 @@ void SceneView::setTime(qreal t)
 
 void SceneView::setStatusFromRenderer(const QString &s)
 {
+    // `dibujado` solo puede ir a mas: una vez que la escena ha salido a
+    // pantalla, un error posterior no la devuelve a "cargando".
+    if (!m_dibujado && !s.isEmpty() && s != QStringLiteral("cargando")
+            && s != QStringLiteral("sin inicializar"))
+        m_dibujado = true;
     if (s == m_status)
         return;
     m_status = s;

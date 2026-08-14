@@ -320,6 +320,7 @@ _TRUNC_DECL_RE = re.compile(
 _TRUNC_FOR_RE = re.compile(
     r"^([ \t]*for[ \t]*\([ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
     r"(float|int|uint|bool|[iub]?vec[234])[ \t]+\w+[ \t]*=[ \t]*)([^;]+);")
+_TRUNC_ASIG_RE = re.compile(r"^([ \t]*(\w+)[ \t]*=[ \t]*)(.+);[ \t]*$")
 _TRUNC_FUNC_RE = re.compile(r"^[ \t]*(\w+)[ \t]+(\w+)[ \t]*\(([^)]*)\)[ \t]*\{")
 _TRUNC_PARAM_RE = re.compile(r"(?:in|out|inout)?[ \t]*(\w+)[ \t]+(\w+)")
 _SWZ = "xyzw"
@@ -414,6 +415,13 @@ def truncar_asignaciones(body: str) -> str:
             base_destino = weglsl.BASE_TIPO[tipo]
             visible = {**glob, **local}
             expr = _porcentaje_a_mod(expr, visible, funcs)
+            # Truncacion implicita DENTRO de la expresion: `vec2 p =
+            # saturate(depth) * pixelSize` mezcla anchos y GLSL corta. Se
+            # intenta antes de tipar, y si no hay nada que recortar el texto se
+            # queda como estaba.
+            recortada = weglsl.truncar(expr, visible, funcs)
+            if recortada is not None:
+                expr = recortada
             got = weglsl.tipo(expr, visible, funcs)
             if got is not None:
                 if got[1] > destino:
@@ -442,6 +450,24 @@ def truncar_asignaciones(body: str) -> str:
             nombre = re.search(r"(\w+)[ \t]*=", cabeza)
             if nombre:
                 local[nombre.group(1)] = (weglsl.BASE_TIPO[tipo], destino)
+        elif prof > 0:
+            # Asignacion a una variable que ya existe: `v_NoiseCoord =
+            # v_TexCoord;` con destino vec2 y origen vec4. Es la misma
+            # truncacion que en una declaracion, pero el tipo del destino hay
+            # que buscarlo en la tabla en vez de leerlo en la linea.
+            ma = _TRUNC_ASIG_RE.match(linea)
+            if ma:
+                destino_t = {**glob, **local}.get(ma.group(2))
+                if destino_t:
+                    expr = ma.group(3)
+                    visible = {**glob, **local}
+                    recortada = weglsl.truncar(expr, visible, funcs)
+                    if recortada is not None:
+                        expr = recortada
+                    got = weglsl.tipo(expr, visible, funcs)
+                    if got is not None and got[1] > destino_t[1]:
+                        expr = f"({expr}).{_SWZ[:destino_t[1]]}"
+                    linea = f"{ma.group(1)}{expr};"
         fuera.append(linea)
         prof += linea.count("{") - linea.count("}")
         prof = max(prof, 0)

@@ -6,20 +6,53 @@
 // iconos del escritorio siguen dibujandose encima sin hacer nada especial.
 //
 // El reloj es el mismo FrameAnimation del hito 0: late una vez por frame
-// compuesto y su elapsedTime alimenta g_Time. Cuando el escritorio queda
-// oculto Qt deja de componer, el reloj se para y el motor deja de renderizar
-// solo, sin logica de pausa.
+// compuesto y su elapsedTime alimenta g_Time. Parar ese reloj es lo unico que
+// hace falta para parar el motor: `SceneView` solo pide un fotograma nuevo
+// cuando `time` cambia, asi que sin reloj no hay pases que ejecutar --- Qt
+// sigue componiendo la ultima textura, que no cuesta nada.
+//
+// Antes aqui ponia que con el escritorio tapado Qt deja de componer y el motor
+// se para solo. Nunca se comprobo. Lo que si esta medido es el coste cuando
+// dibuja: la escena mas pesada del corpus se come el 92% del motor de render de
+// la iGPU, en continuo, y con una ventana maximizada encima no se ve ni un
+// pixel de ella. Asi que la pausa se pide explicitamente en vez de confiar en
+// que alguien la haga por nosotros.
 
 import QtQuick
+import QtQuick.Window
 import org.kde.plasma.plasmoid
 import org.jose.wallpaperengine.render
 
 WallpaperItem {
     id: root
 
+    // Quien vigila si hay algo encima. `Screen` da la pantalla de ESTE fondo,
+    // que es lo que hace falta para no pararlo por un maximizado en otro
+    // monitor; `WallpaperItem` no expone la geometria de su pantalla.
+    VentanasEncima {
+        id: ventanas
+        modo: root.configuration.PauseMode
+        geometriaPantalla: Qt.rect(Screen.virtualX, Screen.virtualY,
+                                   Screen.width, Screen.height)
+    }
+
     FrameAnimation {
         id: clock
         running: true
+        // `paused`, no `running`. Parar la animacion y volver a arrancarla la
+        // reinicia --- `elapsedTime` vuelve a cero --- y ademas deja el reloj
+        // en un estado del que no siempre vuelve: el fondo se quedaba
+        // congelado al destapar el escritorio. En pausa el tiempo se queda
+        // quieto y al reanudar sigue donde estaba, que es lo que se queria.
+        //
+        // Que se quede quieto tambien protege al simulador: un salto de varios
+        // minutos en `g_Time` le pediria simular hasta el tope de 60 s de una
+        // sentada --- 3600 pasos por sistema --- dentro del hilo de render.
+        // NUNCA antes del primer fotograma. Pausar de entrada deja el fondo
+        // NEGRO, no congelado: sin reloj no cambia `time`, sin cambio de
+        // `time` no hay `update()`, y el plan no llega a cargarse. Pasa de
+        // verdad --- basta arrancar la sesion con una ventana ya maximizada.
+        paused: ventanas.tapado && escena.dibujado
     }
 
     readonly property real fps: clock.smoothFrameTime > 0 ? 1.0 / clock.smoothFrameTime : 0
@@ -69,7 +102,14 @@ WallpaperItem {
                 "",
                 "superficie   : " + root.width + "x" + root.height,
                 "fps          : " + root.num(root.fps, 1),
-                "g_Time       : " + root.num(clock.elapsedTime, 1) + " s"
+                "g_Time       : " + root.num(clock.elapsedTime, 1) + " s",
+                "estado       : " + (ventanas.tapado ? "en pausa (tapado)" : "dibujando"),
+                "reloj        : " + (clock.paused ? "en pausa" : "corriendo")
+                                  + " · dibujado " + escena.dibujado,
+                "ventanas     : " + ventanas.ventanas + " · tapan "
+                                  + ventanas.maximizadas + " · fuera "
+                                  + ventanas.ocultas,
+                "tapan        : " + ventanas.detalle
             ].join("\n")
         }
     }

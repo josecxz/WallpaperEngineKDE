@@ -14,11 +14,20 @@
 #define MAX_CP 8
 #define MAX_F 12          /* floats por pieza; ninguna del corpus pasa de 9 */
 #define PASO (1.0f / 60.0f)
-/* Tope de simulacion en una sola llamada. Protege dos casos reales: el primer
- * fotograma, que tiene que recuperar `starttime` mas el instante pedido, y un
- * salto de reloj (suspension, cambio de wallpaper). Sin el, un `t` grande
- * bloquea el hilo de render. */
-#define MAX_SEG_POR_LLAMADA 60.0f
+/* Dos topes de simulacion en una sola llamada, y son distintos a proposito.
+ *
+ * El PRIMER fotograma tiene que recuperar `starttime` --- los segundos que WE
+ * da por transcurridos --- mas el instante pedido, y eso justifica gastar hasta
+ * un minuto de simulacion: es una vez, y sin ello un sistema con `starttime 25`
+ * aparece recien nacido en vez de en regimen.
+ *
+ * Los DEMAS no. Un salto de reloj ---suspension, el escritorio destapandose
+ * despues de un rato, un cambio de wallpaper--- llegaria aqui como un `dt` de
+ * minutos, y recuperarlo son 3600 pasos por sistema DENTRO del hilo de render:
+ * el escritorio se queda colgado varios segundos. Un segundo de recuperacion no
+ * se distingue de sesenta en un sistema en regimen, y no bloquea nada. */
+#define MAX_SEG_PRIMERA 60.0f
+#define MAX_SEG_POR_LLAMADA 1.0f
 
 /* ── vocabulario ───────────────────────────────────────────────────────────
  *
@@ -907,7 +916,7 @@ int we_psys_update(WeParticleSystem *s, float t)
     if (!s)
         return 0;
 
-    float dt;
+    float dt, tope = MAX_SEG_POR_LLAMADA;
     if (!s->arrancado) {
         /* Primera llamada: hay que recuperar `starttime` --- los segundos que
          * WE da por ya transcurridos --- mas el instante pedido. Sin esto un
@@ -915,14 +924,19 @@ int we_psys_update(WeParticleSystem *s, float t)
          * arrancado en vez de en regimen. */
         s->arrancado = 1;
         dt = s->starttime + (t > 0.0f ? t : 0.0f);
+        tope = MAX_SEG_PRIMERA;
     } else {
         dt = t - s->t_prev;
-        if (dt < 0.0f)                     /* el reloj retrocedio */
+        if (dt < 0.0f) {
+            /* El reloj retrocedio: es otro arranque, y se le deja recuperar
+             * como al primero. */
             dt = s->starttime;
+            tope = MAX_SEG_PRIMERA;
+        }
     }
     s->t_prev = t;
-    if (dt > MAX_SEG_POR_LLAMADA)
-        dt = MAX_SEG_POR_LLAMADA;
+    if (dt > tope)
+        dt = tope;
 
     /* Las particulas instantaneas son un unico estallido al arrancar. */
     if (s->instantaneo > 0.0f && s->vivido == 0.0f) {

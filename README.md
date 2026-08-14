@@ -21,6 +21,8 @@ SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
 - **Integrado en Plasma** como plugin de fondo: respeta el z-order, la
   opacidad y los iconos del escritorio.
 - **Sin reiniciar nada**: cambiar de fondo, pararlo o arrancarlo es inmediato.
+- **No dibuja lo que no se ve**: con una ventana maximizada delante el motor se
+  para (98,4 % → 0,0 % de la GPU) y al volver sigue donde estaba.
 
 No soporta wallpapers de tipo vídeo ni web, ni audio reactivo.
 
@@ -119,7 +121,7 @@ Funciona sobre escenas reales de la biblioteca, incluidas algunas complejas
 
 Limitaciones conocidas:
 
-- 11 de 578 variantes de shader no llegan a compilar en el driver y su pase se
+- 6 de 578 variantes de shader no llegan a compilar en el driver y su pase se
   omite. Normalmente cuesta una capa, pero si la que cae es la capa base se
   lleva todo lo que colgaba de ella.
 - Sin sistema de iluminación: los materiales con luces se dibujan planos.

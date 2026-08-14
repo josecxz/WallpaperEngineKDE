@@ -685,10 +685,21 @@ arreglo al lado:
 | 1 | `return 0` en función `float` | literal a flotante |
 | 1 | `vec2 v[] = { … }` | `#extension GL_ARB_shading_language_420pack` |
 
-Quedan **11**: seis piden truncar el operando más ancho de una operación
-aritmética —`v_TexCoord` es `vec4` y el shader lo resta a un `vec2`—, que es la
-regla general de HLSL y necesita reescribir la expresión, no solo el borde; y
-cinco son casos sueltos.
+Las seis siguientes pedían **truncar el operando más ancho de una operación
+aritmética** —`v_TexCoord` es `vec4` y el shader lo resta a un `vec2`—, que es
+la regla general de HLSL. Esa no se puede hacer por los bordes: hay que saber
+dónde empieza y acaba cada operando, y eso lo sabe el parser y no una búsqueda
+plana. `weglsl` gana un modo permisivo que, en vez de responder «no lo sé» ante
+anchos distintos, anota **qué tramo de tokens** habría que recortar y sigue con
+el ancho menor; `truncar()` reescribe con esos tramos. El modo va tras una
+bandera a propósito: el `tipo()` de siempre tiene que seguir siendo estricto,
+porque es lo que hace seguro todo lo que se apoya en él.
+
+Quedan **4**: dos `1 - u_BarSpacing` (un literal entero dentro de la expresión
+de un argumento), dos `pixelSize` que es una **macro** —`#define pixelSize
+(1.0 / g_Texture0Resolution)`, así que su tipo no está en ninguna tabla— y un
+`in vec4 v_Size.xy;` que **generamos nosotros** y huele a bug propio del izado
+de varyings.
 
 Dos cosas que costaron, las dos por lo mismo —tocar texto sin mirar lo que
 significa—:
@@ -703,7 +714,7 @@ significa—:
   un `1e-5` y los índices de array, y dejaba `None.0` donde el grupo no casaba.
   Solo se toca el argumento que **es** un literal pelado.
 
-Resultado: **567 de 578 en Mesa, 568 en NVIDIA**. De nueve escenas
+Resultado: **572 de 578 en Mesa, 573 en NVIDIA**. De nueve escenas
 renderizadas antes y después, ocho salen idénticas al píxel y la novena
 —`3597772384`— pierde una **banda negra** que le cruzaba la imagen: era un pase
 que no compilaba y dejaba su buffer sin escribir.
@@ -1029,6 +1040,45 @@ Lo que el emisor sorteó se conserva como sacudida alrededor del puesto.
   con velocidad propia; uno de ellos apunta a (0, −9999, 0), así que conviene
   entenderlo antes de conectarlo.
 - `remapvalue`, 2 sistemas: remapea un canal por una función de ruido.
+
+## No dibujar lo que no se ve
+
+Un fondo tapado es el gasto más fácil de quitar, y no era pequeño: medido con
+`/proc/<pid>/fdinfo` del i915, plasmashell pasa de **98,4 % a 0,0 %** del motor
+de render de la Intel cuando el fondo se pausa.
+
+Parar el reloj es lo único que hace falta. `SceneView` solo pide un fotograma
+cuando `time` cambia, así que sin reloj no se ejecuta un solo pase; Qt sigue
+componiendo la última textura, que no cuesta nada.
+
+Quién decide es `plugin/contents/ui/VentanasEncima.qml`, con el modelo de
+`org.kde.taskmanager` —el mismo del gestor de tareas— filtrado por pantalla,
+escritorio virtual y actividad. **No se puede probar fuera de plasmashell**: en
+Wayland ese modelo habla por `plasma-window-management`, que KWin solo expone a
+clientes autorizados, y en un arnés suelto devuelve cero ventanas siempre.
+
+Tres cosas salieron mal antes de dar con la buena, y las tres se ven desde el
+HUD, que por eso muestra el estado, el reloj y el recuento de ventanas:
+
+- **Pausar antes del primer fotograma deja el fondo NEGRO, no congelado.** Sin
+  reloj no cambia `time`, sin cambio de `time` no hay `update()`, y el plan no
+  llega a cargarse: basta arrancar la sesión con una ventana ya maximizada.
+  `SceneView` expone ahora `dibujado`, y la pausa espera a que sea cierto.
+- **`running` no es `paused`.** Parar la animación y volver a arrancarla la
+  reinicia; el fondo se quedaba congelado al destapar el escritorio. Con
+  `paused` el tiempo se queda quieto y al reanudar sigue donde estaba —que
+  además protege al simulador de un salto de reloj.
+- **«¿Hay alguna ventana maximizada?» es la pregunta equivocada.** Al llegar al
+  escritorio con *Mostrar el escritorio*, minimizando o cambiando de escritorio
+  virtual, esas ventanas **siguen siendo maximizadas** para KWin: el fondo se
+  quedaba en pausa justo cuando hay que dibujarlo. La pregunta buena es qué
+  estás mirando, o sea la ventana **activa**.
+
+Un aviso sobre medir esto: btop y compañía dan el uso **global** de la GPU, no
+el del fondo. Con la pausa funcionando, btop marcaba movimiento y el desglose
+por proceso lo explicaba —Chrome al 56,7 %, plasmashell a cero—. Y ojo con
+`fdinfo`: hay que sumar por **cliente DRM**, no por descriptor; un proceso abre
+el mismo cliente varias veces.
 
 ## Uso
 

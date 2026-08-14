@@ -121,11 +121,17 @@ class _Parser:
     concreto es lo que permite ser conservador aguas arriba.
     """
 
-    def __init__(self, tokens, tabla, funciones):
+    def __init__(self, tokens, tabla, funciones, permisivo=False):
         self.t = tokens
         self.i = 0
         self.tabla = tabla
         self.funciones = funciones
+        # Con `permisivo`, un operador entre vectores de ancho distinto no
+        # invalida la expresion: se anota el recorte que HLSL haria y se sigue
+        # con el ancho menor. Apagado ---lo normal--- el parser responde None,
+        # que es lo que hace seguro a todo lo que se apoya en `tipo`.
+        self.permisivo = permisivo
+        self.recortes: list[tuple[int, int, int]] = []
 
     def ojear(self):
         return self.t[self.i] if self.i < len(self.t) else None
@@ -175,22 +181,36 @@ class _Parser:
         return izq
 
     def aditivo(self):
+        ini = self.i
         izq = self.multiplicativo()
         while self.ojear() in ("+", "-"):
+            medio = self.i
             self.comer()
-            izq = self._combinar(izq, self.multiplicativo())
+            ini_der = self.i
+            der = self.multiplicativo()
+            izq = self._combinar(izq, der, ini, medio, ini_der, self.i)
+            ini = ini      # el operando izquierdo sigue empezando donde empezo
         return izq
 
     def multiplicativo(self):
+        ini = self.i
         izq = self.unario()
         while self.ojear() in ("*", "/", "%"):
+            medio = self.i
             self.comer()
-            izq = self._combinar(izq, self.unario())
+            ini_der = self.i
+            der = self.unario()
+            izq = self._combinar(izq, der, ini, medio, ini_der, self.i)
         return izq
 
-    @staticmethod
-    def _combinar(a, b):
-        """Escalar con vector da el vector; vector con vector exige igualdad."""
+    def _combinar(self, a, b, ini_a=None, fin_a=None, ini_b=None, fin_b=None):
+        """Escalar con vector da el vector; vector con vector exige igualdad.
+
+        Cuando los dos son vectores de ancho distinto, GLSL lo rechaza y HLSL
+        se queda con el mas estrecho. Aqui se anota que operando habria que
+        recortar --- y donde esta --- y se sigue con el ancho menor, para que la
+        expresion entera se pueda seguir tipando.
+        """
         if a is None or b is None:
             return None
         base = _base_comun(a[0], b[0])
@@ -200,7 +220,16 @@ class _Parser:
             return (base, b[1])
         if b[1] == 1:
             return (base, a[1])
-        return (base, a[1]) if a[1] == b[1] else None
+        if a[1] == b[1]:
+            return (base, a[1])
+        if not self.permisivo or ini_a is None:
+            return None
+        estrecho = min(a[1], b[1])
+        if a[1] > estrecho:
+            self.recortes.append((ini_a, fin_a, estrecho))
+        else:
+            self.recortes.append((ini_b, fin_b, estrecho))
+        return (base, estrecho)
 
     def unario(self):
         while self.ojear() in ("-", "+", "!", "~", "++", "--"):
@@ -314,6 +343,39 @@ def tipo(expr: str, tabla: dict, funciones: dict | None = None):
     p = _Parser(tokens, tabla, funciones or {})
     val = p.expresion()
     return val if p.i == len(tokens) else None      # sobra texto: no fiarse
+
+
+_SWZ = "xyzw"
+
+
+def truncar(expr: str, tabla: dict, funciones: dict | None = None) -> str | None:
+    """Aplica la truncacion implicita de HLSL a los operadores de la expresion.
+
+    `saturate(depth) * pixelSize` con `depth` vec4 y `pixelSize` vec2 es legal
+    en HLSL --- se queda con las dos primeras componentes del ancho --- y GLSL
+    lo rechaza con "vector size mismatch". Aqui se reescribe como
+    `(saturate(depth)).xy * pixelSize`.
+
+    Devuelve None si no hay nada que recortar o si la expresion no se entiende;
+    quien llama se queda entonces con el texto original. El recorte se calcula
+    con el parser, no con una expresion regular: hay que saber DONDE empieza y
+    acaba cada operando, y eso una busqueda plana no lo sabe.
+    """
+    tokens = tokenizar(expr)
+    if tokens is None:
+        return None
+    p = _Parser(tokens, tabla, funciones or {}, permisivo=True)
+    val = p.expresion()
+    if val is None or p.i != len(tokens) or not p.recortes:
+        return None
+    # De dentro hacia fuera, para que los indices de los tramos no se muevan.
+    fuera = list(tokens)
+    for ini, fin, ancho_ in sorted(p.recortes, key=lambda r: -r[0]):
+        if ini >= fin or fin > len(fuera):
+            return None
+        tramo = " ".join(fuera[ini:fin])
+        fuera[ini:fin] = [f"({tramo}).{_SWZ[:ancho_]}"]
+    return " ".join(fuera)
 
 
 def ancho(expr: str, tabla: dict, funciones: dict | None = None) -> int | None:

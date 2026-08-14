@@ -14,6 +14,12 @@
       <label>Mostrar el HUD de diagnostico</label>
       <default>true</default>
     </entry>
+    <!-- 0 nunca, 1 con una ventana maximizada o a pantalla completa,
+         2 con cualquier ventana visible. -->
+    <entry name="PauseMode" type="Int">
+      <label>Cuando dejar de dibujar el fondo</label>
+      <default>1</default>
+    </entry>
   </group>
 
 </kcfg>
