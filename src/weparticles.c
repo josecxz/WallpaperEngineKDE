@@ -592,9 +592,19 @@ static void paso(WeParticleSystem *s, float dt)
                                    e[2] * d[0] - e[0] * d[2],
                                    e[0] * d[1] - e[1] * d[0]};
                     float tn = sqrtf(tg[0] * tg[0] + tg[1] * tg[1] + tg[2] * tg[2]);
+                    /* ARRASTRA, no empuja: mueve la posicion y deja la
+                     * velocidad como estaba. Sumandolo a la velocidad, la
+                     * particula acumula tangencial sin nada que la retenga y
+                     * la orbita se abre en espiral --- en `3219398263` las
+                     * cintas acababan cruzando el cielo entero, y el preview
+                     * las tiene cortas y pegadas al contorno de la esfera.
+                     * Fijar la velocidad tampoco vale: con `speedouter: 0`
+                     * ---los petalos de `2788036464`--- congelaria todo lo que
+                     * cae fuera del radio. Como campo de arrastre los cuatro
+                     * grupos del corpus se sostienen a la vez. */
                     if (tn > 1e-4f)
                         for (int k = 0; k < 3; k++)
-                            q->vel[k] += tg[k] / tn * vel * dt;
+                            q->pos[k] += tg[k] / tn * vel * dt;
                 }
                 break;
             }

@@ -200,17 +200,15 @@ def _op_atrae(e):
 
 
 def _op_vortice(e):
-    # OJO con `axis`: sin declarar queda a cero, y con el eje a cero el producto
-    # vectorial del operador es cero y no mueve NADA --- 9 de los 12 vortices del
-    # corpus estan asi. Ponerle el eje Z (que es lo que escriben los 2 que si lo
-    # declaran) los hace girar, pero en `3219398263` sale una malla de cintas
-    # blancas por todo el cielo que el preview no tiene, y leer el operador como
-    # velocidad en vez de como aceleracion lo empeora. Es un hilo aparte: la
-    # magnitud del operador, no su eje. Se deja como estaba hasta tener con que
-    # decidir.
+    # Sin `axis` el eje es el Z, y no es una eleccion libre: el operador gira la
+    # particula alrededor de ese eje con un producto vectorial, asi que con el
+    # eje a cero no mueve NADA. 9 de los 12 vortices del corpus no lo declaran
+    # ---o sea que estaban todos inertes--- y los 2 que si escriben "0 0 1".
+    # Ademas la escena es plana: girar en el plano de la pantalla es lo unico
+    # que se ve.
+    eje = _v3(e["axis"]) if e.get("axis") is not None else [0.0, 0.0, 1.0]
     return [_f1(e.get("distanceinner"), 0.0), _f1(e.get("distanceouter"), 1.0),
-            _f1(e.get("speedinner"), 0.0), _f1(e.get("speedouter"), 0.0)] \
-        + _v3(e.get("axis"), 0.0)
+            _f1(e.get("speedinner"), 0.0), _f1(e.get("speedouter"), 0.0)] + eje
 
 
 OPERADORES = {
@@ -240,11 +238,14 @@ RENDERERS = ("sprite", "spritetrail", "rope", "ropetrail")
 MAX_POR_DEFECTO = 1.0
 
 
-# Cuantos puntos tiene la cola de una cinta y cada cuanto se muestrea, cuando
-# el JSON no lo dice. `segments` solo aparece en 6 de los 66 sistemas ---con 8 y
-# con 10--- y `length` en 30, casi siempre entre 0.2 y 0.5 s.
+# Cuantos puntos tiene la cola de una cinta cuando el JSON no lo dice.
+# `segments` solo aparece en 6 de los 66 sistemas ---con 8 y con 10--- y
+# `length` en 30, casi siempre entre 0.2 y 0.5 s.
 CINTA_PUNTOS = 8
 CINTA_SEGUNDOS = 0.4
+# La cola guarda un punto por PASO DE SIMULACION, no por `length / segments`.
+# Ver `_cinta`.
+CINTA_PASO = 1.0 / 60.0
 
 
 def _cinta(e: dict) -> tuple[int, int, float]:
@@ -258,10 +259,22 @@ def _cinta(e: dict) -> tuple[int, int, float]:
     modo = 1 if e.get("name") == "rope" else 2
     puntos = e.get("segments")
     puntos = int(puntos) if isinstance(puntos, (int, float)) else CINTA_PUNTOS
-    puntos = max(2, min(32, puntos))
     largo = e.get("length")
     largo = float(largo) if isinstance(largo, (int, float)) else CINTA_SEGUNDOS
-    return (modo, puntos, max(1.0 / 60.0, largo / puntos))
+    # `length` NO es el espaciado entre puntos. Repartirlo ---`length/segments`---
+    # da 3 segundos por segmento en las `star trail` de `3238423642`, que declaran
+    # `length: 30`: cada segmento se convierte en una cuerda recta de cientos de
+    # pixeles y la escena se llena de lineas quebradas de colores que su preview
+    # no tiene. Con un punto por paso las tres escenas de referencia caen a la vez
+    # donde su preview dice: las estelas de `3219398263` rodean la esfera, las
+    # descargas de `1927028828` siguen sus arcos, y las estrellas desaparecen.
+    #
+    # Asi que `length` queda como TOPE de la duracion de la cola, no como
+    # espaciado. En este corpus no llega a recortar a nadie ---la cola mas larga
+    # son 32 pasos, medio segundo--- pero deja el campo con un significado en vez
+    # de ignorarlo.
+    puntos = max(2, min(32, puntos, round(largo / CINTA_PASO)))
+    return (modo, puntos, CINTA_PASO)
 
 
 def _estela(e: dict) -> tuple[float, float, float]:

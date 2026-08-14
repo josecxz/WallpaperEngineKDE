@@ -937,16 +937,40 @@ desactivadas por una opción del usuario (`trail`, `mousetrail`) y en la tercera
 renderer efectivo es otro—. Renderizadas seis de las más cargadas, ninguna se
 mueve más de un 1% de sus píxeles salvo `3219398263`.
 
-**Y esa destapa un hilo suelto.** Sus tres sistemas de cinta no dibujan nada,
-porque sus partículas no se mueven: el operador `vortex` que deberían tener
-girando declara `speedouter: 2500` pero **no declara `axis`**, y el eje a cero
-hace que el producto vectorial del operador sea cero. Antes no se notaba —cada
-partícula quieta se dibujaba igual como sprite—; una cinta de largo cero no se
-dibuja. Poner el eje por defecto a Z (que es lo que escriben los 2 vórtices del
-corpus que sí lo declaran) los hace girar, pero entonces salen cintas blancas
-por todo el cielo que el preview no tiene, y leer el operador como velocidad en
-vez de como aceleración lo empeora todavía más. El eje no es el problema: lo es
-la magnitud del operador, y eso es otra investigación.
+**Y esa destapó dos lecturas equivocadas**, las dos sobre cuánto se mueve una
+partícula, que como sprite no se notaban y como cinta saltan a la vista.
+
+**El `vortex` estaba inerte en 9 de sus 12 usos.** El operador gira la partícula
+alrededor de un eje con un producto vectorial, y `axis` no se declara casi
+nunca: con el eje a cero no mueve nada. Los 2 que sí lo declaran escriben
+`0 0 1`, y la escena es plana, así que el eje por defecto es Z.
+
+Pero ponerle el eje no bastaba: sumado a la velocidad, la partícula acumula
+tangencial sin nada que la retenga y la órbita se abre en espiral —las cintas
+de `3219398263` acababan cruzando el cielo entero—. Y **fijar** la velocidad
+tampoco vale: con `speedouter: 0`, que es lo que declaran los pétalos de
+`2788036464`, congelaría todo lo que cae fuera del radio. La lectura que
+sostiene los cuatro grupos del corpus a la vez es **arrastre**: mueve la
+posición y deja la velocidad como estaba.
+
+Aquí conviene decir cómo casi se descarta. La versión de arrastre subía la media
+de la escena de 85 a 110 y la di por peor sin mirarla; la imagen tenía las
+estelas rodeando la esfera igual que el preview, y la media era más alta
+justamente porque se concentran en un halo en vez de repartirse por el cielo.
+La media es una cifra y una escena es una imagen.
+
+**`length` no es el espaciado entre puntos de la cola.** Repartirlo
+—`length / segments`— da 3 segundos por segmento en las `star trail` de
+`3238423642`, que declaran `length: 30`: cada segmento se vuelve una cuerda
+recta de cientos de píxeles y la escena se llena de líneas quebradas de colores
+que su preview no tiene. Con **un punto por paso de simulación** las tres
+escenas de referencia caen a la vez donde su preview dice: las estelas de
+`3219398263` rodean la esfera, las descargas de `1927028828` siguen sus arcos y
+las estrellas desaparecen. `length` queda como tope de la duración de la cola,
+que en este corpus no llega a recortar a nadie.
+
+Sobre los 821 sistemas: **754 quedan idénticos** y los 67 que cambian son los 66
+de cinta más los del vórtice.
 
 ### Lo que queda
 
