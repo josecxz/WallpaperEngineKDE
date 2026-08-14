@@ -41,8 +41,8 @@ OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o \
            $(BUILD)/weparticles.o \
            $(BUILD)/moc_sceneview.o
 
-.PHONY: all build glexec install install-qml install-package install-env \
-        uninstall reload status clean plan
+.PHONY: all build glexec psysprobe install install-qml install-package \
+        install-env uninstall reload status clean plan
 
 all: build
 
@@ -87,6 +87,15 @@ glexec: $(BUILD)/glexec
 
 $(BUILD)/glexec: tools/glexec.c src/weparticles.c src/weparticles.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ tools/glexec.c src/weparticles.c -lEGL -lGL -lm
+	@echo "construido: $@"
+
+# ── sonda de simulacion ─────────────────────────────────────────────────────
+# Resume lo que hace un `.psys` sin dibujarlo: un PNG no distingue un operador
+# equivocado por un factor de diez si la capa es sutil. Ver tools/psysprobe.c.
+psysprobe: $(BUILD)/psysprobe
+
+$(BUILD)/psysprobe: tools/psysprobe.c src/weparticles.c src/weparticles.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -o $@ tools/psysprobe.c src/weparticles.c -lm
 	@echo "construido: $@"
 
 # ── instalacion ─────────────────────────────────────────────────────────────

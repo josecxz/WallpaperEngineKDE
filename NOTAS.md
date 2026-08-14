@@ -760,7 +760,7 @@ todas son el valor por defecto o pertenecen a un subsistema que no existe:
 |---|---|---|
 | `alignment` | 448 | 397 dicen `center`, que es lo que ya hacíamos. **Implementado**: quedan 24 capas visibles reales. |
 | `locktransforms` | 1293 | Aparece en objetos de **sonido** (56) y **luz** (7). Un campo que se aplica a un sonido no es una transformación: es el candado del editor. Nada que hacer. |
-| `instanceoverride` | 725 | 647 partículas y 64 ocultos, **cero imágenes**. Bloqueado tras el sistema de partículas. |
+| `instanceoverride` | 725 | 647 partículas y 64 ocultos, **cero imágenes**. **Implementado** con el sistema de partículas: `weparticles.cargar` lo aplica sobre el `.json` del emisor. |
 | `parallaxDepth` | 1425 | También en sonidos (57). Es profundidad relativa a la cámara; sin movimiento de cámara no desplaza nada. Bloqueado tras la cámara. |
 | `perspective` | 425 | **423 son `False`.** Los dos `True` del corpus son las capas de personaje de Jeanne y de Lucy, las dos con malla puppet. Jeanne renderiza bien sin leerlo. |
 | `anchor`, `horizontalalign`, `verticalalign` | 159 cada uno | 153, 152 y 156 son el valor neutro. Además son de **texto**, que no rasterizamos. |
@@ -791,8 +791,7 @@ queda no son campos ignorados sino campos cuyo subsistema no existe todavía.
 - ~~Partículas~~ **hecho**: 823 sistemas en 106 escenas, de los que 821 se
   simulan. Ver la sección siguiente.
 - **Texto**: 159 objetos en 28 escenas; leemos el campo, no dibujamos glifos.
-- **Shaders**: 31 variantes de 556 no compilan; 21 son conversiones implícitas
-  de HLSL.
+- **Shaders**: 1 variante de 578 no compila, la truncación de `maskBokeh`.
 
 ## Sistemas de partículas
 
@@ -807,13 +806,13 @@ abordable. Censo de las 125 escenas:
 | categoría | nombres distintos | cobertura |
 |---|---|---|
 | emisores | 2 (`sphererandom` 607, `boxrandom` 216) | los 2 |
-| inicializadores | 10 | los 8 mayores = 99% |
-| operadores | 13 | los 12 mayores |
-| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | los 2 primeros; `rope*` como sprite |
+| inicializadores | 10 | los 10 |
+| operadores | 13 | los 13 |
+| renderers | 4 (`sprite` 586, `spritetrail` 145, `rope` 34, `ropetrail` 32) | los 4; `rope*` con cinta propia |
 | shader | **1**: `genericparticle`, en los 823 | ya compilaba |
 
-29 piezas cubren el 100% de los 823 sistemas. Se simulan **821**; los 2
-restantes no declaran emisor o material.
+29 piezas cubren el 100% de los 823 sistemas, y **el vocabulario está cubierto
+entero**. Se simulan **821**; los 2 restantes no declaran emisor o material.
 
 ### El reparto
 
@@ -918,7 +917,7 @@ Cinco fallos, ninguno en la simulación:
   `max (0,0,0)`: por componente salen rojos y verdes puros —parecían luces de
   navidad—, y con un factor único salen todas del mismo ámbar a distinto brillo.
 - **`controlpointattract` sobre un punto con `flags & 1` no actúa.** Ese bit ata
-  el punto al cursor, y 106 de los 136 usos apuntan justo ahí. Sin puntero el
+  el punto al cursor, y 111 de los 136 usos apuntan justo ahí. Sin puntero el
   punto se queda en el origen y el operador deja de ser una interacción para
   ser un sumidero: la nube de 512 px de radio se apelotona en una bola de 64.
   Cuando el motor en vivo sepa dónde está el puntero, entra por ahí.
@@ -1055,12 +1054,105 @@ Sin él, las partículas se apelotonaban en los 64 px del emisor; con él salen
 repartidas de esquina a esquina, que es lo que hace que un rayo parezca un rayo.
 Lo que el emisor sorteó se conserva como sacudida alrededor del puesto.
 
-### Lo que queda
+### El corro, el ruido y una orientación que ya estaba bien
 
-- `mapsequencearoundcontrolpoint`, 3 sistemas. Coloca alrededor de un punto y
-  con velocidad propia; uno de ellos apunta a (0, −9999, 0), así que conviene
-  entenderlo antes de conectarlo.
-- `remapvalue`, 2 sistemas: remapea un canal por una función de ruido.
+Los tres cabos que quedaban del vocabulario. Los tres se cerraron leyendo el
+JSON con cuidado, y en dos de ellos **lo que bloqueaba era una lectura mía
+equivocada**, no el formato.
+
+**`mapsequencearoundcontrolpoint`, 3 sistemas.** La nota decía que uno apuntaba a
+(0, −9999, 0) y que convenía entenderlo antes de conectarlo. Es falso: ese es el
+**punto 1**, y ninguna de las tres piezas declara `controlpoint`, así que las
+tres usan el **0**. A (0, −9999, 0) no apunta nadie en esas escenas. El susto era
+de un campo que nadie lee.
+
+Es el hermano del reparto por camino: aquel reparte por una recta y este por un
+**corro**. El puesto no da posición —no hay campo de radio en ninguno de los tres
+usos— sino un **ángulo**, y lo que se gira es la velocidad inicial: `count: 5`
+con `speedmin = speedmax = (0, 100, 0)` son cinco chorros a 72°. El giro es
+alrededor de Z por lo mismo que en el vórtice, porque la escena es plana.
+
+`bounds` (`"0 1"`) y `limitbehavior` (`repeat`) son el corro entero y dar la
+vuelta: los dos valores neutros. Se leen igual, para que el campo signifique algo
+en vez de estar ignorado.
+
+**`remapvalue`, 2 operadores en un sistema.** La lluvia de `3597772384`, que
+**no tiene `velocityrandom`**: sin esta pieza las gotas nacían quietas y solo las
+movía la gravedad, con la caja de velocidades que declara el autor sin usar. Dos
+lecturas, las dos por la magnitud de los números:
+
+- **La entrada es la fracción de vida, no la posición.** `transforminputscale`
+  vale 10 y 8; sobre píxeles eso es ruido blanco por partícula, mientras que
+  `turbulence` —que sí muestrea la posición— escala por 0.01. Sobre la vida, 10
+  son diez unidades de ruido a lo largo de la gota.
+- **`speed` multiplica y `velocity` fija.** El rango de `speed` es −5 a 7, cuyo
+  centro es exactamente **1**: el neutro de un factor. Leerlo como rapidez
+  absoluta dejaría las gotas a 1 px/s y volvería inútil al operador anterior, que
+  es el único que da velocidad al sistema. Un autor no encadena dos operadores
+  donde el segundo anula al primero.
+
+`flags` (3 en uno, ausente en el otro) no se lee: con un solo uso de cada canal
+no hay forma de saber si es él quien decide, y no el canal.
+
+Esto **no se puede comprobar en un PNG**: la capa es sutil, las gotas que se ven
+en el render son de otros sistemas de la escena y el diff entre antes y después
+son 1702 píxeles de 8,3 millones. Lo que hay que mirar son las velocidades, y
+para eso está `tools/psysprobe.c` —`make psysprobe`—, que corre el mismo
+simulador sin GL de por medio. A los 10 s:
+
+```
+antes    velocidad media (0.0, -229.0)   max 480    x [-1984, 1954]
+después  velocidad media (-4.4, -555.0)  max 3192   x [-2261, 1772]
+```
+
+La lectura está en las tres columnas. La media pasa a ser el **centro de la caja
+declarada** (0, −550). El máximo, 3192, no cabe en la caja —cuya esquina son
+1020 px/s—, así que solo se explica con el factor de ráfaga. Y la x de antes es
+**exactamente la caja del emisor** (±2000), la firma de que no había ni una
+pizca de velocidad lateral; ahora se sale de ella, que es la deriva de ±200 que
+el JSON pedía.
+
+Los pétalos de `2788036464` cuentan lo mismo: de rapidez media 26 y máximo 43,
+todo gravedad, a media 57 y máximo 99 —los 100 px/s declarados—, y con la media
+en x clavada en 0.0, que es lo que tiene que dar la suma de cinco chorros
+repartidos en un corro.
+
+**`orientation: fixed`, 1 sistema.** No había nada que hacer, y esa es la
+conclusión. `ComputeParticleTrailTangents` calcula `right = cross(vista,
+velocidad)` con la vista en −Z; el eje fijo del `spritetrail` de `Magic_Vortex`
+es (0, 0, 1), o sea el mismo vector cambiado de signo, y eso da **el mismo quad
+con la u espejada** sobre un halo con simetría de giro. Ya se estaba dibujando
+así, en silencio.
+
+Lo mismo vale para los otros dos valores del campo: `screen` orienta al plano de
+pantalla y `upright` clava el eje vertical al del mundo, y sin rotación de cámara
+los dos son el billboard que ya hacemos. `orientation` es, en una escena plana,
+un campo sin efecto —salvo con un eje fijo que no sea paralelo a Z, que el corpus
+no tiene, y ahí `_orientacion` sí avisa.
+
+La excepción es la **cinta**: su anchura no la calcula el shader de WE sino
+nuestro constructor de vértices, que la pone perpendicular al camino. El `rope`
+de *Vapor 1* con `upright` sigue anotado, y es lo único del corpus que queda
+fuera junto con un emisor extra en dos sistemas.
+
+**Verificación.** De los 823 sistemas, **819 dan un `.psys` idéntico byte a byte**
+y los 4 que cambian son exactamente estos. Comparar el `.psys` antes que el PNG
+es lo que hace la comprobación barata: es el contrato entero del sistema, y
+generar los 823 cuesta segundos en vez de la media hora de renderizar el corpus
+dos veces.
+
+Sobre las 125 escenas renderizadas antes y después, **122 salen idénticas byte a
+byte** y las que cambian son *Magic_Vortex* y la lluvia. Los dos sistemas de
+pétalos no aparecen: sus objetos vienen con `visible: false` —son efectos de
+cursor que el usuario enciende—, así que ahí la sonda es la única forma de verlos.
+
+Queda un cabo que no es nuestro: **`3097749052` no renderiza igual dos veces**.
+Renderizado dos veces con el mismo binario cambian 23 850 píxeles dentro de un
+recuadro de 210×430, así que aparece como falso positivo en cualquier regresión
+byte a byte. Es anterior a este trabajo y no tiene que ver con partículas.
+
+El reparto por puestos se refactorizó para compartir el recorrido con el corro;
+las dos escenas que lo usan —`1927028828` y `2658583633`— renderizan idénticas.
 
 ## No dibujar lo que no se ve
 
@@ -1424,27 +1516,26 @@ camino caliente del render.
 
 Por orden de lo que más se nota:
 
-1. **Las 2 escenas negras y los 26 shaders de 578 que no compilan.** Poca
-   anchura, pero cuando cae la capa base se lleva la escena entera.
+1. **Las 2 escenas negras y la variante de shader que no compila** (1 de 578,
+   la truncación de `maskBokeh`). Poca anchura, pero cuando cae la capa base se
+   lleva la escena entera.
 2. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
    glifos.
 3. **Elegir la GPU que renderiza** (ver abajo).
 4. **Iluminación**: los materiales con luces se dibujan planos.
 
-De partículas quedan cuatro cabos, todos pequeños y ninguno bloqueante:
+De partículas ya no queda vocabulario: los tres cabos —el corro, `remapvalue` y
+`orientation`— están cerrados y contados arriba. Lo que sigue fuera de la
+simulación son tres cosas, ninguna bloqueante:
 
-- `mapsequencearoundcontrolpoint`, **3 sistemas**. Coloca alrededor de un punto
-  de control y con velocidad propia; uno apunta a (0, −9999, 0), así que hay que
-  entenderlo antes de conectarlo.
-- `remapvalue`, **2 sistemas**: remapea un canal por ruido simplex a la
-  velocidad. Es un mini sistema de expresiones.
-- Un `spritetrail` con `orientation: fixed` y eje propio, **1 sistema**: la
-  estela se orienta a la cámara y ese la quiere clavada.
-- `controlpointattract` sobre puntos atados al cursor (**111 usos**): entra solo
-  en cuanto el motor en vivo sepa dónde está el puntero. No es trabajo aparte.
-
-`controlpointattract` sobre puntos atados al cursor (106 de 136 usos) entra solo
-en cuanto el motor en vivo sepa dónde está el puntero; no es trabajo aparte.
+- `controlpointattract` sobre puntos atados al cursor (**111 de 136 usos**):
+  entra solo en cuanto el motor en vivo sepa dónde está el puntero. No es
+  trabajo aparte.
+- Un `rope` con `orientation: upright`, **1 sistema**: la anchura de la cinta la
+  monta nuestro constructor de vértices, perpendicular al camino, y ese la
+  quiere vertical.
+- Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
+  ese; tomar el primero es preferible a sumarlos mal.
 
 ### Elegir la GPU que renderiza
 

@@ -12,7 +12,7 @@
 
 #define MAX_PIEZAS 24
 #define MAX_CP 8
-#define MAX_F 12          /* floats por pieza; ninguna del corpus pasa de 9 */
+#define MAX_F 12          /* floats por pieza; ninguna del corpus pasa de 10 */
 #define PASO (1.0f / 60.0f)
 /* Dos topes de simulacion en una sola llamada, y son distintos a proposito.
  *
@@ -40,11 +40,11 @@ enum { EM_ESFERA, EM_CAJA };
 
 enum {
     IN_VIDA, IN_TAM, IN_ALFA, IN_COLOR, IN_VEL, IN_ROT, IN_ANGVEL, IN_TURBVEL,
-    IN_SECUENCIA
+    IN_SECUENCIA, IN_SECUENCIA_CP
 };
 enum {
     OP_MOV, OP_FADE, OP_TAM, OP_ALFA, OP_COLOR, OP_OSCALFA, OP_OSCTAM,
-    OP_OSCPOS, OP_ANGMOV, OP_TURB, OP_ATRAE, OP_VORTICE
+    OP_OSCPOS, OP_ANGMOV, OP_TURB, OP_ATRAE, OP_VORTICE, OP_REMAP
 };
 
 typedef struct { const char *nombre; int codigo; int nfloats; } Entrada;
@@ -62,6 +62,8 @@ static const Entrada INICIALIZADORES[] = {
     {"turbulentvelocityrandom", IN_TURBVEL, 8},
     /* estaciones, 0 repite / 1 rebota */
     {"mapsequencebetweencontrolpoints", IN_SECUENCIA, 2},
+    /* ...los 2 de arriba + vuelta[2] + velmin[3] + velmax[3] */
+    {"mapsequencearoundcontrolpoint", IN_SECUENCIA_CP, 10},
     {NULL, 0, 0},
 };
 
@@ -81,6 +83,8 @@ static const Entrada OPERADORES[] = {
     {"controlpointattract", OP_ATRAE,   6},
     /* dist_interior, dist_exterior, vel_interior, vel_exterior, eje[3] */
     {"vortex",              OP_VORTICE, 7},
+    /* canal (0 velocidad / 1 rapidez), escala, octavas, min[3], max[3] */
+    {"remapvalue",          OP_REMAP,   9},
 };
 
 typedef struct { int codigo; float f[MAX_F]; } Pieza;
@@ -133,7 +137,8 @@ struct WeParticleSystem {
 
     float t_prev;
     float credito;                  /* particulas pendientes de emitir */
-    int estacion;                   /* siguiente puesto de `mapsequence...` */
+    int estacion;                   /* siguiente puesto del reparto por camino */
+    int estacion_cp;                /* ...y el del reparto en corro */
     int cursor;                     /* por donde seguir buscando hueco */
     float vivido;                   /* segundos simulados, para `duracion` */
     unsigned int rng;
@@ -194,6 +199,23 @@ static float ruido(float x, float y, float z, int c)
                 a += w * ruido_hash(ix + dx, iy + dy, iz + dz, c);
             }
     return a;
+}
+
+/* Ruido apilado en octavas, de -1 a 1. `remapvalue` distingue `simplexnoise`
+ * de `fbmnoise`, y la diferencia entre los dos es justo esa: una octava contra
+ * varias. Reproducir el simplex exacto de WE no aporta nada aqui ---nadie
+ * compara pixel a pixel contra WE--- pero el numero de octavas si se nota, que
+ * es por lo que el JSON lo distingue. */
+static float ruido_octavas(float x, float y, float z, int c, int octavas)
+{
+    float suma = 0.0f, amplitud = 1.0f, total = 0.0f;
+    for (int i = 0; i < octavas; i++) {
+        float e = (float)(1 << i);
+        suma += amplitud * ruido(x * e, y * e, z * e, c + i);
+        total += amplitud;
+        amplitud *= 0.5f;
+    }
+    return total > 0.0f ? suma / total : 0.0f;
 }
 
 static void rotacional(float x, float y, float z, float out[3])
@@ -417,6 +439,22 @@ void we_psys_free(WeParticleSystem *s)
 
 /* ── nacimiento ────────────────────────────────────────────────────────── */
 
+/* Puesto que le toca a la particula numero `n` de un reparto de `puestos`.
+ * `rebota` es el `limitbehavior: mirror`: va y vuelve sin repetir los extremos,
+ * en vez de dar la vuelta y volver a empezar. */
+static int puesto(int n, int puestos, int rebota)
+{
+    /* Con un solo puesto no hay reparto, y el periodo del rebote seria cero:
+     * `n % 0` es una division entera por cero, o sea una caida por dato. */
+    if (puestos < 2)
+        return 0;
+    if (!rebota)
+        return n % puestos;
+    int periodo = 2 * (puestos - 1);
+    int m = n % periodo;
+    return m < puestos ? m : periodo - m;
+}
+
 static void emite(WeParticleSystem *s, Particula *q)
 {
     memset(q, 0, sizeof *q);
@@ -465,16 +503,7 @@ static void emite(WeParticleSystem *s, Particula *q)
         int puestos = (int)s->init[i].f[0];
         if (puestos < 2)
             puestos = 2;
-        int n = s->estacion++;
-        int idx;
-        if (s->init[i].f[1] >= 0.5f) {
-            /* `mirror`: va y vuelve, sin repetir los extremos. */
-            int periodo = 2 * (puestos - 1);
-            int m = n % periodo;
-            idx = m < puestos ? m : periodo - m;
-        } else {
-            idx = n % puestos;
-        }
+        int idx = puesto(s->estacion++, puestos, s->init[i].f[1] >= 0.5f);
         /* El camino llega hasta el ultimo punto de control con posicion
          * propia; con uno solo puesto ---el caso del corpus--- es el segmento
          * origen -> cp1. */
@@ -493,6 +522,42 @@ static void emite(WeParticleSystem *s, Particula *q)
             float base = mezcla(s->cp[seg][k], s->cp[seg + 1][k], f);
             q->pos[k] = base + (q->pos[k] - s->org[k]);
         }
+    }
+
+    /* `mapsequencearoundcontrolpoint` reparte en CORRO alrededor del punto de
+     * control 0: el puesto no da una posicion ---no hay radio en ninguno de los
+     * tres usos del corpus--- sino un angulo, y lo que se gira es la velocidad
+     * inicial. Sale un abanico de `count` chorros desde el punto.
+     *
+     * El giro es alrededor de Z por lo mismo que en el vortice: la escena es
+     * plana y girar en el plano de la pantalla es lo unico que se ve.
+     *
+     * Lo que el emisor sorteo se conserva, igual que en el reparto por camino:
+     * el punto de control sustituye al origen del emisor, no a la dispersion. */
+    for (int i = 0; i < s->n_init; i++) {
+        if (s->init[i].codigo != IN_SECUENCIA_CP)
+            continue;
+        const float *v = s->init[i].f;
+        int puestos = (int)v[0];
+        if (puestos < 1)
+            puestos = 1;
+        int idx = puesto(s->estacion_cp++, puestos, v[1] >= 0.5f);
+        /* La vuelta se reparte entre `puestos` porciones, no entre `puestos-1`
+         * puntos: el corro se cierra, asi que el primero y el ultimo no
+         * coinciden. */
+        float vuelta = mezcla(v[2], v[3], (float)idx / (float)puestos);
+        float a = vuelta * 6.283185307f;
+        float ca = cosf(a), sa = sinf(a);
+
+        float vel[3];
+        for (int k = 0; k < 3; k++)
+            vel[k] = mezcla(v[4 + k], v[7 + k], azar(&s->rng));
+        q->vel[0] += vel[0] * ca - vel[1] * sa;
+        q->vel[1] += vel[0] * sa + vel[1] * ca;
+        q->vel[2] += vel[2];
+
+        for (int k = 0; k < 3; k++)
+            q->pos[k] = s->cp[0][k] + (q->pos[k] - s->org[k]);
     }
 
     for (int i = 0; i < s->n_init; i++) {
@@ -661,6 +726,32 @@ static void paso(WeParticleSystem *s, float dt)
                     if (tn > 1e-4f)
                         for (int k = 0; k < 3; k++)
                             q->pos[k] += tg[k] / tn * vel * dt;
+                }
+                break;
+            }
+            case OP_REMAP: {
+                /* Un canal tomado de un campo de ruido. La entrada es la
+                 * FRACCION DE VIDA por la escala declarada ---ver `_op_remap`
+                 * en el lado Python, donde estan las dos lecturas--- desplazada
+                 * por la semilla para que cada particula lleve su propia curva y
+                 * no vayan todas al unisono. */
+                float u = q->edad / q->vida * v[1];
+                float base = azar_fijo(q->semilla, 97) * 64.0f;
+                int octavas = (int)v[2] < 1 ? 1 : (int)v[2];
+                if (v[0] < 0.5f) {
+                    /* Velocidad: la FIJA. Es el unico origen de velocidad de la
+                     * lluvia de `3597772384`, que no trae `velocityrandom`. */
+                    for (int k = 0; k < 3; k++) {
+                        float n = ruido_octavas(u, base, 0.0f, k * 3, octavas);
+                        q->vel[k] = mezcla(v[3 + k], v[6 + k], n * 0.5f + 0.5f);
+                    }
+                } else {
+                    /* Rapidez: MULTIPLICA. El rango del corpus es -5..7, cuyo
+                     * centro es 1: el neutro de un factor. */
+                    float n = ruido_octavas(u, base, 0.0f, 11, octavas);
+                    float f = mezcla(v[3], v[6], n * 0.5f + 0.5f);
+                    for (int k = 0; k < 3; k++)
+                        q->vel[k] *= f;
                 }
                 break;
             }
