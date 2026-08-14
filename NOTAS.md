@@ -667,6 +667,47 @@ que los sprites de refracción no desplazaban nada. Ahora desplazan. En
 intensidad es la correcta no está verificado**: el preview es una imagen fija y
 no las muestra.
 
+### Las conversiones implícitas que quedaban
+
+De 578 variantes reales compilaban 552. Las 26 que no eran **todas** el mismo
+tipo de cosa: HLSL convierte solo y GLSL no. Agrupadas por causa, y con el
+arreglo al lado:
+
+| casos | qué pasaba | qué se hace |
+|---|---|---|
+| 4 | `if (u_flag)`, `INVERT ? a : b` con un escalar | envolver en `bool(...)` |
+| 5 | `uint b = (a + 1) % RESOLUTION` | bajar los `uint` a `int` dentro de la expresión |
+| 4 | `max(0, albedo.rgb)` | el literal toma el ancho: `max(vec3(0.0), …)` |
+| 2 | `mix(vec4, vec3, float)` | truncar el argumento más ancho |
+| 2 | `for (int i = u_MinFreq; …)` | el init de un `for` es una declaración más |
+| 2 | `v_TexCoord += …` sobre un varying | copia local dentro de `main` |
+| 1 | `vec3 color = 0.0` | difusión de escalar |
+| 1 | `return 0` en función `float` | literal a flotante |
+| 1 | `vec2 v[] = { … }` | `#extension GL_ARB_shading_language_420pack` |
+
+Quedan **11**: seis piden truncar el operando más ancho de una operación
+aritmética —`v_TexCoord` es `vec4` y el shader lo resta a un `vec2`—, que es la
+regla general de HLSL y necesita reescribir la expresión, no solo el borde; y
+cinco son casos sueltos.
+
+Dos cosas que costaron, las dos por lo mismo —tocar texto sin mirar lo que
+significa—:
+
+- **Renombrar el varying para poder escribirlo.** Parecía lo simple: declarar
+  `v_TexCoord_in` y copiarlo. Pero las etapas se casan **por nombre**, así que
+  el fragment dejó de recibir lo que el vertex escribía, compiló igual y
+  muestreó en (0, 0). En `3555933181` eso borró el personaje y las vidrieras y
+  dejó solo la lluvia. La copia va dentro de `main` y la declaración no se toca.
+- **Promocionar los enteros dentro de una expresión** con una expresión regular.
+  Se llevó por delante 6 variantes que ya compilaban: convertía el exponente de
+  un `1e-5` y los índices de array, y dejaba `None.0` donde el grupo no casaba.
+  Solo se toca el argumento que **es** un literal pelado.
+
+Resultado: **567 de 578 en Mesa, 568 en NVIDIA**. De nueve escenas
+renderizadas antes y después, ocho salen idénticas al píxel y la novena
+—`3597772384`— pierde una **banda negra** que le cruzaba la imagen: era un pase
+que no compilaba y dejaba su buffer sin escribir.
+
 ## Qué campos del formato leemos y cuáles no
 
 Inventario sobre las 125 escenas, cruzando cada clave que aparece en
@@ -1318,11 +1359,18 @@ Por orden de lo que más se nota:
    glifos.
 3. **Elegir la GPU que renderiza** (ver abajo).
 4. **Iluminación**: los materiales con luces se dibujan planos.
-5. `mapsequence*` (14 sistemas) y `remapvalue` (2).
 
-Las partículas quedan completas salvo dos detalles de las cintas ---la curva de
-la Bézier y el deslizamiento de la textura, los dos por usar la ruta sin
-geometry shader--- que están en la sección de partículas.
+De partículas quedan cuatro cabos, todos pequeños y ninguno bloqueante:
+
+- `mapsequencearoundcontrolpoint`, **3 sistemas**. Coloca alrededor de un punto
+  de control y con velocidad propia; uno apunta a (0, −9999, 0), así que hay que
+  entenderlo antes de conectarlo.
+- `remapvalue`, **2 sistemas**: remapea un canal por ruido simplex a la
+  velocidad. Es un mini sistema de expresiones.
+- Un `spritetrail` con `orientation: fixed` y eje propio, **1 sistema**: la
+  estela se orienta a la cámara y ese la quiere clavada.
+- `controlpointattract` sobre puntos atados al cursor (**111 usos**): entra solo
+  en cuanto el motor en vivo sepa dónde está el puntero. No es trabajo aparte.
 
 `controlpointattract` sobre puntos atados al cursor (106 de 136 usos) entra solo
 en cuanto el motor en vivo sepa dónde está el puntero; no es trabajo aparte.
