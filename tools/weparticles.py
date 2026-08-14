@@ -22,20 +22,19 @@ espera, asi que una divergencia sale como un aviso, no como basura dibujada.
 Censo del corpus (823 sistemas en 106 escenas) que decide que hay que cubrir:
 
     emisores       sphererandom 607, boxrandom 216           -> los dos
-    inicializadores 10 nombres, los 8 mas comunes son el 99% -> los 8
-    operadores      13 nombres                               -> los 12 mayores
+    inicializadores 10 nombres                               -> los 10
+    operadores      13 nombres                               -> los 13
     renderers      sprite 586, spritetrail 145, rope 34, ropetrail 32
     shader         genericparticle, uno solo, en los 823
 
-Lo que NO se simula, y por que:
+El vocabulario esta cubierto entero. Lo unico que queda sin dibujar del corpus
+son un emisor extra en dos sistemas ---WE permite varios y sumarlos mal es peor
+que tomar el primero--- y la anchura de la cinta de un `rope` con
+`orientation: upright`; ver `_orientacion`.
 
-  * `mapsequencearoundcontrolpoint` (3 sistemas): coloca alrededor de un punto
-    de control y con velocidad propia. Uno de los tres apunta a (0, -9999, 0),
-    asi que mas vale entenderlo antes de conectarlo.
-  * `remapvalue` (2 sistemas): remapea un canal arbitrario a otro por una
-    funcion de ruido.
-
-`mapsequencebetweencontrolpoints` (11) SI se coloca: ver `_init_secuencia`.
+Los dos repartos por puestos se colocan: `mapsequencebetweencontrolpoints` (11)
+por un camino y `mapsequencearoundcontrolpoint` (3) en corro. Ver
+`_init_secuencia` y `_init_secuencia_cp`.
 
 Los tres renderers de estela SI se dibujan, por dos caminos distintos:
 
@@ -149,6 +148,35 @@ def _init_secuencia(e):
             1.0 if str(e.get("limitbehavior", "")) == "mirror" else 0.0]
 
 
+def _init_secuencia_cp(e):
+    """Puestos repartidos EN CORRO alrededor de un punto de control.
+
+    Hermano del de arriba: aquel reparte por un camino y este por un corro. El
+    puesto no da una posicion ---no hay campo de radio en ninguno de los tres
+    usos--- sino un ANGULO, y lo que se gira es la velocidad inicial. Asi el
+    corro sale de que cada particula arranca hacia un lado distinto.
+
+    Los tres usos del corpus dicen `count: 5`, y los dos que declaran velocidad
+    dicen `speedmin = speedmax = (0, 100, 0)`: cinco chorros a 72 grados. El
+    tercero ---`Magic_Vortex`--- no declara velocidad, asi que la pieza solo le
+    mueve el origen al punto de control, que ya esta donde emite.
+
+    Que el punto es el 0 no es una eleccion: ninguno de los tres declara
+    `controlpoint`, y el (0, -9999, 0) que asustaba en las notas es el punto 1,
+    al que no apunta NADIE en esas escenas.
+
+    `bounds` es la porcion de vuelta que ocupa el corro y `limitbehavior` como
+    se recorre; los dos unicos valores del corpus ---`"0 1"` y `repeat`--- son
+    el corro entero y dar la vuelta, que es lo neutro. Se leen igual, para que
+    el campo tenga significado en vez de estar ignorado.
+    """
+    b = _fl(e.get("bounds"))
+    return [_f1(e.get("count"), 2.0),
+            1.0 if str(e.get("limitbehavior", "")) == "mirror" else 0.0,
+            b[0] if len(b) > 1 else 0.0, b[1] if len(b) > 1 else 1.0] \
+        + _v3(e.get("speedmin")) + _v3(e.get("speedmax"))
+
+
 INICIALIZADORES = {
     "lifetimerandom": _init_vida,
     "sizerandom": _init_tam,
@@ -159,6 +187,7 @@ INICIALIZADORES = {
     "angularvelocityrandom": _init_vec,
     "turbulentvelocityrandom": _init_turbvel,
     "mapsequencebetweencontrolpoints": _init_secuencia,
+    "mapsequencearoundcontrolpoint": _init_secuencia_cp,
 }
 
 
@@ -227,6 +256,47 @@ def _op_vortice(e):
             _f1(e.get("speedinner"), 0.0), _f1(e.get("speedouter"), 0.0)] + eje
 
 
+# Canales de salida de `remapvalue` y funciones de ruido, en el orden que
+# espera el C. Un nombre fuera de estas tablas deja la pieza sin soporte en vez
+# de escribir en un canal que no es.
+_REMAP_CANAL = {"velocity": 0.0, "speed": 1.0}
+_REMAP_OCTAVAS = {"simplexnoise": 1.0, "fbmnoise": 3.0}
+
+
+def _op_remap(e):
+    """Un canal de la particula tomado de un campo de ruido.
+
+    Los dos usos del corpus son la lluvia de `3597772384`, que NO tiene
+    `velocityrandom`: sin esta pieza las gotas nacen quietas y solo las mueve la
+    gravedad. La primera fija la velocidad dentro de la caja
+    (-200, -100, 0)..(200, -1000, 0) --- caida entre 100 y 1000 px/s con deriva
+    lateral --- y la segunda modula la rapidez entre -5 y 7.
+
+    Dos lecturas, las dos por la magnitud de los numeros:
+
+    * **La entrada es la fraccion de vida**, no la posicion. `transforminputscale`
+      vale 10 y 8; sobre pixeles eso es ruido blanco por particula, mientras que
+      `turbulence` ---que si muestrea la posicion--- escala por 0.01. Con la
+      vida, 10 son diez unidades de ruido a lo largo de la gota: un reguero que
+      acelera y frena, que es lo que hace una gota en un cristal. El material es
+      `rain_screen` y los hermanos del sistema se llaman `rain_screen_static` y
+      `rain_screen_fast`.
+    * **`speed` MULTIPLICA y `velocity` FIJA.** El rango de `speed` es -5..7,
+      cuyo centro es exactamente 1: el valor neutro de un factor. Leerlo como
+      rapidez absoluta dejaria las gotas a 1 px/s y volveria inutil al operador
+      anterior, que es el unico que da velocidad al sistema.
+
+    `flags` (3 en el de `speed`, ausente en el otro) no se lee: con un solo uso
+    de cada canal no hay forma de saber si es el campo que decide y no el canal.
+    """
+    canal = _REMAP_CANAL.get(str(e.get("output", "")))
+    octavas = _REMAP_OCTAVAS.get(str(e.get("transformfunction", "")))
+    if canal is None or octavas is None:
+        return None
+    return [canal, _f1(e.get("transforminputscale"), 1.0), octavas] \
+        + _v3(e.get("outputrangemin")) + _v3(e.get("outputrangemax"))
+
+
 OPERADORES = {
     "movement": _op_mov,
     "alphafade": _op_fade,
@@ -240,10 +310,11 @@ OPERADORES = {
     "turbulence": _op_turb,
     "controlpointattract": _op_atrae,
     "vortex": _op_vortice,
+    "remapvalue": _op_remap,
 }
 
-# `rope` y `ropetrail` se aceptan pero se dibujan como sprites sueltos; ver el
-# encabezado del modulo.
+# `rope` y `ropetrail` se dibujan como cinta, con otro shader y otro vertice;
+# ver el encabezado del modulo y `_cinta`.
 RENDERERS = ("sprite", "spritetrail", "rope", "ropetrail")
 
 # `maxlength` por defecto. El valor que sale de `ComputeParticleTrailTangents`
@@ -325,11 +396,49 @@ def _estela(e: dict) -> tuple[float, float, float]:
             num("minlength", 0.0))
 
 
+def _orientacion(e: dict, cinta: bool) -> str | None:
+    """Que valor de `orientation` no sabemos dibujar; `None` si vale el nuestro.
+
+    Reparto del corpus: 722 renderers sin campo, 38 `screen`, 4 `upright` y 1
+    `fixed`. Los tres nombres piden lo mismo en una escena PLANA:
+
+    * `camera` (el defecto) orienta el sprite hacia la camara.
+    * `screen` lo orienta al plano de pantalla, que sin rotacion de camara es el
+      mismo plano.
+    * `upright` le clava el eje vertical al del mundo, que ya lo es.
+
+    `fixed` sustituye la direccion de la vista por un eje propio. Es el
+    `spritetrail` de `Magic_Vortex`, y su eje es (0, 0, 1):
+    `ComputeParticleTrailTangents` calcula `right = cross(vista, velocidad)` con
+    la vista en -Z, asi que el eje fijo da el MISMO quad con la u espejada ---y
+    su sprite es un halo con simetria de giro. Con un eje que no fuera paralelo
+    a Z si habria trabajo; en el corpus no hay ninguno.
+
+    Las cintas son otra cosa y por eso reciben `cinta=True`: su anchura no la
+    calcula el shader de WE sino nuestro constructor de vertices, que la pone
+    perpendicular al camino. Ahi `upright` ---el `rope` de *Vapor 1*--- si pide
+    otra geometria, y se sigue anotando.
+    """
+    o = e.get("orientation")
+    if o in (None, "camera"):
+        return None
+    if cinta:
+        return f"estela {o}"
+    if o in ("screen", "upright"):
+        return None
+    if o == "fixed":
+        x, y, z = _v3(e.get("axis"))
+        if abs(z) > 1e-6 and abs(x) < 1e-6 and abs(y) < 1e-6:
+            return None
+        return f"orientacion fixed eje {x:g} {y:g} {z:g}"
+    return f"orientacion {o}"
+
+
 def _cursor(op: dict, cursor: set[int]) -> bool:
     """El operador tira de un punto de control que mueve el CURSOR.
 
     `flags & 1` en un punto de control lo ata al puntero, y de las 136
-    apariciones de `controlpointattract` del corpus, 106 apuntan justo a ese
+    apariciones de `controlpointattract` del corpus, 111 apuntan justo a ese
     punto: el preset de luciernagas y sus derivados, que en Wallpaper Engine
     persiguen al raton.
 
@@ -442,25 +551,30 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
                   + [_f1(e.get("instantaneous"), 0.0),
                      _f1(e.get("duration"), 0.0)])
 
+    # Una pieza que esta en la tabla pero devuelve None es una VARIANTE que no
+    # sabemos traducir --- otro canal de `remapvalue`, otra funcion de ruido ---
+    # y se anota igual que un nombre desconocido: nunca se emite a medias.
     for e in pj.get("initializer") or []:
         if not isinstance(e, dict):
             continue
         fn = INICIALIZADORES.get(e.get("name", ""))
-        if fn is None:
+        vals = fn(e) if fn else None
+        if vals is None:
             s.sin_soporte.append(f"initializer:{e.get('name')}")
         else:
-            s.inits.append((e["name"], fn(e)))
+            s.inits.append((e["name"], vals))
 
     for e in pj.get("operator") or []:
         if not isinstance(e, dict):
             continue
         fn = OPERADORES.get(e.get("name", ""))
-        if fn is None:
+        vals = fn(e) if fn else None
+        if vals is None:
             s.sin_soporte.append(f"operator:{e.get('name')}")
         elif _cursor(e, cursor):
             s.sin_cursor.append(e["name"])
         else:
-            s.opers.append((e["name"], fn(e)))
+            s.opers.append((e["name"], vals))
 
     for e in pj.get("renderer") or []:
         if isinstance(e, dict) and e.get("name") in RENDERERS:
@@ -469,12 +583,10 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
                 s.estela = _estela(e)
             elif s.renderer in ("rope", "ropetrail"):
                 s.cinta = _cinta(e)
-                # Un solo sistema del corpus pide `orientation: fixed` con un
-                # eje suyo, en vez de la estela girada hacia la camara que
-                # calcula `ComputeParticleTrailTangents`. Se anota en vez de
-                # dibujarlo mal en silencio.
-                if e.get("orientation") not in (None, "camera"):
-                    s.sin_soporte.append(f"estela {e['orientation']}")
+            # Se anota en vez de dibujarlo mal en silencio; ver `_orientacion`.
+            aviso = _orientacion(e, s.renderer in ("rope", "ropetrail"))
+            if aviso:
+                s.sin_soporte.append(aviso)
         elif isinstance(e, dict):
             s.sin_soporte.append(f"renderer:{e.get('name')}")
 

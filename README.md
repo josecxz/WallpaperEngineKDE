@@ -121,12 +121,14 @@ Funciona sobre escenas reales de la biblioteca, incluidas algunas complejas
 
 Limitaciones conocidas:
 
-- 6 de 578 variantes de shader no llegan a compilar en el driver y su pase se
+- 1 de 578 variantes de shader no llegan a compilar en el driver y su pase se
   omite. Normalmente cuesta una capa, pero si la que cae es la capa base se
   lleva todo lo que colgaba de ella.
 - Sin sistema de iluminación: los materiales con luces se dibujan planos.
 - Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
-  incluidas. Los operadores que siguen al cursor quedan inactivos.
+  incluidas, y con el vocabulario del formato cubierto entero. Los operadores
+  que siguen al cursor quedan inactivos hasta que el motor sepa dónde está el
+  puntero.
 - Sin audio reactivo.
 
 ## Aviso

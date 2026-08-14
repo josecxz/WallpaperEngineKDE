@@ -132,6 +132,9 @@ class _Parser:
         # que es lo que hace seguro a todo lo que se apoya en `tipo`.
         self.permisivo = permisivo
         self.recortes: list[tuple[int, int, int]] = []
+        # Tramos de tokens que hay que envolver en `float(...)`: un operando
+        # entero que se encuentra con uno flotante. HLSL promociona solo.
+        self.promociones: list[tuple[int, int]] = []
 
     def ojear(self):
         return self.t[self.i] if self.i < len(self.t) else None
@@ -216,6 +219,13 @@ class _Parser:
         base = _base_comun(a[0], b[0])
         if base is None:
             return None
+        if self.permisivo and ini_a is not None and base == "float":
+            # `1 - u_BarSpacing`: el driver corta con "could not implicitly
+            # convert". Se envuelve el operando entero, no el flotante.
+            if a[0] in ("int", "uint") and b[0] == "float":
+                self.promociones.append((ini_a, fin_a))
+            elif b[0] in ("int", "uint") and a[0] == "float":
+                self.promociones.append((ini_b, fin_b))
         if a[1] == 1:
             return (base, b[1])
         if b[1] == 1:
@@ -366,15 +376,23 @@ def truncar(expr: str, tabla: dict, funciones: dict | None = None) -> str | None
         return None
     p = _Parser(tokens, tabla, funciones or {}, permisivo=True)
     val = p.expresion()
-    if val is None or p.i != len(tokens) or not p.recortes:
+    if val is None or p.i != len(tokens) or (not p.recortes and not p.promociones):
         return None
-    # De dentro hacia fuera, para que los indices de los tramos no se muevan.
+    # Los dos arreglos son lo mismo ---envolver un tramo de tokens--- y se
+    # aplican juntos, de derecha a izquierda para que los indices no se muevan.
+    cambios = [(i, f, ancho, None) for i, f, ancho in p.recortes]
+    cambios += [(i, f, None, "float") for i, f in p.promociones]
     fuera = list(tokens)
-    for ini, fin, ancho_ in sorted(p.recortes, key=lambda r: -r[0]):
-        if ini >= fin or fin > len(fuera):
+    ultimo = len(fuera) + 1
+    for ini, fin, ancho_, envoltura in sorted(cambios, key=lambda r: (-r[0], -r[1])):
+        if ini >= fin or fin > len(fuera) or fin > ultimo:
+            # Tramos que se solapan: se deja la expresion como estaba antes de
+            # inventar un parentesis a medias.
             return None
+        ultimo = ini
         tramo = " ".join(fuera[ini:fin])
-        fuera[ini:fin] = [f"({tramo}).{_SWZ[:ancho_]}"]
+        fuera[ini:fin] = [f"({tramo}).{_SWZ[:ancho_]}" if envoltura is None
+                          else f"{envoltura}({tramo})"]
     return " ".join(fuera)
 
 
@@ -402,16 +420,44 @@ def tabla_de_funciones(body: str) -> dict[str, tuple[str, int]]:
     return fuera
 
 
+# `#define NOMBRE <expresion>`, sin parametros. Las de funcion ---con `(`
+# pegado al nombre--- no valen: su tipo depende de los argumentos.
+_DEFINE_OBJETO_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+(\S.*)$")
+
+
 def tabla_global(body: str) -> dict[str, tuple[str, int]]:
-    """Uniforms, varyings y globales: lo visible desde cualquier funcion."""
+    """Uniforms, varyings, globales Y macros sin parametros.
+
+    Las macros hay que tiparlas o media inferencia se queda a ciegas: los
+    shaders de desenfoque del corpus escriben
+    `#define pixelSize (1.0 / g_Texture0Resolution)` y despues
+    `vec2 pixelStep = saturate(depth) * pixelSize;`. Sin saber que `pixelSize`
+    es vec4 no hay forma de ver que ahi falta una truncacion, y el pase se
+    pierde entero.
+
+    Se resuelven en dos vueltas porque una macro puede apoyarse en otra; con dos
+    basta para el corpus y no hace falta un grafo de dependencias.
+    """
     fuera: dict[str, tuple[str, int]] = {}
     prof = 0
+    macros: list[tuple[str, str]] = []
     for linea in body.splitlines():
-        if prof == 0:
+        m = _DEFINE_OBJETO_RE.match(linea)
+        if m:
+            macros.append((m.group(1), m.group(2).strip()))
+        elif prof == 0:
             m = _DECL_VAR_RE.match(linea)
             if m and m.group(1) in ANCHO_TIPO:
                 fuera.setdefault(m.group(2),
                                  (BASE_TIPO[m.group(1)], ANCHO_TIPO[m.group(1)]))
         prof += linea.count("{") - linea.count("}")
         prof = max(prof, 0)
+
+    for _ in range(2):
+        for nombre, cuerpo in macros:
+            if nombre in fuera:
+                continue
+            t = tipo(cuerpo, fuera, None)
+            if t is not None:
+                fuera[nombre] = t
     return fuera
