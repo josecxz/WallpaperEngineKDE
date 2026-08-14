@@ -21,6 +21,8 @@ SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
 - **Integrado en Plasma** como plugin de fondo: respeta el z-order, la
   opacidad y los iconos del escritorio.
 - **Sin reiniciar nada**: cambiar de fondo, pararlo o arrancarlo es inmediato.
+- **No dibuja lo que no se ve**: con una ventana maximizada delante el motor se
+  para (98,4 % → 0,0 % de la GPU) y al volver sigue donde estaba.
 
 No soporta wallpapers de tipo vídeo ni web, ni audio reactivo.
 

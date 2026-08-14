@@ -46,6 +46,12 @@ class SceneView : public QQuickRhiItem
     Q_PROPERTY(QUrl planSource READ planSource WRITE setPlanSource NOTIFY planSourceChanged)
     Q_PROPERTY(qreal time READ time WRITE setTime NOTIFY timeChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
+    // Si el plan ya esta cargado y se ha dibujado al menos un fotograma. Lo
+    // necesita QML para no pausar el reloj ANTES del primer fotograma: sin
+    // reloj no hay `time` que cambie, sin cambio de `time` no hay `update()`,
+    // y el plan no llega a cargarse nunca --- el fondo se queda negro en vez
+    // de congelado.
+    Q_PROPERTY(bool dibujado READ dibujado NOTIFY statusChanged)
     Q_PROPERTY(QString sceneTitle READ sceneTitle NOTIFY sceneTitleChanged)
 
 public:
@@ -58,6 +64,7 @@ public:
     void setTime(qreal t);
 
     QString status() const { return m_status; }
+    bool dibujado() const { return m_dibujado; }
     QString sceneTitle() const { return m_sceneTitle; }
 
 Q_SIGNALS:
@@ -84,5 +91,6 @@ private:
     QString m_planPath;
     qreal m_time = 0.0;
     QString m_status = QStringLiteral("sin inicializar");
+    bool m_dibujado = false;
     QString m_sceneTitle;
 };
