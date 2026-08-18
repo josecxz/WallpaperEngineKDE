@@ -809,11 +809,15 @@ static void modula(const WeParticleSystem *s, const Particula *q, Modulado *m)
         const float *v = s->oper[j].f;
         switch (s->oper[j].codigo) {
         case OP_FADE:
-            /* fadeintime y fadeouttime son fracciones de la vida: sube
-             * hasta la primera y baja a partir de la segunda. */
+            /* Los dos son fracciones de la vida: sube hasta la primera y
+             * baja a partir de la segunda. El 0 es un valor legitimo ---se
+             * apaga desde que nace, que es lo que `weparticles.py` pone por
+             * defecto--- asi que el guardia tiene que dejarlo pasar en vez de
+             * tomarlo por "sin apagado". Un preset del corpus lo declara a
+             * mano y se le estaba ignorando. */
             if (v[0] > 0.0f && vn < v[0])
                 m->alfa *= vn / v[0];
-            if (v[1] > 0.0f && v[1] < 1.0f && vn > v[1])
+            if (v[1] >= 0.0f && v[1] < 1.0f && vn > v[1])
                 m->alfa *= 1.0f - (vn - v[1]) / (1.0f - v[1]);
             break;
         case OP_TAM:

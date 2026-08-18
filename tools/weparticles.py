@@ -130,8 +130,37 @@ def _init_vec(e):
     return _v3(e.get("min")) + _v3(e.get("max"))
 
 
+# La `scale` de la turbulencia de WE no esta en las unidades de la celda de
+# ruido del simulador, que mide 1. Se ve en el corpus: 148 sistemas declaran
+# `turbulentvelocityrandom`, casi todos con `scale` entre 0.1 y 0.5, y sin
+# convertir nada el emisor abarcaria una MEDIANA de 102 celdas ---hasta 750---.
+# Con eso, dos particulas nacidas juntas salen en direcciones sin relacion: el
+# campo deja de ser turbulencia y se vuelve una direccion al azar por particula.
+# Medido con `psysprobe` sobre el humo de Sniper Girl, la coherencia
+# ---|velocidad media| / rapidez media--- era 0.08: un pufo que se abre en todas
+# direcciones en vez del chorro que sale del canon.
+#
+# El factor esta CALIBRADO, no leido de WE, que no publica su funcion de ruido.
+# Con el, la coherencia de ese humo sube a 0.72: sale con rumbo pero conserva
+# volumen. Se probaron 0.01 ---0.91, tan paralelo que se ve como una raya de
+# humo--- y 0.1 ---0.56, demasiado abierto---. La direccion resultante no
+# depende del factor (los tres dan -12.6 grados); lo que cambia es cuanto se
+# abre el penacho.
+#
+# Que la direccion concreta la pone nuestro ruido y no el wallpaper es
+# inevitable: el formato no trae ningun campo de direccion, solo `scale`,
+# `speedmin`/`speedmax` y un `offset` que desplaza el punto de muestreo ---y que
+# en este preset vale cero---. Lo que si vuelve a depender del wallpaper es el
+# caracter: los sistemas pequenos salen coherentes y los grandes se esparcen.
+#
+# Vive aqui y no en el `.c` por dos razones. Convertir las unidades del formato
+# es interpretarlo, que es trabajo de Python; el simulador ejecuta el numero que
+# le llega. Y asi el cambio viaja en el plan, en vez de esperar a que
+# plasmashell reinicie para soltar la `.so` que tiene mapeada.
+ESCALA_RUIDO = 0.05
+
 def _init_turbvel(e):
-    return [_f1(e.get("scale"), 0.01), _f1(e.get("timescale"), 1.0),
+    return [_f1(e.get("scale"), 0.01) * ESCALA_RUIDO, _f1(e.get("timescale"), 1.0),
             _f1(e.get("speedmin"), 0.0), _f1(e.get("speedmax"), 0.0),
             _f1(e.get("phasemax"), 0.0)] + _v3(e.get("offset"))
 
@@ -196,8 +225,40 @@ def _op_mov(e):
 
 
 def _op_fade(e):
-    # `fadeouttime` es el instante en que EMPIEZA a apagarse; 1 = no se apaga.
-    return [_f1(e.get("fadeintime"), 0.0), _f1(e.get("fadeouttime"), 1.0)]
+    """`alphafade` -> [entrada, instante en que EMPIEZA el apagado].
+
+    El valor por defecto de `fadeouttime` es **0 ---se apaga desde que nace---
+    y no 1**, que es como si no se apagara nunca. Con 1 la particula muere a
+    plena opacidad, y como `sizechange` la hace crecer con la edad, las volutas
+    mas grandes son las mas viejas: el humo de Sniper Girl salia como una
+    neblina ancha que velaba el rifle.
+
+    Comprobado contra WE, no a ojo: alineando el `preview.jpg` del autor con el
+    lienzo por correlacion (0.929, recorte de 1040 px en (112, 384)) se ve un
+    rifle nitido con una voluta compacta sobre la recamara. Con el apagado
+    ocupando la vida entera sale eso; sin el, la neblina. El tamano por
+    particula ya era correcto: 600 unidades por la escala 0.2 del objeto son
+    120 px de lienzo, y la voluta del preview mide unos 60, que es una
+    particula al 40% de su crecimiento.
+
+    Solo cambia el valor por defecto, no la lectura del campo. Se probo tambien
+    interpretarlo como DURACION del apagado ---que para el caso omitido da lo
+    mismo--- y se descarto: reinterpreta ademas los 244 sistemas que si lo
+    declaran, y ahi no hay con que comprobarlo. Los dos valores mas usados
+    admiten las dos lecturas sin chirriar (`0.9` puede ser "se apaga en el
+    ultimo 10%" o "se apaga durante el 90% de su vida"), y entre los que usan
+    valores bajos hay estelas de raton y gotas de lluvia, donde la lectura de
+    duracion las dejaria cortandose en seco.
+
+    El campo se omite en 236 de los 480 `alphafade` del corpus, en 87 escenas.
+    """
+    # Se emite un epsilon y no un 0 exacto: son indistinguibles en la
+    # simulacion ---0.0001% de la vida--- y el 0 lo descarta el guardia de
+    # cualquier ejecutor anterior al arreglo de `weparticles.c`. Eso importa
+    # porque plasmashell conserva mapeada la .so con la que arranco: hasta que
+    # no reinicia la sesion sigue ejecutando el simulador viejo, y con el 0 el
+    # apagado no se aplicaria aunque el plan sea nuevo.
+    return [_f1(e.get("fadeintime"), 0.0), _f1(e.get("fadeouttime"), 1e-6)]
 
 
 def _op_rampa(e):
@@ -233,7 +294,7 @@ def _op_angmov(e):
 
 
 def _op_turb(e):
-    return [_f1(e.get("scale"), 0.01), _f1(e.get("timescale"), 1.0),
+    return [_f1(e.get("scale"), 0.01) * ESCALA_RUIDO, _f1(e.get("timescale"), 1.0),
             _f1(e.get("speedmin"), 0.0), _f1(e.get("speedmax"), 0.0),
             _f1(e.get("phasemin"), 0.0), _f1(e.get("phasemax"), 0.0)] \
         + _v3(e.get("mask"), 1.0)
