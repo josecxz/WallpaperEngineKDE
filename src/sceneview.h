@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <QColor>
 #include <QQuickRhiItem>
 #include <QString>
 #include <QUrl>
@@ -36,6 +37,11 @@ private:
     bool m_failed = false;
     bool m_diagDone = false;
     int m_reportedPhase = -1;   // evita rehacer el estado en cada fotograma
+    // Copiados en synchronize() como todo lo demas: el encaje se puede cambiar
+    // desde la UI de configuracion mientras el hilo de render esta dibujando.
+    int m_encaje = 0;
+    float m_zoom = 1.0f, m_despX = 0.0f, m_despY = 0.0f;
+    float m_bar[3] = {0.0f, 0.0f, 0.0f};
 };
 
 class SceneView : public QQuickRhiItem
@@ -53,6 +59,17 @@ class SceneView : public QQuickRhiItem
     // de congelado.
     Q_PROPERTY(bool dibujado READ dibujado NOTIFY statusChanged)
     Q_PROPERTY(QString sceneTitle READ sceneTitle NOTIFY sceneTitleChanged)
+    // Encaje del lienzo en la pantalla: 0 cubrir, 1 encajar entero, 2 estirar.
+    // Ver GlExecutor::Encaje, que es quien define los valores.
+    Q_PROPERTY(int encaje READ encaje WRITE setEncaje NOTIFY encajeChanged)
+    Q_PROPERTY(qreal zoom READ zoom WRITE setZoom NOTIFY encajeChanged)
+    Q_PROPERTY(qreal desplazamientoX READ desplazamientoX WRITE setDesplazamientoX
+               NOTIFY encajeChanged)
+    Q_PROPERTY(qreal desplazamientoY READ desplazamientoY WRITE setDesplazamientoY
+               NOTIFY encajeChanged)
+    // Color de las barras cuando la escena no llena la pantalla.
+    Q_PROPERTY(QColor colorBarras READ colorBarras WRITE setColorBarras
+               NOTIFY encajeChanged)
 
 public:
     explicit SceneView(QQuickItem *parent = nullptr);
@@ -67,11 +84,25 @@ public:
     bool dibujado() const { return m_dibujado; }
     QString sceneTitle() const { return m_sceneTitle; }
 
+    int encaje() const { return m_encaje; }
+    qreal zoom() const { return m_zoom; }
+    qreal desplazamientoX() const { return m_despX; }
+    qreal desplazamientoY() const { return m_despY; }
+    QColor colorBarras() const { return m_colorBarras; }
+    void setEncaje(int v);
+    void setZoom(qreal v);
+    void setDesplazamientoX(qreal v);
+    void setDesplazamientoY(qreal v);
+    void setColorBarras(const QColor &c);
+
 Q_SIGNALS:
     void planSourceChanged();
     void timeChanged();
     void statusChanged();
     void sceneTitleChanged();
+    // Una sola senal para los cinco: van juntos a la misma cuenta y quien los
+    // mira ---el HUD--- los enseña en la misma linea.
+    void encajeChanged();
 
 protected:
     QQuickRhiItemRenderer *createRenderer() override;
@@ -93,4 +124,8 @@ private:
     QString m_status = QStringLiteral("sin inicializar");
     bool m_dibujado = false;
     QString m_sceneTitle;
+    int m_encaje = 0;                        // GlExecutor::Cubrir
+    qreal m_zoom = 1.0;
+    qreal m_despX = 0.0, m_despY = 0.0;
+    QColor m_colorBarras = QColor(0, 0, 0);
 };

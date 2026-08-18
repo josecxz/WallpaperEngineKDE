@@ -1544,6 +1544,94 @@ que no hay parallax ni posicionado de capas.
 ejecución y no lo borra. Con escenas 4K son cientos de MB cada una; conviene
 `rm -rf /tmp/werender-*` tras una tanda.
 
+## El relleno a potencia de dos estaba en los píxeles
+
+*Sniper Girl* salía en un recuadro que ocupaba parte de la pantalla, con el
+resto negro y las partículas flotando por fuera. Parecía un fallo de encaje y
+no lo era: el `.tex` del fondo es un contenedor de **4096x2048 con la imagen
+real de 2560x1440 pegada a la esquina superior izquierda** y el resto a alfa
+cero. Subíamos el contenedor entero, así que las UV 0..1 de la capa recorrían
+también el relleno y la escena quedaba en **0,625 x 0,703** de su sitio ---los
+dos cocientes `image_size / texture_size`, y exactamente el recuadro que se
+veía---.
+
+Las partículas no encogían porque su colocación no pasa por esa textura: por
+eso el síntoma parecía de composición y no de textura.
+
+La convención la documentan los propios shaders de WE:
+`g_TextureNResolution = (texW, texH, imgW, imgH)`, y quien la respeta escala sus
+UV con `.zw / .xy` (`genericimage4.vert:183`, `common_particles.h:71`). Nosotros
+emitíamos el mismo par dos veces, o sea proporción 1.
+
+**El arreglo es recortar, no pasar la proporción.** Recortar funciona con
+cualquier shader: el que escala obtiene 1 y muestrea la textura entera, que ya
+es la imagen; y el que no escala ---el pase base usa `a_TexCoord` tal cual---
+también acierta. Pasar la proporción solo arregla a los primeros. Se recorta
+antes del volteo, porque la imagen va arriba en el orden en que WE la guarda.
+
+Medido sobre el corpus:
+
+| | |
+|---|---|
+| texturas con `image_size` != `texture_size` | 939 de 1897 (49,5%), en 119 de 125 escenas |
+| con el relleno **en los píxeles** (mipmap mayor que la imagen) | 335 |
+| escenas que cambian de plan tras el arreglo | **40**, con 85 idénticas y **0 rotas** |
+| VRAM de las texturas rellenadas | 2302 MiB → 1509 MiB (**34% menos**) |
+
+**Recortar por la esquina superior izquierda es una suposición, así que se midió
+antes de fiarse.** De las 335, las **253 con relleno grande** (>64 px en algún
+eje) no tienen **ni un píxel** con estructura fuera del recorte: es relleno
+plano y la imagen va pegada arriba a la izquierda. Las 82 restantes tienen
+márgenes de 64 px o menos ---alineación de bloque BC--- y 62 sí llevan
+contenido ahí, que es la continuación del borde que mete el compresor; también
+ahí manda `image_size`, que es lo que WE muestrea. O sea que la suposición
+falla en cero casos donde importaría.
+
+El comentario de `info_textura` ya sabía del relleno pero daba por hecho que «lo
+que subimos a GL es la imagen». Era verdad a medias: en unas texturas el mipmap
+ya viene recortado y en otras no. Las dos formas se cubren con el mínimo entre
+el mipmap y `image_size`, que es lo que acaba en la GPU.
+
+## Encajar el lienzo en la pantalla
+
+La escena se dibuja al tamaño del lienzo que declara su autor
+(`orthogonalprojection`), no al de la pantalla, y los dos casi nunca coinciden.
+Medido sobre las 125 escenas contra un panel de 1920x1200:
+
+| | |
+|---|---|
+| escenas en 16:9 | **99 de 125** — contra un panel 16:10 son 10% del ancho recortado, 5% por lado |
+| área recortada, mediana | 10,0% |
+| lo peor | `2946362143` (564x1120) pierde el **68,6%**; `2866586232` (1440x2560) el 64,8% |
+| lienzos mayores que la pantalla | **90 de 125**: 53 a 3840x2160 y 4 a **7680x4320**, 33,2 Mpx para enseñar 2,3 |
+
+Hasta aquí el encaje era una línea: `glBlitFramebuffer` con
+`scale = max(viewW/w, viewH/h)`, o sea recorte central, siempre y sin opción.
+Ahora los tres modos —cubrir, entera con barras, estirar— salen de la misma
+cuenta cambiando solo cómo se elige la escala, más un zoom y un desplazamiento
+del recorte, todo desde la configuración del plugin.
+
+Tres cosas que no son obvias:
+
+- **Las barras las pinta el motor, no el QML de debajo.** El item se compone con
+  `setAlphaBlending(false)` —que es lo que evita que los bordes de la escena se
+  oscurezcan dos veces—, así que lo que el motor no pinte sale negro, no
+  transparente: el `Rectangle` con el color de fondo no se ve nunca.
+- **El recorte solo tiene un grado de libertad.** Con `cubrir`, una escena más
+  ancha que la pantalla se recorta a lo ancho y se ve entera a lo alto: ahí el
+  desplazamiento vertical no mueve nada, y por eso los deslizadores se apagan.
+  Con zoom hay holgura en los dos ejes. La prueba de encaje comprueba las dos
+  cosas, incluida la de que **no** se mueva cuando no debe.
+- **Esto no baja lo que cuesta dibujar.** Se siguen renderizando los 8,3 Mpx del
+  lienzo 4K para enseñar 2,3; la resolución es un parámetro del *plan*, porque
+  `g_TexelSize`, `g_Screen` y `g_TextureNResolution` se hornean en Python desde
+  el lienzo. Escalar solo en el ejecutor desincronizaría los radios de
+  desenfoque de su buffer.
+
+El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
+con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
+justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
+
 ## Nota de rendimiento para el port a C++
 
 La GPU de esta máquina (Intel Raptor Lake, Mesa) expone
