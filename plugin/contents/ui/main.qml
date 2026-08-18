@@ -57,6 +57,8 @@ WallpaperItem {
 
     readonly property real fps: clock.smoothFrameTime > 0 ? 1.0 / clock.smoothFrameTime : 0
 
+    readonly property var nombresEncaje: ["cubrir", "entera", "estirar"]
+
     function num(v, dec) {
         return (typeof v === "number" && !isNaN(v)) ? v.toFixed(dec) : "n/d"
     }
@@ -74,6 +76,17 @@ WallpaperItem {
         // La animacion se deriva del tiempo, no de un contador de frames, para
         // que la velocidad no dependa del refresco de la pantalla.
         time: clock.elapsedTime
+
+        // La escena se dibuja al tamano del lienzo de su autor ---16:9 en 99 de
+        // las 125 escenas--- y esto decide como llega a la pantalla. El color de
+        // las barras se pasa al motor en vez de dejarlo al Rectangle de arriba
+        // porque el item se compone sin mezcla alfa: lo que el motor no pinte
+        // sale negro, no transparente.
+        encaje: root.configuration.FitMode
+        zoom: root.configuration.Zoom
+        desplazamientoX: root.configuration.OffsetX
+        desplazamientoY: root.configuration.OffsetY
+        colorBarras: root.configuration.Color || "#0b0b0d"
     }
 
     Rectangle {
@@ -101,6 +114,10 @@ WallpaperItem {
                 "renderizador : " + escena.status,
                 "",
                 "superficie   : " + root.width + "x" + root.height,
+                "encaje       : " + (root.nombresEncaje[escena.encaje] || "?")
+                                  + " · zoom " + Math.round(escena.zoom * 100) + "%"
+                                  + " · recorte " + root.num(escena.desplazamientoX, 2)
+                                  + "," + root.num(escena.desplazamientoY, 2),
                 "fps          : " + root.num(root.fps, 1),
                 "g_Time       : " + root.num(clock.elapsedTime, 1) + " s",
                 "estado       : " + (ventanas.tapado ? "en pausa (tapado)" : "dibujando"),

@@ -493,6 +493,27 @@ class Renderer:
             self.stats["sin_textura"] += 1
             return None
 
+        # WE rellena las texturas hasta potencia de dos y a veces el relleno
+        # esta EN LOS PIXELES, no solo en la cabecera: el fondo de Sniper Girl
+        # es una imagen de 2560x1440 dentro de un buffer de 4096x2048, en la
+        # esquina superior izquierda, con el resto a alfa cero. Subiendo el
+        # buffer entero, las UV 0..1 de la capa recorren tambien el relleno y
+        # la escena sale encogida en un rincon ocupando 0.625 x 0.703 de la
+        # pantalla, con el resto negro --- que es exactamente lo que se veia.
+        #
+        # Se recorta aqui, ANTES del volteo, porque la imagen esta arriba en
+        # el orden en que WE la guarda. Recortar en vez de pasar la proporcion
+        # en `g_TextureNResolution` es lo que funciona con cualquier shader:
+        # los de WE que escalan las UV con `.zw / .xy` obtienen 1 y muestrean
+        # la textura entera, que ya es la imagen, y los que no escalan --- el
+        # pase base usa `a_TexCoord` tal cual --- tambien aciertan.
+        iw, ih = tex.image_size
+        h0, w0 = rgba.shape[:2]
+        if 0 < iw < w0 or 0 < ih < h0:
+            rgba = np.ascontiguousarray(rgba[:min(ih or h0, h0), :min(iw or w0, w0)])
+            self.stats["texturas_recortadas"] = \
+                self.stats.get("texturas_recortadas", 0) + 1
+
         # glReadPixels y las UV de GL van de abajo a arriba; las texturas de WE
         # se guardan con el origen arriba. Se voltea al subir, una sola vez.
         #
@@ -567,14 +588,18 @@ class Renderer:
             hoja = None
             if tex.frames:
                 f = tex.frames[0]
-                # Contra el tamano del MIPMAP, no contra `texture_size`: WE
-                # rellena la textura hasta potencia de dos y guarda el tamano
-                # relleno ahi, pero lo que subimos a GL es la imagen. Una hoja
-                # de 1280x256 declarada como 2048x256 daba fotogramas de 0.125
-                # de ancho en vez de 0.2, y las UV recorrian la hoja a otro
-                # paso que el suyo.
+                # Contra lo que se SUBE, que no es ni `texture_size` ni siempre
+                # el mipmap. WE rellena hasta potencia de dos y guarda el
+                # tamano relleno en la cabecera; una hoja de 1280x256 declarada
+                # como 2048x256 daba fotogramas de 0.125 de ancho en vez de
+                # 0.2. Pero el relleno tambien puede estar en los pixeles ---el
+                # mipmap mide lo relleno y la imagen ocupa una esquina---, y
+                # ahi `texture()` recorta antes de subir. Las dos formas se
+                # cubren con el minimo: es el tamano que acaba en la GPU.
                 mip = tex.images[0][0]
-                tw, th = float(mip.width), float(mip.height)
+                iw, ih = tex.image_size
+                tw = float(min(mip.width, iw) if iw else mip.width)
+                th = float(min(mip.height, ih) if ih else mip.height)
                 anc, alt = float(f["width"]), float(f["height"])
                 if anc > 0 and alt > 0 and tw > 0 and th > 0:
                     hoja = (anc / tw, alt / th, len(tex.frames), alt / anc)

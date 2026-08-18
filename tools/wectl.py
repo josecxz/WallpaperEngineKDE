@@ -175,12 +175,41 @@ def preparar(ruta: Path) -> dict:
     return stats
 
 
+def construir() -> None:
+    """Deja el modulo QML compilado e instalado, o se para con un error.
+
+    El modulo vive fuera del paquete y puede no estar instalado todavia, asi
+    que cada cambio de fondo pasa por aqui. Con los objetos al dia son 16 ms
+    medidos ---`make` no compila nada y la instalacion es copiar 261 KB---,
+    o sea nada al lado del segundo largo que cuesta generar el plan.
+
+    Se retiene **stderr** y se deja pasar la salida normal: por stdout van las
+    dos lineas de donde ha quedado cada cosa, que son las que interesan, y por
+    stderr los avisos del compilador, que no pintan nada en medio de un cambio
+    de fondo. Si el `make` falla se vuelcan enteros; y para verlos a diario
+    esta `make build`.
+    """
+    r = subprocess.run(["make", "-s", "install-qml", "install-package"],
+                       cwd=RAIZ, stderr=subprocess.PIPE, text=True)
+    if r.returncode:
+        sys.stderr.write(r.stderr)
+        raise CtlError("no se pudo construir el modulo QML; el escritorio se "
+                       "queda como estaba. Arreglalo y repite la orden.")
+
+
 def aplicar(ruta: Path) -> dict:
-    """Prepara un wallpaper y lo deja puesto en el escritorio."""
+    """Prepara un wallpaper y lo deja puesto en el escritorio.
+
+    **Construir va primero, y no es un detalle de orden.** `preparar` cambia el
+    plan por un rename, o sea que en cuanto vuelve ya esta el plan nuevo en su
+    sitio; si el `make` fallara despues, el escritorio se quedaria con una
+    escena nueva corriendo sobre el `.so` anterior ---el plan de una version y
+    el motor de otra---, que es lo mas caro de depurar de todo lo que puede
+    salir mal aqui. Construyendo antes, un fallo de compilacion deja las dos
+    mitades como estaban.
+    """
+    construir()
     stats = preparar(ruta)
-    # El modulo QML vive fuera del paquete y puede no estar instalado todavia.
-    subprocess.run(["make", "-s", "install-qml", "install-package"],
-                   cwd=RAIZ, check=False)
     recargar()
     return stats
 
@@ -438,6 +467,12 @@ def cmd_shuffle(args) -> int:
     # que fallo un dia por el disco lleno ---, asi que volvera a intentarse en
     # la siguiente vuelta, que es un segundo perdido cada 125 cambios.
     errores = []
+    # Construir aqui fuera y no solo dentro de `aplicar`: el bucle se traga
+    # cualquier excepcion para pasar a la siguiente escena, y un `make` roto
+    # falla igual con las cinco. Sin esto, un error de compilacion se reporta
+    # como "ninguna de las escenas probadas se pudo preparar", que manda a
+    # mirar la biblioteca cuando el problema es el motor.
+    construir()
     for _ in range(min(5, len(entradas))):
         elegido = _sacar_de_la_bolsa(estado, entradas)
         titulo = titulos.get(elegido, elegido)

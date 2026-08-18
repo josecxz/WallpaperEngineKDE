@@ -46,6 +46,42 @@ set -Ux WE_WORKSHOP /ruta/steam_library/steamapps/workshop/content/431960
 
 `python3 tools/wepaths.py` dice qué ha encontrado o qué le falta.
 
+### Los shaders son de Wallpaper Engine, no de este repositorio
+
+Aquí no hay ni un shader, y no va a haberlo. Los que ejecuta el motor salen
+siempre de tu propia instalación, y tienen dos dueños distintos:
+
+- **La librería común de Wallpaper Engine**, en `$WE_ASSETS/shaders`: 106
+  ficheros `.vert`/`.frag` más 12 cabeceras `common_*.h` y las dos de `base/`.
+  De ahí salen los `#include "common_vertex.h"`, `"common_fragment.h"` o
+  `"base/model_vertex_v1.h"` que casi todas las escenas piden. Son propiedad de
+  Wallpaper Engine.
+- **Los shaders de cada escena**, dentro de su `scene.pkg`, propiedad de quien
+  firmó ese wallpaper.
+
+Al preparar un fondo, `tools/weshader.py` los lee de esos dos sitios y resuelve
+los `#include` buscando **primero en el paquete de la escena y luego en la
+librería común**: un wallpaper puede traer su versión de una cabecera y gana
+sobre la compartida. Lo que aporta este proyecto es el traductor a GLSL, no el
+material que traduce.
+
+La consecuencia práctica es que **Wallpaper Engine tiene que estar ya instalado
+en el PC**, con sus assets en disco. Sin ellos no hay nada que traducir y el
+proceso corta antes de empezar:
+
+```
+$ python3 tools/wepaths.py
+assets    no se encontro los assets de Wallpaper Engine.
+Define WE_ASSETS con la ruta, por ejemplo:
+  export WE_ASSETS=/ruta/a/steam_library/steamapps/common/wallpaper_engine/assets
+```
+
+Copiar los shaders sueltos de otro sitio tampoco vale: cada escena espera las
+cabeceras de la versión de la librería con la que se publicó, y un `#include`
+sin resolver tumba el pase entero. Y el GLSL que acaba en el plan de render es
+una traducción de ese material, así que hereda su propiedad: se queda en
+`plugin/contents/scene/` de tu máquina y no es redistribuible.
+
 ## Uso
 
 ```sh
@@ -87,6 +123,21 @@ siguiente en vez de dejarte sin cambio.
 
 También se puede elegir desde *Clic derecho en el escritorio → Configurar
 escritorio → Tipo de fondo: WallpaperEngine*.
+
+### Cuando la escena no tiene la forma de tu pantalla
+
+Casi ninguna la tiene: **99 de las 125 escenas de esta biblioteca están hechas
+en 16:9**, así que en un panel 16:10 se recorta el 10% del ancho, y una escena
+vertical sobre uno horizontal pierde dos tercios. En la configuración del fondo
+se elige qué hacer:
+
+- **Cubrir** (por defecto): llena la pantalla y recorta lo que sobra.
+- **Ver la escena entera**: se ve completa, con barras del color de fondo.
+- **Estirar**: llena la pantalla deformando la escena.
+
+Con *acercamiento* y los dos *recortes* se decide qué trozo se ve. Los recortes
+se apagan cuando no hay nada que elegir: una escena más ancha que la pantalla se
+recorta a lo ancho y ya se ve entera a lo alto.
 
 ## Cómo funciona
 
@@ -152,7 +203,9 @@ Limitaciones conocidas:
 
 ## Aviso
 
-Este proyecto no distribuye contenido de Wallpaper Engine. Lee los assets de
-tu propia instalación, y los wallpapers son propiedad de sus autores. Es una
+Este proyecto no distribuye contenido de Wallpaper Engine: ni shaders, ni
+texturas, ni escenas. Lee los assets de tu propia instalación —ver
+[Los shaders son de Wallpaper Engine](#los-shaders-son-de-wallpaper-engine-no-de-este-repositorio)—
+y los wallpapers son propiedad de sus autores. Es una
 implementación independiente, sin relación con Wallpaper Engine ni Kristjan
 Skutta.

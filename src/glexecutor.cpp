@@ -763,6 +763,24 @@ void GlExecutor::skinMeshes(float time)
     }
 }
 
+void GlExecutor::setFit(int encaje, float zoom, float despX, float despY)
+{
+    // Se acota aqui y no en quien llama: los valores vienen de la config del
+    // plugin, o sea de un fichero que el usuario puede editar a mano. Un zoom
+    // de cero seria una division por cero en el reparto del recorte.
+    m_fit = (encaje >= Cubrir && encaje <= Estirar) ? encaje : int(Cubrir);
+    m_zoom = qBound(0.25f, zoom, 8.0f);
+    m_despX = qBound(-1.0f, despX, 1.0f);
+    m_despY = qBound(-1.0f, despY, 1.0f);
+}
+
+void GlExecutor::setBarColor(float r, float g, float b)
+{
+    m_bar[0] = qBound(0.0f, r, 1.0f);
+    m_bar[1] = qBound(0.0f, g, 1.0f);
+    m_bar[2] = qBound(0.0f, b, 1.0f);
+}
+
 void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 {
     if (!m_ready)
@@ -897,18 +915,70 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 
     flushObjectToScene();
 
-    // Componer sobre el destino de Qt con recorte que preserva la proporcion.
+    // Componer sobre el destino de Qt. El lienzo del autor casi nunca tiene la
+    // proporcion de la pantalla, asi que aqui se decide que se ve: los tres
+    // encajes salen de la misma cuenta cambiando solo como se elige la escala.
     const Target &src = m_scene;
-    const double scale = qMax(double(viewW) / src.w, double(viewH) / src.h);
-    const int cropW = qRound(viewW / scale);
-    const int cropH = qRound(viewH / scale);
-    const int x0 = (src.w - cropW) / 2;
-    const int y0 = (src.h - cropH) / 2;
+    double sX, sY;                       // pixeles de pantalla por pixel de escena
+    switch (m_fit) {
+    case Encajar:
+        sX = sY = qMin(double(viewW) / src.w, double(viewH) / src.h);
+        break;
+    case Estirar:
+        sX = double(viewW) / src.w;
+        sY = double(viewH) / src.h;
+        break;
+    default:
+        sX = sY = qMax(double(viewW) / src.w, double(viewH) / src.h);
+        break;
+    }
+    sX *= m_zoom;
+    sY *= m_zoom;
 
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, src.fbo);
+    // Cuanto lienzo cabe en la pantalla. Si sobra escena hay recorte y el
+    // desplazamiento elige por donde; si falta, la diferencia son barras. Con
+    // `Cubrir` y zoom 1 no hay barras y esto es lo que se hacia antes.
+    const int cropW = qBound(1, int(qRound(viewW / sX)), src.w);
+    const int cropH = qBound(1, int(qRound(viewH / sY)), src.h);
+    // El eje Y del lienzo crece hacia arriba (lo fija la MVP que hornea
+    // `object_mvp`), asi que un desplazamiento positivo sube.
+    const int x0 = qRound((src.w - cropW) * 0.5 * (1.0 + m_despX));
+    const int y0 = qRound((src.h - cropH) * 0.5 * (1.0 + m_despY));
+    const int dstW = qMin(viewW, int(qRound(cropW * sX)));
+    const int dstH = qMin(viewH, int(qRound(cropH * sY)));
+    const int dx = (viewW - dstW) / 2;
+    const int dy = (viewH - dstH) / 2;
+
+    // El encaje se cambia desde la configuracion y no deja rastro en ningun
+    // sitio: sin esto, "no se ve entera" y "se ve entera pero mal recortada"
+    // son el mismo sintoma. Se traza al cambiar, no por fotograma.
+    if (const quint64 firma = (quint64(m_fit) << 56) ^ (quint64(cropW) << 40)
+                              ^ (quint64(cropH) << 24) ^ (quint64(x0) << 12) ^ quint64(y0)
+                              ^ (quint64(dstW) << 4) ^ quint64(dstH);
+        firma != m_diagFitSig) {
+        m_diagFitSig = firma;
+        qInfo("GlExecutor: encaje=%d escena %dx%d -> se ve %dx%d desde (%d,%d) "
+              "-> destino %dx%d en (%d,%d) de %dx%d",
+              m_fit, src.w, src.h, cropW, cropH, x0, y0, dstW, dstH, dx, dy,
+              viewW, viewH);
+    }
+
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, targetFbo);
+    // Las barras se pintan aqui y no se dejan al QML de debajo: Qt limpia su
+    // destino a transparente al abrir el pase, pero el item se compone SIN
+    // mezcla alfa ---`setAlphaBlending(false)`, que es lo que evita que los
+    // bordes de la escena se oscurezcan dos veces---, asi que lo que no
+    // pintemos sale negro en vez de dejar ver el fondo.
+    if (dstW < viewW || dstH < viewH) {
+        glClearColor(m_bar[0], m_bar[1], m_bar[2], 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, src.fbo);
     glViewport(0, 0, viewW, viewH);
-    glBlitFramebuffer(x0, y0, x0 + cropW, y0 + cropH, 0, 0, viewW, viewH,
+    // El rectangulo de destino lo lleva el propio blit; el viewport de arriba
+    // es para dejar el estado como Qt lo espera al volver de endExternal().
+    glBlitFramebuffer(x0, y0, x0 + cropW, y0 + cropH,
+                      dx, dy, dx + dstW, dy + dstH,
                       GL_COLOR_BUFFER_BIT, GL_LINEAR);
     // Dejar bindeado el destino de Qt, no el framebuffer por defecto: Qt sigue
     // dibujando ahi cuando volvemos de endExternal().

@@ -10,9 +10,10 @@ Las tres piezas que pueden fallar en silencio, y por que cada una:
     bien y el que revienta
   - **el intervalo**: `30m` y `2h` tienen que dar lo que parece
 
-Lo que si toca plasmashell ---aplicar el plan--- no se prueba aqui: eso es
-`wectl shuffle` a mano, y esta comprobado que un fallo ahi se ve al momento en
-`wectl status`.
+De `aplicar` solo se prueba el orden de sus pasos ---construir, cambiar el plan,
+recargar---, que es lo que decide si un fallo deja el escritorio coherente. Lo
+que toca plasmashell de verdad es `wectl shuffle` a mano, y esta comprobado que
+un fallo ahi se ve al momento en `wectl status`.
 
 Uso:  python3 tools/test_wectl.py
 """
@@ -154,6 +155,61 @@ def prueba_cambio_de_plan(fallos: list[str]) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def prueba_construir(fallos: list[str]) -> None:
+    """Un `make` roto no puede acabar en plan nuevo sobre el motor viejo.
+
+    Es el unico camino de `aplicar` que se puede probar sin plasmashell: se
+    comprueba el ORDEN de los tres pasos, que es donde estaba el fallo ---se
+    construia despues de cambiar el plan y sin mirar el resultado---.
+    """
+    print("\n── construir antes de cambiar el plan ──")
+    real_sub, real_prep, real_rec = wectl.subprocess, wectl.preparar, \
+        wectl.recargar
+    hechos: list[str] = []
+
+    class Make:
+        """Ocupa el sitio de `subprocess` dentro de wectl: solo usa run y PIPE."""
+        PIPE = real_sub.PIPE
+
+        def __init__(self, codigo: int) -> None:
+            self.codigo = codigo
+
+        def run(self, cmd, **kw):
+            hechos.append("make")
+            return real_sub.CompletedProcess(
+                cmd, self.codigo, stderr="[el aviso del compilador iria aqui]\n")
+
+    def prep(ruta):
+        hechos.append("preparar")
+        return {"pases": 1}
+
+    try:
+        wectl.preparar = prep
+        wectl.recargar = lambda: hechos.append("recargar")
+
+        wectl.subprocess = Make(2)
+        hechos.clear()
+        try:
+            wectl.aplicar(Path("/tmp/DA-IGUAL"))
+            fallos.append("un make roto no levanto el error")
+        except wectl.CtlError:
+            pass
+        if "preparar" in hechos or "recargar" in hechos:
+            fallos.append(f"con el make roto se siguio adelante: {hechos}")
+        print(f"  make roto  -> {hechos}   (ni plan nuevo ni recarga)")
+
+        wectl.subprocess = Make(0)
+        hechos.clear()
+        wectl.aplicar(Path("/tmp/DA-IGUAL"))
+        if hechos != ["make", "preparar", "recargar"]:
+            fallos.append(f"el camino bueno hace {hechos}, esperaba "
+                          f"['make', 'preparar', 'recargar']")
+        print(f"  make bueno -> {hechos}   ok")
+    finally:
+        wectl.subprocess, wectl.preparar, wectl.recargar = \
+            real_sub, real_prep, real_rec
+
+
 def prueba_unidades(fallos: list[str]) -> None:
     """Las unidades de systemd se escriben donde toca y con lo que toca."""
     print("\n── unidades de systemd ──")
@@ -189,6 +245,7 @@ def main() -> int:
     prueba_intervalo(fallos)
     prueba_bolsa(fallos)
     prueba_cambio_de_plan(fallos)
+    prueba_construir(fallos)
     prueba_unidades(fallos)
 
     if fallos:

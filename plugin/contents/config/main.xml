@@ -20,6 +20,27 @@
       <label>Cuando dejar de dibujar el fondo</label>
       <default>1</default>
     </entry>
+    <!-- Como se lleva el lienzo del autor a la pantalla, que casi nunca tienen
+         la misma proporcion: 0 cubrir recortando, 1 entera con barras,
+         2 estirar. Ver GlExecutor::Encaje, que define los valores. -->
+    <entry name="FitMode" type="Int">
+      <label>Como encajar la escena en la pantalla</label>
+      <default>0</default>
+    </entry>
+    <entry name="Zoom" type="Double">
+      <label>Acercamiento sobre la escena</label>
+      <default>1.0</default>
+    </entry>
+    <!-- Que trozo se ve cuando sobra escena: -1 todo a un lado, 0 centro,
+         +1 al otro. En Y, positivo es hacia arriba. -->
+    <entry name="OffsetX" type="Double">
+      <label>Desplazamiento horizontal del recorte</label>
+      <default>0.0</default>
+    </entry>
+    <entry name="OffsetY" type="Double">
+      <label>Desplazamiento vertical del recorte</label>
+      <default>0.0</default>
+    </entry>
   </group>
 
 </kcfg>

@@ -52,9 +52,26 @@ public:
     // contexto activo. `error` es opcional.
     bool initialize(QString *error = nullptr);
 
-    // Ejecuta todos los pases y compone sobre `targetFbo`, escalando con
-    // recorte para llenar viewW x viewH sin deformar.
+    // Ejecuta todos los pases y compone sobre `targetFbo`, llevando el lienzo
+    // del autor a viewW x viewH segun el encaje configurado.
     void render(GlName targetFbo, int viewW, int viewH, float time);
+
+    // Como se lleva la escena a la pantalla. La escena se dibuja SIEMPRE al
+    // tamano del lienzo que declara su autor, que casi nunca es el de la
+    // pantalla ---99 de las 125 escenas del corpus son 16:9---, asi que este
+    // ultimo paso decide que parte se ve. No cambia lo que cuesta dibujarla:
+    // eso es un parametro del plan, no del ejecutor.
+    enum Encaje {
+        Cubrir  = 0,   // llena la pantalla recortando lo que sobra
+        Encajar = 1,   // se ve entera, con barras donde falta
+        Estirar = 2,   // llena la pantalla deformando la escena
+    };
+    // `zoom` multiplica la escala resultante y `desp` elige que trozo se ve
+    // cuando sobra escena: -1 es todo a un lado, 0 el centro, +1 al otro.
+    void setFit(int encaje, float zoom, float despX, float despY);
+    // Color de las barras. Va aqui y no en el QML porque el item se compone
+    // sin mezcla alfa: lo que no pintemos sale negro, no transparente.
+    void setBarColor(float r, float g, float b);
 
     void releaseResources();
 
@@ -231,6 +248,12 @@ private:
     int m_compoCur = 0;
     GlName m_vao = 0, m_vbo = 0;
     int m_canvasW = 1920, m_canvasH = 1080;
+    // Encaje del lienzo en la pantalla. Los valores por defecto son lo que se
+    // hacia antes de que fuera configurable: cubrir, sin zoom y centrado.
+    int m_fit = Cubrir;
+    float m_zoom = 1.0f, m_despX = 0.0f, m_despY = 0.0f;
+    float m_bar[3] = {0.0f, 0.0f, 0.0f};
+    quint64 m_diagFitSig = 0;   // ultimo encaje trazado, para no repetirlo
     int m_passCount = 0;
     int m_liveUniforms = 0;
     int m_initMs = 0;
