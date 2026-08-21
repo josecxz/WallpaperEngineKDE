@@ -1567,6 +1567,130 @@ que no hay parallax ni posicionado de capas.
 ejecución y no lo borra. Con escenas 4K son cientos de MB cada una; conviene
 `rm -rf /tmp/werender-*` tras una tanda.
 
+## La turbulencia no turbulaba
+
+El humo se abría como un pufo en todas direcciones en vez de salir del cañón, y
+la dirección no la fija ningún campo de dirección: la fija el **campo de ruido**
+de `turbulentvelocityrandom`, que da la velocidad inicial ---120 a 160 en el
+humo de Sniper Girl, frente al ±50 de `velocityrandom`---.
+
+El ruido del simulador tiene celda de **1 unidad**, y el `scale` que declara WE
+no viene en esas unidades. Con los valores reales del corpus el emisor abarcaba
+una **mediana de 102 celdas y hasta 750**: dos partículas nacidas juntas salían
+en direcciones sin ninguna relación. Eso no es turbulencia, es una dirección al
+azar por partícula, y de paso hacía que `scale` no cambiara nada en **128 de 140
+sistemas**. Un campo del formato que nunca altera el resultado es la señal de
+que se está leyendo mal.
+
+Medido con `psysprobe`, la coherencia ---|velocidad media| / rapidez media--- del
+humo de Sniper Girl era **0,08**. Con el factor sube a **0,72**: el chorro sale
+del bocacho a −12,6° (hacia delante y algo abajo, +35 y −8 px de lienzo por
+segundo ya con la rotación y la escala del objeto aplicadas).
+
+**El factor está calibrado, no leído de WE.** La dirección que sale no depende
+de él ---0,01, 0,05 y 0,1 dan los mismos −12,6°---; lo que cambia es cuánto se
+abre el penacho, y ahí se eligió mirando: 0,01 deja las partículas tan paralelas
+que se ven como una raya de humo, 0,1 lo abre de más. Sobre los 136 sistemas del
+corpus con turbulencia, 0,05 reparte así: **57 en chorro (>0,7), 38 en penacho
+(0,3–0,7) y 41 esparciéndose (<0,3)**, que es lo que dicta el `scale` y el tamaño
+de cada emisor.
+
+**La dirección concreta la pone nuestro ruido, no el wallpaper**, y eso no tiene
+arreglo: el formato no trae ningún campo de dirección ---solo `scale`,
+`speedmin`/`speedmax` y un `offset` que desplaza el punto de muestreo--- y WE no
+publica su función de ruido. Lo que sí vuelve a depender del wallpaper es el
+carácter del efecto. Si hiciera falta apuntar un penacho concreto, la palanca
+del propio formato es ese `offset`: medido sobre este humo, (0,0,0) da −12,6°,
+(5,0,0) da −48,5° y (10,10,0) da +120,5°.
+
+El factor vive en `weparticles.py` y no en el `.c` por dos razones. La primera
+es de reparto: convertir las unidades del formato es interpretar el formato, y
+eso es trabajo de Python; el simulador ejecuta el número que le llega. La
+segunda es práctica: **plasmashell conserva mapeada la `.so` con la que
+arrancó**, así que un cambio en el `.c` no se ve hasta reiniciar la sesión,
+mientras que uno que viaja en el plan entra con el siguiente `wectl set`.
+
+Está calibrado, no leído de WE: se eligió para que la mediana del corpus caiga
+en ~1 celda, que es donde la turbulencia se ve como turbulencia. Si hiciera
+falta afinarlo es un solo número.
+
+## Imitar el humo de WE con una captura por oráculo
+
+Una captura de *Wallpaper Engine* corriendo en Windows es el mejor oráculo que
+ha tenido este proyecto: es la escena real, en movimiento, no un promo. Para que
+sirva hay que saber qué trozo del lienzo enseña, y eso se localiza por
+correlación normalizada barriendo tamaño y origen: la captura cubría
+**2320x1380 desde (128, 0) con 0,927**, que es el recorte «cubrir» de un panel
+16:10. A partir de ahí las dos imágenes se comparan píxel a píxel.
+
+**Cuidado con medir sobre el arma.** La primera medida daba un trazo 3:1 con
+pico 238, y era mentira: dos píxeles de desalineo convierten la silueta del
+rifle en «humo». Enmascarando lo que no es fondo claro y ciñendo la caja al
+bocacho, la voluta de WE resulta ser compacta ---unos 150x65 px de lienzo---,
+centrada **87 px por detrás** del emisor y 15 por encima, con lóbulos visibles.
+
+De ahí salieron dos fallos:
+
+- **El ruido se muestreaba en coordenadas locales.** El simulador solo conoce la
+  posición de la partícula dentro de su sistema, y todos nacen alrededor de su
+  propio (0,0,0), así que **todos los sistemas del corpus muestreaban la misma
+  zona del campo y salían en la misma dirección**, fuera cual fuera el
+  wallpaper. Desplazando el muestreo por el origen del objeto ---dato del
+  wallpaper--- cada sistema coge la suya y los dos humos de esta escena dejan de
+  correr en paralelo. El penacho pasa de +30 px por delante del bocacho a −102
+  por detrás, contra los −87 de WE.
+- **El sprite se estiraba con la escala no uniforme del objeto.** La MVP escala
+  x e y por separado (0,25 y 0,5 aquí) y eso convertía cada sprite en 150x300 px
+  cuando **la voluta entera de WE mide 150x65**: el ancho ya coincidía ---es
+  `size` por la escala en X--- y el alto no. Compensando el eje vertical en
+  `g_OrientationUp`, el quad sale cuadrado y las posiciones siguen respetando la
+  escala del autor. Afecta a **322 de los 823 objetos de partículas del corpus,
+  en 61 escenas**.
+
+Lo que sigue sin cuadrar es la dispersión: la nuestra se abre más. Con una vida
+efectiva de ~2 s el parecido es notable, pero el preset declara 3–4 s y no hay
+con qué justificar ignorarlo. La hipótesis pendiente es que WE recicle la
+partícula más vieja al llenarse el cupo ---con `rate 10` y `maxcount 12` daría
+1,2 s---, pero con 1,2 s el humo sale demasiado pequeño, así que no encaja del
+todo y se queda anotada.
+
+## El humo que no se apagaba
+
+El humo de *Sniper Girl* salía como una neblina ancha que velaba el rifle,
+cuando en Wallpaper Engine es una voluta compacta sobre la recámara. No era el
+tamaño del sprite: 600 unidades por la escala 0,2 del objeto son 120 px de
+lienzo, y la voluta del preview mide unos 60, que es una partícula al 40% de su
+crecimiento. Lo que sobraba era **cuánto tiempo seguían viéndose las viejas**,
+que son justo las más grandes porque `sizechange` las hace crecer con la edad.
+
+El preset declara `alphafade` con solo `fadeintime`. Dábamos `fadeouttime = 1`
+por defecto, que en nuestra implementación significa *no apagarse nunca*: cada
+voluta moría a plena opacidad y con el tamaño máximo. El valor por defecto es
+**0** —se apaga desde que nace—, y con eso el alfa dibuja una campana que
+culmina a mitad de vida y se cierra al final.
+
+**Cómo se comprobó, que es lo que hace la diferencia entre saberlo y suponerlo.**
+El `preview.jpg` que sube el autor es un fotograma de WE, así que sirve de
+oráculo si se sabe qué trozo del lienzo cubre. Se localiza por correlación
+normalizada barriendo escala y desplazamiento: sale un recorte de **1040x1040
+en (112, 384) con correlación 0,929**, o sea casi 1:1. Recortando nuestro render
+por esa misma ventana las dos imágenes se comparan pixel a pixel, y ahí se ve
+que con el apagado el arma queda nítida igual que en WE.
+
+Se descartó una segunda lectura del campo ---que `fadeouttime` fuera la
+DURACIÓN del apagado y no el instante en que empieza---. Para el caso omitido da
+exactamente lo mismo, pero además reinterpretaría los 244 sistemas que sí lo
+declaran, y no hay con qué comprobarlo: los valores más usados admiten las dos
+lecturas sin chirriar, y entre los que usan valores bajos hay estelas de ratón y
+gotas de lluvia, que con la lectura de duración se cortarían en seco. Cambiar
+solo el valor por defecto toca **236 de los 480 `alphafade` del corpus, en 87
+escenas**, y deja intactos los que declaran el campo.
+
+De paso, el guardia `v[1] > 0` del simulador ignoraba un `fadeouttime`
+declarado como 0. Es un preset en todo el corpus ---`shurikencursor_1`, que pide
+`0.0` en los dos campos--- y no se apagaba pese a pedirlo. Ahora el guardia
+admite el cero, que con el valor por defecto nuevo es además el caso común.
+
 ## El relleno a potencia de dos estaba en los píxeles
 
 *Sniper Girl* salía en un recuadro que ocupaba parte de la pantalla, con el
