@@ -206,6 +206,8 @@ Limitaciones conocidas:
 - 1 de 578 variantes de shader no llegan a compilar en el driver y su pase se
   omite. Normalmente cuesta una capa, pero si la que cae es la capa base se
   lleva todo lo que colgaba de ella.
+- El parallax por mapa de profundidad se dibuja en reposo: el motor todavía no
+  sabe dónde está el puntero, así que la escena se ve centrada.
 - Sin sistema de iluminación: los materiales con luces se dibujan planos.
 - Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
   incluidas, y con el vocabulario del formato cubierto entero. Los operadores

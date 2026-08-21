@@ -1123,6 +1123,23 @@ class Renderer:
         self.body.append("u1f g_Time @TIME@")
         self.body.append(f"u3f g_Screen {canvas[0]} {canvas[1]} "
                          f"{canvas[0] / max(1, canvas[1])}")
+        # La proyeccion de la textura del efecto y la posicion del parallax.
+        # No es adorno: `depthparallax` saca de la matriz inversa los dos ejes
+        # proyectados y los NORMALIZA. Sin emitirla GL la da a cero, los ejes
+        # salen (0,0), `normalize` hace 0/0 y el NaN viaja por `v_ParallaxOffset`
+        # hasta las coordenadas de muestreo: la escena entera sale NEGRA. Es la
+        # misma familia que el NaN de `g_TexelSize`, y le pasa a `3077334064`
+        # ---un 4K de 11 pases que se preparaba sin una sola queja--- que asi
+        # pasa de luminancia media 18 a 91.
+        #
+        # La escena es plana y mira al lienzo de frente, asi que la identidad es
+        # el valor neutro, igual que con `g_Orientation*`. La posicion del
+        # parallax va al centro, que es el reposo mientras el motor no sepa
+        # donde esta el puntero; cuando lo sepa, se engancha aqui.
+        ident = "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"
+        self.body.append(f"umat4 g_EffectTextureProjectionMatrix {ident}")
+        self.body.append(f"umat4 g_EffectTextureProjectionMatrixInverse {ident}")
+        self.body.append("u2f g_ParallaxPosition 0.5 0.5")
         # Tamano de un texel del buffer al que escribe ESTE pase. Es lo que
         # usan los shaders de desenfoque para saber cuanto vale un paso:
         #

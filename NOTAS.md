@@ -1614,6 +1614,54 @@ Está calibrado, no leído de WE: se eligió para que la mediana del corpus caig
 en ~1 celda, que es donde la turbulencia se ve como turbulencia. Si hiciera
 falta afinarlo es un solo número.
 
+## Tres escenas negras por un `normalize(0, 0)`
+
+`云霓琼宇4K(有声)` (`3077334064`) se preparaba **sin una sola queja** ---11 pases,
+cero shaders perdidos, cero texturas ausentes, ninguna nota--- y salía negra:
+luminancia media 18 de 255. Es el tipo de fallo que la regresión no ve, porque
+comprueba que el plan se genere, no que la imagen tenga luz.
+
+Bisecando con `--passes`, hasta el 8 la escena está bien (83,2) y el pase 9 la
+apaga. Ese pase es `depthparallax`, y su vértice hace esto **sin ninguna guarda
+de combo**:
+
+```glsl
+mat3 rot = CAST3X3(g_EffectTextureProjectionMatrixInverse);
+vec2 projectedDirX = mul(vec3(1.0, 0.0, 0.0), rot).xy;
+projectedDirX = normalize(projectedDirX);
+```
+
+No emitíamos esa matriz, GL la da a cero, los ejes salen `(0,0)` y `normalize`
+hace **0/0**. El NaN viaja por `v_ParallaxOffset` hasta las coordenadas de
+muestreo del fragmento y Mesa devuelve negro. Es la misma familia que el NaN de
+`g_TexelSize`: un uniforme sin emitir, una división indeterminada, y de ahí en
+adelante manda el driver.
+
+Se emiten ahora las dos matrices como **identidad** ---la escena es plana y mira
+al lienzo de frente, igual que `g_Orientation*`--- y `g_ParallaxPosition` al
+**centro**, que es el reposo mientras el motor no sepa dónde está el puntero.
+
+Medido sobre las 125 escenas, siete declaran la matriz inversa sin recibirla, y
+renderizando cada una con y sin el arreglo:
+
+| escena | antes | después |
+|---|---|---|
+| `2810252468` | 11,3 | **64,7** |
+| `3053927686` | 4,3 | **39,3** |
+| `3077334064` | 18,0 | **83,1** |
+| `2349856302` | 79,0 | 82,5 |
+| `3237641967`, `3299228616`, `3555933181` | igual | la declaran en rama muerta |
+
+**Tres escenas negras recuperadas**, y las dos primeras no estaban ni en la lista
+de sospechosas.
+
+Un aviso de método: al principio se leyó como un fallo de valores por defecto,
+porque el plan emitía `g_Scale 1 0` y `g_Sensitivity 0` mientras el shader
+declara `"1 1"` y `1`. **No lo era**: esos valores los pone el propio wallpaper
+en su `constantshadervalues` (`{"center": 0.3, "scale": "1 0", "sens": 0}`), o
+sea que el autor dejó el parallax con sensibilidad cero y el efecto no hace nada
+tampoco en WE. Corregirlos por separado no cambiaba el negro; el NaN era todo.
+
 ## Imitar el humo de WE con una captura por oráculo
 
 Una captura de *Wallpaper Engine* corriendo en Windows es el mejor oráculo que
