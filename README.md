@@ -88,6 +88,7 @@ una traducción de ese material, así que hereda su propiedad: se queda en
 wectl list [texto]      lista tus wallpapers; el * marca el preparado
 wectl set <id|texto>    prepara uno y lo pone en el escritorio
 wectl shuffle           pone uno al azar de toda la biblioteca
+wectl shuffletime <t>    ajusta cada cuánto rota, sin cambiar el fondo
 wectl start / stop      activa o para el motor
 wectl status            qué hay puesto y cómo va
 ```
@@ -116,6 +117,17 @@ rotación activada: otro cada 30 min
 instala un temporizador de usuario de systemd que sigue funcionando tras
 reiniciar. `wectl shuffle --parar` lo apaga y `wectl status` dice cuánto queda
 para el próximo.
+
+Para cambiar solo la cadencia sin llevarte por delante el fondo que estás
+mirando, `wectl shuffletime 10m`. El plazo lo cuenta systemd desde el último cambio,
+así que al acortarlo puede tocar uno enseguida; el comando dice lo que va a
+pasar de verdad.
+
+**El mínimo es 1 minuto**, y no es arbitrario: preparar un wallpaper cuesta
+desde 0,4 s hasta 18,2 s en esta biblioteca —el peor es uno de 65 pases y 196
+assets que escribe 369 MB de plan—, así que un cambio completo se va a unos 20
+s. Un minuto deja un factor 3 de margen para que un cambio no empiece con el
+anterior a medias.
 
 No es un sorteo cada vez: las escenas se reparten en una bolsa, así que **salen
 todas antes de repetirse ninguna**. Si una no se deja preparar, pasa a la
