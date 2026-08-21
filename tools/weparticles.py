@@ -742,6 +742,26 @@ def _aplicar_override(s: Sistema, ov: dict) -> None:
             s.cps[int(m.group(1))] = _v3(valor)
 
 
+def desplazar_ruido(s: Sistema, origen: list[float]) -> None:
+    """Mueve el muestreo del ruido al sitio del sistema en el lienzo.
+
+    El simulador evalua el campo en `pos * scale + offset` con la posicion
+    LOCAL de la particula, asi que sin tocar nada todos los sistemas ---esten
+    donde esten y sean del wallpaper que sean--- muestrean el mismo trozo del
+    campo y su turbulencia sale en la misma direccion. Sumando el origen del
+    objeto ya escalado, `(pos + origen) * scale`, la direccion depende de donde
+    lo puso el autor.
+    """
+    nuevas = []
+    for nombre, vals in s.inits:
+        if nombre == "turbulentvelocityrandom" and len(vals) >= 8:
+            esc, vals = vals[0], list(vals)
+            for k in range(3):
+                vals[5 + k] += origen[k] * esc
+        nuevas.append((nombre, vals))
+    s.inits = nuevas
+
+
 def escribir(s: Sistema, destino: Path, semilla: int) -> None:
     """Vuelca el sistema al formato que lee `we_psys_load`.
 

@@ -1591,6 +1591,46 @@ Está calibrado, no leído de WE: se eligió para que la mediana del corpus caig
 en ~1 celda, que es donde la turbulencia se ve como turbulencia. Si hiciera
 falta afinarlo es un solo número.
 
+## Imitar el humo de WE con una captura por oráculo
+
+Una captura de *Wallpaper Engine* corriendo en Windows es el mejor oráculo que
+ha tenido este proyecto: es la escena real, en movimiento, no un promo. Para que
+sirva hay que saber qué trozo del lienzo enseña, y eso se localiza por
+correlación normalizada barriendo tamaño y origen: la captura cubría
+**2320x1380 desde (128, 0) con 0,927**, que es el recorte «cubrir» de un panel
+16:10. A partir de ahí las dos imágenes se comparan píxel a píxel.
+
+**Cuidado con medir sobre el arma.** La primera medida daba un trazo 3:1 con
+pico 238, y era mentira: dos píxeles de desalineo convierten la silueta del
+rifle en «humo». Enmascarando lo que no es fondo claro y ciñendo la caja al
+bocacho, la voluta de WE resulta ser compacta ---unos 150x65 px de lienzo---,
+centrada **87 px por detrás** del emisor y 15 por encima, con lóbulos visibles.
+
+De ahí salieron dos fallos:
+
+- **El ruido se muestreaba en coordenadas locales.** El simulador solo conoce la
+  posición de la partícula dentro de su sistema, y todos nacen alrededor de su
+  propio (0,0,0), así que **todos los sistemas del corpus muestreaban la misma
+  zona del campo y salían en la misma dirección**, fuera cual fuera el
+  wallpaper. Desplazando el muestreo por el origen del objeto ---dato del
+  wallpaper--- cada sistema coge la suya y los dos humos de esta escena dejan de
+  correr en paralelo. El penacho pasa de +30 px por delante del bocacho a −102
+  por detrás, contra los −87 de WE.
+- **El sprite se estiraba con la escala no uniforme del objeto.** La MVP escala
+  x e y por separado (0,25 y 0,5 aquí) y eso convertía cada sprite en 150x300 px
+  cuando **la voluta entera de WE mide 150x65**: el ancho ya coincidía ---es
+  `size` por la escala en X--- y el alto no. Compensando el eje vertical en
+  `g_OrientationUp`, el quad sale cuadrado y las posiciones siguen respetando la
+  escala del autor. Afecta a **322 de los 823 objetos de partículas del corpus,
+  en 61 escenas**.
+
+Lo que sigue sin cuadrar es la dispersión: la nuestra se abre más. Con una vida
+efectiva de ~2 s el parecido es notable, pero el preset declara 3–4 s y no hay
+con qué justificar ignorarlo. La hipótesis pendiente es que WE recicle la
+partícula más vieja al llenarse el cupo ---con `rate 10` y `maxcount 12` daría
+1,2 s---, pero con 1,2 s el humo sale demasiado pequeño, así que no encaja del
+todo y se queda anotada.
+
 ## El humo que no se apagaba
 
 El humo de *Sniper Girl* salía como una neblina ancha que velaba el rifle,

@@ -636,6 +636,16 @@ class Renderer:
         # Que dependa del id, y no del indice, evita ademas que dos sistemas de
         # la misma escena caigan en la misma secuencia.
         semilla = zlib.crc32(str(obj.raw.get("id")).encode()) or 1
+        # El campo de ruido de la turbulencia se muestrea en coordenadas del
+        # LIENZO, no del sistema. El simulador solo conoce la posicion local de
+        # cada particula ---todos los sistemas nacen alrededor de su (0,0,0)---
+        # asi que sin esto todos muestrean la misma zona del campo y salen en la
+        # misma direccion, sea cual sea el wallpaper. Desplazando el muestreo
+        # por el origen del objeto, la direccion pasa a depender de DONDE esta
+        # el sistema, que es dato del wallpaper, y dos humos distintos de la
+        # misma escena dejan de correr en paralelo.
+        org, _, _ = transform_absoluto(obj, self.por_id)
+        weparticles.desplazar_ruido(sis, org)
         weparticles.escribir(sis, destino, semilla)
         self.lines.append(f"psys {i} {destino}")
         self.psys[id(obj)] = i
@@ -1063,8 +1073,19 @@ class Renderer:
             # La escena es plana y mira al lienzo de frente, asi que son los
             # canonicos; sin emitirlos GL los da a cero y el quad colapsa a un
             # punto --- no se dibuja nada y no hay error que lo diga.
+            # El eje vertical lleva la correccion de la escala NO UNIFORME
+            # del objeto. La MVP del sistema escala x e y por separado ---0.25
+            # y 0.5 en el humo de Sniper Girl--- y eso estira el sprite al doble
+            # de alto que de ancho: la voluta sale como una neblina vertical en
+            # vez de un penacho. Medido contra una captura de WE, alla la
+            # voluta mide ~150 px de ancho, que es el `size` por la escala EN X,
+            # y no 300 de alto. Compensando aqui, el quad sale cuadrado y las
+            # posiciones siguen respetando la escala que puso el autor.
+            _, _esc, _ = (transform_absoluto(obj, self.por_id) if obj is not None
+                          else (None, [1.0, 1.0, 1.0], None))
+            _ky = (_esc[0] / _esc[1]) if _esc[1] else 1.0
             self.body.append("u3f g_OrientationRight 1 0 0")
-            self.body.append("u3f g_OrientationUp 0 1 0")
+            self.body.append(f"u3f g_OrientationUp 0 {_ky:.6g} 0")
             self.body.append("u3f g_OrientationForward 0 0 1")
             self.body.append("u3f g_ViewRight 1 0 0")
             self.body.append("u3f g_ViewUp 0 1 0")
