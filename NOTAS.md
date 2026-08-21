@@ -146,6 +146,29 @@ Dos decisiones que no son obvias:
   disco envejece mal y se llevaría por delante lo que falló un día porque el
   disco estaba lleno. Volverá a intentarse dentro de 125 cambios.
 
+### Cambiar la cadencia sin cambiar el fondo, y por qué el mínimo es 1 minuto
+
+`wectl shuffletime <tiempo>` ajusta el intervalo y deja el wallpaper actual donde está.
+Hasta ahora la única forma de tocarlo era `shuffle --cada`, que además cambia el
+fondo al momento: para pasar de 30 a 10 minutos había que sacrificar el que
+estabas mirando.
+
+**El mínimo son 60 s, y sale de medir.** Preparar un wallpaper va de 0,4 s a
+**18,2 s** (`2637739953`: 65 pases, 196 assets, 369 MB escritos), y el `wectl
+set` completo llega a ~20 s. Un minuto deja un factor 3 sobre el peor caso.
+
+Escribirlo destapó dos fallos que llevaban ahí desde el principio:
+
+- **`enable --now` no reinicia un temporizador que ya está activo.** Seguía
+  corriendo con los parámetros del fichero anterior, así que cambiar la cadencia
+  no cambiaba nada hasta la siguiente sesión —y a `shuffle --cada` le pasaba
+  igual—. Se ve en que el próximo disparo se quedaba 18 686 s en el pasado. Hace
+  falta un `restart` explícito del `.timer`.
+- **`NextElapseUSecMonotonic` mentía.** Esa propiedad conserva el disparo con el
+  que se armó el temporizador la primera vez tras el arranque: con 5,9 h de
+  uptime seguía diciendo «44 min». `list-timers --output=json` sí recalcula y da
+  el instante en microsegundos desde la época, que es lo que se lee ahora.
+
 El plan **no se escribe encima del que hay**. `emit_plan` numera los ficheros
 por índice y no borra lo que sobra, así que un wallpaper de 20 pases sobre uno
 de 113 dejaría 93 sin usar: con `set` a mano se nota poco, rotando por la

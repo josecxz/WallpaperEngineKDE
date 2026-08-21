@@ -4,6 +4,7 @@
     wectl list [texto]     lista los wallpapers de la biblioteca
     wectl set <id|texto>   prepara uno y lo pone en el escritorio
     wectl shuffle          pone uno al azar; --cada <t> lo repite solo
+    wectl shuffletime <t>   ajusta cada cuanto rota, sin cambiar el fondo
     wectl start            vuelve a activar el motor
     wectl stop             devuelve el escritorio al fondo de Plasma
     wectl status           que hay puesto y como va
@@ -24,6 +25,7 @@ import random
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -236,6 +238,11 @@ SUFIJOS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 # Por debajo de un minuto el temporizador no seria honesto (systemd agrupa los
 # disparos) y ademas cada cambio parpadea: `recargar` sale al fondo de Plasma y
 # vuelve. Un minuto ya es absurdo, pero es decision del usuario, no nuestra.
+# Un minuto. El tope lo pone lo que tarda un cambio completo, medido sobre la
+# biblioteca: la mediana esta en unos pocos segundos, pero preparar el plan de
+# `2637739953` ---65 pases, 196 assets, 369 MB escritos--- cuesta 18,2 s, y el
+# `wectl set` entero se va a ~20 s. Un minuto deja un factor 3 de margen sobre
+# el peor caso y evita que un cambio empiece con el anterior a medias.
 INTERVALO_MINIMO = 60
 
 
@@ -252,8 +259,9 @@ def _intervalo(texto: str) -> int:
                        f"prueba `30m`, `2h` o `90s`")
     seg = int(n * factor)
     if seg < INTERVALO_MINIMO:
-        raise CtlError(f"{texto!r} son {seg} s; el minimo es "
-                       f"{INTERVALO_MINIMO} s")
+        raise CtlError(f"{texto!r} son {seg} s y el minimo es 1 min: preparar "
+                       f"un wallpaper cuesta hasta 18 s en la biblioteca "
+                       f"medida, y por debajo de eso los cambios se pisan")
     return seg
 
 
@@ -352,7 +360,13 @@ AccuracySec=1s
 WantedBy=graphical-session.target
 """)
     _systemctl("daemon-reload")
-    _systemctl("enable", "--now", f"{UNIDAD}.timer")
+    _systemctl("enable", f"{UNIDAD}.timer")
+    # `enable --now` NO reinicia un temporizador que ya esta activo: se queda
+    # corriendo con los parametros del fichero anterior, asi que cambiar la
+    # cadencia no cambiaba nada hasta la siguiente sesion. Se vio en que el
+    # proximo disparo se quedaba 18686 s en el pasado. Con `restart` el
+    # temporizador se rearma con el fichero nuevo y desde ahora.
+    _systemctl("restart", f"{UNIDAD}.timer")
 
 
 def rotacion_apagar() -> None:
@@ -365,33 +379,32 @@ def rotacion_apagar() -> None:
 def _proximo_disparo() -> float | None:
     """Segundos que faltan para el siguiente cambio, o None si no se sabe.
 
-    Se pregunta por D-Bus y no con `systemctl show`: el disparo de un
-    temporizador monotono sale por ahi como `NextElapseUSecMonotonic=2h 8min
-    6.555745s`, ya formateado para leerlo, y volver a convertir ESO en un numero
-    es analizar la salida bonita de una herramienta. La propiedad cruda son
-    microsegundos desde el arranque, que es lo que hay que restarle al uptime.
+    Se pregunta con `list-timers --output=json`, que da el instante en
+    microsegundos desde la epoca. Antes se leia `NextElapseUSecMonotonic` por
+    D-Bus y **estaba mal**: esa propiedad conserva el disparo con el que se armo
+    el temporizador la primera vez tras el arranque, asi que con 5,9 h de uptime
+    seguia diciendo "44 min", un valor 18686 s en el pasado. `list-timers` si
+    recalcula, y es lo mismo que ensena `systemctl` a un humano.
 
     Cualquier tropiezo devuelve None y el estado se limita a no decir cuanto
     falta, que es mejor que inventarse una hora.
     """
-    def dbus(*args: str) -> str:
-        r = subprocess.run(["busctl", "--user", *args],
-                           capture_output=True, text=True, timeout=10)
-        return r.stdout.strip() if r.returncode == 0 else ""
-
     try:
-        ruta = dbus("call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
-                    "org.freedesktop.systemd1.Manager", "GetUnit", "s",
-                    f"{UNIDAD}.timer")
-        if not ruta.startswith('o "'):
+        r = subprocess.run(["systemctl", "--user", "list-timers",
+                            f"{UNIDAD}.timer", "--output=json", "--no-pager"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
             return None
-        valor = dbus("get-property", "org.freedesktop.systemd1",
-                     ruta[3:].rstrip('"'), "org.freedesktop.systemd1.Timer",
-                     "NextElapseUSecMonotonic")
-        proximo = int(valor.split()[1]) / 1e6
-        arriba = float(Path("/proc/uptime").read_text().split()[0])
-        return max(0.0, proximo - arriba)
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        filas = json.loads(r.stdout or "[]")
+        if not filas or filas[0].get("next") in (None, 0):
+            return None
+        faltan = filas[0]["next"] / 1e6 - datetime.now().timestamp()
+        # systemd usa un centinela enorme para "no hay proximo disparo".
+        if faltan > 366 * 86400:
+            return None
+        return max(0.0, faltan)
+    except (OSError, ValueError, KeyError, TypeError,
+            subprocess.SubprocessError):
         return None
 
 
@@ -441,6 +454,51 @@ def cmd_set(args) -> int:
     for k, v in stats.items():
         print(f"  {k}: {v}")
     print(f"puesto en el escritorio: {titulo}")
+    return 0
+
+
+def cmd_shuffletime(args) -> int:
+    """Cambia SOLO la cadencia de la rotacion, sin tocar el fondo de ahora.
+
+    Existe porque hasta ahora la unica forma de ajustar el intervalo era
+    `shuffle --cada`, que ademas cambia el wallpaper al momento: para pasar de
+    30 a 10 minutos no habia manera de hacerlo sin llevarse por delante el que
+    estabas mirando.
+
+    Si la rotacion estaba parada, esto la enciende con esa cadencia y deja el
+    fondo actual; el primer cambio llega dentro de un intervalo completo.
+    """
+    if args.parar:
+        rotacion_apagar()
+        print("rotacion parada; el fondo se queda como esta")
+        return 0
+    if not args.tiempo:
+        raise CtlError("dime cada cuanto: `wectl shuffletime 10m`, "
+                       "o `wectl shuffletime --parar`")
+    segundos = _intervalo(args.tiempo)
+    estaba = rotacion_estado()
+    antes = estaba is not None and estaba[1]
+    rotacion_encender(segundos)
+    print(f"{'cadencia cambiada' if antes else 'rotacion activada'}: "
+          f"un wallpaper al azar cada {_en_palabras(segundos)}")
+    # El plazo lo cuenta systemd desde el ULTIMO cambio, no desde ahora
+    # (`OnUnitActiveSec`), asi que al acortar la cadencia el siguiente puede
+    # tocar ya. Se dice lo que va a pasar de verdad en vez de prometer un
+    # intervalo entero.
+    # systemd tarda un instante en calcular el disparo tras habilitar el
+    # temporizador; sin esta espera corta la primera consulta sale vacia.
+    faltan = _proximo_disparo()
+    if faltan is None:
+        time.sleep(0.6)
+        faltan = _proximo_disparo()
+    if faltan is None:
+        print("el fondo de ahora se queda")
+    elif faltan < 5:
+        print("el fondo de ahora cambia enseguida: desde el ultimo cambio ya "
+              "habia pasado mas de ese tiempo")
+    else:
+        print(f"el fondo de ahora se queda; el siguiente, en "
+              f"{_en_palabras(faltan)}")
     return 0
 
 
@@ -564,11 +622,18 @@ def main() -> int:
     s.set_defaults(fn=cmd_set)
 
     s = sub.add_parser("shuffle", help="pone uno al azar de toda la biblioteca")
-    s.add_argument("--cada", metavar="TIEMPO",
+    s.add_argument("--every", "--cada", metavar="TIEMPO", dest="cada",
                    help="ademas, repetirlo solo cada TIEMPO: 30m, 2h, 90s")
     s.add_argument("--parar", action="store_true",
                    help="para la rotacion automatica")
     s.set_defaults(fn=cmd_shuffle)
+
+    s = sub.add_parser("shuffletime",
+                       help="cambia cada cuanto rota, sin tocar el fondo")
+    s.add_argument("tiempo", nargs="?", metavar="TIEMPO",
+                   help="30m, 2h, 90s, 1d; un numero suelto son minutos")
+    s.add_argument("--parar", action="store_true", help="para la rotacion")
+    s.set_defaults(fn=cmd_shuffletime)
 
     for nombre, fn, ayuda in (("start", cmd_start, "activa el motor"),
                               ("stop", cmd_stop, "para el motor"),

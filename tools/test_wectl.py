@@ -240,6 +240,43 @@ def prueba_unidades(fallos: list[str]) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def prueba_shuffletime(fallos: list[str]) -> None:
+    """`shuffletime` ajusta la cadencia sin tocar el plan ni el escritorio."""
+    print("\n── cambiar la cadencia ──")
+    tmp = Path(tempfile.mkdtemp(prefix="wectl-shuffletime-"))
+    reales = (wectl.UNIDADES, wectl._systemctl, wectl._proximo_disparo,
+              wectl.preparar, wectl.recargar, wectl.construir)
+    tocado: list[str] = []
+    try:
+        wectl.UNIDADES = tmp
+        wectl._systemctl = lambda *a, **k: ""
+        wectl._proximo_disparo = lambda: 600.0
+        for nombre in ("preparar", "recargar", "construir"):
+            setattr(wectl, nombre, lambda *a, _n=nombre, **k: tocado.append(_n))
+
+        class Args:
+            tiempo, parar = "10m", False
+        wectl.cmd_shuffletime(Args())
+        timer = (tmp / f"{wectl.UNIDAD}.timer").read_text()
+        if "OnUnitActiveSec=600" not in timer:
+            fallos.append("la cadencia no llego al temporizador")
+        if tocado:
+            fallos.append(f"cambiar la cadencia toco el escritorio: {tocado}")
+        print(f"  `shuffletime 10m` -> temporizador a 600 s, sin tocar el fondo   ok")
+
+        class Malo:
+            tiempo, parar = "30s", False
+        try:
+            wectl.cmd_shuffletime(Malo())
+            fallos.append("acepto 30s, por debajo del minimo")
+        except wectl.CtlError:
+            print(f"  `shuffletime 30s` rechazado (minimo {wectl.INTERVALO_MINIMO} s)   ok")
+    finally:
+        (wectl.UNIDADES, wectl._systemctl, wectl._proximo_disparo,
+         wectl.preparar, wectl.recargar, wectl.construir) = reales
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     fallos: list[str] = []
     prueba_intervalo(fallos)
@@ -247,6 +284,7 @@ def main() -> int:
     prueba_cambio_de_plan(fallos)
     prueba_construir(fallos)
     prueba_unidades(fallos)
+    prueba_shuffletime(fallos)
 
     if fallos:
         print("\n── fallos ──")
