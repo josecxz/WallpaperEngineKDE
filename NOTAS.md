@@ -303,6 +303,7 @@ tools/
   test_weshader.py           regresión del traductor (combos por defecto)
   test_wescene.py            regresión end-to-end (combos reales)
   test_weparticles.py        contrato entre weparticles.py y weparticles.c
+  test_luminancia.py         regresión de LUZ: renderiza y mide cuánta sale
 src/
   glexecutor.cpp/.h          ejecutor de planes en vivo (port de glexec.c)
   weparticles.c/.h           simulador de partículas, COMPARTIDO por los dos
@@ -1613,6 +1614,38 @@ mientras que uno que viaja en el plan entra con el siguiente `wectl set`.
 Está calibrado, no leído de WE: se eligió para que la mediana del corpus caiga
 en ~1 celda, que es donde la turbulencia se ve como turbulencia. Si hiciera
 falta afinarlo es un solo número.
+
+## Medir la luz, no solo que el plan se genere
+
+`tools/test_luminancia.py` renderiza las 125 escenas y mide cuánta luz sale.
+Existe porque el resto de la batería comprueba que el plan se genere y que los
+shaders compilen, y con eso una escena puede quedarse **negra sin que nada
+proteste**: las tres que rescató el arreglo del parallax llevaban meses así.
+
+Mide tres cosas por escena, y las tres hacen falta:
+
+- **media** — separa «negra» de «oscura pero viva».
+- **p99** — una escena legítimamente nocturna tiene brillos; una rota es plana.
+  Sin este dato, un cielo estrellado y un fallo se parecen.
+- **fracción de píxeles bajo 8** — con la media sola, un destello en una esquina
+  disimula un lienzo apagado.
+
+**Los umbrales salen de medir, no de una corazonada.** Con un único umbral en 25
+caían 16 escenas y mezclaba churras con merinas. Con los datos delante quedan dos
+niveles: `media < 8` es **apagada** ---las seis que caen ahí van de 0,00 a 5,39,
+y dos tienen `p99` 0,00, negro absoluto--- y `media < 25` con `p99 < 120` es
+**sospechosa**, apagada de forma uniforme y sin un brillo, que se informa pero no
+falla porque puede ser intencionado. La mediana del corpus está en 74.
+
+Primera pasada tras el arreglo del parallax: **6 apagadas, 3 sospechosas, 0
+regresiones**. Las cuatro conocidas ---`1518454472`, `3577990983`, `2968771936`,
+`3624053922`--- y **dos que no estaban en ninguna lista**: `3459506773` (4,23) y
+`2311315748` (5,39).
+
+La referencia no se guarda en el repositorio, porque depende de qué wallpapers
+tenga cada uno: se genera en local con `--guardar` y se compara contra sí misma
+con `--referencia`. Y `--desde` reanaliza una medida ya hecha sin volver a
+renderizar, que cuesta seis minutos.
 
 ## Tres escenas negras por un `normalize(0, 0)`
 
