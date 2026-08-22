@@ -14,7 +14,7 @@ LIB     := libwallpaperenginerender.so
 ENVDIR  := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/environment.d
 ENVFILE := $(ENVDIR)/50-wallpaperengine.conf
 
-QT_MODULES := Qt6Quick Qt6Qml Qt6Gui Qt6Core
+QT_MODULES := Qt6Quick Qt6Qml Qt6Gui Qt6Core Qt6DBus
 # Las cabeceras de QRhi viven en una ruta versionada: es API semipublica, sin
 # garantia de compatibilidad entre versiones menores de Qt.
 QT_VER  := $(shell pkg-config --modversion Qt6Core)
@@ -38,6 +38,7 @@ LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL
 MOC     := /usr/lib/qt6/moc
 BUILD   := obj
 OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o \
+           $(BUILD)/escritorio.o $(BUILD)/moc_escritorio.o \
            $(BUILD)/weparticles.o \
            $(BUILD)/moc_sceneview.o
 
@@ -55,6 +56,9 @@ $(BUILD):
 $(BUILD)/moc_sceneview.cpp: src/sceneview.h | $(BUILD)
 	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
 
+$(BUILD)/moc_escritorio.cpp: src/escritorio.h | $(BUILD)
+	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
+
 # plugin.cpp declara su QObject en el propio .cpp, asi que su moc se incluye.
 $(BUILD)/plugin.moc: src/plugin.cpp | $(BUILD)
 	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
@@ -68,6 +72,9 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/moc_sceneview.o: $(BUILD)/moc_sceneview.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/moc_escritorio.o: $(BUILD)/moc_escritorio.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
 
 # plugin.cpp incluye su propio .moc, que no puede deducirse de los includes.

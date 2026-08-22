@@ -308,6 +308,7 @@ src/
   glexecutor.cpp/.h          ejecutor de planes en vivo (port de glexec.c)
   weparticles.c/.h           simulador de partículas, COMPARTIDO por los dos
   sceneview.cpp/.h           QQuickRhiItem que compone la escena
+  escritorio.cpp/.h          le pregunta a KWin si muestra el escritorio
   plugin.cpp, qmldir         registro del módulo QML
 ```
 
@@ -1222,6 +1223,63 @@ byte a byte. Es anterior a este trabajo y no tiene que ver con partículas.
 
 El reparto por puestos se refactorizó para compartir el recorrido con el corro;
 las dos escenas que lo usan —`1927028828` y `2658583633`— renderizan idénticas.
+
+## La pausa mide cobertura, no una bandera
+
+Preguntar «¿está maximizada la ventana activa?» falla en tres casos que se dan a
+diario: **dos ventanas en mosaico** que entre las dos tapan la pantalla y
+ninguna está maximizada ---un PDF y una consola, medido: el motor al **98,2%**
+del i915 sin que se viera un píxel del fondo---, **una ventana pequeña activa
+encima de una maximizada**, y **una redimensionada a mano** hasta cubrirlo todo.
+
+Ahora se mide cuánta pantalla queda tapada: una rejilla de 32x18 sobre el área
+útil, comprobando el **centro** de cada celda contra los rectángulos de las
+ventanas visibles. El centro y no el solape: contar una celda por rozarla
+inflaría la cobertura y pararía el fondo con una ventana pegada al borde. La
+referencia es el área útil ---la pantalla menos los paneles, vía
+`availableScreenRect` del containment--- porque el fondo bajo un panel opaco no
+se ve; sin ella, una maximizada se queda en el 94% y el umbral habría que
+aflojarlo hasta dejar pasar huecos de verdad. Se pausa por encima del **92%**.
+
+**Dos condiciones, y cada una tapa el agujero de la otra**: la ventana activa
+dice si estás mirando algo, y la cobertura si eso que miras deja ver el fondo.
+Con la activa sola, el mosaico no paraba nada; con la cobertura sola, el
+escritorio a la vista tampoco arrancaba.
+
+### Lo que el modelo de tareas no dice, y cómo se supo
+
+Instrumentando la decisión con el estado de cada ventana salieron dos hechos que
+no se pueden deducir de la documentación:
+
+- **Minimizar sí se marca.** Al minimizar de verdad, el modelo pasa a decir
+  `Google Chrome MIN OCULTA`, así que la cobertura excluye esa ventana y el
+  fondo despierta. Medido: **95,3%** del motor con todo minimizado.
+- **«Mostrar el escritorio» no se marca.** KWin aparta las ventanas pero el
+  modelo las sigue dando con su geometría intacta, sin `MIN` ni `OCULTA`, y
+  encima conserva la ventana activa:
+
+      CachyOS Hello [560,303 800x594]; Dolphin [480,0 960x1168];
+      Google Chrome ACTIVA [0,0 1920x1168]; Konsole [0,0 1920x1168]; ...
+
+  Con esos datos la cobertura sale del 100% y el fondo se queda congelado justo
+  cuando lo estás mirando.
+
+Por eso `src/escritorio.cpp` le pregunta a **KWin por D-Bus**
+(`org.kde.KWin.showingDesktop` y su señal), que es quien lo sabe, y lo publica a
+QML. Si KWin no responde ---otro compositor, D-Bus caído--- se queda en `false`
+y el motor se comporta como antes. QML no habla D-Bus; por eso vive en el C++.
+
+| situación | antes | ahora |
+|---|---|---|
+| PDF a media pantalla + consola detrás | 98,2% | **0,1%** |
+| todo minimizado | — | **95,3%**, dibuja |
+| KWin mostrando el escritorio | congelado | dibuja |
+
+**Trampa que costó una medida engañosa:** plasmashell compila el QML al arrancar
+y lo sirve de memoria, así que un cambio en un `.qml` **no se ve con `wectl
+set`** ---hay que reiniciar la sesión, igual que con la `.so`---. Durante un rato
+estuvimos midiendo la lógica vieja creyendo que era la nueva; lo delató que el
+proceso llevaba dos días vivo y su caché de QML tenía esa misma fecha.
 
 ## No dibujar lo que no se ve
 
