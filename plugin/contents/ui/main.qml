@@ -34,6 +34,16 @@ WallpaperItem {
         modo: root.configuration.PauseMode
         geometriaPantalla: Qt.rect(Screen.virtualX, Screen.virtualY,
                                    Screen.width, Screen.height)
+        // `availableScreenRect` es la pantalla sin paneles, y viene en
+        // coordenadas RELATIVAS al containment; el modelo de tareas da las
+        // ventanas en absolutas, asi que hay que sumarle el origen.
+        geometriaUtil: {
+            const r = Plasmoid.availableScreenRect
+            return (r && r.width > 0)
+                ? Qt.rect(Screen.virtualX + r.x, Screen.virtualY + r.y,
+                          r.width, r.height)
+                : Qt.rect(0, 0, 0, 0)
+        }
     }
 
     FrameAnimation {
@@ -120,9 +130,12 @@ WallpaperItem {
                                   + "," + root.num(escena.desplazamientoY, 2),
                 "fps          : " + root.num(root.fps, 1),
                 "g_Time       : " + root.num(clock.elapsedTime, 1) + " s",
-                "estado       : " + (ventanas.tapado ? "en pausa (tapado)" : "dibujando"),
+                "estado       : " + (ventanas.tapado ? "en pausa (tapado)" : "dibujando")
+                                  + " · tapada " + Math.round(ventanas.cobertura * 100) + "%",
                 "reloj        : " + (clock.paused ? "en pausa" : "corriendo")
                                   + " · dibujado " + escena.dibujado,
+                "escritorio   : " + (ventanas.mostrandoEscritorio
+                                     ? "KWin lo esta mostrando" : "tapado por ventanas"),
                 "ventanas     : " + ventanas.ventanas + " · tapan "
                                   + ventanas.maximizadas + " · fuera "
                                   + ventanas.ocultas,

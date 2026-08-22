@@ -3,6 +3,7 @@
 #include <QQmlExtensionPlugin>
 #include <qqml.h>
 
+#include "escritorio.h"
 #include "sceneview.h"
 
 class WallpaperEnginePlugin : public QQmlExtensionPlugin
@@ -14,6 +15,7 @@ public:
     void registerTypes(const char *uri) override
     {
         qmlRegisterType<SceneView>(uri, 1, 0, "SceneView");
+        qmlRegisterType<Escritorio>(uri, 1, 0, "Escritorio");
     }
 };
 
