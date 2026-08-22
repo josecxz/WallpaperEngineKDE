@@ -48,23 +48,54 @@ sys.path.insert(0, str(Path(__file__).parent))
 import wepaths
 import werender
 
-# Dos niveles, y la diferencia sale de medir el corpus entero, no de una
-# corazonada. Con un unico umbral en 25 caian 16 escenas, pero mezclaba cosas
-# distintas: hay arte legitimamente oscuro ---un `p99` de 180 con media 20 es
-# una escena nocturna con brillos, no una rota--- y hay lienzos planos.
+# El criterio NO es un umbral absoluto, y averiguarlo costo dos falsos
+# positivos: `Dark Queen [4K]` mide 4.23 de media y `Samurai - Cyberpunk 2077`
+# 5.39, o sea por debajo de tres de las cuatro escenas rotas conocidas ---y las
+# dos estan perfectas: son obras deliberadamente negras, con una corona o un
+# demonio encendidos sobre un fondo en penumbra. Cualquier umbral absoluto que
+# cace las rotas se lleva por delante el arte oscuro.
 #
-#   APAGADA     media < 8. Ahi no hay escena: las seis del corpus que caen
-#               estan entre 0.00 y 5.39, y dos tienen `p99` 0.00, o sea negro
-#               absoluto. Falla la prueba.
-#   SOSPECHOSA  media < 25 Y p99 < 120: apagada de forma uniforme, sin un solo
-#               brillo. Se informa pero no falla, porque puede ser intencionado.
+# Lo que si separa es comparar contra el PREVIEW del autor, que es un fotograma
+# de la escena tal como debe verse. La razon `nuestro / preview` deja los dos
+# grupos sin solapamiento:
 #
-# La mediana del corpus esta en 74 de media, para dar escala.
+#     2968771936  0.00 / 144.63 = 0.00   rota
+#     3577990983  1.95 /  68.07 = 0.03   rota
+#     1518454472  3.88 /  70.09 = 0.06   rota
+#     3624053922  4.07 /  70.67 = 0.06   rota
+#     3459506773  4.23 /  11.32 = 0.37   arte oscuro, correcta
+#     2311315748  5.39 /  21.29 = 0.25   arte oscuro, correcta
+#
+# El preview es material del autor: a veces es un recorte o arte promocional en
+# vez de una captura fiel, asi que la razon es aproximada y el umbral, generoso.
+RAZON_APAGADA = 0.15
+# Por debajo de esto el preview es tan oscuro que la razon no dice nada, y se
+# cae al criterio absoluto.
+PREVIEW_MINIMO = 5.0
 APAGADA = 8.0
 SOSPECHOSA_MEDIA = 25.0
 SOSPECHOSA_P99 = 120.0
 # Cuanta luz puede perder una escena antes de considerarlo regresion.
 CAIDA = 0.25
+
+
+def preview(escena: Path) -> float | None:
+    """Luminancia media del preview del autor, o None si no hay o no se lee.
+
+    Los `.gif` traen varios fotogramas; con el primero basta para saber si la
+    escena deberia tener luz.
+    """
+    for p in sorted(escena.glob("preview*")):
+        try:
+            im = Image.open(p)
+            try:
+                im.seek(0)
+            except Exception:                                # noqa: BLE001
+                pass
+            return float(np.asarray(im.convert("RGB"), dtype=np.float32).mean())
+        except Exception:                                    # noqa: BLE001
+            continue
+    return None
 
 
 def mide(png: Path) -> dict:
@@ -114,7 +145,13 @@ def main() -> int:
             try:
                 r = werender.Renderer(esc, glexec, 4.0)
                 r.render(png, frames=fotogramas)
-                res[esc.name] = mide(png)
+                v = mide(png)
+                ref = preview(esc)
+                if ref is not None:
+                    v["preview"] = round(ref, 2)
+                    if ref >= PREVIEW_MINIMO:
+                        v["razon"] = round(v["media"] / ref, 3)
+                res[esc.name] = v
             except BaseException as e:                       # noqa: BLE001
                 res[esc.name] = {"error": f"{type(e).__name__}: {e}"}
                 fallos.append(f"{esc.name}: no renderiza ({type(e).__name__})")
@@ -134,8 +171,15 @@ def main() -> int:
 
 
 def informe(res, base, fallos, segundos, guardar) -> int:
-    apagadas = [(k, v) for k, v in res.items()
-                if "media" in v and v["media"] < APAGADA]
+    def apagada(v):
+        """Rota = mucho mas oscura que su preview; sin preview, casi negra."""
+        if "media" not in v:
+            return False
+        if "razon" in v:
+            return v["razon"] < RAZON_APAGADA
+        return v["media"] < APAGADA
+
+    apagadas = [(k, v) for k, v in res.items() if apagada(v)]
     sospechosas = [(k, v) for k, v in res.items()
                    if "media" in v and APAGADA <= v["media"] < SOSPECHOSA_MEDIA
                    and v["p99"] < SOSPECHOSA_P99]
@@ -153,11 +197,12 @@ def informe(res, base, fallos, segundos, guardar) -> int:
     print("\n── las 10 mas oscuras ──")
     for media, k in vivas[:10]:
         v = res[k]
-        marca = ("  <-- APAGADA" if media < APAGADA else
+        marca = ("  <-- APAGADA" if apagada(v) else
                  "  <-- sospechosa" if v["p99"] < SOSPECHOSA_P99
                  and media < SOSPECHOSA_MEDIA else "")
+        razon = f"{v['razon']:5.2f}" if "razon" in v else "    -"
         print(f"  {k:12} media {media:6.2f}  p99 {v['p99']:6.2f}  "
-              f"negro {v['oscuro'] * 100:5.1f}%{marca}")
+              f"negro {v['oscuro'] * 100:5.1f}%  vs preview {razon}{marca}")
 
     if caidas:
         print("\n── han perdido luz respecto a la referencia ──")
@@ -168,7 +213,8 @@ def informe(res, base, fallos, segundos, guardar) -> int:
         Path(guardar).write_text(json.dumps(res, indent=1, sort_keys=True))
         print(f"\nreferencia guardada en {guardar}")
 
-    print(f"\napagadas (media < {APAGADA}): {len(apagadas)}   "
+    print(f"\napagadas (menos del {RAZON_APAGADA:.0%} de su preview): "
+          f"{len(apagadas)}   "
           f"sospechosas: {len(sospechosas)}   "
           f"regresiones: {len(caidas)}   no renderizan: {len(fallos)}")
     for f in fallos[:10]:
