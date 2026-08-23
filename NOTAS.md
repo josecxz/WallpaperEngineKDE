@@ -1918,6 +1918,125 @@ El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
 justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
 
+## La función de iluminación no está en los assets
+
+Ocho shaders de la librería común llaman a `PerformLighting_V1`, y ninguno la
+define. Tampoco declara ninguno las dos arrays de luces que consume. Lo que sí
+traen es una línea que no es GLSL:
+
+```glsl
+#require LightingV1
+```
+
+Ese `#require` es el hueco: WE inyecta ahí el módulo entero —función y
+uniforms— antes de compilar. Nosotros borrábamos la directiva y el shader se
+quedaba con una llamada a una función inexistente, así que el pase no
+enlazaba. Por eso `LIGHTING` estaba apagado a la fuerza y las capas con luces
+salían planas.
+
+**El cuerpo no hubo que inventarlo.** WE deja la misma cuenta escrita a mano en
+tres sitios de su propia librería, y entre los tres sale entera:
+
+- `effects/fluidsimulation/…/fluidsimulation_combine.frag` hace el bucle de las
+  cuatro luces desenrollado, en vez de llamar a la función. De ahí sale la
+  forma: sumar por luz y dejar el ambiente aparte.
+- `ComputePBRLightShadow` (`common_pbr_2.h`) es esta misma función con sombras,
+  con la firma completa —radio, exponente, `specularTint`—. Se llama con
+  `shadowFactor` a 1. Tiene que ser esta y no `ComputePBRLight`, porque el
+  header que incluyen los ocho ya no define la segunda.
+- `ComputeLightSpecular` (`common_fragment.h`), de la generación anterior, fija
+  el exponente: atenúa el difuso con `lightAttn * lightAttn` sobre el mismo
+  `saturate(1 - d/radio)`.
+
+### El mismo color por dos caminos distintos
+
+Conviven dos generaciones de shaders y cada una recibe las luces de una forma,
+con **convenciones incompatibles** para el mismo dato:
+
+| uniform | quién lo lee | atenuación | qué lleva el color |
+|---|---|---|---|
+| `g_LightsColorRadius[4]` | `generic4`, `foliage4`, `fur4`… | `saturate(1 - d/r)²` | color × intensidad |
+| `g_LightsColorPremultiplied[3]` | `genericimage2`, `generic2`… | `1 / d²` | color × intensidad × **radio²** |
+
+El `radio²` no es un ajuste: por ese camino el shader no recibe el radio, solo
+divide por la distancia al cuadrado. Sin él, una luz de radio 1200 llega a su
+propio borde con 0,7/1,44e6 y no se ve. Con él, a la distancia del radio la luz
+vale exactamente su color.
+
+El segundo además va **traspuesto**: los tres primeros colores en el `.rgb` de
+cada elemento y el cuarto repartido por los tres `.w`. Así caben cuatro colores
+en tres `vec4`.
+
+### El mundo es el lienzo en píxeles
+
+Las luces declaran su `origin` en las mismas unidades que los objetos: píxeles
+del `orthogonalprojection`, con la z hacia el espectador. Una luz típica está a
+343 o 500 px por delante del plano de la escena. No hay conversión de espacios
+porque no hace falta ninguna; lo que hacía falta era emitir la matriz de mundo,
+que hasta ahora solo se ponía para partículas —y con la matriz de recorte
+dentro, que en ese espacio pone la luz a 500 pantallas de distancia.
+
+### Tres uniforms que GL pone a cero sin decir nada
+
+Encender el combo hace que el vértice tome un camino distinto, y ese camino usa
+uniforms que el plan no emitía. GL no avisa: los da a cero y el resultado es
+espectacular en las dos direcciones.
+
+- **`g_ViewProjectionMatrix`** → **la escena entera en negro**. Con luz,
+  `gl_Position = mul(worldPos, M_VP)` en vez de salir de la MVP. A cero, el
+  quad colapsa a un punto y no se dibuja nada. No hay que inventarla: como
+  `MVP = VP · Mundo` y las otras dos ya están, la que falta es
+  `MVP · Mundo⁻¹`, exacta para capas, mallas y partículas por igual.
+- **`g_NormalModelMatrix`** → primero NaN, y luego **el fondo en blanco puro**.
+  Es un `mat3`, un tipo que el plan no sabía emitir; se añadió `umat3` a los dos
+  ejecutores. Y tiene que ser **solo el giro**: la traspuesta de la inversa
+  —lo que pide un normal bajo escala no uniforme— aquí es justo lo que no vale,
+  porque el shader mete esa matriz en `BuildTangentSpace` y con ella arma la
+  BASE en la que expresa la dirección a cada luz. Una base que encoge x e y por
+  1/1920 no cambia hacia dónde apunta esa dirección, pero le cambia el módulo,
+  y el módulo es la distancia de la que sale `color / d²`.
+- **`g_LightAmbientColor`** → la capa en negro, porque el shader sustituye el
+  color por `ambiente * albedo + luz`.
+
+### O todas las luces, o ninguna
+
+Ese `ambiente * albedo` es la razón de una regla que parece conservadora y no lo
+es: **si una escena trae una luz que no sabemos poner, se dibuja plana entera**.
+El ambiente OSCURECE la capa contando con que las luces devuelvan lo que quita,
+así que iluminar a medias sale peor que no iluminar.
+
+Medido en la única escena del corpus donde pasa —3053927686, con una luz de
+tubo (un segmento, del que la escena solo declara el centro) y una puntual fuera
+de alcance—: encenderla a medias la baja de 39,31 a 11,52 de media, y su propio
+preview está en 89,99.
+
+### La función repuesta no la usa ninguna escena de esta biblioteca
+
+Conviene decirlo claro: de los 6 pases que acaban iluminados en el corpus, los 6
+van por el camino viejo, el de `g_LightsColorPremultiplied`. **Ninguno llama a
+`PerformLighting_V1`.** O sea que la reconstrucción de la función está
+verificada como GLSL —su cuerpo se compila en las 578 variantes, porque se
+inyecta fuera del `#if`— pero no está verificada contra ninguna imagen.
+
+Aun así tiene que estar. Sin ella, el combo no se puede encender en esos ocho
+shaders: el pase no enlaza y se pierde entero, que es de donde venía la regla
+anterior de apagar la iluminación a la fuerza. Cuando aparezca un wallpaper que
+la use, lo que habrá que mirar es la fuerza del término, no si compila.
+
+### Lo que se ve
+
+9 luces en 5 wallpapers, todas puntuales menos ese tubo. En la escena de
+referencia (2518601723, tres luces) son 2 pases de 21 los que se iluminan, y la
+media pasa de 81,08 a 67,02 con el preview del autor en 60,80: la iluminación
+la acerca al original en vez de alejarla.
+
+En el corpus entero: 125/125 siguen renderizando, ninguna escena nueva en
+negro, y las 578 variantes de shader compilan igual que antes (577 en Mesa, 576
+en NVIDIA).
+
+Sigue sin haber reflejos: `REFLECTION` pide el fotograma ya compuesto y
+mipmapeado en `_rt_MipMappedFrameBuffer`, que es otro subsistema.
+
 ## Nota de rendimiento para el port a C++
 
 La GPU de esta máquina (Intel Raptor Lake, Mesa) expone
@@ -1935,13 +2054,14 @@ camino caliente del render.
 
 Por orden de lo que más se nota:
 
-1. **Las 2 escenas negras y la variante de shader que no compila** (1 de 578,
+1. **Las 4 escenas negras y la variante de shader que no compila** (1 de 578,
    la truncación de `maskBokeh`). Poca anchura, pero cuando cae la capa base se
    lleva la escena entera.
 2. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
    glifos.
 3. **Elegir la GPU que renderiza** (ver abajo).
-4. **Iluminación**: los materiales con luces se dibujan planos.
+4. **Reflejos** (`REFLECTION`) y **luces de tubo**: lo que queda del sistema de
+   iluminación, que ya cubre las luces puntuales.
 
 De partículas ya no queda vocabulario: los tres cabos —el corro, `remapvalue` y
 `orientation`— están cerrados y contados arriba. Lo que sigue fuera de la

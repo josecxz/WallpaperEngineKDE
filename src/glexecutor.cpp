@@ -227,6 +227,7 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             else if (kw == QLatin1String("u2f")) n = 2;
             else if (kw == QLatin1String("u3f")) n = 3;
             else if (kw == QLatin1String("u4f")) n = 4;
+            else if (kw == QLatin1String("umat3")) n = 9;
             else if (kw == QLatin1String("umat4")) n = 16;
             if (n && tok.size() >= 2 + n) {
                 Uniform u;
@@ -876,6 +877,9 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             case 2:  glUniform2fv(u.location, 1, v); break;
             case 3:  glUniform3fv(u.location, 1, v); break;
             case 4:  glUniform4fv(u.location, 1, v); break;
+            // La matriz de normales. Va escrita por filas como las demas, asi
+            // que GL la lee traspuesta y `mul(v, M)` acaba dando `M * v`.
+            case 9:  glUniformMatrix3fv(u.location, 1, GL_FALSE, v); break;
             case 16: glUniformMatrix4fv(u.location, 1, GL_FALSE, v); break;
             default: break;
             }

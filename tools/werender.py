@@ -113,6 +113,28 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
     asi que el array plano que se sube es la matriz escrita por filas.
     """
     w, h = canvas
+    hx, hy, ax, ay, c, s, _ = _colocacion(obj, canvas, mesh, por_id)
+    sx, sy = 2.0 * hx / w, 2.0 * hy / h
+    tx = 2.0 * ax / w - 1.0
+    ty = 2.0 * ay / h - 1.0
+    # Rotacion en Z antes de la escala; los angulos vienen en radianes.
+    return [ sx * c, -sy * s, 0.0, tx,
+             sx * s,  sy * c, 0.0, ty,
+             0.0,     0.0,    1.0, 0.0,
+             0.0,     0.0,    0.0, 1.0]
+
+
+def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
+                por_id: dict | None = None
+                ) -> tuple[float, float, float, float, float, float, float]:
+    """Semiextension, centro, giro y profundidad de la capa, EN PIXELES.
+
+    Es la mitad de `object_mvp` que no depende de a donde vaya el resultado.
+    Se separa porque hay dos destinos y tienen que coincidir: clip space para
+    dibujar, y coordenadas del lienzo para iluminar. Si divergieran, la luz
+    caeria en un sitio distinto de donde se ve la capa.
+    """
+    w, h = canvas
     # Una capa `passthrough` (composelayer, fullscreenlayer, projectlayer)
     # trabaja sobre el fotograma completo: su origin y su size describen el
     # rectangulo que el autor ve en el editor, no donde se dibuja.
@@ -151,15 +173,24 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
         elif "top" in alin:
             ay -= media_h
 
-    tx = 2.0 * ax / w - 1.0
-    ty = 2.0 * ay / h - 1.0
+    return (sx * w / 2.0, sy * h / 2.0, ax, ay,
+            math.cos(angles[2]), math.sin(angles[2]), origin[2])
 
-    c = math.cos(angles[2])
-    s = math.sin(angles[2])
-    # Rotacion en Z antes de la escala; los angulos vienen en radianes.
-    return [ sx * c, -sy * s, 0.0, tx,
-             sx * s,  sy * c, 0.0, ty,
-             0.0,     0.0,    1.0, 0.0,
+
+def object_world(obj, canvas: tuple[int, int], mesh: bool = False,
+                 por_id: dict | None = None) -> list[float]:
+    """Matriz que lleva la geometria del objeto a coordenadas del LIENZO.
+
+    Es `object_mvp` parada un paso antes: sin normalizar a clip space. Ese
+    espacio intermedio --- pixeles del lienzo, z hacia el espectador --- es el
+    mundo que ven los shaders en `v_WorldPos`, y es el mismo en el que la
+    escena declara el `origin` de sus luces. No hay conversion de por medio
+    porque no hace falta ninguna: son las mismas unidades.
+    """
+    hx, hy, ax, ay, c, s, az = _colocacion(obj, canvas, mesh, por_id)
+    return [ hx * c, -hy * s, 0.0, ax,
+             hx * s,  hy * c, 0.0, ay,
+             0.0,     0.0,    1.0, az,
              0.0,     0.0,    0.0, 1.0]
 
 
@@ -197,6 +228,161 @@ def particle_mvp(obj, canvas: tuple[int, int],
             2.0 * sx * s / h,  2.0 * sy * c / h, 0.0, 2.0 * origin[1] / h - 1.0,
             0.0, 0.0, 0.0, 0.0,
             0.0, 0.0, 0.0, 1.0]
+
+
+def particle_world(obj, canvas: tuple[int, int],
+                   por_id: dict | None = None) -> list[float]:
+    """`particle_mvp` parada antes de clip space: sistema -> lienzo.
+
+    A diferencia de la de dibujo, esta SI lleva la z. Aquella la aplana porque
+    una particula con z de 10 o 20 se saldria del rango de recorte y GL tiraria
+    el triangulo; aqui no hay recorte que valga, y la z es justo lo que decide
+    si la particula esta delante o detras del foco.
+    """
+    w, h = canvas
+    origin, scale, angles = transform_absoluto(obj, por_id)
+    if not _floats(obj.raw.get("origin")):
+        origin = [w / 2, h / 2, 0.0]
+    c, s = math.cos(angles[2]), math.sin(angles[2])
+    return [scale[0] * c, -scale[1] * s, 0.0,      origin[0],
+            scale[0] * s,  scale[1] * c, 0.0,      origin[1],
+            0.0,           0.0,          scale[2], origin[2],
+            0.0,           0.0,          0.0,      1.0]
+
+
+# La camara de estas escenas es ortografica ---`orthogonalprojection`---, asi
+# que el espectador esta en el infinito y el vector de vista es constante:
+# (0, 0, 1) para todo el lienzo. Los shaders no lo reciben hecho, lo derivan de
+# `g_EyePosition - worldPos`, asi que la unica forma de decir "infinito" es un
+# ojo lo bastante lejos. A 100.000 px el borde de un lienzo de 3840 se desvia
+# 1,1 grados, que no se ve; poner el ojo cerca inventaria una perspectiva que
+# la escena no tiene y ladearia los brillos hacia el centro.
+OJO_Z = 100000.0
+
+# WE reserva sitio para cuatro luces por pase: `g_LightsPosition[4]`. En el
+# corpus ninguna escena pasa de tres.
+MAX_LUCES = 4
+
+
+def vp_de(mvp: list[float], mundo: list[float]) -> list[float]:
+    """La matriz vista-proyeccion que le falta al pase, deducida de las otras.
+
+    Con la iluminacion encendida el vertice deja de usar la MVP para colocar el
+    triangulo y pasa por el mundo: `gl_Position = mul(worldPos, M_VP)`. O sea
+    que pide una tercera matriz que el plan nunca ha emitido; sin ella GL la da
+    a cero, el quad colapsa a un punto y la capa desaparece --- que es como se
+    quedaba la escena entera en negro, sin un solo error de por medio.
+
+    No hay que inventarla: la MVP y la de mundo ya estan, y como
+    `MVP = VP * Mundo`, la que falta es `MVP * Mundo^-1`. Sale exacta para
+    cualquier tipo de pase ---capa, malla o particula--- sin distinguir casos, y
+    por construccion el triangulo acaba en el mismo sitio que sin luces.
+    """
+    try:
+        w = np.linalg.inv(np.array(mundo, dtype=np.float64).reshape(4, 4))
+    except np.linalg.LinAlgError:
+        # Una capa con un eje a escala cero. No se puede deshacer, y forzar la
+        # cuenta daria infinitos: mejor la proyeccion del lienzo, que al menos
+        # deja la geometria en pantalla.
+        return list(IDENTITY)
+    return list((np.array(mvp, dtype=np.float64).reshape(4, 4) @ w).ravel())
+
+
+def _inverso(x: float) -> float:
+    """1/x, pero un eje aplastado no colapsa la normal.
+
+    Una escala de 0 dejaria esa fila de la matriz a cero y con ella la normal;
+    `normalize(0, 0, 0)` es NaN y una capa en NaN se lleva por delante todo lo
+    que se componga encima. Ya ha pasado dos veces en este motor.
+    """
+    return 1.0 / x if abs(x) > 1e-9 else 1.0
+
+
+def matriz_normales(c: float, s: float) -> list[float]:
+    """La matriz de normales: SOLO el giro, escrita por filas como las demas.
+
+    La traspuesta de la inversa ---`R * S^-1`, que es lo que pide un normal
+    bajo escala no uniforme--- aqui es justo lo que no vale. Este uniform no se
+    usa solo para girar la normal: el shader lo mete en `BuildTangentSpace` y
+    con el arma la BASE en la que luego expresa la direccion a cada luz. Una
+    base que encoge x e y por 1/1920 no cambia hacia donde apunta esa
+    direccion, pero le cambia el MODULO, y el modulo es la distancia a la luz
+    de la que sale `color / d^2`. Con la distancia dividida por dos mil, el
+    fondo entero salia blanco puro.
+
+    El giro es ortonormal, conserva longitudes, y para una capa plana ---cuya
+    normal es (0, 0, 1) por construccion--- deja la normal donde estaba, que es
+    lo correcto: escalar el ancho de una imagen no la inclina.
+    """
+    return [c, -s, 0.0,
+            s,  c, 0.0,
+            0.0, 0.0, 1.0]
+
+
+def colores_premultiplicados(luces) -> list[list[float]]:
+    """Las cuatro luces empaquetadas en tres vec4, como las pide WE.
+
+    `g_LightsColorPremultiplied` no es una lista de colores: es la traspuesta.
+    Los tres primeros van en el `.rgb` de cada elemento y el CUARTO se reparte
+    por los tres `.w`. Asi caben cuatro colores en tres vec4 sin desperdiciar
+    registros, y el shader lo recompone con
+    `vec3(g_LightsColorPremultiplied[0].w, [1].w, [2].w)`.
+
+    "Premultiplicado" es por el radio al cuadrado. Los shaders que leen esta
+    array atenuan con `color / d^2` y nada mas ---no reciben el radio---, asi
+    que sin ese factor una luz de radio 1200 llegaria a su propio borde con
+    0.7/1.44e6, que es invisible. Con el, a la distancia del radio la luz vale
+    exactamente su color, que es lo que el autor ve en el editor.
+    """
+    cols = []
+    for i in range(MAX_LUCES):
+        if i < len(luces):
+            _, col, radio = luces[i]
+            cols.append([c * radio * radio for c in col])
+        else:
+            cols.append([0.0, 0.0, 0.0])
+    return [[cols[i][0], cols[i][1], cols[i][2], cols[3][i]] for i in range(3)]
+
+
+def luces_de_escena(scene) -> list[tuple[list[float], list[float], float]]:
+    """Las luces puntuales visibles, en coordenadas del lienzo.
+
+    Devuelve por luz: posicion, color ya multiplicado por su intensidad, y
+    radio. La intensidad se funde con el color porque el shader no la recibe
+    aparte. El radio se queda suelto: uno de los dos caminos lo manda tal cual
+    y el otro lo necesita al cuadrado dentro del color, y de eso ya se ocupa
+    `colores_premultiplicados`.
+
+    Devuelve la lista VACIA si la escena tiene alguna luz visible que no sea
+    puntual. Las de tipo `ltube` son un SEGMENTO, no un punto: su brillo sale
+    de los dos extremos y la escena solo declara el centro, asi que no hay
+    forma de ponerla. Y encender la iluminacion a medias sale peor que no
+    encenderla: el shader cambia el color por `ambiente * albedo + luz`, o sea
+    que el ambiente OSCURECE la capa contando con que las luces devuelvan lo
+    que quita. Medido en la unica escena del corpus donde pasa (3053927686,
+    una luz de tubo y una puntual fuera de alcance): con la luz a medias cae de
+    39.31 a 11.52 de media, y su propio preview esta en 89.99.
+    """
+    fuera = []
+    for obj in scene.objects:
+        if obj.kind != "light":
+            continue
+        if not wescene.is_visible(obj.raw.get("visible"), scene.properties):
+            continue                      # apagada por el autor: no cuenta
+        if str(obj.raw.get("light") or "") not in ("point", "lpoint"):
+            return []
+        org = (_floats(obj.raw.get("origin")) + [0.0, 0.0, 0.0])[:3]
+        col = (_floats(obj.raw.get("color")) + [1.0, 1.0, 1.0])[:3]
+        # `intensity` y `origin` pueden venir animados o guiados por script ---
+        # la luz que sigue al cursor de una escena del corpus. `_floats` se
+        # queda con el valor guardado, que es la pose en que el autor lo dejo.
+        ints = (_floats(obj.raw.get("intensity")) + [1.0])[0]
+        radio = (_floats(obj.raw.get("radius")) + [0.0])[0]
+        if radio <= 0.0:
+            continue                      # sin alcance no alumbra nada
+        fuera.append(([org[0], org[1], org[2]],
+                      [col[0] * ints, col[1] * ints, col[2] * ints], radio))
+    return fuera[:MAX_LUCES]
 
 
 def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
@@ -451,6 +637,10 @@ class Renderer:
         # Margen de render por objeto; ver _emit_mesh.
         self.margins: dict[int, float] = {}
         self.canvas: tuple[int, int] = (1920, 1080)
+        # Luces de la escena y su ambiente; los rellena `_build` al leerla.
+        self.luces: list[tuple[list[float], list[float], float]] = []
+        self.ambiente: list[float] = [1.0, 1.0, 1.0]
+        self.cielo: list[float] = [1.0, 1.0, 1.0]
         self.mesh_files: list[Path] = []
         self.notes: list[str] = []
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
@@ -858,20 +1048,23 @@ class Renderer:
         # `pulse` de la escena de referencia hacia oscilar el brillo del
         # wallpaper completo casi al doble en vez de solo la zona enmascarada.
         combos = dict(p.combos)
-        # No hay sistema de iluminacion: los objetos `light` de la escena no se
-        # renderizan ni alimentan uniforms. Un material con el combo LIGHTING
-        # activo compila igual, pero recibe luz cero y sale NEGRO -- en el
-        # wallpaper de Asuka el EVA entero desaparecia en una mancha oscura.
+        # La iluminacion se enciende solo si hay con que iluminar. Un pase con
+        # el combo activo y las luces a cero no queda plano: queda NEGRO, porque
+        # el shader sustituye el color por `ambiente * albedo + luz` y ahi todo
+        # vale cero. Es lo que le pasaba al EVA de Asuka, que desaparecia en una
+        # mancha oscura.
         #
-        # Desactivar el combo da la capa plana, sin luces ni reflejos, que es
-        # una aproximacion pobre pero reconocible; negro no lo es. Afecta a 8
-        # pases de material en todo el corpus (5 wallpapers), asi que el riesgo
-        # de estropear algo que hoy funcione es minimo.
-        #
-        # WE_LIGHTING=1 lo deja pasar, para cuando haya con que iluminar.
-        if not os.environ.get("WE_LIGHTING"):
-            combos.pop("LIGHTING", None)
-            combos.pop("REFLECTION", None)
+        # Y el valor se FUERZA, no se quita. Cada shader trae su propio
+        # `default` para el combo ---en `generic4` es 1--- que se aplica en
+        # cuanto la clave no esta, asi que borrarla no apaga nada: lo enciende.
+        # `obj` entra en la condicion porque de el salen las matrices de mundo:
+        # un pase suelto, sin objeto detras, no puede alimentar el combo y
+        # encenderlo lo dejaria a oscuras.
+        combos["LIGHTING"] = 1 if (self.luces and obj is not None
+                                   and combos.get("LIGHTING")) else 0
+        # Los reflejos son otro subsistema: piden el fotograma ya compuesto y
+        # mipmapeado en `_rt_MipMappedFrameBuffer`. Siguen apagados.
+        combos["REFLECTION"] = 0
 
         # Los combos del vertice los pone el motor, no el material: describen
         # el formato que va a llegar, que es decision del ejecutor.
@@ -1068,6 +1261,9 @@ class Renderer:
             mvp = IDENTITY
         self.body.append("umat4 g_ModelViewProjectionMatrix " +
                          " ".join(f"{x:.6g}" for x in mvp))
+        # Un pase iluminado necesita saber DONDE esta cada fragmento en el
+        # lienzo; el resto no gasta esos uniforms ni cambia de comportamiento.
+        luz = bool(combos.get("LIGHTING"))
         if particula:
             # `ComputeParticleTangents` orienta el sprite con estos tres ejes.
             # La escena es plana y mira al lienzo de frente, asi que son los
@@ -1089,8 +1285,26 @@ class Renderer:
             self.body.append("u3f g_OrientationForward 0 0 1")
             self.body.append("u3f g_ViewRight 1 0 0")
             self.body.append("u3f g_ViewUp 0 1 0")
-            self.body.append("u3f g_EyePosition 0 0 1")
-            self.body.append("umat4 g_ModelMatrix " + " ".join(f"{x:.6g}" for x in mvp))
+            # `g_ModelMatrix` no coloca nada: el vertice de particula saca de el
+            # `v_WorldPos`, y `gl_Position` sale de la MVP, que va aparte. Sin
+            # luces da igual lo que valga mientras sea coherente con el ojo, y
+            # se deja como estaba --- clip space y ojo en (0, 0, 1). Con luces
+            # tiene que ser el mundo de verdad, porque el foco esta a 500 px del
+            # plano y en clip space eso serian 500 pantallas de distancia.
+            if luz:
+                self.body.append("u3f g_EyePosition "
+                                 f"{canvas[0] / 2:.6g} {canvas[1] / 2:.6g} {OJO_Z:.6g}")
+                mundo = particle_world(obj, canvas, por_id=self.por_id)
+                self.body.append("umat4 g_ViewProjectionMatrix " + " ".join(
+                    f"{x:.6g}" for x in vp_de(mvp, mundo)))
+                _, _e, _a = transform_absoluto(obj, self.por_id)
+                self.body.append("umat3 g_NormalModelMatrix " + " ".join(
+                    f"{x:.6g}" for x in matriz_normales(
+                        math.cos(_a[2]), math.sin(_a[2]))))
+            else:
+                self.body.append("u3f g_EyePosition 0 0 1")
+                mundo = mvp
+            self.body.append("umat4 g_ModelMatrix " + " ".join(f"{x:.6g}" for x in mundo))
             self.body.append("umat4 g_ModelMatrixInverse " +
                              " ".join(f"{x:.6g}" for x in IDENTITY))
             if hoja:
@@ -1120,6 +1334,45 @@ class Renderer:
                                  + " ".join(f"{v:.6g}" for v in estela) + " 0")
             else:
                 self.body.append("u4f g_RenderVar0 1 1 1 1")
+        elif luz:
+            self.body.append("u3f g_EyePosition "
+                             f"{canvas[0] / 2:.6g} {canvas[1] / 2:.6g} {OJO_Z:.6g}")
+            _malla = (p.stage == "base" and mesh_id is not None)
+            mundo = object_world(obj, canvas, mesh=_malla, por_id=self.por_id)
+            self.body.append("umat4 g_ModelMatrix " + " ".join(f"{x:.6g}" for x in mundo))
+            self.body.append("umat4 g_ViewProjectionMatrix " + " ".join(
+                f"{x:.6g}" for x in vp_de(mvp, mundo)))
+            _, _, _, _, _c, _s, _ = _colocacion(obj, canvas, _malla, self.por_id)
+            self.body.append("umat3 g_NormalModelMatrix " + " ".join(
+                f"{x:.6g}" for x in matriz_normales(_c, _s)))
+
+        if luz:
+            # Las arrays se mandan elemento a elemento: GL sabe resolver
+            # `g_LightsPosition[2]` como nombre, asi que no hace falta que el
+            # plan ni el ejecutor aprendan lo que es un array.
+            self.body.append("u3f g_LightAmbientColor "
+                             + " ".join(f"{x:.6g}" for x in self.ambiente))
+            self.body.append("u3f g_LightSkylightColor "
+                             + " ".join(f"{x:.6g}" for x in self.cielo))
+            for i in range(MAX_LUCES):
+                if i < len(self.luces):
+                    org, col, radio = self.luces[i]
+                else:
+                    # Un hueco vacio no se puede dejar sin escribir: GL daria
+                    # cero tambien en el radio, y el decaimiento divide por el.
+                    org, col, radio = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0
+                self.body.append(f"u3f g_LightsPosition[{i}] "
+                                 + " ".join(f"{x:.6g}" for x in org))
+                self.body.append(f"u4f g_LightsColorRadius[{i}] "
+                                 + " ".join(f"{x:.6g}" for x in col)
+                                 + f" {radio:.6g}")
+            # La otra forma de mandar los mismos colores. No es alternativa a
+            # la de arriba: cada generacion de shaders lee una, y un pase puede
+            # necesitar las dos ---el vertice saca las direcciones de
+            # `g_LightsPosition` y el fragmento el color de aqui.
+            for i, v in enumerate(colores_premultiplicados(self.luces)):
+                self.body.append(f"u4f g_LightsColorPremultiplied[{i}] "
+                                 + " ".join(f"{x:.6g}" for x in v))
         self.body.append("u1f g_Time @TIME@")
         self.body.append(f"u3f g_Screen {canvas[0]} {canvas[1]} "
                          f"{canvas[0] / max(1, canvas[1])}")
@@ -1239,6 +1492,14 @@ class Renderer:
                    int(_floats(proj.get("height", 1080))[0]))
                   if isinstance(proj, dict) else (1920, 1080))
         self.canvas = canvas
+        self.luces = luces_de_escena(scene)
+        # `ambientcolor` es la luz que llega a todo por igual y `skylightcolor`
+        # la que viene de abajo; el vertice mezcla las dos segun a donde mire la
+        # normal. Sin ninguna de las dos declaradas se usa blanco, que deja la
+        # capa como esta hoy en vez de apagarla.
+        amb = (_floats(general.get("ambientcolor")) + [1.0, 1.0, 1.0])[:3]
+        self.ambiente = amb
+        self.cielo = (_floats(general.get("skylightcolor")) + amb)[:3]
         self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
         # Instante al que deformar las mallas. Solo lo usa glexec, que no
         # tiene reloj propio: el motor en vivo pasa su tiempo real.
@@ -1443,7 +1704,12 @@ def main() -> int:
         return 1
     wallpaper = Path(sys.argv[1])
     out = Path(sys.argv[2])
-    exec_path = Path("/tmp/glexec")
+    # Donde lo deja `make glexec`. Antes apuntaba a /tmp/glexec, que no lo
+    # escribe nadie: quedaba el binario de la ultima vez que alguien lo copio a
+    # mano, y un plan nuevo contra un ejecutor viejo no falla --- se salta en
+    # silencio lo que no entiende. Con el uniform de la matriz de normales sin
+    # subir, el fondo de dos escenas salia negro y no habia nada que lo dijera.
+    exec_path = Path("obj/glexec")
     if "--exec" in sys.argv:
         exec_path = Path(sys.argv[sys.argv.index("--exec") + 1])
     t = 0.0
