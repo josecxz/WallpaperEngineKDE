@@ -1688,17 +1688,35 @@ Mide tres cosas por escena, y las tres hacen falta:
 - **fracción de píxeles bajo 8** — con la media sola, un destello en una esquina
   disimula un lienzo apagado.
 
-**Los umbrales salen de medir, no de una corazonada.** Con un único umbral en 25
-caían 16 escenas y mezclaba churras con merinas. Con los datos delante quedan dos
-niveles: `media < 8` es **apagada** ---las seis que caen ahí van de 0,00 a 5,39,
-y dos tienen `p99` 0,00, negro absoluto--- y `media < 25` con `p99 < 120` es
-**sospechosa**, apagada de forma uniforme y sin un brillo, que se informa pero no
-falla porque puede ser intencionado. La mediana del corpus está en 74.
+**El criterio no es un umbral absoluto, y averiguarlo costó dos falsos
+positivos.** Con un umbral en 25 caían 16 escenas; bajándolo a 8 quedaban seis,
+y dos de ellas ---`Dark Queen [4K]` con 4,23 de media y `Samurai - Cyberpunk
+2077` con 5,39--- **están perfectas**: son obras deliberadamente negras, con una
+corona o un demonio encendidos sobre penumbra, y nuestro render coincide con el
+preview del autor. Cualquier umbral absoluto que cace las rotas se lleva por
+delante el arte oscuro, porque las rotas miden 0,00–4,07 y estas 4,23–5,39.
 
-Primera pasada tras el arreglo del parallax: **6 apagadas, 3 sospechosas, 0
-regresiones**. Las cuatro conocidas ---`1518454472`, `3577990983`, `2968771936`,
-`3624053922`--- y **dos que no estaban en ninguna lista**: `3459506773` (4,23) y
-`2311315748` (5,39).
+Lo que sí separa es comparar contra el **preview del autor**, que es un fotograma
+de la escena tal como debe verse. La razón `nuestro / preview` deja los dos
+grupos sin solapamiento:
+
+| escena | nuestro | preview | razón | |
+|---|---|---|---|---|
+| `2968771936` | 0,00 | 144,63 | **0,00** | rota |
+| `3577990983` | 1,95 | 68,07 | **0,03** | rota |
+| `1518454472` | 3,88 | 70,09 | **0,06** | rota |
+| `3624053922` | 4,07 | 70,67 | **0,06** | rota |
+| `3459506773` | 4,23 | 11,32 | 0,37 | arte oscuro, correcta |
+| `2311315748` | 5,39 | 21,29 | 0,25 | arte oscuro, correcta |
+
+Se marca apagada por debajo del **15%** de su preview. El preview es material del
+autor ---a veces un recorte o arte promocional en vez de una captura fiel---, así
+que la razón es aproximada y el umbral, generoso; sin preview se cae al criterio
+absoluto de media < 8. La mediana del corpus está en 74 de media.
+
+Con ese criterio, tras el arreglo del parallax quedan **las cuatro escenas
+negras ya conocidas y ninguna más**: las dos que el umbral absoluto señalaba de
+más resultaron estar bien.
 
 La referencia no se guarda en el repositorio, porque depende de qué wallpapers
 tenga cada uno: se genera en local con `--guardar` y se compara contra sí misma
