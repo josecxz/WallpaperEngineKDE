@@ -1219,6 +1219,34 @@ class Renderer:
                     w, h = rt_size(b, canvas)
                 self.body.append(
                     f"u4f g_Texture{slot}Resolution {w} {h} {w} {h}")
+            if src is None:
+                # El shader declara el sampler y dice con que rellenarlo cuando
+                # el material no lo trae. Hay que hacerlo: un sampler sin
+                # enlazar NO lee negro, se queda en la unidad 0 --- que es la
+                # del slot 0 --- y el shader acaba usando la propia imagen como
+                # si fuera el otro mapa.
+                #
+                # Es lo que borraba `3624164256`: su parallax por profundidad
+                # declara `g_Texture1` con `default: util/black` ---sin mapa
+                # pintado no hay desplazamiento--- y al no enlazarlo tomaba el
+                # color de la escena por profundidad. El raymarch se iba a
+                # muestrear a cualquier parte y la capa desaparecia: 68.17 de
+                # media con solo las capas base, 13.07 con el efecto puesto.
+                #
+                # Los `_rt_*` y los `_alias_*` quedan fuera a proposito: no son
+                # ficheros sino buffers de subsistemas que este motor no tiene
+                # ---sombras, reflejos, cookies de luz---, y fabricarlos vacios
+                # es peor que dejarlos.
+                por_defecto = str(meta.get(uni, {}).get("default", ""))
+                if por_defecto and not por_defecto.startswith(("_rt_", "_alias_")):
+                    t = self.texture(por_defecto,
+                                     str(meta[uni].get("mode", "")),
+                                     1.0, flip=not particula)
+                    if t:
+                        src = f"tex:{t[0]}"
+                        self.body.append(f"u4f g_Texture{slot}Resolution "
+                                         f"{t[1]} {t[2]} {t[1]} {t[2]}")
+
             if src:
                 self.body.append(f"sampler {uni} {src}")
 
@@ -1610,8 +1638,11 @@ class Renderer:
         # limpia la escena igual que el motor en vivo. Sin eso la escena
         # acumulaba una composicion por repeticion y salia mas brillante
         # cuantas mas se pedian, que es lo contrario de lo que se quiere
-        # observar: escondio durante toda una sesion que 3146507587 se
-        # desvanece a negro.
+        # observar: escondio durante toda una sesion que 3146507587 salia
+        # negra. (Aquella escena ya esta arreglada --- era un sampler sin
+        # enlazar, ver NOTAS --- y hoy converge hacia arriba, de 10.88 con un
+        # fotograma a 21.20 con doce. La leccion sobre `frame` sigue valiendo:
+        # sin el, lo que se mide es la acumulacion, no la escena.)
         plan_lines = list(self.lines)
         for i in range(max(1, frames)):
             plan_lines.append("frame")

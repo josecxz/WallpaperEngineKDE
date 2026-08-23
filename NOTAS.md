@@ -1918,6 +1918,64 @@ El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
 justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
 
+## Un sampler sin enlazar no lee negro
+
+`3624164256` (Resident Evil 9) salía casi vacía: lluvia y niebla sobre negro,
+sin calle, sin personaje. Con `--only-base` aparecía entera —68,17 de media
+frente a 13,07 con todo puesto—, así que el contenido estaba bien y lo borraba
+un pase.
+
+Quitando un pase cada vez del plan y midiendo, el culpable salió a la primera:
+el **parallax por profundidad**, no los godrays que parecían el sospechoso
+—33 de las 129 escenas los usan y salen bien—.
+
+La causa está en una línea de metadatos del shader:
+
+```glsl
+uniform sampler2D g_Texture1; // {"label":"depth_map","mode":"depth",
+                              //  "format":"r8","default":"util/black"}
+```
+
+Ni la escena, ni el efecto, ni el material declaran esa textura: **la pone el
+motor**, y cuando la capa no tiene mapa pintado pone `util/black` —profundidad
+0, o sea sin desplazamiento—. Nosotros no poníamos nada, y ahí está el detalle
+que engaña: **un sampler sin enlazar no lee negro**. Se queda con su valor por
+defecto, que es 0, o sea la unidad de textura 0 —la del slot 0—, así que el
+shader acababa usando *la propia imagen* como mapa de profundidad. El raymarch
+de `ParallaxMapping` iba entonces a muestrear a cualquier parte y la capa
+desaparecía.
+
+Un `#if` mal resuelto o una matriz a cero se ven venir; esto no, porque el pase
+compila, enlaza, dibuja y no da un solo error.
+
+### El arreglo es general, y destapa 26 escenas
+
+Se enlaza el `default` que declare el sampler siempre que el material no traiga
+nada. Quedan fuera a propósito los `_rt_*` y los `_alias_*`: no son ficheros
+sino buffers de subsistemas que este motor no tiene —sombras, reflejos, cookies
+de luz— y fabricarlos vacíos es peor que dejarlos. El vocabulario real de
+defaults de fichero es corto: `util/white`, `util/black`, `util/noise`,
+`util/fur` y un gradiente de toon.
+
+Sobre las 129 escenas: **0 regresiones** y **26 escenas cambian**, casi todas a
+más luz porque aparece contenido que antes se destruía.
+
+| escena | antes | después |
+|---|---|---|
+| 3624164256 | 14,45 | **71,20** |
+| 2970694180 | 74,99 | 91,06 |
+| 2220826239 | 21,89 | 37,30 |
+| 3146507587 | 12,17 | 21,06 |
+| 3775394622 | 62,41 | 68,89 |
+| 3362719513 | 53,81 | 59,84 |
+| 2946362143 | 21,34 | 27,19 |
+
+Las cinco mayores están miradas contra su preview, no solo medidas: todas
+dibujan la obra del autor. Las razones salen por debajo de 1 porque los
+previews son recortes cerrados sobre el sujeto y nuestro render trae el encuadre
+entero. `3146507587` es además la que un comentario del código daba por perdida
+—«se desvanece a negro»—.
+
 ## La función de iluminación no está en los assets
 
 Ocho shaders de la librería común llaman a `PerformLighting_V1`, y ninguno la
