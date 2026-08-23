@@ -1976,6 +1976,59 @@ previews son recortes cerrados sobre el sujeto y nuestro render trae el encuadre
 entero. `3146507587` es además la que un comentario del código daba por perdida
 —«se desvanece a negro»—.
 
+## El lunar negro del vinilo: la opacidad iba a un uniform que nadie lee
+
+Con `3624164256` ya recuperada quedaba un disco negro y opaco en mitad del
+personaje. La escena es un wallpaper de reproductor de música ---trae objetos
+`Vinyl Disc`, `Album Art`, `Song Title`--- y el disco era la **sombra** del
+vinilo, que el autor declara así:
+
+```json
+{ "name": "Vinyl Shadow", "alpha": 0.1, "color": "0.00000 0.00000 0.00000" }
+```
+
+Negro al 10 %. Salía al 100 %.
+
+Ablatiendo por zona ---midiendo solo el rectángulo del lunar en vez de la imagen
+entera--- salieron los dos pases que lo dibujaban, y de ahí a la causa: el plan
+mandaba la opacidad del objeto en `g_Alpha`, y **ese nombre no lo lee ninguno de
+los shaders de imagen**. `genericimage2` la lee de dos sitios, en ramas
+excluyentes del mismo fichero:
+
+```glsl
+#ifndef VERSION
+	color.rgb *= g_Brightness;
+	color.a   *= g_UserAlpha;
+#else
+	color *= g_Color4;      // rgb Y alfa
+#endif
+```
+
+El pase traía `#define VERSION 2`, o sea la segunda rama, donde el alfa viaja en
+el `.w` de `g_Color4` --- que el plan escribía fijo a 1. Poner `g_Alpha` a 0, a
+0.1 o a 1 daba exactamente la misma imagen: el uniform no lo leía nadie.
+
+Ahora la opacidad se manda por los tres sitios. No se aplica dos veces, y no es
+una suposición: en toda la librería no hay un solo `.frag` que lea dos de los
+tres. `g_Color4` lo usan 5, `g_UserAlpha` 2, `g_Alpha` 6, y el único
+solapamiento ---`genericimage2`, con `g_Color4` y `g_UserAlpha`--- son esas dos
+ramas excluyentes.
+
+### Alcance: 78 objetos en 18 escenas
+
+Son los objetos del corpus con `alpha` distinto de 1, de 2093 en total. Medido
+sobre las 129: **0 regresiones**, 9 escenas cambian y solo dos de forma
+apreciable, las dos a MENOS luz porque sus capas translúcidas dejan de pintarse
+opacas:
+
+| escena | antes | después | qué se ve |
+|---|---|---|---|
+| 2533288714 | 139,98 | 112,40 | la bruma de la ciudad deja de velar la escena |
+| 3237641967 | 91,11 | 78,93 | el halo rojo deja de ser un muro |
+
+Las dos están miradas contra su preview, no solo medidas: siguen dibujando la
+obra de su autor, con menos velo encima.
+
 ## La función de iluminación no está en los assets
 
 Ocho shaders de la librería común llaman a `PerformLighting_V1`, y ninguno la

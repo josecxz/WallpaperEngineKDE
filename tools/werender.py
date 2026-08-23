@@ -1455,9 +1455,24 @@ class Renderer:
             brillo = (_floats(obj.raw.get("brightness")) + [1.0])[0]
         else:
             col, alfa, brillo = [1.0, 1.0, 1.0], 1.0, 1.0
-        self.body.append(f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} 1")
+        # La opacidad del objeto viaja por TRES sitios distintos porque cada
+        # generacion de shaders la lee de uno, y son ramas excluyentes del
+        # mismo fichero: `genericimage2` aplica `g_Color4` entero (rgb Y alfa)
+        # si esta definido VERSION, y si no `g_Brightness` sobre el rgb y
+        # `g_UserAlpha` sobre el alfa. Mandarla solo en `g_Alpha` --- que es lo
+        # que se hacia --- la perdia en las dos: ese nombre lo usan otros seis
+        # shaders, ninguno de estos.
+        #
+        # No se aplica dos veces: en toda la libreria no hay un shader que lea
+        # dos de los tres. Comprobado sobre los .frag de `assets/shaders`.
+        #
+        # Costo de no tenerlo: la sombra del disco de vinilo de 3624164256 es
+        # negra con `alpha: 0.1`, y salia OPACA --- un lunar negro en mitad del
+        # personaje.
+        self.body.append(f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} "
+                         f"{alfa:.6g}")
         self.body.append(f"u1f g_Brightness {brillo:.6g}")
-        self.body.append("u1f g_UserAlpha 1")
+        self.body.append(f"u1f g_UserAlpha {alfa:.6g}")
         self.body.append(f"u1f g_Alpha {alfa:.6g}")
 
         # Constantes del material, resueltas via metadatos.
