@@ -137,9 +137,13 @@ UNSUPPORTED = {
 #     bucle desenrollado en vez de llamar a la funcion.
 #   * El termino por luz, en `ComputePBRLightShadow` (`common_pbr_2.h`), que es
 #     esta misma funcion con sombras. Se llama con `shadowFactor` a 1.
-#   * El exponente 2 del decaimiento, de `ComputeLightSpecular`
+#   * El exponente del decaimiento, de `ComputeLightSpecular`
 #     (`common_fragment.h`): la generacion anterior de shaders atenua el
-#     difuso con `lightAttn * lightAttn` sobre el mismo `saturate(1 - d/radio)`.
+#     difuso con `lightAttn * lightAttn` sobre el mismo `saturate(1 - d/radio)`,
+#     o sea 2. Pero NO es una constante: en el modulo que WE genera de verdad
+#     ---esta como texto en `wallpaper64.exe`, ver NOTAS--- el exponente viaja
+#     con la luz, en el `.w` de su origen. Aqui va en `g_LightsExponent`, que
+#     el plan rellena; 2 es solo el valor por defecto.
 #
 # Se construye sobre `ComputePBRLightShadow` y no sobre `ComputePBRLight`
 # porque `common_pbr_2.h` --- el header que incluyen los 8 --- ya no define la
@@ -148,6 +152,7 @@ UNSUPPORTED = {
 LIGHTING_V1_GLSL = """
 uniform vec3 g_LightsPosition[4];
 uniform vec4 g_LightsColorRadius[4];
+uniform float g_LightsExponent[4];
 
 vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir,
                         vec3 specularTint, vec3 f0, float roughness, float metallic)
@@ -160,8 +165,8 @@ vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir,
 		// se ha ido a negro dos veces por un normalize(0).
 		hacia.z += step(dot(hacia, hacia), 1e-8) * 1e-4;
 		suma += ComputePBRLightShadow(normal, hacia, viewDir, albedo,
-			g_LightsColorRadius[i].rgb, max(g_LightsColorRadius[i].w, 1e-4), 2.0,
-			specularTint, f0, roughness, metallic, 1.0);
+			g_LightsColorRadius[i].rgb, max(g_LightsColorRadius[i].w, 1e-4),
+			g_LightsExponent[i], specularTint, f0, roughness, metallic, 1.0);
 	}
 	return suma;
 }
@@ -439,6 +444,87 @@ def _porcentaje_a_mod(expr: str, tabla: dict, funcs: dict) -> str:
                 return f"mod({izq}, float({der}))"
             break
     return expr
+
+
+_LLAMADA_RE = re.compile(r"\b(\w+)[ \t]*\(")
+
+
+def _corta_argumentos(texto: str, i: int) -> tuple[list[str], int] | None:
+    """Los argumentos de la llamada que abre en `texto[i]`, y donde cierra.
+
+    Corta por las comas de PRIMER nivel: una coma dentro de otra llamada o de
+    un constructor no separa argumentos. Devuelve None si el parentesis no
+    cierra en esta linea, que es lo normal en una llamada partida en varias.
+    """
+    prof, ini, args = 0, i + 1, []
+    for j in range(i, len(texto)):
+        c = texto[j]
+        if c == "(":
+            prof += 1
+        elif c == ")":
+            prof -= 1
+            if prof == 0:
+                args.append(texto[ini:j])
+                return ([a for a in args if a.strip() != ""] if len(args) > 1
+                        or args[0].strip() else []), j
+        elif c == "," and prof == 1:
+            args.append(texto[ini:j])
+            ini = j + 1
+    return None
+
+
+def truncar_argumentos(body: str) -> str:
+    """Aplica la truncacion implicita de HLSL a los ARGUMENTOS de una llamada.
+
+    HLSL deja pasar un vec4 donde se espera un vec2 y se queda con las dos
+    primeras componentes; GLSL lo rechaza y se lleva el pase entero. Es lo que
+    tumbaba la unica variante del corpus que no compilaba:
+
+        albedo = vec4(maskBokeh(v_TexCoord, ...), albedo.a);
+        error C7011: implicit cast from "vec4" to "vec2"
+
+    `v_TexCoord` es un vec4 porque ese shader empaqueta mas cosas en el `zw`, y
+    `maskBokeh` pide un vec2.
+
+    La regla que hace esto seguro es la misma que en `truncar_asignaciones`:
+    **solo se toca cuando el ancho se puede AFIRMAR** y es mayor que el del
+    parametro. `weglsl.ancho` devuelve None ante la duda ---incluidas las
+    variables locales, que aqui no se siguen--- y entonces el argumento se deja
+    como esta. Un barrido plano con expresiones regulares ya rompio 124
+    variantes una vez; el oraculo es el corpus que ya compila.
+    """
+    params = weglsl.tabla_de_parametros(body)
+    if not params:
+        return body
+    glob = weglsl.tabla_global(body)
+    funcs = weglsl.tabla_de_funciones(body)
+
+    def en_linea(linea: str) -> str:
+        pos = 0
+        while True:
+            m = _LLAMADA_RE.search(linea, pos)
+            if not m:
+                return linea
+            firma = params.get(m.group(1))
+            corte = _corta_argumentos(linea, m.end() - 1) if firma else None
+            if not corte or len(corte[0]) != len(firma):
+                pos = m.end()
+                continue
+            args, fin = corte
+            nuevos = []
+            for arg, tipo_p in zip(args, firma):
+                a = arg.strip()
+                if tipo_p is not None and a:
+                    w = weglsl.ancho(a, glob, funcs)
+                    if w is not None and w > tipo_p[1]:
+                        a = f"({a}).{'xyzw'[:tipo_p[1]]}"
+                nuevos.append(a)
+            nueva = ", ".join(nuevos)
+            linea = linea[:m.end()] + nueva + linea[fin:]
+            pos = m.end() + len(nueva)
+
+    return "\n".join(l if l.lstrip().startswith("#") else en_linea(l)
+                      for l in body.splitlines())
 
 
 def truncar_asignaciones(body: str) -> str:
@@ -1141,6 +1227,7 @@ def translate(src: str,
     body = bool_a_float(body)
     body = const_no_constante(body)
     body = truncar_asignaciones(body)
+    body = truncar_argumentos(body)
     body = condicion_a_bool(body)
     body = literales_de_llamada(body)
     body = literales_de_return(body)

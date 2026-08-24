@@ -64,8 +64,8 @@ maxcount 10
 starttime 0.5
 anim 0 1.5
 emit sphererandom 20.5 0 0 0 750.25 750.25 750.25 1 0.1 1 350.5 750.5 0 0 0 0 0 0
-init lifetimerandom 16.5 20.5
-init alpharandom 0.25 0.75
+init lifetimerandom 16.5 20.5 2.5
+init alpharandom 0.25 0.75 1.5
 oper alphafade 0.1 0.9
 oper movement 0.5 0.25 0.125 0.0625
 """

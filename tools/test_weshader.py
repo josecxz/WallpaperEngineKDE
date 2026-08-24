@@ -60,6 +60,59 @@ def compile_batch(check: Path, files: list[Path], env_extra: dict,
     return ok, logs
 
 
+def prueba_lighting_v1(check: Path) -> int:
+    """Los 8 shaders que piden `LightingV1`, compilados con la luz ENCENDIDA.
+
+    Es el unico sitio donde se ejercita la funcion que inyectamos en el hueco
+    del `#require`. Hace falta una prueba aparte porque **ninguna escena del
+    corpus enciende ese combo en estos shaders**: la llamada a
+    `PerformLighting_V1` vive en una rama que no se compila nunca, asi que el
+    barrido de arriba pasa aunque la firma no cuadre. El cuerpo si se compila
+    ---va fuera del `#if`--- pero un cuerpo que nadie llama no prueba nada.
+
+    Los `TEX<n>FORMAT` se pasan a mano porque los pone el motor, no el
+    material: son samplers con `formatcombo`, que usan el combo como VALOR
+    dentro del codigo y no en un `#if`. Sin ellos `fur4` se cae con «undefined
+    variable TEX8FORMAT», y solo con la luz encendida, que es como se
+    descubrio.
+    """
+    we = wepaths.we_assets()
+    fuentes = sorted(
+        p for d in ("shaders", "effects") if (we / d).is_dir()
+        for p in (we / d).rglob("*.frag")
+        if "#require LightingV1" in p.read_text(errors="replace"))
+
+    tmp = Path(tempfile.mkdtemp(prefix="weshader-luz-"))
+    salidas, fallos = [], 0
+    for f in fuentes:
+        combos = {"LIGHTING": 1}
+        texto = f.read_text(errors="replace")
+        for m in re.finditer(r"uniform sampler2D g_Texture(\d)[^\n]*formatcombo", texto):
+            combos[f"TEX{m.group(1)}FORMAT"] = 0
+        res = weshader.Resolver(roots=[f.parent, f.parent.parent, we, we / "shaders"])
+        try:
+            out = weshader.translate(texto, "frag", res, combos=combos)
+        except Exception as e:                                   # noqa: BLE001
+            print(f"    {f.name}: no traduce: {type(e).__name__}: {e}")
+            fallos += 1
+            continue
+        if "PerformLighting_V1(" not in out:
+            print(f"    {f.name}: la llamada no sobrevive a la traduccion")
+            fallos += 1
+        d = tmp / f.name
+        d.write_text(out)
+        salidas.append(d)
+
+    ok, logs = compile_batch(check, salidas, {}, ["--desktop"])
+    print(f"\n── LightingV1 con el combo encendido: compilan "
+          f"{len(ok)}/{len(salidas)} de {len(fuentes)} shaders")
+    for d in salidas:
+        if str(d) not in ok:
+            fallos += 1
+            print(f"    {d.name}: {logs.get(str(d), '')[:120]}")
+    return fallos
+
+
 def main() -> int:
     corpus = Path(sys.argv[1])
     check = Path(sys.argv[2])
@@ -118,7 +171,12 @@ def main() -> int:
             cats = Counter(categorise(logs.get(str(d), "")) for d in fail)
             for k, v in cats.most_common(10):
                 print(f"    {v:>4} x {k}")
+    fallos = prueba_lighting_v1(check)
+
     print(f"\ntraducidos en: {tmp}")
+    if fallos:
+        print(f"\nFALLO: {fallos} problemas con LightingV1")
+        return 1
     return 0
 
 

@@ -118,7 +118,7 @@ def prueba_luces(fallos: list[str]) -> None:
     if len(luces) != 1:
         fallos.append("no se leyo la luz puntual")
     else:
-        org, col, radio = luces[0]
+        org, col, radio, expo = luces[0]
         if org != [100.0, 200.0, 300.0]:
             fallos.append(f"origen mal leido: {org}")
         # El shader recibe un solo color: la intensidad va dentro.
@@ -126,6 +126,10 @@ def prueba_luces(fallos: list[str]) -> None:
             fallos.append(f"la intensidad no se aplico al color: {col}")
         if radio != 300.0:
             fallos.append(f"radio mal leido: {radio}")
+        # El exponente viaja con la luz, no clavado en el shader: en el modulo
+        # que WE genera de verdad va en el `.w` del origen de cada una.
+        if expo != werender.EXPONENTE_POR_DEFECTO:
+            fallos.append(f"la luz no lleva su exponente: {expo}")
 
     # Una luz apagada por el autor no cuenta, y no invalida la escena.
     sc = _escena([_luz(visible=False), _luz()])
@@ -146,7 +150,7 @@ def prueba_luces(fallos: list[str]) -> None:
 
 def prueba_empaquetado(fallos: list[str]) -> None:
     """La cuarta luz viaja en los `.w` de las otras tres, no en un cuarto vec4."""
-    luces = [([0, 0, 0], [float(i + 1)] * 3, 1.0) for i in range(4)]
+    luces = [([0, 0, 0], [float(i + 1)] * 3, 1.0, 2.0) for i in range(4)]
     v = werender.colores_premultiplicados(luces)
     if len(v) != 3:
         fallos.append(f"el empaquetado deberia dar 3 vec4, dio {len(v)}")
@@ -159,7 +163,7 @@ def prueba_empaquetado(fallos: list[str]) -> None:
 
     # El radio entra al cuadrado: es lo unico que lleva el alcance por este
     # camino, donde el shader solo divide por la distancia al cuadrado.
-    v = werender.colores_premultiplicados([([0, 0, 0], [1.0, 1.0, 1.0], 10.0)])
+    v = werender.colores_premultiplicados([([0, 0, 0], [1.0, 1.0, 1.0], 10.0, 2.0)])
     if not np.allclose(v[0][:3], [100.0, 100.0, 100.0]):
         fallos.append(f"el color no se premultiplico por el radio^2: {v[0][:3]}")
 

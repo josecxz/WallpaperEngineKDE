@@ -49,15 +49,15 @@ enum {
 
 typedef struct { const char *nombre; int codigo; int nfloats; } Entrada;
 
-/* min[3] max[3] salvo donde se indique. */
+/* min[3] max[3] + exponente, salvo donde se indique. */
 static const Entrada INICIALIZADORES[] = {
-    {"lifetimerandom",          IN_VIDA,    2},   /* min max */
-    {"sizerandom",              IN_TAM,     2},   /* min max */
-    {"alpharandom",             IN_ALFA,    2},   /* min max */
-    {"colorrandom",             IN_COLOR,   6},
-    {"velocityrandom",          IN_VEL,     6},
-    {"rotationrandom",          IN_ROT,     6},
-    {"angularvelocityrandom",   IN_ANGVEL,  6},
+    {"lifetimerandom",          IN_VIDA,    3},   /* min max exponente */
+    {"sizerandom",              IN_TAM,     3},   /* min max exponente */
+    {"alpharandom",             IN_ALFA,    3},   /* min max exponente */
+    {"colorrandom",             IN_COLOR,   7},
+    {"velocityrandom",          IN_VEL,     7},
+    {"rotationrandom",          IN_ROT,     7},
+    {"angularvelocityrandom",   IN_ANGVEL,  7},
     /* escala, escalatiempo, velmin, velmax, fasemax, desplazamiento[3] */
     {"turbulentvelocityrandom", IN_TURBVEL, 8},
     /* estaciones, 0 repite / 1 rebota */
@@ -167,6 +167,19 @@ static float azar_fijo(unsigned int semilla, int indice)
     unsigned int x = semilla ^ (0x9e3779b9u * (unsigned int)(indice + 1));
     x ^= x << 13; x ^= x >> 17; x ^= x << 5;
     return (x & 0xffffff) / 16777216.0f;
+}
+
+/* El `exponent` de un inicializador aleatorio: sesga el sorteo en vez de
+ * repartir uniforme. Con 1 no hace nada ---es el valor por defecto y el que
+ * declara la mitad del corpus---; por encima, los valores se apinan cerca del
+ * MINIMO, que es lo que pide un autor cuando pone `sizerandom` de 100 a 250 con
+ * exponente 2: muchas particulas pequenas y unas pocas grandes.
+ *
+ * Son 96 usos en la biblioteca, repartidos por seis inicializadores. Ignorarlo
+ * no rompe nada, solo reparte plano lo que el autor pidio sesgado. */
+static float sesgo(float t, float e)
+{
+    return (e <= 0.0f || e == 1.0f) ? t : powf(t, e);
 }
 
 static float mezcla(float a, float b, float t) { return a + (b - a) * t; }
@@ -564,9 +577,9 @@ static void emite(WeParticleSystem *s, Particula *q)
         const float *v = s->init[i].f;
         float t = azar(&s->rng);
         switch (s->init[i].codigo) {
-        case IN_VIDA:  q->vida = mezcla(v[0], v[1], t); break;
-        case IN_TAM:   q->tam_base = mezcla(v[0], v[1], t); break;
-        case IN_ALFA:  q->alfa_base = mezcla(v[0], v[1], t); break;
+        case IN_VIDA:  q->vida = mezcla(v[0], v[1], sesgo(t, v[2])); break;
+        case IN_TAM:   q->tam_base = mezcla(v[0], v[1], sesgo(t, v[2])); break;
+        case IN_ALFA:  q->alfa_base = mezcla(v[0], v[1], sesgo(t, v[2])); break;
         case IN_COLOR:
             /* UN solo aleatorio para las tres componentes: el color sale de la
              * recta que une los dos declarados.
@@ -579,19 +592,19 @@ static void emite(WeParticleSystem *s, Particula *q)
              * distinto brillo, que es lo que el autor pidio al elegir esos dos
              * colores. */
             for (int k = 0; k < 3; k++)
-                q->color_base[k] = mezcla(v[k], v[3 + k], t);
+                q->color_base[k] = mezcla(v[k], v[3 + k], sesgo(t, v[6]));
             break;
         case IN_VEL:
             for (int k = 0; k < 3; k++)
-                q->vel[k] += mezcla(v[k], v[3 + k], azar(&s->rng));
+                q->vel[k] += mezcla(v[k], v[3 + k], sesgo(azar(&s->rng), v[6]));
             break;
         case IN_ROT:
             for (int k = 0; k < 3; k++)
-                q->rot[k] = mezcla(v[k], v[3 + k], azar(&s->rng));
+                q->rot[k] = mezcla(v[k], v[3 + k], sesgo(azar(&s->rng), v[6]));
             break;
         case IN_ANGVEL:
             for (int k = 0; k < 3; k++)
-                q->angvel[k] = mezcla(v[k], v[3 + k], azar(&s->rng));
+                q->angvel[k] = mezcla(v[k], v[3 + k], sesgo(azar(&s->rng), v[6]));
             break;
         case IN_TURBVEL: {
             /* Velocidad inicial tomada de un campo de ruido: las particulas
