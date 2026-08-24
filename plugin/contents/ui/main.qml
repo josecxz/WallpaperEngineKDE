@@ -128,7 +128,19 @@ WallpaperItem {
                                   + " · zoom " + Math.round(escena.zoom * 100) + "%"
                                   + " · recorte " + root.num(escena.desplazamientoX, 2)
                                   + "," + root.num(escena.desplazamientoY, 2),
-                "fps          : " + root.num(root.fps, 1),
+                // Dos numeros y no uno, porque miden cosas distintas y el
+                // primero solo no dice si el motor llega: el reloj late con el
+                // compositor y las llamadas a GL son asincronas, asi que la
+                // CPU encola y vuelve aunque la GPU se quede atras. Medido:
+                // 166 fps de reloj con la integrada al 98% y 45 ms de GPU por
+                // fotograma. El de abajo lo cronometra la GPU misma.
+                "fps (reloj)  : " + root.num(root.fps, 1),
+                "gpu          : " + (escena.msGpu >= 0
+                                     ? root.num(escena.msGpu, 1) + " ms/fotograma  ("
+                                       + (escena.msGpu > 0
+                                          ? Math.round(1000 / escena.msGpu) : "?")
+                                       + "/s como mucho)"
+                                     : "sin medida"),
                 "g_Time       : " + root.num(clock.elapsedTime, 1) + " s",
                 "estado       : " + (ventanas.tapado ? "en pausa (tapado)" : "dibujando")
                                   + " · tapada " + Math.round(ventanas.cobertura * 100) + "%",

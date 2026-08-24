@@ -6,6 +6,8 @@
 
 #include "sceneview.h"
 
+#include <cmath>
+
 #include <QDebug>
 #include <QMetaObject>
 #include <QUrl>
@@ -109,6 +111,14 @@ void SceneView::setStatusFromRenderer(const QString &s)
     Q_EMIT statusChanged();
 }
 
+void SceneView::setMsGpuFromRenderer(qreal ms)
+{
+    if (qFuzzyCompare(ms, m_msGpu))
+        return;
+    m_msGpu = ms;
+    Q_EMIT msGpuChanged();
+}
+
 void SceneView::setSceneTitleFromRenderer(const QString &t)
 {
     if (t == m_sceneTitle)
@@ -151,6 +161,19 @@ void SceneRenderer::synchronize(QQuickRhiItem *item)
     // constante para un resultado que no cambia: 166 QString y 166
     // invokeMethod por segundo tirados.
     const int fase = m_failed ? 2 : (m_planLoaded ? 1 : 0);
+    // El cronometro de GPU va ANTES del corte por fase, y ese detalle es todo:
+    // debajo hay un `return` que solo deja pasar el fotograma en que cambia el
+    // estado, asi que publicarlo despues lo mandaba una vez y nunca mas ---el
+    // HUD decia "sin medida" mientras el motor tenia el numero. Solo se manda
+    // cuando se mueve de verdad: son 165 sincronias por segundo y no hay nada
+    // que ganar despertando al hilo de la interfaz por una centesima.
+    const double gpu = m_exec.diagGpuMs();
+    if (gpu >= 0 && std::abs(gpu - m_gpuPublicado) > 0.05) {
+        m_gpuPublicado = gpu;
+        QMetaObject::invokeMethod(view, "setMsGpuFromRenderer", Qt::QueuedConnection,
+                                  Q_ARG(qreal, qreal(gpu)));
+    }
+
     if (fase == m_reportedPhase)
         return;
     m_reportedPhase = fase;
@@ -175,6 +198,7 @@ void SceneRenderer::synchronize(QQuickRhiItem *item)
     // No se puede emitir la senal desde el hilo de render.
     QMetaObject::invokeMethod(view, "setStatusFromRenderer", Qt::QueuedConnection,
                               Q_ARG(QString, estado));
+
     if (fase == 1) {
         // Q_ARG guarda std::addressof() del valor, NO una copia. Pasarle el
         // temporal que devuelve title() deja al evento en cola apuntando a
@@ -247,12 +271,22 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
     m_exec.setBarColor(m_bar[0], m_bar[1], m_bar[2]);
     m_exec.render(GLuint(qtFbo), size.width(), size.height(), m_time);
 
+    // Segundo parte, ya en marcha: el primero sale en el fotograma 1, cuando el
+    // cronometro de GPU aun no puede tener resultado por definicion.
+    if (++m_frames == 200)
+        qInfo("SceneView: cronometro de GPU -> %.2f ms/fotograma, "
+              "saltos=%d fallos=%d consulta_ajena=%d",
+              m_exec.diagGpuMs(), m_exec.diagGpuSaltos(),
+              m_exec.diagGpuFallos(), m_exec.diagGpuAjena());
+
     if (!m_diagDone) {
         m_diagDone = true;
         const GLenum e = glGetError();
-        qInfo("SceneView: destino=%d tam=%dx%d glError=0x%x compo_medio=%.1f targets=%d",
+        qInfo("SceneView: destino=%d tam=%dx%d glError=0x%x compo_medio=%.1f targets=%d "
+              "gpu=%.2f ms fallos_cronometro=%d",
               qtFbo, size.width(), size.height(), e,
-              m_exec.diagCompoMean(), m_exec.targetCount());
+              m_exec.diagCompoMean(), m_exec.targetCount(),
+              m_exec.diagGpuMs(), m_exec.diagGpuFallos());
         if (m_exec.diagBlitError())
             qWarning("SceneView: error de GL tras componer: 0x%x", m_exec.diagBlitError());
     }

@@ -91,6 +91,18 @@ public:
     int liveUniformCount() const { return m_liveUniforms; }
     int initMillis() const { return m_initMs; }
     double diagCompoMean() const { return m_diagCompoMean; }
+
+    // Milisegundos de GPU por fotograma, medidos por la GPU misma. El `fps`
+    // del HUD no vale para esto: sale del reloj de QML, y como las llamadas a
+    // GL son asincronas la CPU encola y vuelve enseguida aunque la GPU se
+    // quede atras. Con el fondo 4K medimos 166 fps en el HUD mientras la
+    // integrada estaba al 98%. Negativo mientras no haya medida.
+    double diagGpuMs() const { return m_gpuMs; }
+    // Cuantas veces fallo al abrir la consulta; >0 explica un
+    // "sin medida" que si no seria mudo.
+    int diagGpuFallos() const { return m_gpuFallos; }
+    int diagGpuSaltos() const { return m_gpuSaltos; }
+    int diagGpuAjena() const { return m_gpuAjena; }
     int diagBlitError() const { return m_diagBlitError; }
     int targetCount() const { return m_diagTargets; }
     QString title() const { return m_title; }
@@ -261,6 +273,23 @@ private:
     int m_frame = 0;            // solo para la traza de WE_TRACE_FRAMES
     int m_objeto = 0;           // idem
     double m_diagCompoMean = -1;
+
+    // Cronometro de GPU. Dos objetos de consulta alternos: se pregunta por el
+    // del fotograma ANTERIOR, porque preguntar por el de ahora obligaria a
+    // esperar a que la GPU acabe --- y esa espera es justo lo que falsearia la
+    // medida.
+    void gpuTimerBegin();
+    void gpuTimerEnd();
+    void gpuTimerPoll();
+    GlName m_gpuQuery[2] = {0, 0};
+    bool m_gpuPend[2] = {false, false};
+    int m_gpuCur = 0;
+    bool m_gpuActive = false;
+    bool m_gpuOff = false;          // el driver no da GL_TIME_ELAPSED
+    int m_gpuFallos = 0;
+    int m_gpuSaltos = 0;
+    int m_gpuAjena = 0;
+    double m_gpuMs = -1;
     int m_diagBlitError = 0;
     int m_diagTargets = 0;
     int m_droppedUniforms = 0;

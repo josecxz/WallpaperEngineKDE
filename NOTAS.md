@@ -15,6 +15,12 @@ compone en su scene graph, detrás de los iconos del escritorio. Verificado en
 Plasma 6.7.3 / Wayland: primero *LoL Warwick* con 24 pases, y ahora *Sentinel
 Irelia* con 102 pases y 4 sistemas de partículas.
 
+Aquí ponía «a 166 fps». Ese número era el del reloj de QML y no medía el motor
+—ver [El HUD decía 166 fps con la GPU al 98 %](#el-hud-decía-166-fps-con-la-gpu-al-98-)—.
+La biblioteca de referencia son **129 escenas** desde el 2026-08-24, cuando las
+rutas pasaron a la instalación real de Wallpaper Engine; las cuentas «de 125»
+que aparecen más abajo son medidas correctas de la biblioteca anterior.
+
 ```
 SceneView: backend OpenGL, plan con 102 pases, lienzo 2560x1440, init 119 ms,
 uniforms 311 activos / 1376 descartados, mallas 12 subidas / 12 pases las
@@ -1917,6 +1923,51 @@ Tres cosas que no son obvias:
 El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
 justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
+
+## El HUD decía 166 fps con la GPU al 98 %
+
+Los dos números salían a la vez y no podían ser los dos ciertos. El HUD daba
+**166 fps** mientras `/proc/<pid>/fdinfo`, sumando por cliente DRM, decía que
+el fondo se comía el **98,1 %** del motor de render de la integrada.
+
+El culpable era el propio HUD: su `fps` es `1 / clock.smoothFrameTime`, o sea
+el reloj de QML, que late con el compositor. Y las llamadas a GL son
+**asíncronas**: la CPU las encola y vuelve enseguida aunque la GPU se quede
+atrás. Así que ese número medía a qué ritmo pedíamos fotogramas, nunca si el
+motor llegaba a darlos.
+
+Cronometrar la CPU alrededor del envío habría mentido igual. Lo único que lo
+mide es preguntarle a la GPU, con `GL_TIME_ELAPSED`, y hacerlo **sin
+esperarla**: dos objetos de consulta alternos, y en cada fotograma se lee el
+del anterior. Preguntar por el de ahora obligaría a esperar a que la GPU
+acabase —y esa espera es justo lo que falsearía la medida.
+
+El resultado, en la misma escena y a la vez:
+
+```
+fps (reloj)  : 167.3
+gpu          : 38.9 ms/fotograma  (26/s como mucho)
+```
+
+Esos 38,9 ms cuadran con los 41–45 que da el mismo plan cronometrado aparte con
+el ejecutor offline. La diferencia entre 167 y 26 era el bulto que el HUD
+tapaba.
+
+Tres detalles que costaron un rato:
+
+- **La medida se publica antes del corte por fase.** `synchronize()` tiene un
+  `return` que solo deja pasar el fotograma en que cambia el estado; publicando
+  después, el valor se mandaba una vez y nunca más, y el HUD decía «sin medida»
+  mientras el motor ya tenía el número.
+- **Abrir la consulta puede fallar callando.** Si el turno sigue en vuelo, o si
+  hay otra `GL_TIME_ELAPSED` abierta —dibujamos dentro del `beginExternal()` de
+  Qt, el contexto no es solo nuestro—, `glBeginQuery` da `GL_INVALID_OPERATION`
+  y sin comprobarlo el turno se queda marcado como pendiente para siempre. Se
+  cuentan los saltos y los fallos, que es lo que convierte un «sin medida» mudo
+  en algo que se puede leer.
+- **El primer parte no puede traer medida.** El diagnóstico de siempre sale en
+  el fotograma 1, cuando la primera consulta aún está en vuelo por definición.
+  Hay un segundo parte al fotograma 200.
 
 ## Dos `wectl` a la vez se pisaban
 

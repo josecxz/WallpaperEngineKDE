@@ -36,12 +36,14 @@ private:
     bool m_planLoaded = false;
     bool m_failed = false;
     bool m_diagDone = false;
+    int m_frames = 0;
     int m_reportedPhase = -1;   // evita rehacer el estado en cada fotograma
     // Copiados en synchronize() como todo lo demas: el encaje se puede cambiar
     // desde la UI de configuracion mientras el hilo de render esta dibujando.
     int m_encaje = 0;
     float m_zoom = 1.0f, m_despX = 0.0f, m_despY = 0.0f;
     float m_bar[3] = {0.0f, 0.0f, 0.0f};
+    double m_gpuPublicado = -1;   // ultimo valor mandado al item
 };
 
 class SceneView : public QQuickRhiItem
@@ -58,6 +60,11 @@ class SceneView : public QQuickRhiItem
     // y el plan no llega a cargarse nunca --- el fondo se queda negro en vez
     // de congelado.
     Q_PROPERTY(bool dibujado READ dibujado NOTIFY statusChanged)
+    // Milisegundos de GPU por fotograma, medidos por la GPU. Negativo mientras
+    // no haya medida (o si el driver no da timer queries). NO es 1/fps: el
+    // `fps` del HUD sale del reloj de QML y sigue latiendo aunque la GPU se
+    // quede atras, porque las llamadas a GL son asincronas.
+    Q_PROPERTY(qreal msGpu READ msGpu NOTIFY msGpuChanged)
     Q_PROPERTY(QString sceneTitle READ sceneTitle NOTIFY sceneTitleChanged)
     // Encaje del lienzo en la pantalla: 0 cubrir, 1 encajar entero, 2 estirar.
     // Ver GlExecutor::Encaje, que es quien define los valores.
@@ -82,6 +89,7 @@ public:
 
     QString status() const { return m_status; }
     bool dibujado() const { return m_dibujado; }
+    qreal msGpu() const { return m_msGpu; }
     QString sceneTitle() const { return m_sceneTitle; }
 
     int encaje() const { return m_encaje; }
@@ -99,6 +107,7 @@ Q_SIGNALS:
     void planSourceChanged();
     void timeChanged();
     void statusChanged();
+    void msGpuChanged();
     void sceneTitleChanged();
     // Una sola senal para los cinco: van juntos a la misma cuenta y quien los
     // mira ---el HUD--- los enseña en la misma linea.
@@ -113,6 +122,7 @@ private Q_SLOTS:
     // API que ve QML.
     void setStatusFromRenderer(const QString &s);
     void setSceneTitleFromRenderer(const QString &t);
+    void setMsGpuFromRenderer(qreal ms);
 
 private:
     // El renderizador lee estos campos solo desde synchronize(), que es el
@@ -122,6 +132,7 @@ private:
     QString m_planPath;
     qreal m_time = 0.0;
     QString m_status = QStringLiteral("sin inicializar");
+    qreal m_msGpu = -1;
     bool m_dibujado = false;
     QString m_sceneTitle;
     int m_encaje = 0;                        // GlExecutor::Cubrir
