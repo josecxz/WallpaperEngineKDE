@@ -137,9 +137,13 @@ UNSUPPORTED = {
 #     bucle desenrollado en vez de llamar a la funcion.
 #   * El termino por luz, en `ComputePBRLightShadow` (`common_pbr_2.h`), que es
 #     esta misma funcion con sombras. Se llama con `shadowFactor` a 1.
-#   * El exponente 2 del decaimiento, de `ComputeLightSpecular`
+#   * El exponente del decaimiento, de `ComputeLightSpecular`
 #     (`common_fragment.h`): la generacion anterior de shaders atenua el
-#     difuso con `lightAttn * lightAttn` sobre el mismo `saturate(1 - d/radio)`.
+#     difuso con `lightAttn * lightAttn` sobre el mismo `saturate(1 - d/radio)`,
+#     o sea 2. Pero NO es una constante: en el modulo que WE genera de verdad
+#     ---esta como texto en `wallpaper64.exe`, ver NOTAS--- el exponente viaja
+#     con la luz, en el `.w` de su origen. Aqui va en `g_LightsExponent`, que
+#     el plan rellena; 2 es solo el valor por defecto.
 #
 # Se construye sobre `ComputePBRLightShadow` y no sobre `ComputePBRLight`
 # porque `common_pbr_2.h` --- el header que incluyen los 8 --- ya no define la
@@ -148,6 +152,7 @@ UNSUPPORTED = {
 LIGHTING_V1_GLSL = """
 uniform vec3 g_LightsPosition[4];
 uniform vec4 g_LightsColorRadius[4];
+uniform float g_LightsExponent[4];
 
 vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir,
                         vec3 specularTint, vec3 f0, float roughness, float metallic)
@@ -160,7 +165,8 @@ vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir,
 		// se ha ido a negro dos veces por un normalize(0).
 		hacia.z += step(dot(hacia, hacia), 1e-8) * 1e-4;
 		suma += ComputePBRLightShadow(normal, hacia, viewDir, albedo,
-			g_LightsColorRadius[i].rgb, max(g_LightsColorRadius[i].w, 1e-4), 2.0,\n\t\t\tspecularTint, f0, roughness, metallic, 1.0);
+			g_LightsColorRadius[i].rgb, max(g_LightsColorRadius[i].w, 1e-4),
+			g_LightsExponent[i], specularTint, f0, roughness, metallic, 1.0);
 	}
 	return suma;
 }

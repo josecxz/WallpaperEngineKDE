@@ -263,6 +263,31 @@ OJO_Z = 100000.0
 # corpus ninguna escena pasa de tres.
 MAX_LUCES = 4
 
+# Con que cae la luz entre su origen y su radio: `saturate(1 - d/radio)` elevado
+# a esto. Sale de la generacion anterior de shaders, que atenua el difuso con
+# `lightAttn * lightAttn`. No esta en el formato de escena, asi que es un valor
+# por defecto, no un dato leido.
+EXPONENTE_POR_DEFECTO = 2.0
+
+
+def inversa_de(mvp: list[float]) -> list[float]:
+    """La inversa de una MVP, sorteando la fila z aplanada.
+
+    `particle_mvp` pone la tercera fila a CERO a proposito ---una particula con
+    z de 10 px se saldria del rango de recorte y GL tiraria el triangulo--- y
+    eso deja la matriz singular. Para invertirla se le repone la identidad en
+    esa fila: quien lee la inversa la usa para llevar el puntero de clip space
+    al espacio local, donde la z no pinta nada.
+    """
+    m = np.array(mvp, dtype=np.float64).reshape(4, 4)
+    if abs(np.linalg.det(m)) < 1e-12:
+        m = m.copy()
+        m[2] = [0.0, 0.0, 1.0, 0.0]
+    try:
+        return list(np.linalg.inv(m).ravel())
+    except np.linalg.LinAlgError:
+        return list(IDENTITY)
+
 
 def vp_de(mvp: list[float], mundo: list[float]) -> list[float]:
     """La matriz vista-proyeccion que le falta al pase, deducida de las otras.
@@ -370,7 +395,7 @@ def colores_premultiplicados(luces) -> list[list[float]]:
     cols = []
     for i in range(MAX_LUCES):
         if i < len(luces):
-            _, col, radio = luces[i]
+            _, col, radio, _exp = luces[i]
             cols.append([c * radio * radio for c in col])
         else:
             cols.append([0.0, 0.0, 0.0])
@@ -380,11 +405,18 @@ def colores_premultiplicados(luces) -> list[list[float]]:
 def luces_de_escena(scene) -> list[tuple[list[float], list[float], float]]:
     """Las luces puntuales visibles, en coordenadas del lienzo.
 
-    Devuelve por luz: posicion, color ya multiplicado por su intensidad, y
-    radio. La intensidad se funde con el color porque el shader no la recibe
-    aparte. El radio se queda suelto: uno de los dos caminos lo manda tal cual
-    y el otro lo necesita al cuadrado dentro del color, y de eso ya se ocupa
-    `colores_premultiplicados`.
+    Devuelve por luz: posicion, color ya multiplicado por su intensidad, radio
+    y exponente de decaimiento. La intensidad se funde con el color porque el
+    shader no la recibe aparte. El radio se queda suelto: uno de los dos
+    caminos lo manda tal cual y el otro lo necesita al cuadrado dentro del
+    color, y de eso ya se ocupa `colores_premultiplicados`.
+
+    El exponente no sale del `scene.json` ---ninguna de las 9 luces del corpus
+    lo declara, y el campo `exponent` del formato es de color, no de luces---
+    pero tampoco es una constante del shader: en el modulo que WE genera de
+    verdad viaja con cada luz, en el `.w` de su origen. Aqui viaja igual, con
+    `EXPONENTE_POR_DEFECTO` mientras no se sepa de donde leerlo, para que el
+    dia que aparezca sea una linea y no un cambio de shader.
 
     Devuelve la lista VACIA si la escena tiene alguna luz visible que no sea
     puntual. Las de tipo `ltube` son un SEGMENTO, no un punto: su brillo sale
@@ -414,7 +446,8 @@ def luces_de_escena(scene) -> list[tuple[list[float], list[float], float]]:
         if radio <= 0.0:
             continue                      # sin alcance no alumbra nada
         fuera.append(([org[0], org[1], org[2]],
-                      [col[0] * ints, col[1] * ints, col[2] * ints], radio))
+                      [col[0] * ints, col[1] * ints, col[2] * ints], radio,
+                      EXPONENTE_POR_DEFECTO))
     return fuera[:MAX_LUCES]
 
 
@@ -1099,6 +1132,28 @@ class Renderer:
         # mipmapeado en `_rt_MipMappedFrameBuffer`. Siguen apagados.
         combos["REFLECTION"] = 0
 
+        # Un sampler con `formatcombo` no se conforma con la textura: pide
+        # ademas un `TEX<n>FORMAT` con SU empaquetado, y lo usa como valor
+        # dentro del codigo ---`ConvertTextureFormat(TEX8FORMAT, ...)`---, no
+        # en un `#if`. Sin definirlo el shader no compila, pero solo cuando esa
+        # linea esta viva: por eso no se notaba. Con `LIGHTING` encendido,
+        # `fur4` se cae con «undefined variable TEX8FORMAT».
+        #
+        # Son 17 declaraciones en la libreria y la mitad son el slot 1, el mapa
+        # de normales, que es justo lo que enciende el camino de la
+        # iluminacion. El formato sale de la textura que se vaya a enlazar de
+        # verdad, sea la del material o la que el shader declare por defecto.
+        for slot in range(8):
+            m = meta.get(f"g_Texture{slot}")
+            if not m or not m.get("formatcombo"):
+                continue
+            nombre = (p.textures[slot]
+                      if slot < len(p.textures) and p.textures[slot]
+                      else textura_por_defecto(m))
+            if not nombre or nombre.startswith("_rt_"):
+                continue
+            combos.setdefault(f"TEX{slot}FORMAT", self.info_textura(nombre)[0])
+
         # Los combos del vertice los pone el motor, no el material: describen
         # el formato que va a llegar, que es decision del ejecutor.
         hoja = None
@@ -1417,16 +1472,18 @@ class Renderer:
                              + " ".join(f"{x:.6g}" for x in self.cielo))
             for i in range(MAX_LUCES):
                 if i < len(self.luces):
-                    org, col, radio = self.luces[i]
+                    org, col, radio, expo = self.luces[i]
                 else:
                     # Un hueco vacio no se puede dejar sin escribir: GL daria
                     # cero tambien en el radio, y el decaimiento divide por el.
-                    org, col, radio = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0
+                    org, col, radio, expo = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+                                             1.0, EXPONENTE_POR_DEFECTO)
                 self.body.append(f"u3f g_LightsPosition[{i}] "
                                  + " ".join(f"{x:.6g}" for x in org))
                 self.body.append(f"u4f g_LightsColorRadius[{i}] "
                                  + " ".join(f"{x:.6g}" for x in col)
                                  + f" {radio:.6g}")
+                self.body.append(f"u1f g_LightsExponent[{i}] {expo:.6g}")
             # La otra forma de mandar los mismos colores. No es alternativa a
             # la de arriba: cada generacion de shaders lee una, y un pase puede
             # necesitar las dos ---el vertice saca las direcciones de
@@ -1454,6 +1511,36 @@ class Renderer:
         self.body.append(f"umat4 g_EffectTextureProjectionMatrix {ident}")
         self.body.append(f"umat4 g_EffectTextureProjectionMatrixInverse {ident}")
         self.body.append("u2f g_ParallaxPosition 0.5 0.5")
+        # El puntero, en UV y en reposo. NO se puede dejar sin emitir: cero no
+        # es "sin cursor", es el cursor clavado en la esquina superior
+        # izquierda, y 14 variantes del corpus lo leen. El centro es lo mismo
+        # que ya asume `g_ParallaxPosition`, y lo que se vera hasta que el
+        # motor sepa donde esta el raton de verdad.
+        self.body.append("u2f g_PointerPosition 0.5 0.5")
+        self.body.append("u2f g_PointerPositionLast 0.5 0.5")
+        # La inversa de la MVP lleva el puntero de clip space al espacio local
+        # de la capa. Sin emitirla GL la da a cero y ahi dentro hay una
+        # division: es la misma familia de fallo que dejo tres escenas negras
+        # con `g_EffectTextureProjectionMatrixInverse`.
+        self.body.append("umat4 g_ModelViewProjectionMatrixInverse "
+                         + " ".join(f"{x:.6g}" for x in inversa_de(mvp)))
+        if obj is not None:
+            # Donde cae este fragmento en la PANTALLA, que no es donde cae en
+            # el buffer de la capa: los pases de efecto dibujan un quad a
+            # pantalla completa sobre su propio buffer, asi que su MVP es la
+            # identidad y no sirve para situarse en la escena.
+            self.body.append("umat4 g_EffectModelViewProjectionMatrix " + " ".join(
+                f"{x:.6g}" for x in object_mvp(obj, canvas, por_id=self.por_id)))
+            # De esta solo se leen las LONGITUDES de sus dos primeros ejes, y
+            # lo que se espera ahi es el factor de escala de la capa ---1 cuando
+            # no esta escalada---, porque multiplica una resolucion. Va sin
+            # rotacion a proposito: con nuestra convencion de escribir las
+            # matrices por filas, `m[0]` en GLSL no es el eje sino la fila, y
+            # mezclar el giro daria una longitud que no es la escala. Nadie la
+            # multiplica, solo la mide.
+            _, _esc, _ = transform_absoluto(obj, self.por_id)
+            self.body.append(f"umat4 g_LayerModelMatrix {_esc[0]:.6g} 0 0 0 "
+                             f"0 {_esc[1]:.6g} 0 0  0 0 {_esc[2]:.6g} 0  0 0 0 1")
         # Tamano de un texel del buffer al que escribe ESTE pase. Es lo que
         # usan los shaders de desenfoque para saber cuanto vale un paso:
         #

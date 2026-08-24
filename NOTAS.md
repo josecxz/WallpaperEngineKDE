@@ -2030,6 +2030,62 @@ marca como regresión. Es el sesgo funcionando: su único sistema tiene
 píxeles quita en torno al 40 % de área. Esa escena ya estaba en la lista de las
 cuatro negras —al 6 % de su preview— así que no sirve para juzgar la dirección.
 
+## Los uniforms que el motor rellena y nosotros no
+
+El binario de WE lleva la **tabla de uniforms que su motor sabe rellenar**: 147
+nombres. Cruzarla con el código VIVO de las 594 variantes del corpus ---no con
+lo que declaran, que puede estar en una rama muerta--- deja 15 que se usan y
+nunca emitíamos. Cero no es «sin valor»: es un valor, y a veces el peor.
+
+| uniform | variantes | qué leía |
+|---|---|---|
+| `g_AudioSpectrum16/32/64` | 19 / 6 / 8 | ceros = silencio. Degradación honesta |
+| **`g_PointerPosition`** | **14** | (0,0) = el cursor **clavado en la esquina** |
+| `g_ModelViewProjectionMatrixInverse` | 5 | matriz a cero, con una división dentro |
+| `g_EffectModelViewProjectionMatrix` | 4 | ídem |
+| `g_LayerModelMatrix` | 3 | ídem |
+| `g_Frametime` | 2 | 0 s por fotograma |
+
+El audio no es un fallo: cero es silencio y es lo que hay hasta que exista el
+subsistema. El puntero sí lo era, y se arregla como ya se arreglaba
+`g_ParallaxPosition`: **el centro, `0.5 0.5`**, que es el reposo que el resto
+del motor ya asume. Las tres matrices son la familia que nos ha mordido dos
+veces —`normalize(0)` esperando— y las tres se derivan de lo que el plan ya
+tiene:
+
+- **`g_ModelViewProjectionMatrixInverse`** lleva el puntero de clip space al
+  espacio local. Su única trampa es que `particle_mvp` aplana la fila z a
+  propósito, lo que deja la matriz singular; para invertirla se le repone la
+  identidad en esa fila, que es inofensivo porque quien lee la inversa no mira
+  la z.
+- **`g_EffectModelViewProjectionMatrix`** es dónde cae el fragmento en la
+  PANTALLA, que no es dónde cae en el buffer de su capa: un pase de efecto
+  dibuja a pantalla completa sobre su propio buffer y su MVP es la identidad.
+  Se emite la matriz de colocación del objeto.
+- **`g_LayerModelMatrix`** solo se lee por las longitudes de sus dos primeros
+  ejes, y lo que se espera ahí es el **factor de escala** de la capa —1 cuando
+  no está escalada—, porque multiplica una resolución. Va sin rotación a
+  propósito: con nuestra convención de escribir las matrices por filas, `m[0]`
+  en GLSL no es el eje sino la fila, y mezclar el giro daría una longitud que
+  no es la escala. Nadie la multiplica, solo la mide.
+
+Sobre las 129: **0 regresiones**, 8 escenas se mueven y ninguna más de 1,34 de
+media —las que leían ceros—. Y las 594 variantes compilan igual.
+
+### Lo que queda medido para después
+
+El mismo cruce, aplicado a las partículas, dice que el **vocabulario está
+completo**: 25 piezas distintas en 527 sistemas, las 25 implementadas. Lo que
+falta son campos de piezas que sí leemos:
+
+| campo | usos | qué se pierde |
+|---|---|---|
+| `exponent` en los seis inicializadores aleatorios | **96** | la forma de la distribución: el autor pide un sesgo y repartimos uniforme |
+| `audioprocessing*` en 6 piezas | ~50 | reactividad al sonido |
+| `right`/`up`/`forward` en `turbulentvelocityrandom` | 4 c/u | los ejes de la turbulencia |
+| `operation` en `remapvalue` | 2 | el modo del remapeo |
+| `blendin/out` en `oscillatealpha` | 1 c/u | las ventanas de entrada y salida |
+
 ## El HUD decía 166 fps con la GPU al 98 %
 
 Los dos números salían a la vez y no podían ser los dos ciertos. El HUD daba
@@ -2297,6 +2353,57 @@ Medido en la única escena del corpus donde pasa —3053927686, con una luz de
 tubo (un segmento, del que la escena solo declara el centro) y una puntual fuera
 de alcance—: encenderla a medias la baja de 39,31 a 11,52 de media, y su propio
 preview está en 89,99.
+
+### El módulo de verdad está en el binario, y no es un fichero
+
+`wallpaper64.exe` lleva el módulo `LightingV1` **como texto**, y eso explica por
+qué no aparecía en los assets: **no es un shader, es un generador**. El motor lo
+arma en tiempo de ejecución con las luces que tenga la escena — se ve en los
+propios fragmentos, `uniform vec4 g_LPoint_Origin[` con el corchete abierto para
+pegarle el número, y `const uint i = ` con el espacio final.
+
+La firma real y el término por luz:
+
+```glsl
+vec3 PerformLighting_V1(vec3 worldPos, vec3 color, vec3 normal, vec3 viewVector,
+                        vec3 specularTint, vec3 ambient, float roughness, float metallic)
+
+light += ComputePBRLightShadow(normal, lightDelta, viewVector, color,
+    g_LPoint_Color[i].rgb, g_LPoint_Color[i].w, g_LPoint_Origin[i].w,
+    specularTint, ambient, roughness, metallic, 1.0);
+```
+
+Lo que confirma de la reconstrucción de arriba:
+
+- **El sexto parámetro es `f0`, no el ambiente.** WE lo llama `ambient` en su
+  propia firma, pero mira dónde acaba: en la novena posición de
+  `ComputePBRLightShadow`, que es `baseReflectance`. El nombre es un despiste
+  suyo, y los shaders que la llaman le pasan `f0`.
+- El radio va en el `.w` del color y la posición en el `.xyz` del origen, con
+  las arrays **dimensionadas por escena**, no `[4]` fijo. Las
+  `g_LightsPosition[4]` que declaramos son de la generación anterior.
+
+Y lo que corrige: **el exponente del decaimiento no es una constante**, viaja
+con cada luz en el `.w` de su origen. Aquí estaba clavado a 2, deducido del
+`lightAttn * lightAttn` de la generación vieja. Ahora viaja igual, en
+`g_LightsExponent`, aunque el valor siga siendo 2: ninguna de las 9 luces del
+corpus declara exponente y el campo `exponent` del formato es de color, no de
+luces. La diferencia es que deja de ser una suposición metida en el shader y
+pasa a ser un dato del plan, así que el día que se sepa de dónde leerlo es una
+línea.
+
+También sitúa lo que falta: WE cubre **puntuales, focos, tubo y direccionales**,
+con sombras en cascada y *cookies* de color. Y su tabla de uniforms incluye
+`g_PointerPosition` y `g_AudioSpectrum16/32/64`, que son los dos cabos que
+bloquean el parallax con puntero y el audio reactivo.
+
+**Dónde está la raya.** Ese generador es código de Wallpaper Engine. Leerlo para
+comprobar que nuestra implementación independiente se comporta igual es lo que
+hace cualquier proyecto de interoperabilidad; copiarlo al repositorio rompería
+lo que promete el README —«aquí no hay ni un shader, y no va a haberlo»— y
+además no serviría de nada, porque siendo un generador habría que reimplementarlo
+igual. Nada de lo que hay en `weshader.py` sale de ahí: la reconstrucción es
+anterior y se hizo desde los shaders de la propia librería.
 
 ### La función repuesta no la usa ninguna escena de esta biblioteca
 
