@@ -1942,6 +1942,44 @@ El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
 justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
 
+## La última variante que no compilaba: truncar también al llamar
+
+Quedaba 1 de 594. El error:
+
+```
+albedo = vec4(maskBokeh(v_TexCoord, depth * 2.0 * strength), albedo.a);
+error C7011: implicit cast from "vec4" to "vec2"
+```
+
+`v_TexCoord` es un `vec4` porque ese shader empaqueta más cosas en el `zw`, y
+`maskBokeh` pide un `vec2`. HLSL trunca solo al pasar el argumento; GLSL lo
+rechaza y se lleva el pase entero.
+
+Ya existía `truncar_asignaciones` para el mismo problema en los inicializadores.
+Faltaba el caso de los **argumentos de una llamada**, y se resuelve igual, con
+la misma regla que hace segura a su hermana: **solo se toca cuando el ancho se
+puede AFIRMAR** y es mayor que el del parámetro. `weglsl` devuelve `None` ante
+la duda —incluidas las variables locales, que aquí no se siguen— y entonces el
+argumento se deja como está.
+
+Esa disciplina no es adorno. Un intento anterior de inferir anchos barriendo
+identificadores con una expresión regular rompió 124 variantes, porque un
+barrido plano cree que `dot(a, b)` es ancho. El oráculo es el corpus que ya
+compila, y hay que pasarlo entero **antes** de dar el cambio por bueno.
+
+Para saber qué espera cada parámetro se añadió `weglsl.tabla_de_parametros`,
+que devuelve `None` en las posiciones que no sabe medir —un array, una
+estructura, un tipo desconocido— para que el que llame las deje en paz.
+
+**Resultado: 594/594 en Mesa, el 100 %.** Las cuatro escenas que incrustan ese
+efecto recuperan su desenfoque bokeh; la media apenas se mueve porque un
+desenfoque no cambia el brillo, pero dejan de omitir el pase.
+
+Queda **una en NVIDIA**, que Mesa acepta: `step(0.5, nodeNum)` con `nodeNum`
+declarado `in int` como parámetro de función. Para arreglarla harían falta dos
+extensiones del parser —ámbito local de función, y una tabla de firmas de los
+built-ins— y es una variante en el driver que no es el del escritorio.
+
 ## El `exponent` de los sorteos: leído, y con la curva sin confirmar
 
 Los inicializadores aleatorios de una partícula declaran `min`, `max` y a veces

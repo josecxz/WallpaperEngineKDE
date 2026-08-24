@@ -425,6 +425,37 @@ def tabla_de_funciones(body: str) -> dict[str, tuple[str, int]]:
 _DEFINE_OBJETO_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)[ \t]+(\S.*)$")
 
 
+# Calificadores que pueden preceder al tipo de un parametro y que no dicen
+# nada de su ancho.
+_CALIF = frozenset(("const", "in", "out", "inout", "highp", "mediump", "lowp"))
+
+
+def tabla_de_parametros(body: str) -> dict[str, list[tuple[str, int] | None]]:
+    """Tipos de los parametros de cada funcion que declara el propio shader.
+
+    `None` en una posicion significa "no se pudo determinar": un tipo que no
+    conocemos, un array, una estructura. Quien lo lea tiene que dejar ese
+    argumento en paz, que es la regla que hace segura la truncacion.
+    """
+    fuera: dict[str, list[tuple[str, int] | None]] = {}
+    for m in _FUNC_RE.finditer(body):
+        crudo = m.group(3).strip()
+        if crudo in ("", "void"):
+            fuera[m.group(2)] = []
+            continue
+        params: list[tuple[str, int] | None] = []
+        for trozo in crudo.split(","):
+            piezas = [x for x in trozo.split() if x not in _CALIF]
+            # `vec3 v` son dos piezas; `vec3 v[4]` o `mat3 m` tambien entran,
+            # pero solo se acepta lo que el parser sabe medir.
+            if len(piezas) == 2 and piezas[0] in ANCHO_TIPO and "[" not in piezas[1]:
+                params.append((BASE_TIPO[piezas[0]], ANCHO_TIPO[piezas[0]]))
+            else:
+                params.append(None)
+        fuera[m.group(2)] = params
+    return fuera
+
+
 def tabla_global(body: str) -> dict[str, tuple[str, int]]:
     """Uniforms, varyings, globales Y macros sin parametros.
 
