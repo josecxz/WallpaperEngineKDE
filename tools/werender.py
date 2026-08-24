@@ -288,6 +288,39 @@ def vp_de(mvp: list[float], mundo: list[float]) -> list[float]:
     return list((np.array(mvp, dtype=np.float64).reshape(4, 4) @ w).ravel())
 
 
+def uniforms_de_tinte(col: list[float], alfa: float, brillo: float) -> list[str]:
+    """Color, brillo y opacidad del objeto, por los tres nombres que se leen.
+
+    Cada generacion de shaders lee la opacidad de un sitio, y son ramas
+    excluyentes del mismo fichero: `genericimage2` aplica `g_Color4` entero
+    ---rgb Y alfa--- si esta definido VERSION, y si no `g_Brightness` sobre el
+    rgb y `g_UserAlpha` sobre el alfa. Mandarla solo en `g_Alpha` la perdia en
+    las dos: ese nombre lo usan otros seis shaders, ninguno de estos.
+
+    No se aplica dos veces: en toda la libreria no hay un `.frag` que lea dos
+    de los tres.
+    """
+    return [f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} {alfa:.6g}",
+            f"u1f g_Brightness {brillo:.6g}",
+            f"u1f g_UserAlpha {alfa:.6g}",
+            f"u1f g_Alpha {alfa:.6g}"]
+
+
+def textura_por_defecto(meta_uni: dict | None) -> str:
+    """Con que rellenar un sampler que el material deja sin enlazar.
+
+    El shader lo dice en sus metadatos. Hay que hacerle caso: un sampler sin
+    enlazar NO lee negro, se queda en la unidad 0 ---la del slot 0--- y el
+    shader acaba usando la propia imagen como si fuera el otro mapa.
+
+    Los `_rt_*` y los `_alias_*` devuelven cadena vacia a proposito: no son
+    ficheros sino buffers de subsistemas que este motor no tiene ---sombras,
+    reflejos, cookies de luz--- y fabricarlos vacios es peor que dejarlos.
+    """
+    d = str((meta_uni or {}).get("default", ""))
+    return "" if d.startswith(("_rt_", "_alias_")) else d
+
+
 def _inverso(x: float) -> float:
     """1/x, pero un eje aplastado no colapsa la normal.
 
@@ -1237,8 +1270,8 @@ class Renderer:
                 # ficheros sino buffers de subsistemas que este motor no tiene
                 # ---sombras, reflejos, cookies de luz---, y fabricarlos vacios
                 # es peor que dejarlos.
-                por_defecto = str(meta.get(uni, {}).get("default", ""))
-                if por_defecto and not por_defecto.startswith(("_rt_", "_alias_")):
+                por_defecto = textura_por_defecto(meta.get(uni))
+                if por_defecto:
                     t = self.texture(por_defecto,
                                      str(meta[uni].get("mode", "")),
                                      1.0, flip=not particula)
@@ -1469,11 +1502,7 @@ class Renderer:
         # Costo de no tenerlo: la sombra del disco de vinilo de 3624164256 es
         # negra con `alpha: 0.1`, y salia OPACA --- un lunar negro en mitad del
         # personaje.
-        self.body.append(f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} "
-                         f"{alfa:.6g}")
-        self.body.append(f"u1f g_Brightness {brillo:.6g}")
-        self.body.append(f"u1f g_UserAlpha {alfa:.6g}")
-        self.body.append(f"u1f g_Alpha {alfa:.6g}")
+        self.body.extend(uniforms_de_tinte(col, alfa, brillo))
 
         # Constantes del material, resueltas via metadatos.
         for uni_name, m in meta.items():

@@ -19,6 +19,15 @@ Asi que aqui se comprueban las dos propiedades que tienen que cumplirse, no los
 numeros concretos: que `VP * Mundo` reproduce la MVP de siempre, y que la
 matriz de normales es ortonormal.
 
+Con el tiempo se le han sumado los otros dos uniforms que nadie leia, por la
+misma razon ---fallan callando---:
+
+  * El `default` de un sampler que el material no enlaza. Sin ponerlo, el
+    sampler se queda en la unidad 0 y el shader usa la propia imagen como si
+    fuera el otro mapa.
+  * La opacidad del objeto, que cada generacion de shaders lee de un nombre
+    distinto. Iba solo a `g_Alpha`, que no lo lee ninguno de los de imagen.
+
 Uso:
     python3 tools/test_werender.py
 """
@@ -155,10 +164,65 @@ def prueba_empaquetado(fallos: list[str]) -> None:
         fallos.append(f"el color no se premultiplico por el radio^2: {v[0][:3]}")
 
 
+def prueba_sampler_por_defecto(fallos: list[str]) -> None:
+    """El shader dice con que rellenar un sampler que el material no enlaza.
+
+    Hay que hacerle caso porque un sampler sin enlazar NO lee negro: se queda
+    en la unidad 0 ---la del slot 0--- y el shader acaba usando la propia
+    imagen como si fuera el otro mapa. Asi desaparecia la capa entera de
+    3624164256, cuyo parallax declara `g_Texture1` con `default: util/black`.
+    """
+    for meta, espera, por_que in (
+            ({"default": "util/black"}, "util/black", "el mapa de profundidad sin pintar"),
+            ({"default": "util/white"}, "util/white", "el albedo que no viene"),
+            ({"default": "gradient/gradient_toon_smooth"},
+             "gradient/gradient_toon_smooth", "un gradiente de la libreria"),
+            ({"default": "_rt_FullFrameBuffer"}, "", "buffer del motor, no fichero"),
+            ({"default": "_alias_lightCookie"}, "", "subsistema que no tenemos"),
+            ({"label": "sin default"}, "", "el shader no dice nada"),
+            (None, "", "el shader ni declara el sampler")):
+        da = werender.textura_por_defecto(meta)
+        if da != espera:
+            fallos.append(f"textura_por_defecto({meta}) dio {da!r}, "
+                          f"se esperaba {espera!r} ({por_que})")
+
+
+def prueba_opacidad_del_objeto(fallos: list[str]) -> None:
+    """La opacidad tiene que salir por los tres nombres que leen los shaders.
+
+    Cada generacion lee uno, y son ramas excluyentes del mismo fichero. Iba
+    solo en `g_Alpha`, que no lo lee ninguno de los de imagen: la sombra del
+    vinilo de 3624164256 ---negra al 10 %--- salia opaca, un lunar negro en
+    mitad del personaje.
+    """
+    lineas = werender.uniforms_de_tinte([0.0, 0.0, 0.0], 0.1, 1.0)
+    por_nombre = {l.split()[1]: l.split()[2:] for l in lineas}
+
+    if "g_Color4" not in por_nombre:
+        fallos.append("no se emite g_Color4")
+    elif len(por_nombre["g_Color4"]) != 4 or float(por_nombre["g_Color4"][3]) != 0.1:
+        fallos.append(f"la opacidad no va en el .w de g_Color4: {por_nombre.get('g_Color4')}")
+    for nombre in ("g_UserAlpha", "g_Alpha"):
+        if nombre not in por_nombre or float(por_nombre[nombre][0]) != 0.1:
+            fallos.append(f"la opacidad no llega a {nombre}: {por_nombre.get(nombre)}")
+
+    # El color va en el rgb y el brillo aparte: son cosas distintas.
+    lineas = werender.uniforms_de_tinte([1.0, 0.5, 0.25], 1.0, 2.0)
+    por_nombre = {l.split()[1]: l.split()[2:] for l in lineas}
+    if [float(x) for x in por_nombre["g_Color4"][:3]] != [1.0, 0.5, 0.25]:
+        fallos.append(f"el color no llega intacto: {por_nombre['g_Color4']}")
+    if float(por_nombre["g_Brightness"][0]) != 2.0:
+        fallos.append("el brillo no llega a g_Brightness")
+    # Un objeto sin opacidad declarada no debe oscurecer nada.
+    if float(por_nombre["g_Color4"][3]) != 1.0 or float(por_nombre["g_UserAlpha"][0]) != 1.0:
+        fallos.append("con alpha 1 la capa no queda neutra")
+
+
 def main() -> int:
     fallos: list[str] = []
     for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
-                   prueba_luces, prueba_empaquetado):
+                   prueba_luces, prueba_empaquetado,
+                   prueba_sampler_por_defecto, prueba_opacidad_del_objeto):
         prueba(fallos)
         print(f"  {prueba.__name__}")
     if fallos:
