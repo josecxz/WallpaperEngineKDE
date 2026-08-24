@@ -113,9 +113,20 @@ def _f1(value, defecto: float) -> float:
 # `src/weparticles.c`. Un nombre ausente de estas tablas se cuenta como no
 # soportado y se anota; nunca se emite a medias.
 
-def _init_vida(e):   return [_f1(e.get("min"), 1.0), _f1(e.get("max"), 1.0)]
-def _init_tam(e):    return [_f1(e.get("min"), 32.0), _f1(e.get("max"), 32.0)]
-def _init_alfa(e):   return [_f1(e.get("min"), 1.0), _f1(e.get("max"), 1.0)]
+def _init_vida(e):   return [_f1(e.get("min"), 1.0), _f1(e.get("max"), 1.0)] + _expo(e)
+def _expo(e):
+    """El `exponent` del sorteo, 1 si no lo declara.
+
+    Va SIEMPRE, aunque sea 1, porque el `.psys` es una lista de numeros sin
+    nombres: si un inicializador emitiera a veces dos floats y a veces tres, el
+    lector en C no sabria donde empieza la pieza siguiente. Ver
+    `test_weparticles.py`, que compara las dos tablas.
+    """
+    return [_f1(e.get("exponent"), 1.0)]
+
+
+def _init_tam(e):    return [_f1(e.get("min"), 32.0), _f1(e.get("max"), 32.0)] + _expo(e)
+def _init_alfa(e):   return [_f1(e.get("min"), 1.0), _f1(e.get("max"), 1.0)] + _expo(e)
 
 
 def _init_color(e):
@@ -123,11 +134,11 @@ def _init_color(e):
     # Sin `max` el color es fijo: 145 sistemas del corpus solo declaran `min`.
     mn = _v3(e.get("min"), 255.0)
     mx = _v3(e.get("max"), 255.0) if e.get("max") is not None else list(mn)
-    return [c / 255.0 for c in mn] + [c / 255.0 for c in mx]
+    return [c / 255.0 for c in mn] + [c / 255.0 for c in mx] + _expo(e)
 
 
 def _init_vec(e):
-    return _v3(e.get("min")) + _v3(e.get("max"))
+    return _v3(e.get("min")) + _v3(e.get("max")) + _expo(e)
 
 
 # La `scale` de la turbulencia de WE no esta en las unidades de la celda de
@@ -205,6 +216,13 @@ def _init_secuencia_cp(e):
             b[0] if len(b) > 1 else 0.0, b[1] if len(b) > 1 else 1.0] \
         + _v3(e.get("speedmin")) + _v3(e.get("speedmax"))
 
+
+# Los que llevan el `exponent` del sorteo como ULTIMO float. Importa mas de lo
+# que parece: los ajustes del objeto ---`size`, `alpha`, `speed`, `lifetime`,
+# el tinte--- escalan los floats del inicializador, y escalar el exponente por
+# el tamano de la capa no significa nada. Hay que dejarlo fuera a mano.
+CON_EXPONENTE = ("lifetimerandom", "sizerandom", "alpharandom", "colorrandom",
+                 "velocityrandom", "rotationrandom", "angularvelocityrandom")
 
 INICIALIZADORES = {
     "lifetimerandom": _init_vida,
@@ -700,7 +718,8 @@ def _aplicar_override(s: Sistema, ov: dict) -> None:
     for nombre, vals in s.inits:
         f = esc.get(nombre, 1.0)
         if f != 1.0:
-            vals = [v * f for v in vals]
+            n = len(vals) - 1 if nombre in CON_EXPONENTE else len(vals)
+            vals = [v * f for v in vals[:n]] + vals[n:]
         nuevos.append((nombre, vals))
     s.inits = nuevos
 
@@ -711,7 +730,7 @@ def _aplicar_override(s: Sistema, ov: dict) -> None:
     tiene = {n for n, _ in s.inits}
     a = _f1(ov.get("alpha"), 1.0)
     if a != 1.0 and "alpharandom" not in tiene:
-        s.inits.append(("alpharandom", [a, a]))
+        s.inits.append(("alpharandom", [a, a, 1.0]))
 
     # `colorn` viene normalizado y `color` de 0 a 255; los dos tinen el color
     # del preset, y `brightness` lo escala.
@@ -723,11 +742,11 @@ def _aplicar_override(s: Sistema, ov: dict) -> None:
         t = tinte or [1.0, 1.0, 1.0]
         t = [c * b for c in t]
         if "colorrandom" in tiene:
-            s.inits = [(n, [v * t[i % 3] for i, v in enumerate(vals)])
+            s.inits = [(n, [v * t[i % 3] for i, v in enumerate(vals[:6])] + vals[6:])
                        if n == "colorrandom" else (n, vals)
                        for n, vals in s.inits]
         else:
-            s.inits.append(("colorrandom", t + t))
+            s.inits.append(("colorrandom", t + t + [1.0]))
         # `colorchange` FIJA el color, asi que el tinte tambien tiene que pasar
         # por sus dos extremos o los 55 sistemas que lo usan lo perderian. Sus
         # dos primeros floats son tiempos, no color.

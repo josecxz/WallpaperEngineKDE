@@ -1942,6 +1942,56 @@ El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
 justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
 
+## El `exponent` de los sorteos: leído, y con la curva sin confirmar
+
+Los inicializadores aleatorios de una partícula declaran `min`, `max` y a veces
+`exponent`. Nosotros leíamos los dos primeros y tirábamos el tercero: **96 usos
+en la biblioteca**, repartidos por seis inicializadores —`alpharandom` 38,
+`sizerandom` 33, `lifetimerandom` 15, `velocityrandom` 6, `colorrandom` 3,
+`rotationrandom` 1—. Ignorarlo reparte plano lo que el autor pidió sesgado.
+
+Los valores del corpus son todos enteros: 1 (la mitad, o sea neutro), 2, 3, 5 y
+9. Así que 1 es el valor por defecto y el sesgo crece desde ahí.
+
+Ahora viaja hasta el simulador y se aplica como `pow(t, exponent)` sobre el
+sorteo. Cuidado con dos cosas al añadirlo, porque el `.psys` es una lista de
+números sin nombres:
+
+- **Va siempre, aunque valga 1.** Si un inicializador emitiera a veces dos
+  floats y a veces tres, el lector en C no sabría dónde empieza la pieza
+  siguiente. La prueba de contrato entre los dos lados lo caza al momento.
+- **Los ajustes del objeto no deben tocarlo.** `size`, `alpha`, `speed`,
+  `lifetime` y el tinte escalan los floats del inicializador; escalar el
+  exponente por el tamaño de la capa no significa nada. Hay que dejarlo fuera a
+  mano, y hay cuatro sitios donde se construye o se escala un inicializador.
+
+### Lo que NO se pudo confirmar
+
+**La dirección del sesgo.** `pow(t, e)` apiña los valores cerca del MÍNIMO;
+`1 - pow(1-t, e)` los apiña cerca del máximo. Se intentó decidir con tres
+oráculos y ninguno sirve:
+
+- La media del corpus no distingue: 23 escenas cambian y todas menos una lo
+  hacen por menos del 1 %.
+- Los textos de la aplicación solo dicen «Exponent», sin explicación.
+- Una comparación A/B píxel a píxel sobre `2930166418` —`sizerandom` de 30 a 150
+  con exponente 3, una escena bien renderizada— da 170,89 contra 170,96 de
+  media, y las dos versiones difieren en el **0,25 % de los píxeles**. El
+  preview del autor es un recorte más cerrado y tampoco decide.
+
+Se eligió `pow(t, e)` por dos razones, y las dos son inferencia: es la
+convención habitual para un exponente sobre un aleatorio de 0 a 1, y es la que
+casa con la intención artística —`sizerandom` de 50 a 270 con exponente 2 en un
+sistema llamado *rising debris* pide muchos cascotes pequeños y unos pocos
+grandes, no al revés—.
+
+**Efecto medido:** 23 escenas de 129 cambian, 22 de ellas por menos del 1 %. La
+excepción es `3624053922`, que baja un 33 % —de 4,07 a 2,74— y la herramienta la
+marca como regresión. Es el sesgo funcionando: su único sistema tiene
+`sizerandom` de 50 a 270 con exponente 2, y llevar el tamaño medio de 160 a 123
+píxeles quita en torno al 40 % de área. Esa escena ya estaba en la lista de las
+cuatro negras —al 6 % de su preview— así que no sirve para juzgar la dirección.
+
 ## El HUD decía 166 fps con la GPU al 98 %
 
 Los dos números salían a la vez y no podían ser los dos ciertos. El HUD daba
@@ -2214,9 +2264,34 @@ preview está en 89,99.
 
 Conviene decirlo claro: de los 6 pases que acaban iluminados en el corpus, los 6
 van por el camino viejo, el de `g_LightsColorPremultiplied`. **Ninguno llama a
-`PerformLighting_V1`.** O sea que la reconstrucción de la función está
-verificada como GLSL —su cuerpo se compila en las 578 variantes, porque se
-inyecta fuera del `#if`— pero no está verificada contra ninguna imagen.
+`PerformLighting_V1`.**
+
+Eso dejaba la reconstrucción sin ejercitar de verdad: su cuerpo se compila en
+todas las variantes —va fuera del `#if`— pero **la llamada de dentro de `main()`
+no la compila nadie**, porque ninguna escena enciende el combo en esos ocho
+shaders. Un cuerpo que nadie llama no prueba que la firma cuadre.
+
+Así que `test_weshader.py` los traduce aparte con `LIGHTING` **encendido** y los
+compila con el driver: los 8 de 8 pasan, y ahí sí se compila la llamada. Lo que
+sigue sin estar verificado es la imagen —la fuerza del término, el `radio²`—,
+no la sintaxis.
+
+Esa prueba encontró de paso un agujero que no tenía nada que ver con la
+iluminación, y que solo asoma con ella encendida:
+
+```
+fur4.frag : error C1503: undefined variable "TEX8FORMAT"
+```
+
+Un sampler con `"formatcombo": true` no se conforma con la textura: pide además
+un `TEX<n>FORMAT` con **su** empaquetado, y lo usa como VALOR dentro del código
+—`ConvertTextureFormat(TEX8FORMAT, ...)`—, no en un `#if`. Sin definirlo el
+shader no compila, pero solo cuando esa línea está viva. Son 17 declaraciones en
+la librería y **once de ellas son el slot 1, el mapa de normales**, que es justo
+lo que enciende el camino de la iluminación. Ahora el combo se emite para todo
+sampler que lo declare, sacando el formato de la textura que se vaya a enlazar
+de verdad —la del material o la que el shader ponga por defecto—. Sobre las 129:
+0 regresiones y 3 escenas que se mueven menos de medio punto.
 
 Aun así tiene que estar. Sin ella, el combo no se puede encender en esos ocho
 shaders: el pase no enlaza y se pierde entero, que es de donde venía la regla
