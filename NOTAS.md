@@ -2258,6 +2258,30 @@ simulación son tres cosas, ninguna bloqueante:
 - Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
   ese; tomar el primero es preferible a sumarlos mal.
 
+### Los 19 wallpapers que trae la aplicación: 7 servirían
+
+La instalación de Wallpaper Engine trae los suyos en
+`projects/defaultprojects`, sin empaquetar —`scene.json` suelto, sin
+`scene.pkg`—, y las herramientas no los ven porque filtran justo por ese
+fichero. Suena a deuda de dos líneas; medido, no compensa:
+
+| | |
+|---|---|
+| escenas 2D ortográficas, que este motor dibuja | **7** — beach, deep_space, dino_run, eagleflag, razer_bedroom, razer_vortex, shimmering_particles |
+| con modelos o cámara 3D | **5** — arsenal, demon_core, dna_fragment, neon_sunset, retro |
+| no cargan: su escena no se llama `scene.json` | **4** — audiophile, fantasticcar, ricepod, techno (el nombre está en el campo `file` de `project.json`) |
+| no son escenas | **3** — dos web de Corsair y una aplicación de Unity |
+
+`beach` renderiza a 0,87 de su preview, o sea bien. `demon_core` sale **negro
+entero** y `neon_sunset` casi: los dos declaran modelos y **no** traen
+`orthogonalprojection`, que es sobre lo que está construido todo este motor
+—lienzo plano, capas, sin cámara ni profundidad—.
+
+Así que enchufarlos hoy ofrecería siete wallpapers de demo de marca y otros
+nueve que salen negros. La plomería que falta no es el filtro por `scene.pkg`
+sino un segundo origen de wallpapers y el campo `file`; y lo que de verdad
+desbloquearía el resto es el soporte de modelos, que es otro subsistema.
+
 ### Elegir la GPU que renderiza
 
 En un portátil híbrido el fondo se dibuja hoy en la iGPU, que es la que lleva el
