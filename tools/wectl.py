@@ -19,12 +19,15 @@ systemd y deja el escritorio caido. Con D-Bus nada de eso ocurre.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import random
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 from datetime import datetime
@@ -140,6 +143,31 @@ def resolver(consulta: str) -> tuple[Path, str]:
     return raiz / hallados[0][0], hallados[0][1]
 
 
+@contextlib.contextmanager
+def en_exclusiva():
+    """Un solo `wectl` cambiando el plan a la vez.
+
+    La rotacion dispara `wectl shuffle` desde systemd cada pocos minutos, y
+    nada impedia que cayera encima de un `wectl set` a mano. Los dos construian
+    en el MISMO directorio, y el `rmtree` con que empieza uno se llevaba por
+    delante los ficheros que el otro estaba escribiendo:
+
+        FileNotFoundError: .../plugin/contents/scene.nueva/p000.frag
+
+    Visto de verdad, con la rotacion cada 60 s. El escritorio no se rompio
+    ---el plan viejo seguia en su sitio--- pero el cambio se perdio y el error
+    no dice de que va.
+
+    El cerrojo hace esperar al segundo en vez de dejarle pisar. Cuesta lo que
+    tarde el primero ---hasta 20 s en el peor wallpaper de la biblioteca--- y a
+    cambio los dos cambios ocurren enteros, uno detras de otro.
+    """
+    ESCENA.parent.mkdir(parents=True, exist_ok=True)
+    with open(ESCENA.parent / ".plan.lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
 def preparar(ruta: Path) -> dict:
     """Genera el plan de `ruta` y lo pone en su sitio de una pieza.
 
@@ -161,19 +189,25 @@ def preparar(ruta: Path) -> dict:
     `emit_plan` donde van a ACABAR y no donde se estan escribiendo; si no, sale
     apuntando al directorio de trabajo y el motor arranca sin encontrar nada.
     """
-    nueva = ESCENA.with_name(ESCENA.name + ".nueva")
-    vieja = ESCENA.with_name(ESCENA.name + ".vieja")
-    shutil.rmtree(nueva, ignore_errors=True)
-    shutil.rmtree(vieja, ignore_errors=True)
-    try:
-        stats = emit_plan(ruta, nueva, ESCENA)
-    except BaseException:
-        shutil.rmtree(nueva, ignore_errors=True)
-        raise
-    if ESCENA.exists():
-        ESCENA.rename(vieja)
-    nueva.rename(ESCENA)
-    shutil.rmtree(vieja, ignore_errors=True)
+    with en_exclusiva():
+        # El directorio de construccion lleva un nombre unico, no `.nueva` a
+        # secas: asi ni siquiera sin el cerrojo ---otro usuario, otra copia del
+        # repo--- puede un proceso borrarle los ficheros a otro.
+        ESCENA.parent.mkdir(parents=True, exist_ok=True)
+        nueva = Path(tempfile.mkdtemp(prefix=ESCENA.name + ".nueva.",
+                                      dir=ESCENA.parent))
+        vieja = ESCENA.with_name(ESCENA.name + ".vieja")
+        shutil.rmtree(vieja, ignore_errors=True)
+        try:
+            stats = emit_plan(ruta, nueva, ESCENA)
+            if ESCENA.exists():
+                ESCENA.rename(vieja)
+            nueva.rename(ESCENA)
+        except BaseException:
+            shutil.rmtree(nueva, ignore_errors=True)
+            raise
+        finally:
+            shutil.rmtree(vieja, ignore_errors=True)
     return stats
 
 

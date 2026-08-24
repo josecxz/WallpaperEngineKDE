@@ -12,8 +12,14 @@ Motor de animaciones para el escritorio, KDE Plasma 6 / Wayland.
 **El motor corre en vivo dentro de plasmashell**, partículas incluidas. Una
 escena real de Wallpaper Engine se ejecuta con OpenGL sobre una textura que Qt
 compone en su scene graph, detrás de los iconos del escritorio. Verificado en
-Plasma 6.7.3 / Wayland: primero *LoL Warwick* con 24 pases a 166 fps, y ahora
-*Sentinel Irelia* con 102 pases y 4 sistemas de partículas.
+Plasma 6.7.3 / Wayland: primero *LoL Warwick* con 24 pases, y ahora *Sentinel
+Irelia* con 102 pases y 4 sistemas de partículas.
+
+Aquí ponía «a 166 fps». Ese número era el del reloj de QML y no medía el motor
+—ver [El HUD decía 166 fps con la GPU al 98 %](#el-hud-decía-166-fps-con-la-gpu-al-98-)—.
+La biblioteca de referencia son **129 escenas** desde el 2026-08-24, cuando las
+rutas pasaron a la instalación real de Wallpaper Engine; las cuentas «de 125»
+que aparecen más abajo son medidas correctas de la biblioteca anterior.
 
 ```
 SceneView: backend OpenGL, plan con 102 pases, lienzo 2560x1440, init 119 ms,
@@ -1936,6 +1942,301 @@ El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
 justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
 
+## El HUD decía 166 fps con la GPU al 98 %
+
+Los dos números salían a la vez y no podían ser los dos ciertos. El HUD daba
+**166 fps** mientras `/proc/<pid>/fdinfo`, sumando por cliente DRM, decía que
+el fondo se comía el **98,1 %** del motor de render de la integrada.
+
+El culpable era el propio HUD: su `fps` es `1 / clock.smoothFrameTime`, o sea
+el reloj de QML, que late con el compositor. Y las llamadas a GL son
+**asíncronas**: la CPU las encola y vuelve enseguida aunque la GPU se quede
+atrás. Así que ese número medía a qué ritmo pedíamos fotogramas, nunca si el
+motor llegaba a darlos.
+
+Cronometrar la CPU alrededor del envío habría mentido igual. Lo único que lo
+mide es preguntarle a la GPU, con `GL_TIME_ELAPSED`, y hacerlo **sin
+esperarla**: dos objetos de consulta alternos, y en cada fotograma se lee el
+del anterior. Preguntar por el de ahora obligaría a esperar a que la GPU
+acabase —y esa espera es justo lo que falsearía la medida.
+
+El resultado, en la misma escena y a la vez:
+
+```
+fps (reloj)  : 167.3
+gpu          : 38.9 ms/fotograma  (26/s como mucho)
+```
+
+Esos 38,9 ms cuadran con los 41–45 que da el mismo plan cronometrado aparte con
+el ejecutor offline. La diferencia entre 167 y 26 era el bulto que el HUD
+tapaba.
+
+Tres detalles que costaron un rato:
+
+- **La medida se publica antes del corte por fase.** `synchronize()` tiene un
+  `return` que solo deja pasar el fotograma en que cambia el estado; publicando
+  después, el valor se mandaba una vez y nunca más, y el HUD decía «sin medida»
+  mientras el motor ya tenía el número.
+- **Abrir la consulta puede fallar callando.** Si el turno sigue en vuelo, o si
+  hay otra `GL_TIME_ELAPSED` abierta —dibujamos dentro del `beginExternal()` de
+  Qt, el contexto no es solo nuestro—, `glBeginQuery` da `GL_INVALID_OPERATION`
+  y sin comprobarlo el turno se queda marcado como pendiente para siempre. Se
+  cuentan los saltos y los fallos, que es lo que convierte un «sin medida» mudo
+  en algo que se puede leer.
+- **El primer parte no puede traer medida.** El diagnóstico de siempre sale en
+  el fotograma 1, cuando la primera consulta aún está en vuelo por definición.
+  Hay un segundo parte al fotograma 200.
+
+## Dos `wectl` a la vez se pisaban
+
+La rotación dispara `wectl shuffle` desde systemd —cada 60 s si se apura el
+mínimo— y nada impedía que cayera encima de un `wectl set` a mano. Los dos
+construían el plan en el **mismo** directorio, y el `rmtree` con que empieza uno
+se llevaba los ficheros que el otro estaba escribiendo:
+
+```
+FileNotFoundError: .../plugin/contents/scene.nueva/p000.frag
+```
+
+Visto de verdad. El escritorio no se rompía —el plan viejo seguía en su sitio—
+pero el cambio se perdía y el error no dice de qué va.
+
+Ahora hay un cerrojo (`flock` sobre `.plan.lock`) que hace esperar al segundo en
+vez de dejarle pisar, y el directorio de construcción lleva nombre único, así
+que ni siquiera sin el cerrojo puede un proceso borrarle los ficheros a otro.
+La prueba de `wectl` lanza dos `preparar` a la vez y comprueba que salen los
+dos enteros; sin el cerrojo reproduce el `FileNotFoundError` exacto.
+
+## Un sampler sin enlazar no lee negro
+
+`3624164256` (Resident Evil 9) salía casi vacía: lluvia y niebla sobre negro,
+sin calle, sin personaje. Con `--only-base` aparecía entera —68,17 de media
+frente a 13,07 con todo puesto—, así que el contenido estaba bien y lo borraba
+un pase.
+
+Quitando un pase cada vez del plan y midiendo, el culpable salió a la primera:
+el **parallax por profundidad**, no los godrays que parecían el sospechoso
+—33 de las 129 escenas los usan y salen bien—.
+
+La causa está en una línea de metadatos del shader:
+
+```glsl
+uniform sampler2D g_Texture1; // {"label":"depth_map","mode":"depth",
+                              //  "format":"r8","default":"util/black"}
+```
+
+Ni la escena, ni el efecto, ni el material declaran esa textura: **la pone el
+motor**, y cuando la capa no tiene mapa pintado pone `util/black` —profundidad
+0, o sea sin desplazamiento—. Nosotros no poníamos nada, y ahí está el detalle
+que engaña: **un sampler sin enlazar no lee negro**. Se queda con su valor por
+defecto, que es 0, o sea la unidad de textura 0 —la del slot 0—, así que el
+shader acababa usando *la propia imagen* como mapa de profundidad. El raymarch
+de `ParallaxMapping` iba entonces a muestrear a cualquier parte y la capa
+desaparecía.
+
+Un `#if` mal resuelto o una matriz a cero se ven venir; esto no, porque el pase
+compila, enlaza, dibuja y no da un solo error.
+
+### El arreglo es general, y destapa 26 escenas
+
+Se enlaza el `default` que declare el sampler siempre que el material no traiga
+nada. Quedan fuera a propósito los `_rt_*` y los `_alias_*`: no son ficheros
+sino buffers de subsistemas que este motor no tiene —sombras, reflejos, cookies
+de luz— y fabricarlos vacíos es peor que dejarlos. El vocabulario real de
+defaults de fichero es corto: `util/white`, `util/black`, `util/noise`,
+`util/fur` y un gradiente de toon.
+
+Sobre las 129 escenas: **0 regresiones** y **26 escenas cambian**, casi todas a
+más luz porque aparece contenido que antes se destruía.
+
+| escena | antes | después |
+|---|---|---|
+| 3624164256 | 14,45 | **71,20** |
+| 2970694180 | 74,99 | 91,06 |
+| 2220826239 | 21,89 | 37,30 |
+| 3146507587 | 12,17 | 21,06 |
+| 3775394622 | 62,41 | 68,89 |
+| 3362719513 | 53,81 | 59,84 |
+| 2946362143 | 21,34 | 27,19 |
+
+Las cinco mayores están miradas contra su preview, no solo medidas: todas
+dibujan la obra del autor. Las razones salen por debajo de 1 porque los
+previews son recortes cerrados sobre el sujeto y nuestro render trae el encuadre
+entero. `3146507587` es además la que un comentario del código daba por perdida
+—«se desvanece a negro»—.
+
+## El lunar negro del vinilo: la opacidad iba a un uniform que nadie lee
+
+Con `3624164256` ya recuperada quedaba un disco negro y opaco en mitad del
+personaje. La escena es un wallpaper de reproductor de música ---trae objetos
+`Vinyl Disc`, `Album Art`, `Song Title`--- y el disco era la **sombra** del
+vinilo, que el autor declara así:
+
+```json
+{ "name": "Vinyl Shadow", "alpha": 0.1, "color": "0.00000 0.00000 0.00000" }
+```
+
+Negro al 10 %. Salía al 100 %.
+
+Ablatiendo por zona ---midiendo solo el rectángulo del lunar en vez de la imagen
+entera--- salieron los dos pases que lo dibujaban, y de ahí a la causa: el plan
+mandaba la opacidad del objeto en `g_Alpha`, y **ese nombre no lo lee ninguno de
+los shaders de imagen**. `genericimage2` la lee de dos sitios, en ramas
+excluyentes del mismo fichero:
+
+```glsl
+#ifndef VERSION
+	color.rgb *= g_Brightness;
+	color.a   *= g_UserAlpha;
+#else
+	color *= g_Color4;      // rgb Y alfa
+#endif
+```
+
+El pase traía `#define VERSION 2`, o sea la segunda rama, donde el alfa viaja en
+el `.w` de `g_Color4` --- que el plan escribía fijo a 1. Poner `g_Alpha` a 0, a
+0.1 o a 1 daba exactamente la misma imagen: el uniform no lo leía nadie.
+
+Ahora la opacidad se manda por los tres sitios. No se aplica dos veces, y no es
+una suposición: en toda la librería no hay un solo `.frag` que lea dos de los
+tres. `g_Color4` lo usan 5, `g_UserAlpha` 2, `g_Alpha` 6, y el único
+solapamiento ---`genericimage2`, con `g_Color4` y `g_UserAlpha`--- son esas dos
+ramas excluyentes.
+
+### Alcance: 78 objetos en 18 escenas
+
+Son los objetos del corpus con `alpha` distinto de 1, de 2093 en total. Medido
+sobre las 129: **0 regresiones**, 9 escenas cambian y solo dos de forma
+apreciable, las dos a MENOS luz porque sus capas translúcidas dejan de pintarse
+opacas:
+
+| escena | antes | después | qué se ve |
+|---|---|---|---|
+| 2533288714 | 139,98 | 112,40 | la bruma de la ciudad deja de velar la escena |
+| 3237641967 | 91,11 | 78,93 | el halo rojo deja de ser un muro |
+
+Las dos están miradas contra su preview, no solo medidas: siguen dibujando la
+obra de su autor, con menos velo encima.
+
+## La función de iluminación no está en los assets
+
+Ocho shaders de la librería común llaman a `PerformLighting_V1`, y ninguno la
+define. Tampoco declara ninguno las dos arrays de luces que consume. Lo que sí
+traen es una línea que no es GLSL:
+
+```glsl
+#require LightingV1
+```
+
+Ese `#require` es el hueco: WE inyecta ahí el módulo entero —función y
+uniforms— antes de compilar. Nosotros borrábamos la directiva y el shader se
+quedaba con una llamada a una función inexistente, así que el pase no
+enlazaba. Por eso `LIGHTING` estaba apagado a la fuerza y las capas con luces
+salían planas.
+
+**El cuerpo no hubo que inventarlo.** WE deja la misma cuenta escrita a mano en
+tres sitios de su propia librería, y entre los tres sale entera:
+
+- `effects/fluidsimulation/…/fluidsimulation_combine.frag` hace el bucle de las
+  cuatro luces desenrollado, en vez de llamar a la función. De ahí sale la
+  forma: sumar por luz y dejar el ambiente aparte.
+- `ComputePBRLightShadow` (`common_pbr_2.h`) es esta misma función con sombras,
+  con la firma completa —radio, exponente, `specularTint`—. Se llama con
+  `shadowFactor` a 1. Tiene que ser esta y no `ComputePBRLight`, porque el
+  header que incluyen los ocho ya no define la segunda.
+- `ComputeLightSpecular` (`common_fragment.h`), de la generación anterior, fija
+  el exponente: atenúa el difuso con `lightAttn * lightAttn` sobre el mismo
+  `saturate(1 - d/radio)`.
+
+### El mismo color por dos caminos distintos
+
+Conviven dos generaciones de shaders y cada una recibe las luces de una forma,
+con **convenciones incompatibles** para el mismo dato:
+
+| uniform | quién lo lee | atenuación | qué lleva el color |
+|---|---|---|---|
+| `g_LightsColorRadius[4]` | `generic4`, `foliage4`, `fur4`… | `saturate(1 - d/r)²` | color × intensidad |
+| `g_LightsColorPremultiplied[3]` | `genericimage2`, `generic2`… | `1 / d²` | color × intensidad × **radio²** |
+
+El `radio²` no es un ajuste: por ese camino el shader no recibe el radio, solo
+divide por la distancia al cuadrado. Sin él, una luz de radio 1200 llega a su
+propio borde con 0,7/1,44e6 y no se ve. Con él, a la distancia del radio la luz
+vale exactamente su color.
+
+El segundo además va **traspuesto**: los tres primeros colores en el `.rgb` de
+cada elemento y el cuarto repartido por los tres `.w`. Así caben cuatro colores
+en tres `vec4`.
+
+### El mundo es el lienzo en píxeles
+
+Las luces declaran su `origin` en las mismas unidades que los objetos: píxeles
+del `orthogonalprojection`, con la z hacia el espectador. Una luz típica está a
+343 o 500 px por delante del plano de la escena. No hay conversión de espacios
+porque no hace falta ninguna; lo que hacía falta era emitir la matriz de mundo,
+que hasta ahora solo se ponía para partículas —y con la matriz de recorte
+dentro, que en ese espacio pone la luz a 500 pantallas de distancia.
+
+### Tres uniforms que GL pone a cero sin decir nada
+
+Encender el combo hace que el vértice tome un camino distinto, y ese camino usa
+uniforms que el plan no emitía. GL no avisa: los da a cero y el resultado es
+espectacular en las dos direcciones.
+
+- **`g_ViewProjectionMatrix`** → **la escena entera en negro**. Con luz,
+  `gl_Position = mul(worldPos, M_VP)` en vez de salir de la MVP. A cero, el
+  quad colapsa a un punto y no se dibuja nada. No hay que inventarla: como
+  `MVP = VP · Mundo` y las otras dos ya están, la que falta es
+  `MVP · Mundo⁻¹`, exacta para capas, mallas y partículas por igual.
+- **`g_NormalModelMatrix`** → primero NaN, y luego **el fondo en blanco puro**.
+  Es un `mat3`, un tipo que el plan no sabía emitir; se añadió `umat3` a los dos
+  ejecutores. Y tiene que ser **solo el giro**: la traspuesta de la inversa
+  —lo que pide un normal bajo escala no uniforme— aquí es justo lo que no vale,
+  porque el shader mete esa matriz en `BuildTangentSpace` y con ella arma la
+  BASE en la que expresa la dirección a cada luz. Una base que encoge x e y por
+  1/1920 no cambia hacia dónde apunta esa dirección, pero le cambia el módulo,
+  y el módulo es la distancia de la que sale `color / d²`.
+- **`g_LightAmbientColor`** → la capa en negro, porque el shader sustituye el
+  color por `ambiente * albedo + luz`.
+
+### O todas las luces, o ninguna
+
+Ese `ambiente * albedo` es la razón de una regla que parece conservadora y no lo
+es: **si una escena trae una luz que no sabemos poner, se dibuja plana entera**.
+El ambiente OSCURECE la capa contando con que las luces devuelvan lo que quita,
+así que iluminar a medias sale peor que no iluminar.
+
+Medido en la única escena del corpus donde pasa —3053927686, con una luz de
+tubo (un segmento, del que la escena solo declara el centro) y una puntual fuera
+de alcance—: encenderla a medias la baja de 39,31 a 11,52 de media, y su propio
+preview está en 89,99.
+
+### La función repuesta no la usa ninguna escena de esta biblioteca
+
+Conviene decirlo claro: de los 6 pases que acaban iluminados en el corpus, los 6
+van por el camino viejo, el de `g_LightsColorPremultiplied`. **Ninguno llama a
+`PerformLighting_V1`.** O sea que la reconstrucción de la función está
+verificada como GLSL —su cuerpo se compila en las 578 variantes, porque se
+inyecta fuera del `#if`— pero no está verificada contra ninguna imagen.
+
+Aun así tiene que estar. Sin ella, el combo no se puede encender en esos ocho
+shaders: el pase no enlaza y se pierde entero, que es de donde venía la regla
+anterior de apagar la iluminación a la fuerza. Cuando aparezca un wallpaper que
+la use, lo que habrá que mirar es la fuerza del término, no si compila.
+
+### Lo que se ve
+
+9 luces en 5 wallpapers, todas puntuales menos ese tubo. En la escena de
+referencia (2518601723, tres luces) son 2 pases de 21 los que se iluminan, y la
+media pasa de 81,08 a 67,02 con el preview del autor en 60,80: la iluminación
+la acerca al original en vez de alejarla.
+
+En el corpus entero: 125/125 siguen renderizando, ninguna escena nueva en
+negro, y las 578 variantes de shader compilan igual que antes (577 en Mesa, 576
+en NVIDIA).
+
+Sigue sin haber reflejos: `REFLECTION` pide el fotograma ya compuesto y
+mipmapeado en `_rt_MipMappedFrameBuffer`, que es otro subsistema.
+
 ## Nota de rendimiento para el port a C++
 
 La GPU de esta máquina (Intel Raptor Lake, Mesa) expone
@@ -1953,13 +2254,14 @@ camino caliente del render.
 
 Por orden de lo que más se nota:
 
-1. **Las 2 escenas negras y la variante de shader que no compila** (1 de 578,
+1. **Las 4 escenas negras y la variante de shader que no compila** (1 de 578,
    la truncación de `maskBokeh`). Poca anchura, pero cuando cae la capa base se
    lleva la escena entera.
 2. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
    glifos.
 3. **Elegir la GPU que renderiza** (ver abajo).
-4. **Iluminación**: los materiales con luces se dibujan planos.
+4. **Reflejos** (`REFLECTION`) y **luces de tubo**: lo que queda del sistema de
+   iluminación, que ya cubre las luces puntuales.
 
 De partículas ya no queda vocabulario: los tres cabos —el corro, `remapvalue` y
 `orientation`— están cerrados y contados arriba. Lo que sigue fuera de la
@@ -1973,6 +2275,30 @@ simulación son tres cosas, ninguna bloqueante:
   quiere vertical.
 - Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
   ese; tomar el primero es preferible a sumarlos mal.
+
+### Los 19 wallpapers que trae la aplicación: 7 servirían
+
+La instalación de Wallpaper Engine trae los suyos en
+`projects/defaultprojects`, sin empaquetar —`scene.json` suelto, sin
+`scene.pkg`—, y las herramientas no los ven porque filtran justo por ese
+fichero. Suena a deuda de dos líneas; medido, no compensa:
+
+| | |
+|---|---|
+| escenas 2D ortográficas, que este motor dibuja | **7** — beach, deep_space, dino_run, eagleflag, razer_bedroom, razer_vortex, shimmering_particles |
+| con modelos o cámara 3D | **5** — arsenal, demon_core, dna_fragment, neon_sunset, retro |
+| no cargan: su escena no se llama `scene.json` | **4** — audiophile, fantasticcar, ricepod, techno (el nombre está en el campo `file` de `project.json`) |
+| no son escenas | **3** — dos web de Corsair y una aplicación de Unity |
+
+`beach` renderiza a 0,87 de su preview, o sea bien. `demon_core` sale **negro
+entero** y `neon_sunset` casi: los dos declaran modelos y **no** traen
+`orthogonalprojection`, que es sobre lo que está construido todo este motor
+—lienzo plano, capas, sin cámara ni profundidad—.
+
+Así que enchufarlos hoy ofrecería siete wallpapers de demo de marca y otros
+nueve que salen negros. La plomería que falta no es el filtro por `scene.pkg`
+sino un segundo origen de wallpapers y el campo `file`; y lo que de verdad
+desbloquearía el resto es el soporte de modelos, que es otro subsistema.
 
 ### Elegir la GPU que renderiza
 

@@ -227,6 +227,7 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             else if (kw == QLatin1String("u2f")) n = 2;
             else if (kw == QLatin1String("u3f")) n = 3;
             else if (kw == QLatin1String("u4f")) n = 4;
+            else if (kw == QLatin1String("umat3")) n = 9;
             else if (kw == QLatin1String("umat4")) n = 16;
             if (n && tok.size() >= 2 + n) {
                 Uniform u;
@@ -781,11 +782,89 @@ void GlExecutor::setBarColor(float r, float g, float b)
     m_bar[2] = qBound(0.0f, b, 1.0f);
 }
 
+// ── cronometro de GPU ───────────────────────────────────────────────────────
+//
+// Lo que se quiere saber es si la GPU llega, y eso no lo dice ni el reloj de
+// QML ni cronometrar la CPU: las llamadas a GL son asincronas, la CPU las
+// encola y vuelve. Hay que preguntarle a la GPU, y hacerlo sin esperarla.
+
+void GlExecutor::gpuTimerPoll()
+{
+    for (int i = 0; i < 2; i++) {
+        if (!m_gpuPend[i])
+            continue;
+        GLint listo = 0;
+        glGetQueryObjectiv(m_gpuQuery[i], GL_QUERY_RESULT_AVAILABLE, &listo);
+        if (!listo)
+            continue;
+        GLuint64 ns = 0;
+        glGetQueryObjectui64v(m_gpuQuery[i], GL_QUERY_RESULT, &ns);
+        m_gpuPend[i] = false;
+        const double ms = double(ns) / 1.0e6;
+        // Media movil: un fotograma suelto no dice nada y el numero baila.
+        m_gpuMs = m_gpuMs < 0 ? ms : m_gpuMs * 0.9 + ms * 0.1;
+    }
+}
+
+void GlExecutor::gpuTimerBegin()
+{
+    if (m_gpuOff)
+        return;
+    if (!m_gpuQuery[0]) {
+        glGenQueries(2, m_gpuQuery);
+        if (!m_gpuQuery[0]) {       // driver sin ARB_timer_query
+            m_gpuOff = true;
+            return;
+        }
+    }
+    // Tres cosas pueden impedir medir, y las tres callan:
+    //
+    //  * Que el turno siga en vuelo: reabrir una consulta sin haber leido su
+    //    resultado es GL_INVALID_OPERATION.
+    //  * Que ya haya una consulta de este tipo abierta. No se pueden anidar, y
+    //    el contexto no es solo nuestro: dibujamos dentro del `beginExternal()`
+    //    de Qt, que puede tener la suya.
+    //  * Que el driver no las soporte.
+    //
+    // Sin comprobarlo, un `glBeginQuery` fallido deja el turno marcado como
+    // pendiente para siempre y no se vuelve a medir nunca: el HUD se queda en
+    // "sin medida" sin decir por que.
+    GLint abierta = 0;
+    glGetQueryiv(GL_TIME_ELAPSED, GL_CURRENT_QUERY, &abierta);
+    m_gpuActive = !m_gpuPend[m_gpuCur] && abierta == 0;
+    if (!m_gpuActive) {
+        m_gpuSaltos++;
+        m_gpuAjena = abierta;
+        return;
+    }
+    while (glGetError() != GL_NO_ERROR) { }      // limpiar lo ajeno
+    glBeginQuery(GL_TIME_ELAPSED, m_gpuQuery[m_gpuCur]);
+    if (glGetError() != GL_NO_ERROR) {
+        m_gpuActive = false;
+        m_gpuFallos++;
+        if (m_gpuFallos > 30)                    // no va a arreglarse solo
+            m_gpuOff = true;
+    }
+}
+
+void GlExecutor::gpuTimerEnd()
+{
+    if (m_gpuOff || !m_gpuQuery[0])
+        return;
+    if (m_gpuActive) {
+        glEndQuery(GL_TIME_ELAPSED);
+        m_gpuPend[m_gpuCur] = true;
+        m_gpuCur = 1 - m_gpuCur;
+    }
+    gpuTimerPoll();
+}
+
 void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 {
     if (!m_ready)
         return;
 
+    gpuTimerBegin();
     skinMeshes(time);
 
     glDisable(GL_DEPTH_TEST);
@@ -876,6 +955,9 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             case 2:  glUniform2fv(u.location, 1, v); break;
             case 3:  glUniform3fv(u.location, 1, v); break;
             case 4:  glUniform4fv(u.location, 1, v); break;
+            // La matriz de normales. Va escrita por filas como las demas, asi
+            // que GL la lee traspuesta y `mul(v, M)` acaba dando `M * v`.
+            case 9:  glUniformMatrix3fv(u.location, 1, GL_FALSE, v); break;
             case 16: glUniformMatrix4fv(u.location, 1, GL_FALSE, v); break;
             default: break;
             }
@@ -1049,6 +1131,8 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         m_diagCompoMean = muestra(src.fbo, src.w / 2, src.h / 2);
         m_diagBlitError = int(glGetError());
     }
+
+    gpuTimerEnd();
 }
 
 const GlExecutor::MeshSpec *GlExecutor::meshFor(int id) const

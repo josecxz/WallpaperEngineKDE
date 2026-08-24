@@ -24,6 +24,7 @@ import random
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -146,10 +147,57 @@ def prueba_cambio_de_plan(fallos: list[str]) -> None:
         plan = (wectl.ESCENA / "plan.txt").read_text()
         if "NUEVO" not in plan:
             fallos.append("tras un fallo, el escritorio se quedo sin su plan")
-        hermanos = sorted(p.name for p in tmp.iterdir())
+        # `.plan.lock` es el cerrojo que serializa dos `wectl` a la vez; se
+        # queda a proposito, vacio y de 0 bytes. Lo que no puede quedar es un
+        # directorio de construccion a medias.
+        hermanos = sorted(p.name for p in tmp.iterdir() if p.name != ".plan.lock")
         if hermanos != ["scene"]:
             fallos.append(f"quedaron directorios sueltos: {hermanos}")
         print(f"  tras un fallo: plan intacto, hermanos {hermanos}   ok")
+
+        # Dos a la vez. La rotacion dispara `wectl shuffle` desde systemd y
+        # puede caer encima de un `set` a mano: antes los dos construian en el
+        # mismo `.nueva` y el que empezaba segundo le borraba los ficheros al
+        # primero, que moria con FileNotFoundError. Pasa de verdad, con la
+        # rotacion cada 60 s.
+        import threading
+        errores, a_la_vez, dentro = [], [], threading.Lock()
+
+        def emit_lento(ruta, out, ruta_final=None):
+            out.mkdir(parents=True, exist_ok=True)
+            with dentro:
+                a_la_vez.append(len(a_la_vez) + 1)
+                simultaneos = sum(1 for _ in a_la_vez)
+            time.sleep(0.25)          # ventana de sobra para pisarse
+            (out / "plan.txt").write_text(f"title {ruta.name}\n")
+            (out / "tex000.rgba").write_bytes(b"\0")
+            with dentro:
+                a_la_vez.pop()
+            return {"pases": 1, "simultaneos": simultaneos}
+
+        wectl.emit_plan = emit_lento
+
+        def corre(nombre):
+            try:
+                wectl.preparar(Path(f"/tmp/{nombre}"))
+            except BaseException as e:                       # noqa: BLE001
+                errores.append(f"{nombre}: {type(e).__name__}: {e}")
+
+        hilos = [threading.Thread(target=corre, args=(n,)) for n in ("UNO", "DOS")]
+        for h in hilos:
+            h.start()
+        for h in hilos:
+            h.join()
+        if errores:
+            fallos.append(f"dos cambios a la vez rompieron: {errores}")
+        plan = (wectl.ESCENA / "plan.txt").read_text()
+        if "UNO" not in plan and "DOS" not in plan:
+            fallos.append(f"tras dos cambios a la vez el plan no es de ninguno: {plan!r}")
+        hermanos = sorted(p.name for p in tmp.iterdir() if p.name != ".plan.lock")
+        if hermanos != ["scene"]:
+            fallos.append(f"dos a la vez dejaron restos: {hermanos}")
+        print(f"  dos cambios a la vez: los dos enteros, gana uno "
+              f"({plan.split()[1] if len(plan.split()) > 1 else '?'}), sin restos   ok")
     finally:
         wectl.ESCENA, wectl.emit_plan = escena_real, emit_real
         shutil.rmtree(tmp, ignore_errors=True)

@@ -122,8 +122,74 @@ layout(location = 0) out vec4 wpFragColor;
 UNSUPPORTED = {
     "register": "sintaxis de binding de HLSL (: register(cN))",
     "GetDimensions": "metodo de objeto de HLSL, sin equivalente directo",
-    "PerformLighting_V1": "funcion de iluminacion no presente en los assets",
 }
+
+# `PerformLighting_V1` NO esta en los assets: la inyecta el motor de WE donde
+# encuentra `#require LightingV1`, y por eso los 8 shaders que la llaman
+# tampoco declaran las dos arrays de luces que consume. Hay que reponer las
+# tres cosas.
+#
+# El cuerpo no es una invencion: WE deja la misma cuenta escrita a mano en
+# otros sitios de su propia libreria, y de ahi sale entera.
+#
+#   * La suma de cuatro luces puntuales y el ambiente aparte, en
+#     `effects/fluidsimulation/.../fluidsimulation_combine.frag`, que hace el
+#     bucle desenrollado en vez de llamar a la funcion.
+#   * El termino por luz, en `ComputePBRLightShadow` (`common_pbr_2.h`), que es
+#     esta misma funcion con sombras. Se llama con `shadowFactor` a 1.
+#   * El exponente 2 del decaimiento, de `ComputeLightSpecular`
+#     (`common_fragment.h`): la generacion anterior de shaders atenua el
+#     difuso con `lightAttn * lightAttn` sobre el mismo `saturate(1 - d/radio)`.
+#
+# Se construye sobre `ComputePBRLightShadow` y no sobre `ComputePBRLight`
+# porque `common_pbr_2.h` --- el header que incluyen los 8 --- ya no define la
+# segunda. Por eso se inyecta en el sitio del `#require`, que en los 8 va
+# despues de los `#include`: alli el helper ya esta declarado.
+LIGHTING_V1_GLSL = """
+uniform vec3 g_LightsPosition[4];
+uniform vec4 g_LightsColorRadius[4];
+
+vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir,
+                        vec3 specularTint, vec3 f0, float roughness, float metallic)
+{
+	vec3 suma = vec3(0.0, 0.0, 0.0);
+	for (int i = 0; i < 4; ++i) {
+		vec3 hacia = g_LightsPosition[i] - worldPos;
+		// Una particula puede nacer justo encima de la luz. Alli `length` da 0 y
+		// la normalizacion de dentro reparte NaN por toda la capa; el corpus ya
+		// se ha ido a negro dos veces por un normalize(0).
+		hacia.z += step(dot(hacia, hacia), 1e-8) * 1e-4;
+		suma += ComputePBRLightShadow(normal, hacia, viewDir, albedo,
+			g_LightsColorRadius[i].rgb, max(g_LightsColorRadius[i].w, 1e-4), 2.0,
+			specularTint, f0, roughness, metallic, 1.0);
+	}
+	return suma;
+}
+"""
+
+
+def inyectar_lighting_v1(body: str) -> tuple[str, bool]:
+    """Repone la funcion de iluminacion en el sitio donde WE la inyectaria.
+
+    Devuelve el cuerpo y si se pudo poner. Solo se pone cuando el helper sobre
+    el que se apoya esta a la vista: un shader que pidiera `LightingV1` sin
+    incluir `common_pbr_2.h` compilaria peor con la inyeccion que sin ella ---
+    un error de simbolo ajeno en vez del que se entiende.
+    """
+    if "LightingV1" not in body or "ComputePBRLightShadow" not in body:
+        return body, False
+
+    puesta = False
+
+    def _sub(m: re.Match) -> str:
+        nonlocal puesta
+        if "LightingV1" not in m.group(0):
+            return ""
+        puesta = True
+        return LIGHTING_V1_GLSL
+
+    return REQUIRE_DIR_RE.sub(_sub, body), puesta
+
 
 COMBO_RE = re.compile(r"//\s*\[COMBO\]\s*(\{.*?\})\s*$", re.M)
 INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]+"([^"]+)"[ \t]*$', re.M)
@@ -1066,12 +1132,10 @@ def translate(src: str,
     body = _strip_comments(expanded)
 
     # `#require X` declara una dependencia de un modulo del motor; no es GLSL y
-    # el driver la rechaza como directiva desconocida. Se emite siempre a nivel
-    # superior, aunque lo que la necesita este dentro de un `#if`, asi que no
-    # sirve para decidir nada: quien decide es el escaneo de UNSUPPORTED sobre
-    # las ramas vivas. En el corpus solo aparece `#require LightingV1`, en los
-    # 8 shaders con iluminacion.
-    body = REQUIRE_DIR_RE.sub("", body)
+    # el driver la rechaza como directiva desconocida. En el corpus solo
+    # aparece `#require LightingV1`, en los 8 shaders con iluminacion, y ahi la
+    # directiva no se borra: se cambia por el modulo que pide. El resto se van.
+    body, luz_puesta = inyectar_lighting_v1(body)
     body = equilibrar_condicionales(body)
     body = declaracion_sin_swizzle(body)
     body = bool_a_float(body)
@@ -1126,6 +1190,13 @@ def translate(src: str,
     for name, why in UNSUPPORTED.items():
         if re.search(rf"\b{name}\b", vivo):
             raise ShaderError(f"usa {name}: {why}")
+
+    # La iluminacion viva sin la funcion detras es el mismo caso que UNSUPPORTED
+    # ---el driver fallaria al enlazar, no al compilar, que es mas dificil de
+    # leer--- pero solo si la rama sobrevive a los combos de este pase.
+    if not luz_puesta and re.search(r"\bPerformLighting_V1\b", vivo):
+        raise ShaderError("usa PerformLighting_V1 y no incluye common_pbr_2.h, "
+                          "que es donde vive el termino por luz")
 
     # WE declara los samplers g_TextureN segun los slots enlazados en el pase,
     # asi que hay shaders que los usan sin declararlos. Se declaran los que

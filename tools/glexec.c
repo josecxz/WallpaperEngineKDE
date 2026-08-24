@@ -23,7 +23,7 @@
  *     psys <id>                        dibuja un sistema de particulas
  *     sampler <uniform> tex:<id>|rt:<nombre>|prev
  *     u1f/u2f/u3f/u4f <uniform> <floats>
- *     umat4 <uniform> <16 floats>
+ *     umat3 <uniform> <9 floats>   umat4 <uniform> <16 floats>
  *     blend <normal|translucent|additive|none|premul_additive|premul_alpha>
  *   endpass
  *   copy <origen> <destino>
@@ -851,6 +851,7 @@ int main(int argc, char **argv)
             else if (strcmp(kw, "u2f") == 0) cnt = 2;
             else if (strcmp(kw, "u3f") == 0) cnt = 3;
             else if (strcmp(kw, "u4f") == 0) cnt = 4;
+            else if (strcmp(kw, "umat3") == 0) cnt = 9;
             else if (strcmp(kw, "umat4") == 0) cnt = 16;
             if (cnt) {
                 char *p = line + strlen(kw);
@@ -911,6 +912,7 @@ int main(int argc, char **argv)
                 case 2: glUniform2fv(loc, 1, unis[i].v); break;
                 case 3: glUniform3fv(loc, 1, unis[i].v); break;
                 case 4: glUniform4fv(loc, 1, unis[i].v); break;
+                case 9: glUniformMatrix3fv(loc, 1, GL_FALSE, unis[i].v); break;
                 case 16: glUniformMatrix4fv(loc, 1, GL_FALSE, unis[i].v); break;
                 }
             }

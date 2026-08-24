@@ -210,7 +210,9 @@ Limitaciones conocidas:
   lleva todo lo que colgaba de ella.
 - El parallax por mapa de profundidad se dibuja en reposo: el motor todavía no
   sabe dónde está el puntero, así que la escena se ve centrada.
-- Sin sistema de iluminación: los materiales con luces se dibujan planos.
+- Luces puntuales sí; de tubo no, y una escena que traiga alguna se dibuja
+  plana entera —iluminar a medias la deja más oscura que no iluminarla—.
+  Sin reflejos.
 - Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
   incluidas, y con el vocabulario del formato cubierto entero. Los operadores
   que siguen al cursor quedan inactivos hasta que el motor sepa dónde está el

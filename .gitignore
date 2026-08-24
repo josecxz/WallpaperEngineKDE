@@ -26,5 +26,9 @@ __pycache__/
 plugin/contents/scene/
 plugin/contents/media/
 
+# Cerrojo con que `wectl` serializa dos cambios de fondo a la vez. Vacio, y
+# local de la maquina.
+plugin/contents/.plan.lock
+
 # ── local de la maquina ─────────────────────────────────────────────────────
 .claude/settings.local.json
