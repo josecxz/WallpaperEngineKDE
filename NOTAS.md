@@ -12,8 +12,8 @@ Motor de animaciones para el escritorio, KDE Plasma 6 / Wayland.
 **El motor corre en vivo dentro de plasmashell**, partículas incluidas. Una
 escena real de Wallpaper Engine se ejecuta con OpenGL sobre una textura que Qt
 compone en su scene graph, detrás de los iconos del escritorio. Verificado en
-Plasma 6.7.3 / Wayland: primero *LoL Warwick* con 24 pases a 166 fps, y ahora
-*Sentinel Irelia* con 102 pases y 4 sistemas de partículas.
+Plasma 6.7.3 / Wayland: primero *LoL Warwick* con 24 pases, y ahora *Sentinel
+Irelia* con 102 pases y 4 sistemas de partículas.
 
 ```
 SceneView: backend OpenGL, plan con 102 pases, lienzo 2560x1440, init 119 ms,
@@ -1917,6 +1917,26 @@ Tres cosas que no son obvias:
 El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
 justo lo que evita el SIGBUS— y con él, con el `.so` anterior.
+
+## Dos `wectl` a la vez se pisaban
+
+La rotación dispara `wectl shuffle` desde systemd —cada 60 s si se apura el
+mínimo— y nada impedía que cayera encima de un `wectl set` a mano. Los dos
+construían el plan en el **mismo** directorio, y el `rmtree` con que empieza uno
+se llevaba los ficheros que el otro estaba escribiendo:
+
+```
+FileNotFoundError: .../plugin/contents/scene.nueva/p000.frag
+```
+
+Visto de verdad. El escritorio no se rompía —el plan viejo seguía en su sitio—
+pero el cambio se perdía y el error no dice de qué va.
+
+Ahora hay un cerrojo (`flock` sobre `.plan.lock`) que hace esperar al segundo en
+vez de dejarle pisar, y el directorio de construcción lleva nombre único, así
+que ni siquiera sin el cerrojo puede un proceso borrarle los ficheros a otro.
+La prueba de `wectl` lanza dos `preparar` a la vez y comprueba que salen los
+dos enteros; sin el cerrojo reproduce el `FileNotFoundError` exacto.
 
 ## Un sampler sin enlazar no lee negro
 
