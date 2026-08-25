@@ -263,6 +263,25 @@ OJO_Z = 100000.0
 # corpus ninguna escena pasa de tres.
 MAX_LUCES = 4
 
+# Las clases de luz que sabemos poner, y el combo con el que cada shader
+# dimensiona su array. WE cubre cuatro; aqui van las dos que la biblioteca
+# tiene y que por tanto se han podido comprobar contra una escena real. El
+# foco y la direccional se quedan fuera A PROPOSITO: el shader las declara,
+# pero su orientacion sale de `angles` y no hay una sola en el corpus con la
+# que verificar el mapeo. Escribirlas a ciegas cambiaria "la escena se dibuja
+# plana" ---que es visible y honesto--- por "la escena se ilumina mal".
+CLASES_DE_LUZ = {"point": "LIGHTS_POINT", "tube": "LIGHTS_TUBE"}
+
+# Los combos de las clases que no ponemos. Hay que emitirlos a CERO igual: el
+# shader dimensiona `g_LSpot_Color[LIGHTS_SPOT]` con ellos y una macro sin
+# definir vale 0, pero dejarlo al azar es lo que produce pares que no enlazan.
+CLASES_SIN_PONER = ("LIGHTS_SPOT", "LIGHTS_DIRECTIONAL")
+
+# Que version del bucle de luces se compila en `genericimage3` y `generic3`.
+# Es un contador de compilacion de WE, no un dato de la escena; 62 es donde
+# cambia la convencion y la unica frontera que los shaders del corpus miran.
+SHADERVERSION = 62
+
 # Con que cae la luz entre su origen y su radio: `saturate(1 - d/radio)` elevado
 # a esto. Sale de la generacion anterior de shaders, que atenua el difuso con
 # `lightAttn * lightAttn`. No esta en el formato de escena, asi que es un valor
@@ -331,6 +350,40 @@ def uniforms_de_tinte(col: list[float], alfa: float, brillo: float) -> list[str]
             f"u1f g_Alpha {alfa:.6g}"]
 
 
+def primer_fotograma(mp4: bytes) -> "np.ndarray | None":
+    """El primer fotograma de una textura de video, como RGBA.
+
+    Hay capas cuyo `.tex` no lleva pixeles sino un MP4 entero ---el bandera
+    IS_VIDEO del contenedor--- y `wetex` se niega a interpretarlo como pixeles,
+    con razon: hacerle caso al `format` de la cabecera da ruido en vez de un
+    error. Hasta ahora eso dejaba la capa SIN textura, y una capa de fondo sin
+    textura no se ve: dos de las cuatro escenas negras del corpus son esto.
+
+    Congelar el primer fotograma no es reproducir el video, pero la diferencia
+    entre una imagen quieta y una pantalla negra es toda. En la escena de
+    referencia (3624053922) el fotograma da 71,31 de media y su propio preview
+    esta en 70,68.
+
+    Devuelve None si no hay `ffmpeg` o si no lo entiende; el que llama se queda
+    entonces como estaba, sin textura.
+    """
+    from PIL import Image
+    tmp = Path(tempfile.mkdtemp(prefix="wevideo-"))
+    try:
+        (tmp / "v.mp4").write_bytes(mp4)
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(tmp / "v.mp4"),
+             "-frames:v", "1", str(tmp / "f.png")],
+            capture_output=True, text=True)
+        if r.returncode != 0 or not (tmp / "f.png").is_file():
+            return None
+        return np.array(Image.open(tmp / "f.png").convert("RGBA"))
+    except (OSError, ValueError):
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def textura_por_defecto(meta_uni: dict | None) -> str:
     """Con que rellenar un sampler que el material deja sin enlazar.
 
@@ -395,48 +448,71 @@ def colores_premultiplicados(luces) -> list[list[float]]:
     cols = []
     for i in range(MAX_LUCES):
         if i < len(luces):
-            _, col, radio, _exp = luces[i]
-            cols.append([c * radio * radio for c in col])
+            cols.append([c * luces[i].radio * luces[i].radio
+                         for c in luces[i].color])
         else:
             cols.append([0.0, 0.0, 0.0])
     return [[cols[i][0], cols[i][1], cols[i][2], cols[3][i]] for i in range(3)]
 
 
-def luces_de_escena(scene) -> list[tuple[list[float], list[float], float]]:
-    """Las luces puntuales visibles, en coordenadas del lienzo.
+# Como llama el `scene.json` a cada clase de luz. Conviven dos generaciones:
+# `point` es la vieja ---sin `castshadow` ni `controlpoint`--- y las `l*` son
+# las nuevas, que WE escribe con la estructura entera aunque el tipo no use
+# todos los campos. Por eso una `lpoint` trae `controlpoint` igual que una
+# `ltube`: es el valor por defecto del editor, no un dato de la luz.
+TIPOS_DE_LUZ = {
+    "point": "point", "lpoint": "point",
+    "spot": "spot", "lspot": "spot",
+    "tube": "tube", "ltube": "tube",
+    "directional": "directional", "ldirectional": "directional",
+}
 
-    Devuelve por luz: posicion, color ya multiplicado por su intensidad, radio
-    y exponente de decaimiento. La intensidad se funde con el color porque el
-    shader no la recibe aparte. El radio se queda suelto: uno de los dos
-    caminos lo manda tal cual y el otro lo necesita al cuadrado dentro del
-    color, y de eso ya se ocupa `colores_premultiplicados`.
+# El extremo de un tubo cuando la escena no dice otra cosa. `controlpoint` es
+# el que lo mueve; sin el, un tubo degenera en punto y `PointSegmentDelta` lo
+# trata como tal, que es su propio caso `v == 0`.
+TUBO_POR_DEFECTO = [0.0, 0.0, 0.0]
+
+
+class Luz(NamedTuple):
+    """Una luz de la escena, ya en coordenadas del lienzo."""
+    tipo: str
+    origen: list[float]
+    color: list[float]          # color * intensidad, sin el radio
+    radio: float
+    extremo: list[float]        # el otro extremo del segmento, solo en `tube`
+
+
+def luces_de_escena(scene, por_id: dict | None = None) -> list[Luz]:
+    """Las luces visibles de la escena, en coordenadas del lienzo.
+
+    La intensidad se funde con el color porque ningun shader la recibe aparte.
+    El radio se queda suelto: el camino viejo lo quiere al cuadrado dentro del
+    color ---de eso se ocupa `colores_premultiplicados`--- y el nuevo lo manda
+    en el `.w` del color y multiplica el mismo.
+
+    **El tubo es un segmento y la escena si dice cual.** Estas notas lo daban
+    por imposible ---"la escena solo declara el centro"--- y no es asi: el
+    segundo extremo va en `controlpoint`, relativo al origen y en el marco de
+    la luz. Lo que despista es que WE escribe ese campo tambien en las luces
+    que no lo usan, con su valor por defecto (200, 0, 0), asi que aparece
+    identico en la `lpoint` de la misma escena.
 
     El exponente no sale del `scene.json` ---ninguna de las 9 luces del corpus
     lo declara, y el campo `exponent` del formato es de color, no de luces---
-    pero tampoco es una constante del shader: en el modulo que WE genera de
-    verdad viaja con cada luz, en el `.w` de su origen. Aqui viaja igual, con
-    `EXPONENTE_POR_DEFECTO` mientras no se sepa de donde leerlo, para que el
-    dia que aparezca sea una linea y no un cambio de shader.
-
-    Devuelve la lista VACIA si la escena tiene alguna luz visible que no sea
-    puntual. Las de tipo `ltube` son un SEGMENTO, no un punto: su brillo sale
-    de los dos extremos y la escena solo declara el centro, asi que no hay
-    forma de ponerla. Y encender la iluminacion a medias sale peor que no
-    encenderla: el shader cambia el color por `ambiente * albedo + luz`, o sea
-    que el ambiente OSCURECE la capa contando con que las luces devuelvan lo
-    que quita. Medido en la unica escena del corpus donde pasa (3053927686,
-    una luz de tubo y una puntual fuera de alcance): con la luz a medias cae de
-    39.31 a 11.52 de media, y su propio preview esta en 89.99.
+    y por el camino nuevo no existe: `ComputePBRLight` atenua con `1 / d^2` y
+    punto. Solo lo lleva el camino viejo, en `EXPONENTE_POR_DEFECTO`.
     """
-    fuera = []
+    fuera: list[Luz] = []
     for obj in scene.objects:
         if obj.kind != "light":
             continue
         if not wescene.is_visible(obj.raw.get("visible"), scene.properties):
             continue                      # apagada por el autor: no cuenta
-        if str(obj.raw.get("light") or "") not in ("point", "lpoint"):
-            return []
-        org = (_floats(obj.raw.get("origin")) + [0.0, 0.0, 0.0])[:3]
+        tipo = TIPOS_DE_LUZ.get(str(obj.raw.get("light") or ""))
+        if tipo is None:
+            continue                      # clase de luz que no conocemos
+        # Una luz tambien puede colgar de un grupo, y su `origin` es relativo.
+        org, esc, ang = transform_absoluto(obj, por_id)
         col = (_floats(obj.raw.get("color")) + [1.0, 1.0, 1.0])[:3]
         # `intensity` y `origin` pueden venir animados o guiados por script ---
         # la luz que sigue al cursor de una escena del corpus. `_floats` se
@@ -445,10 +521,29 @@ def luces_de_escena(scene) -> list[tuple[list[float], list[float], float]]:
         radio = (_floats(obj.raw.get("radius")) + [0.0])[0]
         if radio <= 0.0:
             continue                      # sin alcance no alumbra nada
-        fuera.append(([org[0], org[1], org[2]],
-                      [col[0] * ints, col[1] * ints, col[2] * ints], radio,
-                      EXPONENTE_POR_DEFECTO))
+        # El segundo extremo del segmento, en el marco de la luz: se gira y se
+        # escala como cualquier hijo de un grupo.
+        cp = (_floats(obj.raw.get("controlpoint")) + TUBO_POR_DEFECTO)[:3]
+        c, sn = math.cos(ang[2]), math.sin(ang[2])
+        lx, ly = cp[0] * esc[0], cp[1] * esc[1]
+        extremo = [org[0] + lx * c - ly * sn, org[1] + lx * sn + ly * c,
+                   org[2] + cp[2] * esc[2]]
+        fuera.append(Luz(tipo, [org[0], org[1], org[2]],
+                         [col[0] * ints, col[1] * ints, col[2] * ints], radio,
+                         extremo))
     return fuera[:MAX_LUCES]
+
+
+def por_tipo(luces: list[Luz]) -> dict[str, list[Luz]]:
+    """Las luces agrupadas por clase, que es como las pide el shader nuevo.
+
+    WE dimensiona un array por clase ---`g_LPoint_Origin[LIGHTS_POINT]`--- y
+    recorre cada uno en su bucle. Los combos son esos tamanos.
+    """
+    fuera: dict[str, list[Luz]] = {}
+    for luz in luces:
+        fuera.setdefault(luz.tipo, []).append(luz)
+    return fuera
 
 
 def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
@@ -464,6 +559,15 @@ COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_(\d+)_[ab]$")
 # Nombres con los que un shader pide lo que ya hay dibujado detras. No son
 # buffers propios: el ejecutor los resuelve al acumulado de la escena.
 BUFFERS_DEL_MOTOR = ("_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer")
+
+
+def niveles_mipmap(w: int, h: int) -> int:
+    """Cuantos niveles tiene la piramide de un buffer de w x h.
+
+    Los que genera `glGenerateMipmap`: se va dividiendo por dos hasta 1x1, asi
+    que son `floor(log2(max(w, h))) + 1`. En un lienzo 4K son 12.
+    """
+    return max(1, max(w, h)).bit_length()
 
 
 def _buffers_de_composicion(scene) -> dict[str, list[str]]:
@@ -487,6 +591,33 @@ def _buffers_de_composicion(scene) -> dict[str, list[str]]:
                     if m and m.group(1) != mio and t not in fuera.get(m.group(1), ()):
                         fuera.setdefault(m.group(1), []).append(t)
     return fuera
+
+
+def resolucion_de_dibujo(canvas: tuple[int, int],
+                         pantalla: tuple[int, int] | None) -> tuple[int, int]:
+    """A cuantos pixeles dibujar una escena hecha para `canvas`.
+
+    La escena se dibuja al lienzo que eligio su autor y se encoge al final para
+    caber en la pantalla: 8,3 Mpx pintados para ensenar 2,3 en un panel de
+    1920x1200, que son dos de cada tres puntos a la basura. En esta biblioteca
+    le pasa al 72% de las escenas, con una razon mediana de 3,6x y cuatro
+    lienzos de 7680x4320 que pintan 33 Mpx.
+
+    El factor sale del lado que MAS pixeles necesita ---el `max`, que es lo que
+    pide el modo "cubrir"--- para que **el mismo numero valga para los tres
+    modos de encaje**. Si se usara el del modo concreto, la resolucion quedaria
+    atada al encaje, que hoy se cambia en caliente sin regenerar el plan.
+
+    Y nunca por encima de 1: pintar mas puntos de los que dibujo el autor no
+    anade detalle, solo gasto.
+
+    Medido con el mismo plan en la iGPU: 44,5 ms por fotograma a 3840x2160
+    contra 16,2 a 1920x1200, o sea 2,8x mas rapido.
+    """
+    if not pantalla or canvas[0] <= 0 or canvas[1] <= 0:
+        return canvas
+    k = min(1.0, max(pantalla[0] / canvas[0], pantalla[1] / canvas[1]))
+    return (max(1, int(round(canvas[0] * k))), max(1, int(round(canvas[1] * k))))
 
 
 def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
@@ -689,7 +820,8 @@ class MeshAnim(NamedTuple):
 
 
 class Renderer:
-    def __init__(self, wallpaper: Path, exec_path: Path, time: float = 0.0):
+    def __init__(self, wallpaper: Path, exec_path: Path, time: float = 0.0,
+                 resolucion: tuple[int, int] | None = None):
         self.res = AssetResolver.for_wallpaper(wallpaper, wepaths.we_assets())
         self.exec_path = exec_path
         self.time = time
@@ -702,14 +834,31 @@ class Renderer:
         self.meshes: dict[int, int] = {}
         # Margen de render por objeto; ver _emit_mesh.
         self.margins: dict[int, float] = {}
+        # DOS cosas distintas que hasta ahora eran el mismo numero:
+        #
+        #   `canvas`  el sistema de medida de la ESCENA. Donde esta cada capa,
+        #             cuanto mide una malla, a que distancia esta una luz. Es
+        #             del autor y no se toca.
+        #   `pixeles` a cuantos PIXELES se dibuja. De aqui salen los buffers
+        #             ---el ejecutor los crea todos al tamano de la linea
+        #             `canvas` del plan--- y los uniforms que le dicen al
+        #             shader cuanto mide un pixel.
+        #
+        # Confundirlas es lo que impedia bajar la resolucion: dividir el lienzo
+        # por dos deja una malla de 600 ocupando el doble de pantalla, porque
+        # el mismo numero la situa.
         self.canvas: tuple[int, int] = (1920, 1080)
+        self.pixeles: tuple[int, int] = (1920, 1080)
+        self.pantalla = resolucion
         # Luces de la escena y su ambiente; los rellena `_build` al leerla.
-        self.luces: list[tuple[list[float], list[float], float]] = []
+        self.luces: list[Luz] = []
+        self.por_clase: dict[str, list[Luz]] = {}
         self.ambiente: list[float] = [1.0, 1.0, 1.0]
         self.cielo: list[float] = [1.0, 1.0, 1.0]
         self.mesh_files: list[Path] = []
         self.notes: list[str] = []
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
+                      "video_congelado": 0,
                       "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0,
                       "psys": 0, "psys_parcial": 0, "psys_estela": 0,
                       "psys_cinta": 0, "psys_sin_estela": 0}
@@ -744,7 +893,14 @@ class Renderer:
         try:
             tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
             mip = tex.images[0][0]
-            rgba = mip.to_rgba(tex.format)
+            if getattr(mip, "video", False):
+                rgba = primer_fotograma(mip.raw)
+                if rgba is None:
+                    self.stats["sin_textura"] += 1
+                    return None
+                self.stats["video_congelado"] += 1
+            else:
+                rgba = mip.to_rgba(tex.format)
         except Exception:
             self.stats["sin_textura"] += 1
             return None
@@ -1108,11 +1264,6 @@ class Renderer:
         meta = metadatos(fuente_f)
         meta.update(metadatos(fuente_v))
 
-        # Un combo declarado en los metadatos de un sampler se activa cuando
-        # ese slot esta realmente enlazado en el pase. Sin esto la mascara de
-        # un efecto se ignora y el efecto se aplica a la imagen entera: el
-        # `pulse` de la escena de referencia hacia oscilar el brillo del
-        # wallpaper completo casi al doble en vez de solo la zona enmascarada.
         combos = dict(p.combos)
         # La iluminacion se enciende solo si hay con que iluminar. Un pase con
         # el combo activo y las luces a cero no queda plano: queda NEGRO, porque
@@ -1126,11 +1277,38 @@ class Renderer:
         # `obj` entra en la condicion porque de el salen las matrices de mundo:
         # un pase suelto, sin objeto detras, no puede alimentar el combo y
         # encenderlo lo dejaria a oscuras.
+        #
+        # Y solo se enciende si ESTE shader sabe expresar todas las clases de
+        # luz que trae la escena. Hay dos interfaces: la vieja ---un solo array
+        # de posiciones--- entiende puntuales y nada mas; la nueva declara un
+        # array por clase y es la unica que sabe de tubos y focos. Encender la
+        # iluminacion dejandose una luz fuera sale PEOR que no encenderla,
+        # porque el ambiente oscurece la capa contando con que las luces
+        # devuelvan lo que quita.
+        clases = set(self.por_clase)
+        moderno = "LIGHTS_POINT" in fuente_f
+        soportadas = set(CLASES_DE_LUZ) if moderno else {"point"}
         combos["LIGHTING"] = 1 if (self.luces and obj is not None
-                                   and combos.get("LIGHTING")) else 0
-        # Los reflejos son otro subsistema: piden el fotograma ya compuesto y
-        # mipmapeado en `_rt_MipMappedFrameBuffer`. Siguen apagados.
-        combos["REFLECTION"] = 0
+                                   and combos.get("LIGHTING")
+                                   and clases <= soportadas) else 0
+        if combos["LIGHTING"] and moderno:
+            # Los tamanos de cada array, que es lo que WE genera por escena.
+            for clase, combo in CLASES_DE_LUZ.items():
+                combos[combo] = len(self.por_clase.get(clase, []))
+            for combo in CLASES_SIN_PONER:
+                combos[combo] = 0
+            # Cual de las dos versiones del bucle se compila. De la 62 en
+            # adelante el shader recibe color y radio por separado y hace el
+            # `color * r^2` el mismo; antes lo esperaba ya premultiplicado.
+            # Emitimos la moderna, que es la que casa con mandar el radio en el
+            # `.w` del color.
+            combos.setdefault("SHADERVERSION", SHADERVERSION)
+        # El reflejo lee el fotograma ya compuesto y mipmapeado desde
+        # `_rt_MipMappedFrameBuffer`, que el ejecutor resuelve al buffer de
+        # escena. Como la iluminacion, necesita el objeto detras: de el salen
+        # las matrices de mundo con las que el vertice arma la base tangente.
+        combos["REFLECTION"] = 1 if (obj is not None
+                                     and combos.get("REFLECTION")) else 0
 
         # Un sampler con `formatcombo` no se conforma con la textura: pide
         # ademas un `TEX<n>FORMAT` con SU empaquetado, y lo usa como valor
@@ -1202,9 +1380,19 @@ class Renderer:
                 if bound:
                     combos[combo] = 1
 
+        # Lo que las dos etapas tienen que acordar antes de traducirlas por
+        # separado: los combos que una declara y la otra consulta, y el tipo de
+        # los varying que no coinciden. Traducidas por su cuenta salen dos
+        # mitades que compilan y no enlazan, y el pase se pierde sin ruido.
+        combos_v, combos_f = weshader.combos_de_pase(
+            fuente_v, fuente_f, sresolver, combos)
+        varyings = weshader.varyings_de_pase(
+            fuente_v, fuente_f, sresolver, combos_v, combos_f)
         try:
-            vert = weshader.translate(fuente_v, "vert", sresolver, combos=combos)
-            frag = weshader.translate(fuente_f, "frag", sresolver, combos=combos)
+            vert = weshader.translate(fuente_v, "vert", sresolver,
+                                      combos=combos_v, varyings=varyings)
+            frag = weshader.translate(fuente_f, "frag", sresolver,
+                                      combos=combos_f, varyings=varyings)
         except Exception:
             self.stats["sin_shader"] += 1
             return
@@ -1274,10 +1462,11 @@ class Renderer:
                     # los slots 1 y 2 derivan `v_TexCoord.zw` de ella, y a cero
                     # muestrean fuera del buffer: el efecto lee transparente y
                     # se anula.
-                    rw, rh = rt_size(name, canvas)
+                    rw, rh = rt_size(name, self.pixeles)
                     self.body.append(
                         f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
-            elif particula and str(meta.get(uni, {}).get("default", "")) in BUFFERS_DEL_MOTOR:
+            elif str(meta.get(uni, {}).get("default", "")) in (
+                    BUFFERS_DEL_MOTOR if particula else ("_rt_MipMappedFrameBuffer",)):
                 # Sampler oculto que el material no declara y cuyo valor por
                 # defecto es el fotograma ya dibujado. Es como `genericparticle`
                 # lo recibe para refractarlo: 89 pases del corpus activan
@@ -1290,10 +1479,27 @@ class Renderer:
                 # escena sin crear nada. Otros defaults ocultos --- el atlas de
                 # sombras, por ejemplo --- pertenecen a subsistemas que no
                 # existen, y enlazarlos solo crearia buffers vacios.
+                #
+                # Fuera de las particulas solo se enlaza el MIPMAPEADO, que es
+                # el que pide el reflejo. Enlazar tambien `_rt_FullFrameBuffer`
+                # en las capas ---el `g_Texture4` de `BLENDMODE`--- es un
+                # cambio aparte y NO sale bien tal cual: medido sobre las 129,
+                # mueve 4 escenas y las cuatro se alejan de su preview,
+                # `2464842912` de 0.95 a 0.82. Tiene sentido: ese camino lee lo
+                # que hay compuesto DETRAS de la capa, y nuestro buffer de
+                # escena se vuelca por objeto, asi que en mitad de un objeto no
+                # contiene lo mismo que el de WE.
                 b = str(meta[uni]["default"])
                 src = f"rt:{b}"
-                rw, rh = rt_size(b, canvas)
+                rw, rh = rt_size(b, self.pixeles)
                 self.body.append(f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
+                if b == "_rt_MipMappedFrameBuffer":
+                    # El nivel mas alto de la piramide. El shader lo usa como
+                    # `texSample2DLod(..., roughness * g_TextureNMipMapInfo)`:
+                    # una superficie lisa lee el nivel 0 y una rugosa el ultimo,
+                    # que es el reflejo desenfocado.
+                    self.body.append(f"u1f g_Texture{slot}MipMapInfo "
+                                     f"{niveles_mipmap(rw, rh) - 1}")
             elif slot in bind_by_index or (slot == 0 and p.stage != "base"):
                 b = bind_by_index.get(slot, "previous")
                 src = "prev" if b == "previous" else f"rt:{b}"
@@ -1302,9 +1508,14 @@ class Renderer:
                 # y muestrear con la resolucion equivocada descuadra el kernel.
                 # `previous` es el buffer del objeto, que representa la capa.
                 if b == "previous" and obj is not None:
-                    w, h = layer_size(obj, canvas)
+                    # El rectangulo de la capa esta en unidades de ESCENA y el
+                    # buffer en pixeles de dibujo: hay que pasarlo a la misma
+                    # escala o el kernel del desenfoque se descuadra.
+                    lw, lh = layer_size(obj, canvas)
+                    k = self.pixeles[0] / max(1, self.canvas[0])
+                    w, h = max(1, round(lw * k)), max(1, round(lh * k))
                 else:
-                    w, h = rt_size(b, canvas)
+                    w, h = rt_size(b, self.pixeles)
                 self.body.append(
                     f"u4f g_Texture{slot}Resolution {w} {h} {w} {h}")
             if src is None:
@@ -1380,6 +1591,10 @@ class Renderer:
         # Un pase iluminado necesita saber DONDE esta cada fragmento en el
         # lienzo; el resto no gasta esos uniforms ni cambia de comportamiento.
         luz = bool(combos.get("LIGHTING"))
+        # El reflejo toma el mismo camino en el vertice ---la base tangente y
+        # la posicion en mundo salen del `#if LIGHTING || REFLECTION`--- asi
+        # que pide los mismos uniforms aunque no haya una sola luz.
+        reflejo = bool(combos.get("REFLECTION"))
         if particula:
             # `ComputeParticleTangents` orienta el sprite con estos tres ejes.
             # La escena es plana y mira al lienzo de frente, asi que son los
@@ -1450,7 +1665,7 @@ class Renderer:
                                  + " ".join(f"{v:.6g}" for v in estela) + " 0")
             else:
                 self.body.append("u4f g_RenderVar0 1 1 1 1")
-        elif luz:
+        elif luz or reflejo:
             self.body.append("u3f g_EyePosition "
                              f"{canvas[0] / 2:.6g} {canvas[1] / 2:.6g} {OJO_Z:.6g}")
             _malla = (p.stage == "base" and mesh_id is not None)
@@ -1470,29 +1685,59 @@ class Renderer:
                              + " ".join(f"{x:.6g}" for x in self.ambiente))
             self.body.append("u3f g_LightSkylightColor "
                              + " ".join(f"{x:.6g}" for x in self.cielo))
+            puntuales = self.por_clase.get("point", [])
             for i in range(MAX_LUCES):
-                if i < len(self.luces):
-                    org, col, radio, expo = self.luces[i]
+                if i < len(puntuales):
+                    lz = puntuales[i]
+                    org, col, radio = lz.origen, lz.color, lz.radio
                 else:
                     # Un hueco vacio no se puede dejar sin escribir: GL daria
                     # cero tambien en el radio, y el decaimiento divide por el.
-                    org, col, radio, expo = ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0],
-                                             1.0, EXPONENTE_POR_DEFECTO)
+                    org, col, radio = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1.0
                 self.body.append(f"u3f g_LightsPosition[{i}] "
                                  + " ".join(f"{x:.6g}" for x in org))
                 self.body.append(f"u4f g_LightsColorRadius[{i}] "
                                  + " ".join(f"{x:.6g}" for x in col)
                                  + f" {radio:.6g}")
-                self.body.append(f"u1f g_LightsExponent[{i}] {expo:.6g}")
+                self.body.append(f"u1f g_LightsExponent[{i}] "
+                                 f"{EXPONENTE_POR_DEFECTO:.6g}")
             # La otra forma de mandar los mismos colores. No es alternativa a
             # la de arriba: cada generacion de shaders lee una, y un pase puede
             # necesitar las dos ---el vertice saca las direcciones de
             # `g_LightsPosition` y el fragmento el color de aqui.
-            for i, v in enumerate(colores_premultiplicados(self.luces)):
+            for i, v in enumerate(colores_premultiplicados(puntuales)):
                 self.body.append(f"u4f g_LightsColorPremultiplied[{i}] "
                                  + " ".join(f"{x:.6g}" for x in v))
+            # Y la tercera, la de los shaders que declaran un array por CLASE
+            # de luz. Aqui el radio viaja en el `.w` del color y el shader lo
+            # eleva al cuadrado el mismo, asi que el color va sin premultiplicar
+            # ---la misma convencion, repartida distinto---. Es el unico camino
+            # que sabe de tubos y de focos.
+            for clase, prefijo in (("point", "g_LPoint"), ("tube", "g_LTube")):
+                for i, lz in enumerate(self.por_clase.get(clase, [])):
+                    self.body.append(f"u4f {prefijo}_Color[{i}] "
+                                     + " ".join(f"{x:.6g}" for x in lz.color)
+                                     + f" {lz.radio:.6g}")
+                    if clase == "tube":
+                        # Los dos extremos del segmento. `PointSegmentDelta`
+                        # busca el punto mas cercano entre ellos, asi que un
+                        # tubo cuyos extremos coincidan se comporta como una
+                        # puntual: es su propio caso `v == 0`.
+                        self.body.append(f"u4f {prefijo}_OriginA[{i}] "
+                                         + " ".join(f"{x:.6g}" for x in lz.origen)
+                                         + " 0")
+                        self.body.append(f"u4f {prefijo}_OriginB[{i}] "
+                                         + " ".join(f"{x:.6g}" for x in lz.extremo)
+                                         + " 0")
+                    else:
+                        self.body.append(f"u4f {prefijo}_Origin[{i}] "
+                                         + " ".join(f"{x:.6g}" for x in lz.origen)
+                                         + " 0")
         self.body.append("u1f g_Time @TIME@")
-        self.body.append(f"u3f g_Screen {canvas[0]} {canvas[1]} "
+        # La proporcion sale del lienzo de la ESCENA, no de los pixeles de
+        # dibujo: el redondeo a entero de estos ultimos la movería, y hay
+        # shaders que la usan para corregir la deformacion.
+        self.body.append(f"u3f g_Screen {self.pixeles[0]} {self.pixeles[1]} "
                          f"{canvas[0] / max(1, canvas[1])}")
         # La proyeccion de la textura del efecto y la posicion del parallax.
         # No es adorno: `depthparallax` saca de la matriz inversa los dos ejes
@@ -1552,7 +1797,7 @@ class Renderer:
         # -- el del escritorio -- lo propagaba, asi que 3146507587 se veia bien
         # en el render offline y se desvanecia a negro en vivo. La misma escena,
         # renderizada offline forzando Mesa, se desvanecia igual.
-        tw, th = rt_size(p.target, canvas) if p.target else canvas
+        tw, th = rt_size(p.target, self.pixeles) if p.target else self.pixeles
         self.body.append(f"u2f g_TexelSize {1.0 / max(1, tw):.9g} "
                          f"{1.0 / max(1, th):.9g}")
         self.body.append("u4f g_Texture0Rotation 1 0 0 1")
@@ -1619,7 +1864,7 @@ class Renderer:
         """
         self._build(None)
         out_dir.mkdir(parents=True, exist_ok=True)
-        w, h = self.stats["canvas"]
+        w, h = self.stats["pixeles"]
 
         plan = list(self.lines)
         for i in range(warmup):
@@ -1651,7 +1896,12 @@ class Renderer:
                    int(_floats(proj.get("height", 1080))[0]))
                   if isinstance(proj, dict) else (1920, 1080))
         self.canvas = canvas
-        self.luces = luces_de_escena(scene)
+        self.pixeles = resolucion_de_dibujo(canvas, self.pantalla)
+        # El indice por id se arma aqui y no mas abajo porque las luces
+        # tambien pueden colgar de un grupo.
+        self.por_id = {str(o.raw.get("id")): o for o in scene.objects}
+        self.luces = luces_de_escena(scene, self.por_id)
+        self.por_clase = por_tipo(self.luces)
         # `ambientcolor` es la luz que llega a todo por igual y `skylightcolor`
         # la que viene de abajo; el vertice mezcla las dos segun a donde mire la
         # normal. Sin ninguna de las dos declaradas se usa blanco, que deja la
@@ -1659,17 +1909,16 @@ class Renderer:
         amb = (_floats(general.get("ambientcolor")) + [1.0, 1.0, 1.0])[:3]
         self.ambiente = amb
         self.cielo = (_floats(general.get("skylightcolor")) + amb)[:3]
-        self.lines.append(f"canvas {canvas[0]} {canvas[1]}")
+        self.lines.append(f"canvas {self.pixeles[0]} {self.pixeles[1]}")
         # Instante al que deformar las mallas. Solo lo usa glexec, que no
         # tiene reloj propio: el motor en vivo pasa su tiempo real.
         self.lines.append(f"meshtime {self.time:.6f}")
         we = wepaths.we_assets()
         sresolver = weshader.Resolver(
             overlay=self.res.entries, roots=[we, we / "shaders"])
-        por_id = {str(o.raw.get("id")): o for o in scene.objects}
         # Lo necesita `emit_pass` para colocar las particulas, que se resuelven
         # pase a pase y no en este bucle.
-        self.por_id = por_id
+        por_id = self.por_id
         self.buffers_de = _buffers_de_composicion(scene)
         # Las capas que solo llenan un buffer se dibujan ANTES que nadie: asi
         # el buffer esta listo cuando la composicion lo muestrea, sin depender
@@ -1748,7 +1997,11 @@ class Renderer:
             for nombre in buffers:
                 self.body.append(f"copy prev {nombre}")
         self.stats["canvas"] = canvas
-        return canvas
+        self.stats["pixeles"] = self.pixeles
+        # Se devuelve lo que MIDE el volcado, que son los pixeles de dibujo.
+        # El lienzo de la escena queda en las estadisticas: son dos cosas
+        # distintas desde que se puede dibujar mas pequeno.
+        return self.pixeles
 
     def render(self, out_png: Path, only_base: bool = False,
                max_passes: int | None = None, frames: int = 1) -> dict:
@@ -1802,7 +2055,8 @@ class Renderer:
 
 
 def emit_plan(wallpaper: Path, out_dir: Path,
-              ruta_final: Path | None = None) -> dict:
+              ruta_final: Path | None = None,
+              resolucion: tuple[int, int] | None = None) -> dict:
     """Escribe el plan como plantilla, con @TIME@ sin sustituir.
 
     Es la interfaz con el motor en C++: Python resuelve el grafo, traduce los
@@ -1819,7 +2073,7 @@ def emit_plan(wallpaper: Path, out_dir: Path,
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     destino = ruta_final if ruta_final is not None else out_dir
-    r = Renderer(wallpaper, Path("/nonexistent"), 0.0)
+    r = Renderer(wallpaper, Path("/nonexistent"), 0.0, resolucion=resolucion)
     canvas = r._build(None)
 
     remap: dict[str, str] = {}
@@ -1877,8 +2131,14 @@ def main() -> int:
     t = 0.0
     if "--time" in sys.argv:
         t = float(sys.argv[sys.argv.index("--time") + 1])
+    # `--pantalla 1920x1200` dibuja a la resolucion que se vaya a ver en vez de
+    # al lienzo del autor. Sin ella no cambia nada.
+    pantalla = None
+    if "--pantalla" in sys.argv:
+        w, _, h = sys.argv[sys.argv.index("--pantalla") + 1].partition("x")
+        pantalla = (int(w), int(h))
 
-    r = Renderer(wallpaper, exec_path, t)
+    r = Renderer(wallpaper, exec_path, t, resolucion=pantalla)
     mp = None
     if "--passes" in sys.argv:
         mp = int(sys.argv[sys.argv.index("--passes") + 1])

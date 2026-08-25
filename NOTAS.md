@@ -867,7 +867,10 @@ queda no son campos ignorados sino campos cuyo subsistema no existe todavía.
 - ~~Partículas~~ **hecho**: 823 sistemas en 106 escenas, de los que 821 se
   simulan. Ver la sección siguiente.
 - **Texto**: 159 objetos en 28 escenas; leemos el campo, no dibujamos glifos.
-- **Shaders**: 1 variante de 578 no compila, la truncación de `maskBokeh`.
+- ~~1 variante de 578 no compila~~ **hecho**: era truncación en los argumentos
+  de la llamada, no solo en las asignaciones. Compilan las 594 de la
+  biblioteca nueva. Y **enlazan**, que es otra cosa y costó 82 pases más
+  —ver [Compilar no es enlazar](#compilar-no-es-enlazar-82-pases-que-se-perdían-sin-decir-nada)—.
 
 ## Sistemas de partículas
 
@@ -1932,11 +1935,12 @@ Tres cosas que no son obvias:
   desplazamiento vertical no mueve nada, y por eso los deslizadores se apagan.
   Con zoom hay holgura en los dos ejes. La prueba de encaje comprueba las dos
   cosas, incluida la de que **no** se mueva cuando no debe.
-- **Esto no baja lo que cuesta dibujar.** Se siguen renderizando los 8,3 Mpx del
-  lienzo 4K para enseñar 2,3; la resolución es un parámetro del *plan*, porque
-  `g_TexelSize`, `g_Screen` y `g_TextureNResolution` se hornean en Python desde
-  el lienzo. Escalar solo en el ejecutor desincronizaría los radios de
-  desenfoque de su buffer.
+- **Esto no bajaba lo que cuesta dibujar**, y esa era la fase que faltaba: se
+  renderizaban los 8,3 Mpx del lienzo 4K para enseñar 2,3. Ya no —ver [Dibujar
+  a la resolución que se ve](#dibujar-a-la-resolución-que-se-ve)—, pero el
+  motivo por el que no bastaba con escalar en el ejecutor sigue en pie: la
+  resolución es un parámetro del *plan*, porque `g_TexelSize`, `g_Screen` y los
+  tamaños de buffer se hornean en Python.
 
 El código nuevo no se ve hasta que plasmashell reinicia: `install-qml` instala
 con un rename, así que el proceso sigue con el inodo viejo mapeado —que es
@@ -1980,7 +1984,7 @@ declarado `in int` como parámetro de función. Para arreglarla harían falta do
 extensiones del parser —ámbito local de función, y una tabla de firmas de los
 built-ins— y es una variante en el driver que no es el del escritorio.
 
-## El `exponent` de los sorteos: leído, y con la curva sin confirmar
+## El `exponent` de los sorteos: leído, y la curva elegida mirando la vela
 
 Los inicializadores aleatorios de una partícula declaran `min`, `max` y a veces
 `exponent`. Nosotros leíamos los dos primeros y tirábamos el tercero: **96 usos
@@ -2029,6 +2033,15 @@ marca como regresión. Es el sesgo funcionando: su único sistema tiene
 `sizerandom` de 50 a 270 con exponente 2, y llevar el tamaño medio de 160 a 123
 píxeles quita en torno al 40 % de área. Esa escena ya estaba en la lista de las
 cuatro negras —al 6 % de su preview— así que no sirve para juzgar la dirección.
+Y dejó de contar como regresión sola: al arreglar su textura de vídeo pasó de
+2,74 a 72,59, y sobre esa base el sesgo es ruido.
+
+**Decidido:** se buscó la escena donde la diferencia se ve mejor —`3362719513`,
+la de la vela, con `sizerandom` de 50 a 450 y exponente 5— probando las cuatro
+candidatas del corpus con las dos curvas y quedándose con la que más píxeles
+mueve (5,56 %, frente a menos del 1 % en las demás). Las formas de neón
+alrededor de la vela salen muchas y pequeñas con `pow(t, e)`, y pocas y grandes
+con la contraria. Revisado y aprobado el 2026-08-25: se queda `pow(t, e)`.
 
 ## Los uniforms que el motor rellena y nosotros no
 
@@ -2349,10 +2362,14 @@ es: **si una escena trae una luz que no sabemos poner, se dibuja plana entera**.
 El ambiente OSCURECE la capa contando con que las luces devuelvan lo que quita,
 así que iluminar a medias sale peor que no iluminar.
 
-Medido en la única escena del corpus donde pasa —3053927686, con una luz de
-tubo (un segmento, del que la escena solo declara el centro) y una puntual fuera
-de alcance—: encenderla a medias la baja de 39,31 a 11,52 de media, y su propio
-preview está en 89,99.
+Medido en la única escena del corpus donde pasaba —3053927686, con una luz de
+tubo y una puntual lejos—: encenderla a medias la bajaba de 39,31 a 11,52 de
+media, con su preview en 89,99.
+
+La regla sigue, pero ya no le toca a esa escena: el tubo resultó estar en el
+`scene.json` y ahora se pone entero —ver [El tubo sí venía en la
+escena](#el-tubo-sí-venía-en-la-escena-y-el-reflejo-solo-pedía-una-pirámide)—.
+A quien le toca ahora es a los focos y las direccionales.
 
 ### El módulo de verdad está en el binario, y no es un fichero
 
@@ -2454,8 +2471,135 @@ En el corpus entero: 125/125 siguen renderizando, ninguna escena nueva en
 negro, y las 578 variantes de shader compilan igual que antes (577 en Mesa, 576
 en NVIDIA).
 
-Sigue sin haber reflejos: `REFLECTION` pide el fotograma ya compuesto y
-mipmapeado en `_rt_MipMappedFrameBuffer`, que es otro subsistema.
+## El tubo sí venía en la escena, y el reflejo solo pedía una pirámide
+
+Las dos cosas que quedaban del sistema de iluminación resultaron ser mucho más
+pequeñas de lo que decían estas notas, y por el mismo motivo: se daba por
+ausente un dato que sí estaba.
+
+### La luz de tubo: `controlpoint` es el otro extremo
+
+Estas notas decían que un `ltube` es «un segmento del que la escena solo
+declara el centro, así que no hay forma de ponerla», y por eso una escena con
+un tubo se dibujaba **plana entera**. No es así. El segundo extremo va en
+`controlpoint`, relativo al origen y en el marco de la luz.
+
+Lo que despista es que WE escribe la estructura completa en toda luz de la
+generación nueva, use o no cada campo: la `lpoint` de esa misma escena trae
+`controlpoint: "200 0 0"` idéntico, que es el valor por defecto del editor. Con
+los dos juntos parece un campo decorativo. No lo es en la que sí es un tubo.
+
+Y el shader nunca necesitó nada nuestro: `genericimage3` ---el único que usan
+los dos pases iluminados de `3053927686`--- ya trae el bucle escrito:
+
+```glsl
+#if LIGHTS_TUBE
+	vec3 lightDelta = PointSegmentDelta(worldPos, g_LTube_OriginA[l].xyz,
+	                                    g_LTube_OriginB[l].xyz);
+	light += ComputePBRLight(normal, lightDelta, ..., g_LTube_Color[l].rgb
+	                         * g_LTube_Color[l].w * g_LTube_Color[l].w, ...);
+#endif
+```
+
+Lo que faltaba eran los **combos que dimensionan sus arrays** ---`LIGHTS_POINT`,
+`LIGHTS_TUBE`, uno por clase de luz--- y los uniforms correspondientes. Es
+exactamente lo que hace ese generador que WE lleva en el binario: contar las
+luces de la escena por clase y escribir el tamaño en el `#if`. Sin los combos,
+las macros indefinidas valen 0 y **no se compila un solo bucle de luz**.
+
+### La tercera convención para el mismo color
+
+Ya había dos formas de mandar las luces; esta es la tercera, y no es una
+alternativa a las otras: es la que leen los shaders con un array por clase.
+
+| uniform | atenuación | qué lleva el color |
+|---|---|---|
+| `g_LightsColorRadius[4]` | `saturate(1 - d/r)²` | color × intensidad |
+| `g_LightsColorPremultiplied[3]` | `1 / d²` | color × intensidad × **radio²** |
+| `g_LPoint_Color[n]`, `g_LTube_Color[n]` | `1 / d²` | color × intensidad, y el **radio en el `.w`** |
+
+La tercera es la segunda repartida distinto: el shader hace el `× radio²` él
+mismo con ese `.w`. Cuál de las dos formas compila lo decide `SHADERVERSION`,
+que es un contador de compilación de WE y no un dato de la escena; de la 62 en
+adelante es la de arriba, y es la que emitimos porque es la que casa con
+mandar el radio aparte.
+
+### Los focos se quedan fuera a propósito
+
+`genericimage3` declara también `LIGHTS_SPOT` y `LIGHTS_DIRECTIONAL`, y sería
+una tentación rellenarlos. No se hace: su orientación sale de `angles` y **no
+hay ni un foco ni una direccional en esta biblioteca** con la que comprobar el
+mapeo. Escribirlos a ciegas cambiaría «la escena se dibuja plana» ---que se ve
+y es honesto--- por «la escena se ilumina mal», que no se ve. La regla de o
+todas las luces o ninguna sigue en pie para ellos.
+
+### Lo que se ve, y lo que no
+
+`3053927686` pasa de 32,62 a 31,88 de media. Es decir: **casi nada**, y hacia
+abajo. Tiene explicación y conviene dejarla escrita para no volver a mirar aquí:
+el ambiente de esa escena es 0,3, así que encender la iluminación quita el 70 %
+del albedo contando con que las luces lo devuelvan, y las dos luces están a
+1748 y 2000 px del plano ---con radios de 1000 y 963--- así que devuelven
+aproximadamente eso mismo. El tubo, además, mide 186 px de largo a 1748 px de
+distancia: `PointSegmentDelta` sobre un segmento así da casi lo mismo que una
+puntual.
+
+Y esa escena sigue al 0,35 de su preview por una razón que **no es la
+iluminación**: sale en escala de grises. El preview es un atardecer azul y
+rosa; lo nuestro es el mismo dibujo sin color. Eso es otro cabo, y el que de
+verdad tiene esa escena.
+
+## Reflejos: no era un subsistema, era un filtro
+
+`REFLECTION` estaba forzado a cero con la nota de que «pide el fotograma ya
+compuesto y mipmapeado en `_rt_MipMappedFrameBuffer`, que es otro subsistema».
+El buffer ya existía ---el ejecutor resuelve ese nombre al acumulado de la
+escena desde hace tiempo---, así que lo que faltaba era la pirámide y tres
+cosas pequeñas:
+
+- **Enlazar el sampler.** `g_Texture3` es oculto: el material no lo declara y
+  su default lo nombra. Esa rama ya existía pero solo corría para partículas.
+- **`g_Texture3MipMapInfo`**, el nivel más alto de la pirámide. El shader
+  muestrea con `texSample2DLod(g_Texture3, uv, roughness * g_Texture3MipMapInfo)`:
+  una superficie lisa lee el nivel 0 y una rugosa el último. En un lienzo 4K
+  son 12 niveles, o sea 11.
+- **Los uniforms del vértice.** El reflejo entra por el mismo
+  `#if LIGHTING || REFLECTION` que la iluminación, así que quiere
+  `g_ModelMatrix`, `g_ViewProjectionMatrix`, `g_NormalModelMatrix` y
+  `g_EyePosition` aunque la escena no tenga una sola luz.
+
+### El filtro no puede vivir en la textura
+
+Aquí estuvo el fallo real, y no lo cazó la escena de reflejos sino el corpus.
+`_rt_MipMappedFrameBuffer` y `_rt_FullFrameBuffer` son **el mismo buffer**, así
+que dejarle a esa textura `GL_LINEAR_MIPMAP_LINEAR` se lo cambia también a
+quien la lee por el otro nombre. Medido: **4 escenas que no tienen reflejos**
+se movían hasta 10 puntos de luminancia y las cuatro se alejaban de su preview
+---`2464842912` de 0,95 a 0,82--- porque algún pase que minifica el fondo
+pasaba a leer un nivel borroso.
+
+Se arregla con un *sampler object*, que ata el filtro a la unidad de textura y
+deja la textura como estaba. La pirámide se regenera en cada lectura, porque
+entre pase y pase se sigue dibujando sobre la escena.
+
+### Lo que se ve
+
+7 pases en 3 escenas encienden `REFLECTION`, y el bloque solo vive con
+`NORMALMAP`: sin relieve no hay nada que reflejar, porque el término es
+`(1 - dot(normal, (0,0,1)))` y una superficie de frente lo anula. Por eso el
+efecto es desigual:
+
+| escena | media | razón vs preview |
+|---|---|---|
+| `2533288714` (el EVA de Asuka) | 112,40 → 112,82 | 0,823 → 0,826 |
+| `3097749052` | 38,13 → 38,18 | 0,983 → 0,985 |
+| `2518601723` (Elden Ring) | sin cambio medible | — |
+
+Las tres se acercan o se quedan igual. En el EVA cambia el 10 % de los píxeles
+y el brillo cae justo sobre el blindaje, que es donde el mapa de normales tiene
+relieve; en Elden Ring el mapa es tan suave que el reflejo se anula solo. Sobre
+las 129 escenas: **3 cambian, 0 regresiones**, que son exactamente las que
+tenían que cambiar.
 
 ## Nota de rendimiento para el port a C++
 
@@ -2470,18 +2614,370 @@ CPU y el filtrado lo hace el sampler. Lo que hay que portar a C++ es el
 decodificadores BC de `wetex.py` son para tooling y validación, no para el
 camino caliente del render.
 
+## Mejora propuesta: generar un wallpaper desde un prompt
+
+El motor come de un formato abierto, así que no hace falta una tubería nueva:
+basta con **producir lo que ya sabe leer**. De los dos puntos de entrada
+posibles, uno es claramente mejor.
+
+- Generar el **plan de render** directamente es factible —es texto más blobs
+  RGBA y GLSL— pero se salta todo lo que ya está resuelto.
+- Generar una **escena en formato WE** (un directorio con `scene.json` y
+  `materials/`) reutiliza el traductor de shaders, el decodificador de
+  texturas, los sistemas de partículas y la librería de efectos del propio
+  Wallpaper Engine que ya está en disco. Y el resultado funcionaría también en
+  WE de verdad.
+
+Que la tubería acepta un directorio suelto no es teoría: los wallpapers propios
+de la aplicación vienen así, y `beach` renderiza a 0,87 de su preview.
+
+### El camino mínimo
+
+```
+prompt -> imagen -> mapa de profundidad -> scene.json (capa + depthparallax
+         [+ partículas]) -> tubería actual -> plan -> motor
+```
+
+Un wallpaper plano es una foto; lo que lo hace un wallpaper son capas que se
+mueven a distinta velocidad. El atajo es que **`depthparallax` ya funciona** y
+solo pide una textura de profundidad en `g_Texture1`: con estimación monocular
+sobre la imagen generada, la escena reacciona al cursor sin separar capas a
+mano.
+
+### Lo que falta en este repositorio
+
+- **Aceptar imágenes normales.** Las texturas se buscan siempre como
+  `materials/<nombre>.tex` y no hay escritor de ese contenedor, así que un PNG
+  generado no entra. Lo barato es aceptar `materials/<nombre>.png` cuando no
+  exista el `.tex` —unas diez líneas entre `texture_path` y
+  `Renderer.texture()`—; lo fiel sería escribir un `.tex` mínimo con el PNG
+  embebido, variante que `wetex` ya sabe leer.
+- **Saber dónde está el puntero.** Hoy se emite el centro fijo. Es el mismo
+  cabo que desbloquea los 111 usos de `controlpointattract` de las partículas.
+
+### Lo que el motor no puede dar, y conviene saber antes de diseñar el prompt
+
+Texto (no se rasterizan glifos), audio reactivo, vídeo y modelos 3D. El
+generador tiene que producir escenas **2D por capas**, que es justo lo que este
+motor hace bien.
+
+## Dibujar a la resolución que se ve
+
+La escena se dibujaba al lienzo que eligió su autor y se encogía al final para
+caber en la pantalla: **8,3 Mpx pintados para enseñar 2,3** en un panel de
+1920x1200, dos de cada tres puntos a la basura. En esta biblioteca le pasa al
+**72 % de las escenas**, con una razón mediana de **3,6x** y cuatro lienzos de
+7680x4320 que pintan 33 Mpx.
+
+Lo que lo impedía no era un número sino una **confusión**: `canvas` significaba
+dos cosas a la vez.
+
+- **El sistema de medida de la escena.** Dónde está cada capa, cuánto mide una
+  malla, a qué distancia está una luz. Es del autor y no se toca.
+- **A cuántos píxeles se dibuja.** De ahí salen los buffers y los uniforms que
+  le dicen al shader cuánto mide un píxel.
+
+Dividir el lienzo por dos dejaba una malla de 600 ocupando el doble de
+pantalla, porque el mismo número la situaba. Separadas las dos, la mayor parte
+del motor resulta ser **indiferente a la resolución**: la geometría se
+normaliza a clip y eso no depende de cuántos puntos haya. Lo que sí escala es
+corto y contable: los render targets, el buffer de cada capa, `g_Screen`,
+`g_TexelSize` y el tamaño del destino. Y una pieza clave: **el ejecutor crea
+todos sus buffers al tamaño de la línea `canvas` del plan**, así que ese único
+número los arrastra.
+
+El factor:
+
+```
+k = min(1, max(anchoPantalla/anchoLienzo, altoPantalla/altoLienzo))
+```
+
+El `max` es el que pide el modo «cubrir», el de por defecto y el que más
+píxeles necesita, así que **un solo número vale para los tres modos de encaje**
+y la resolución no queda atada al encaje —que hoy se cambia en caliente sin
+regenerar el plan—. El `min` con 1 para no ampliar nunca por encima del lienzo
+del autor: más puntos de los que él dibujó no añaden detalle.
+
+Es opcional. Sin resolución todo se comporta como antes; `wectl` la detecta con
+`kscreen-doctor` y toma el monitor **más grande**, porque el plan es uno solo y
+lo comparten todas las pantallas.
+
+### Lo medido
+
+Cronometrando solo el ejecutor, en la integrada:
+
+| escena | antes | después | |
+|---|---|---|---|
+| Elden Ring, 21 pases, 4K | 42,4 ms | 13,9 ms | **3,0x** |
+| Sci-Fi Cyber City, 75 pases, 4K | 99,9 ms | 36,3 ms | **2,8x** — de 10 a 27 fps |
+| la de 8K | 85,0 ms | 12,2 ms | **7,0x** — de 12 a 82 fps |
+
+Y el corpus entero pasa de **849 Mpx a 318**, un 63 % menos.
+
+**La imagen no cambia**, que es lo que había que demostrar: las 129 escenas
+renderizadas a las dos resoluciones dan 0 errores y **128 de 129 con menos del
+2 % de diferencia**. La única que se sale (2,8 %) es una escena casi negra,
+donde cualquier cambio absoluto es relativo grande. Las de 8K difieren un 0,4 %
+reduciendo los píxeles catorce veces.
+
+En vivo el motor lo confirma:
+
+```
+GlExecutor: encaje=0 escena 2133x1200 -> se ve 1920x1200 desde (107,0)
+```
+
+Recorta 107 px por lado y pinta **píxel a píxel, sin escalar**.
+
+Dos trampas al implementarlo, las dos de las que fallan callando: llamar
+`self.render` al campo nuevo **pisa el método `render()`** del propio
+renderizador, y el volcado final hay que reinterpretarlo con los píxeles de
+dibujo y no con el lienzo de la escena.
+
+## Compilar no es enlazar: 82 pases que se perdían sin decir nada
+
+`test_wescene` compilaba las 594 variantes del corpus y daba 594/594. Pero un
+vértice y un fragmento pueden compilar cada uno por su lado y **no poder
+enlazarse**, porque lo que tiene que casar es la interfaz entre los dos. Ese
+error no lo veía nadie: el motor se quedaba sin el pase y seguía.
+
+`glslcheck` tiene ahora un modo `--link` que toma los pares y crea el programa
+de verdad, con los mismos `glBindAttribLocation` que ata el motor. Sobre los 297
+pares del corpus:
+
+```
+compilan   594/594  (100 %)
+enlazan    283/297 en Mesa, 286/297 en NVIDIA   -> 14 variantes perdidas,
+                                                   82 pases en los planes reales
+```
+
+Y no son los mismos en los dos drivers, que es lo que despista: Mesa se queja
+de cosas que NVIDIA acepta, y como el escritorio corre sobre Mesa, la cuenta
+que importa es la peor.
+
+### La causa del grupo grande
+
+Seis de los catorce son la familia de desenfoques gaussianos, con el mismo error:
+
+```
+error: array length mismatch between stages for variable v_TexCoord[N]
+```
+
+`godrays_gaussian.vert` declara `[COMBO] KERNEL` con `default: 1`; el `.frag`
+**no lo declara**. Traduciendo cada etapa por su cuenta, el vértice sale con
+`out vec2 v_TexCoord[7]` y el fragmento con `in vec2 v_TexCoord[13]`, porque una
+macro indefinida vale 0 y ahí `#if KERNEL == 0` se cumple.
+
+En WE un combo vale para el **programa**, no para una etapa: se declara una vez
+y las dos mitades lo ven.
+
+### El arreglo obvio parecía romper la imagen, y ya no
+
+Prestarle a cada etapa el combo que consulta y no declara arregla el enlace.
+La primera vez que se probó también **destrozaba la imagen** —72 escenas
+cambiadas, 10 de las 14 que más se movían alejándose de su preview,
+`2979320215` de 84,66 a 244,84 con su preview en 97,38, o sea blanco puro— y
+por eso se revirtió, con la lectura de que el fallo de enlace estaba *tapando*
+un segundo fallo en las cadenas de godrays y glow.
+
+**Vuelto a medir hoy, eso no pasa.** Con el árbol actual, prestando combos:
+
+```
+                       antes    ahora
+2979320215 (media)     83,66    83,49
+escenas que cambian       —     44 de 129
+la que más se mueve       —     ±6,09 sobre 255
+regresiones (test_luminancia)   0
+```
+
+Ninguna se dispara, y probando además la regla cruda —empujar todos los
+defaults de una etapa a la otra, que es lo que de verdad hay que evitar—
+`2979320215` sale igual, en 83,49. O sea que el 244,84 no venía de la regla
+sino de otra cosa del traductor, y lo más probable es que fuera
+`varying_escribible`: sus tres fallos se arreglaron en esa misma sesión pero
+**después** de revertir, y nadie volvió a medir con el préstamo puesto. Un
+fragmento que escribe sobre un varying sin su copia local es exactamente el
+tipo de cosa que descuadra un acumulador de glow.
+
+Así que el préstamo entra. No es solo por los 8 pares que no enlazaban: la
+mayoría de las escenas de godrays traen **su propia copia** del shader, con
+`v_TexCoord` como `vec4` en las dos mitades, así que enlazaban de siempre —y
+corrían mal—. `KERNEL` se declara solo en el vértice, con `default: 1` (7x7);
+el fragmento se quedaba sin él, y una macro indefinida vale 0, que en ese
+shader es el kernel de 13x13. El vértice calculaba los desplazamientos de 7
+muestras y el fragmento leía 13. Ese es el desenfoque de más que se ve en
+`2834359155` y `2645037214`: la mitad de un programa desenfocando más ancho de
+lo que pedía la otra mitad.
+
+### Tres causas, y ninguna era la que decían estas notas
+
+Con `--link` sobre los 297 pares del corpus deduplicado, en los dos drivers:
+
+```
+             Mesa   NVIDIA
+antes       283/297  286/297
+ahora       297/297  296/297
+```
+
+Pero el 297 engaña, porque cuenta cada variante una vez y en el corpus se
+repiten. Enlazando los **planes de verdad**, los 3638 pares que salen de
+generar las 129 escenas:
+
+```
+antes    82 pares no enlazan, repartidos en 25 escenas
+ahora    0, en Mesa y en NVIDIA
+```
+
+Ochenta y dos pases perdidos, no diez. `2242388122` perdía 8 de sus 62 y
+`3462491575` 6 de 67.
+
+Las 14 pérdidas de Mesa no eran las cuatro causas que decía la tabla anterior
+sino tres, porque dos de las que parecían distintas eran la misma vista por dos
+compiladores: lo que en Mesa sale como «`v_TexCoord` declarado vec4 y vec2» en
+NVIDIA sale como `unknown semantics "ATTR0.xy"`, y son los mismos tres pares.
+
+| causa | pares | de quién |
+|---|---|---|
+| un combo declarado en una etapa y consultado en la otra | 8 | de WE |
+| un varying con tipo distinto en cada etapa | 3 | del autor |
+| un uniform declarado y **sin usar**, con tipo distinto en cada etapa | 3 | del autor |
+
+**El combo** es el grupo grande: 6 gaussianos, más `auto_sway` —que declara
+`AA_VERSION` en el vértice y lo usa en el fragmento para elegir cuál de sus
+tres `main` sobrevive, así que sin él el fragmento se quedaba literalmente sin
+`main`— más el osciloscopio de `2799421411`, que declara `RESOLUTION` en el
+fragmento y dimensiona con él un array de varyings en el vértice.
+
+**El varying** es del autor y WE lo tolera porque HLSL enlaza por semántica:
+el pixel shader puede declarar menos componentes de las que el vertex shader
+escribe y se queda con las primeras. `rotate2d` trae `vec2` en el vértice y
+`vec3` en el fragmento; el `test_shader` de `2844906964`, `vec4` y `vec2`.
+Gana el vértice, que es quien produce, y los usos del fragmento son swizzles
+que siguen valiendo. Comprobado: ninguno de los dos toca las componentes que
+se van.
+
+**El uniform** también es del autor, y las notas lo daban por nuestro: se
+decía que las dos declaraciones las generaba el traductor en la sección de
+uniforms izados. No es así —izar mueve la línea del autor, no inventa el
+tipo—. `frame_builder` declara `uniform vec2 u_refResolution` en el vértice
+con `default "512 512"` y `uniform float u_refResolution` en el fragmento con
+`default 512`, y **el fragmento no lo usa para nada**. El enlazador compara
+los uniform por nombre antes de tirar lo que no se usa, así que corta el
+programa por una declaración muerta. Se quita: son 129 declaraciones de 4290
+en todo el corpus, el 3 %, y una que no se usa no cambia un píxel.
+
+Del uso hay que mirar el orden, que es donde estuvo la trampa: el fragmento de
+`frame_builder` declara una variable local `res` mucho antes del
+`#define res u_refResolution`, y contar apariciones sin mirar dónde caen
+mantenía vivo justo el uniform que sobra. Y del alias valen **todas** sus
+definiciones: `genericimage4` define `M_MDL` como `g_AltModelMatrix` y como
+`g_ModelMatrix`, y quedarse con la primera borraba la otra —la del pase base
+de casi toda imagen—.
+
+### Y lo que parecía un límite de hardware: `GLSL` sin definir
+
+El osciloscopio fallaba con `insufficient contiguous locations`, que parece un
+límite de hardware y no lo es. WE define `GLSL` o `HLSL` según a qué backend
+compila; nosotros no definíamos ninguno, así que todo `#ifdef GLSL` caía al
+`#else`, o sea a la rama de D3D. Ahí el array de audio se dimensiona con
+`RESOLUTION` —32 vec4— en vez de con los 28 de la rama de GLSL, y con los tres
+varyings de siempre se pasa del máximo. Con `GLSL` definido caben.
+
+Son 18 ficheros de los assets de WE los que preguntan por uno de los dos, y
+solo uno pregunta por `GLSL`: `puppettexturechannels`, que en la rama de D3D
+indexa una matriz con un flotante, cosa que GLSL rechaza —así que esa también
+se arregla sola—. Los otros 17 preguntan por `HLSL`, que se queda sin definir
+a propósito: sus ramas invierten la Y de las texturas. Los que lo usan de
+verdad son los shaders de taller, como el osciloscopio.
+
+### Lo que queda
+
+Nada en los planes reales: 3638 pares, cero fallos, en los dos drivers. En el
+corpus deduplicado queda uno, y no es de enlace: la variante de `auto_sway` con
+`NODE_COUNT 5` **no compila** en NVIDIA, con `ambiguous overloaded function
+reference "step(float, int)"`. Es la conversión implícita de HLSL que NVIDIA no
+hace al resolver sobrecargas, y para arreglarla haría falta una tabla de firmas
+de los built-ins. En Mesa —el driver del escritorio— compila y enlaza, y con
+los combos que el motor le pone de verdad ni siquiera aparece.
+
+Y la red que dejó pasar todo esto ya está puesta: `test_wescene` enlazaba cero
+pares y ahora enlaza los 297, con los mismos `glBindAttribLocation` que ata el
+motor. Compilar las dos mitades por separado nunca iba a ver un fallo de
+interfaz.
+
+## Vídeo en el motor: qué haría falta
+
+Dos de las cuatro escenas negras del corpus lo eran por lo mismo: su capa
+principal no es una imagen, es un **MP4 entero dentro del `.tex`**. El
+contenedor lo marca con `IS_VIDEO` y `wetex` se niega a leerlo como píxeles
+—con razón: hacerle caso al `format` de la cabecera da ruido en vez de un
+error—. La capa se quedaba sin textura, y una capa de fondo sin textura no se
+ve.
+
+El apaño actual es **congelar el primer fotograma** con `ffmpeg`. Sube
+`2968771936` de 0,00 a 132,13 y `3624053922` de 4,07 a 72,59, las dos a menos
+de un 10 % de su preview. Pero es una imagen quieta.
+
+Son **3 escenas de 129** con textura de vídeo. Reproducirlo de verdad abriría
+además los **15 wallpapers de tipo vídeo** de la biblioteca, que hoy no se
+tocan.
+
+### Lo que hay que resolver antes de intentarlo
+
+- **Quién decodifica.** O se enlaza `libavcodec`/`libavformat` en el ejecutor,
+  o se lee de una tubería de `ffmpeg`. Lo primero mete una dependencia nativa
+  nueva en el plugin; lo segundo mete un proceso por capa de vídeo.
+- **Dónde.** El decodificado NO puede ir en el hilo de render: son 39 ms por
+  fotograma de presupuesto en la escena 4K de referencia —medidos con el
+  cronómetro de GPU— y un H.264 de 2560x1440 no cabe ahí. Hace falta un hilo
+  aparte con una cola de fotogramas y subida asíncrona (PBO).
+- **El reloj.** El motor tiene `g_Time`, pero un vídeo necesita el suyo: tasa
+  propia, bucle, y qué hacer cuando el reloj del fondo se pausa. La pausa por
+  cobertura tiene que parar también el decodificador, o el ahorro de GPU se lo
+  come la CPU.
+- **La memoria.** El MP4 de `3624053922` son 12 MB; cada fotograma decodificado
+  a RGBA son 14 MB. Con doble búfer y varias capas eso se nota, y el trabajo de
+  las potencias de dos ya nos enseñó que la VRAM es un recurso escaso aquí.
+- **El plan.** Hoy una textura es `tex <id> <fichero> <w> <h>`, un RGBA crudo
+  que el ejecutor sube una vez. Una capa de vídeo necesita otra clase de
+  entrada —algo como `video <id> <fichero> <fps>`— y que el ejecutor sepa que
+  esa textura cambia cada fotograma.
+
+Mientras tanto, el fotograma congelado cuesta una llamada a `ffmpeg` en tiempo
+de generación del plan y no añade ninguna dependencia en ejecución. Si `ffmpeg`
+no está, se queda como estaba: sin textura.
+
 ## Lo siguiente
 
 Por orden de lo que más se nota:
 
-1. **Las 4 escenas negras y la variante de shader que no compila** (1 de 578,
-   la truncación de `maskBokeh`). Poca anchura, pero cuando cae la capa base se
-   lleva la escena entera.
-2. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
-   glifos.
-3. **Elegir la GPU que renderiza** (ver abajo).
-4. **Reflejos** (`REFLECTION`) y **luces de tubo**: lo que queda del sistema de
-   iluminación, que ya cubre las luces puntuales.
+1. ~~Los pases que no enlazan~~ **hecho**: los 297 pares del corpus enlazan en
+   Mesa, el driver del escritorio, y 296 en NVIDIA —al que le falta uno que
+   tampoco compila—. Y el fallo que el enlace supuestamente tapaba en godrays
+   y glow no aparece al volver a medirlo; ver [Compilar no es
+   enlazar](#compilar-no-es-enlazar-82-pases-que-se-perdían-sin-decir-nada).
+2. **Las 2 escenas negras que quedan**: `3577990983` y `1518454472`. Las otras
+   dos eran texturas de vídeo y ya se ven.
+3. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
+   glifos. Los materiales de fuente MSDF, que faltaban, aparecieron al pasar a
+   la instalación real.
+4. **Reproducir vídeo** de verdad, en vez del fotograma congelado: 3 escenas
+   con textura de vídeo y los 15 wallpapers de tipo vídeo de la biblioteca.
+5. **Elegir la GPU que renderiza** (ver abajo).
+6. ~~Reflejos y luces de tubo~~ **hecho**: el reflejo solo pedía la pirámide de
+   mipmaps del buffer de escena, y el tubo venía en `controlpoint` desde el
+   principio. Del sistema de iluminación quedan los **focos** y las
+   **direccionales**, que el shader declara y la biblioteca no usa: sin una
+   sola en el corpus no hay con qué verificar su orientación, así que una
+   escena que traiga alguna se sigue dibujando plana.
+7. **Audio reactivo**: `g_AudioSpectrum16/32/64` en 33 variantes de shader y
+   `audioprocessing*` en ~50 usos de partícula.
+8. **El puntero de verdad**: hoy se emite el centro fijo. Desbloquea el
+   parallax y los 111 usos de `controlpointattract`.
+
+Y un fallo de uso, sin arreglar: **cambiar el fondo con el escritorio tapado no
+recarga el motor**. `recargar()` intercambia el plugin pero el `SceneView` no se
+reinstancia, y hace falta reiniciar plasmashell. Visto con una escena en la que
+la resolución no cambia nada, así que no es de la fase 2.
 
 De partículas ya no queda vocabulario: los tres cabos —el corro, `remapvalue` y
 `orientation`— están cerrados y contados arriba. Lo que sigue fuera de la

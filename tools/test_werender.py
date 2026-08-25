@@ -118,39 +118,52 @@ def prueba_luces(fallos: list[str]) -> None:
     if len(luces) != 1:
         fallos.append("no se leyo la luz puntual")
     else:
-        org, col, radio, expo = luces[0]
-        if org != [100.0, 200.0, 300.0]:
-            fallos.append(f"origen mal leido: {org}")
+        lz = luces[0]
+        if lz.tipo != "point":
+            fallos.append(f"clase mal leida: {lz.tipo}")
+        if lz.origen != [100.0, 200.0, 300.0]:
+            fallos.append(f"origen mal leido: {lz.origen}")
         # El shader recibe un solo color: la intensidad va dentro.
-        if not np.allclose(col, [2.0, 1.0, 0.5]):
-            fallos.append(f"la intensidad no se aplico al color: {col}")
-        if radio != 300.0:
-            fallos.append(f"radio mal leido: {radio}")
-        # El exponente viaja con la luz, no clavado en el shader: en el modulo
-        # que WE genera de verdad va en el `.w` del origen de cada una.
-        if expo != werender.EXPONENTE_POR_DEFECTO:
-            fallos.append(f"la luz no lleva su exponente: {expo}")
+        if not np.allclose(lz.color, [2.0, 1.0, 0.5]):
+            fallos.append(f"la intensidad no se aplico al color: {lz.color}")
+        if lz.radio != 300.0:
+            fallos.append(f"radio mal leido: {lz.radio}")
 
     # Una luz apagada por el autor no cuenta, y no invalida la escena.
     sc = _escena([_luz(visible=False), _luz()])
     if len(werender.luces_de_escena(sc)) != 1:
         fallos.append("una luz invisible no deberia contar")
 
-    # Un tipo que no sabemos poner apaga la iluminacion de la escena entera:
-    # media luz oscurece mas de lo que alumbra. Ver 3053927686.
-    sc = _escena([_luz(light="ltube"), _luz()])
-    if werender.luces_de_escena(sc) != []:
-        fallos.append("una luz de tubo deberia dejar la escena sin iluminar")
+    # El tubo es un SEGMENTO y la escena dice cual: `controlpoint` es el otro
+    # extremo, relativo al origen. Antes se descartaba la escena entera por no
+    # saber ponerlo. Ver 3053927686.
+    sc = _escena([_luz(light="ltube", origin="100 200 300",
+                       controlpoint="50 0 0")])
+    luces = werender.luces_de_escena(sc)
+    if len(luces) != 1 or luces[0].tipo != "tube":
+        fallos.append("no se leyo la luz de tubo")
+    elif luces[0].extremo != [150.0, 200.0, 300.0]:
+        fallos.append(f"el extremo del tubo mal puesto: {luces[0].extremo}")
 
-    # ...pero solo si esta encendida.
-    sc = _escena([_luz(light="ltube", visible=False), _luz()])
-    if len(werender.luces_de_escena(sc)) != 1:
-        fallos.append("una luz de tubo apagada no deberia estorbar")
+    # Sin `controlpoint` el tubo degenera en punto, que es el caso que
+    # `PointSegmentDelta` ya trata: los dos extremos coinciden.
+    sc = _escena([_luz(light="ltube", origin="100 200 300")])
+    luces = werender.luces_de_escena(sc)
+    if luces and luces[0].extremo != luces[0].origen:
+        fallos.append(f"un tubo sin controlpoint no es un punto: {luces[0]}")
+
+    # Un foco si sigue sin ponerse: el shader lo declara, pero su orientacion
+    # sale de `angles` y no hay ninguno en la biblioteca con el que verificarlo.
+    sc = _escena([_luz(light="lspot"), _luz()])
+    clases = set(werender.por_tipo(werender.luces_de_escena(sc)))
+    if not (clases - set(werender.CLASES_DE_LUZ)):
+        fallos.append("un foco deberia quedar fuera de las clases que ponemos")
 
 
 def prueba_empaquetado(fallos: list[str]) -> None:
     """La cuarta luz viaja en los `.w` de las otras tres, no en un cuarto vec4."""
-    luces = [([0, 0, 0], [float(i + 1)] * 3, 1.0, 2.0) for i in range(4)]
+    luces = [werender.Luz("point", [0, 0, 0], [float(i + 1)] * 3, 1.0,
+                          [0, 0, 0]) for i in range(4)]
     v = werender.colores_premultiplicados(luces)
     if len(v) != 3:
         fallos.append(f"el empaquetado deberia dar 3 vec4, dio {len(v)}")
@@ -163,7 +176,8 @@ def prueba_empaquetado(fallos: list[str]) -> None:
 
     # El radio entra al cuadrado: es lo unico que lleva el alcance por este
     # camino, donde el shader solo divide por la distancia al cuadrado.
-    v = werender.colores_premultiplicados([([0, 0, 0], [1.0, 1.0, 1.0], 10.0, 2.0)])
+    v = werender.colores_premultiplicados(
+        [werender.Luz("point", [0, 0, 0], [1.0, 1.0, 1.0], 10.0, [0, 0, 0])])
     if not np.allclose(v[0][:3], [100.0, 100.0, 100.0]):
         fallos.append(f"el color no se premultiplico por el radio^2: {v[0][:3]}")
 
@@ -189,6 +203,23 @@ def prueba_sampler_por_defecto(fallos: list[str]) -> None:
         if da != espera:
             fallos.append(f"textura_por_defecto({meta}) dio {da!r}, "
                           f"se esperaba {espera!r} ({por_que})")
+
+
+def prueba_niveles_mipmap(fallos: list[str]) -> None:
+    """El nivel mas alto de la piramide del buffer de escena.
+
+    El reflejo muestrea con `roughness * g_TextureNMipMapInfo`, asi que este
+    numero decide cuanto llega a desenfocarse. `glGenerateMipmap` va dividiendo
+    por dos hasta 1x1: son `floor(log2(max(w, h))) + 1` niveles.
+    """
+    for w, h, espera, por_que in ((3840, 2160, 12, "lienzo 4K"),
+                                  (1920, 1200, 11, "un panel 16:10"),
+                                  (1024, 1024, 11, "potencia de dos exacta"),
+                                  (1, 1, 1, "un buffer de un pixel")):
+        da = werender.niveles_mipmap(w, h)
+        if da != espera:
+            fallos.append(f"niveles_mipmap({w}, {h}) dio {da}, "
+                          f"se esperaba {espera} ({por_que})")
 
 
 def prueba_opacidad_del_objeto(fallos: list[str]) -> None:
@@ -226,7 +257,8 @@ def main() -> int:
     fallos: list[str] = []
     for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
                    prueba_luces, prueba_empaquetado,
-                   prueba_sampler_por_defecto, prueba_opacidad_del_objeto):
+                   prueba_sampler_por_defecto, prueba_niveles_mipmap,
+                   prueba_opacidad_del_objeto):
         prueba(fallos)
         print(f"  {prueba.__name__}")
     if fallos:

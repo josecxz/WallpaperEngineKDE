@@ -108,7 +108,7 @@ def prueba_cambio_de_plan(fallos: list[str]) -> None:
         # Sobrante de un wallpaper con mas pases que el que viene.
         (wectl.ESCENA / "p099.frag").write_text("sobra\n")
 
-        def emit_ok(ruta, out, ruta_final=None):
+        def emit_ok(ruta, out, ruta_final=None, resolucion=None):
             out.mkdir(parents=True, exist_ok=True)
             destino = ruta_final if ruta_final is not None else out
             (out / "plan.txt").write_text(
@@ -133,7 +133,7 @@ def prueba_cambio_de_plan(fallos: list[str]) -> None:
         print(f"  el plan nombra el directorio definitivo: "
               f"{'no' if '.nueva' in plan else 'si'}")
 
-        def emit_revienta(ruta, out, ruta_final=None):
+        def emit_revienta(ruta, out, ruta_final=None, resolucion=None):
             out.mkdir(parents=True, exist_ok=True)
             (out / "plan.txt").write_text("a medias\n")
             raise RuntimeError("escena rota")
@@ -163,7 +163,7 @@ def prueba_cambio_de_plan(fallos: list[str]) -> None:
         import threading
         errores, a_la_vez, dentro = [], [], threading.Lock()
 
-        def emit_lento(ruta, out, ruta_final=None):
+        def emit_lento(ruta, out, ruta_final=None, resolucion=None):
             out.mkdir(parents=True, exist_ok=True)
             with dentro:
                 a_la_vez.append(len(a_la_vez) + 1)
