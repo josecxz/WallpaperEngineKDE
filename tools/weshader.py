@@ -52,6 +52,13 @@ DEFAULT_TARGET = "gl330"
 # que el orden es matriz-por-vector, no al reves.
 PRELUDE_COMPAT = r"""
 // ── compatibilidad HLSL -> GLSL ES ──────────────────────────────────────
+// WE define GLSL o HLSL segun a que backend compila, y los shaders eligen con
+// `#ifdef`. Nosotros no definiamos ninguno, asi que todo `#ifdef GLSL` caia al
+// `#else`, o sea a la rama de D3D: `puppettexturechannels` indexaba una matriz
+// con un flotante ---que GLSL rechaza--- y el osciloscopio se quedaba sin su
+// array de varyings, con lo que el programa no enlazaba. HLSL se queda sin
+// definir a proposito: sus ramas invierten la Y de las texturas.
+#define GLSL 1
 #define frac fract
 #define lerp mix
 #define saturate(x) clamp((x), 0.0, 1.0)
@@ -171,6 +178,124 @@ vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir,
 	return suma;
 }
 """
+
+
+def combos_de_pase(fuente_v: str, fuente_f: str, resolver,
+                   material: dict | None = None) -> tuple[dict, dict]:
+    """Los combos de cada etapa, prestandose lo que a la otra le falta.
+
+    Un combo vale para el PROGRAMA, no para una etapa: WE lo declara una sola
+    vez ---en el vertice o en el fragmento, donde le venga--- y las dos mitades
+    lo ven. Traduciendo cada etapa por su cuenta, la que no lo declara se queda
+    sin el `#define` y evalua `#if KERNEL == 0` como cierto, porque una macro
+    indefinida vale 0.
+
+    No es teorico: `godrays_gaussian` declara KERNEL solo en el vertice, con
+    default 1. El vertice salia con `out vec2 v_TexCoord[7]` y el fragmento con
+    `in vec2 v_TexCoord[13]`, y el programa NO ENLAZA:
+
+        error: array length mismatch between stages for variable v_TexCoord
+
+    Las dos etapas compilan por separado, asi que una prueba de compilacion no
+    lo ve. Eran 8 de los 14 fallos de enlace del corpus, y de lejos el grupo
+    grande de los 82 pases que se perdian en los planes reales.
+
+    **Solo se presta lo que hace falta**: unicamente el combo que la etapa
+    CONSULTA en un `#if` y no declara. Empujar todos los defaults de una etapa
+    a la otra enciende ademas ramas que esa etapa nunca miro; medido, en este
+    corpus da la misma imagen, pero no hay razon para arriesgarla.
+
+    Y arregla mas de lo que se perdia: la mayoria de las escenas de godrays
+    traen su propia copia del shader, con `v_TexCoord` como vec4 en las dos
+    mitades, asi que enlazaban --- y corrian con el vertice calculando 7
+    muestras y el fragmento leyendo 13.
+    """
+    def declarados(fuente: str) -> tuple[str, dict]:
+        texto = normalise_newlines(fuente)
+        try:
+            texto = resolve_includes(texto, resolver)
+        except ShaderError:
+            pass          # sin el include, al menos los de este fichero
+        return texto, parse_combos(texto)
+
+    texto_v, combos_v = declarados(fuente_v)
+    texto_f, combos_f = declarados(fuente_f)
+
+    for texto, propios, ajenos in ((texto_v, combos_v, combos_f),
+                                   (texto_f, combos_f, combos_v)):
+        for nombre in undefined_conditionals(texto, set(propios)):
+            if nombre in ajenos:
+                propios[nombre] = ajenos[nombre]
+
+    mat = material or {}
+    combos_v.update(mat)
+    combos_f.update(mat)
+    return combos_v, combos_f
+
+
+_VARYING_DECL_RE = re.compile(
+    r"^[ \t]*(?:varying|out|in)[ \t]+(\w+)[ \t]+([A-Za-z_]\w*)[ \t]*;[ \t]*$")
+
+
+def varyings_de_pase(fuente_v: str, fuente_f: str, resolver,
+                     combos_v: dict, combos_f: dict) -> dict[str, str]:
+    """Los varying cuyo tipo no coincide entre las dos etapas, y con cual queda.
+
+    HLSL enlaza por semantica y tolera que el pixel shader declare menos
+    componentes de las que escribe el vertex shader: lee las primeras. GLSL
+    exige que el tipo sea el MISMO y, si no, tira el programa:
+
+        error: vertex shader output `v_TexCoord' declared as type `vec4',
+               but fragment shader input declared as type `vec2'
+
+    Los autores se apoyan en esa tolerancia. En el corpus son 3 pares y el
+    desajuste esta en la fuente, no en la traduccion: `rotate2d` declara
+    `varying vec2` en el vertice y `varying vec3` en el fragmento; el
+    `test_shader` de 2844906964, `vec4` y `vec2`.
+
+    **Gana el vertice**, porque es quien produce: lo que el interpolador
+    transporta es lo que el vertex shader declaro, y el fragmento leyendo de
+    mas leeria componentes que nadie escribio. Los usos del fragmento son
+    swizzles ---`v_TexCoord.xy`--- que siguen valiendo al cambiar el ancho, y
+    los pocos que usan el varying entero caen en la truncacion implicita que ya
+    se aplica despues.
+
+    Solo cuentan las declaraciones VIVAS: una dentro de `#if KERNEL == 0` no
+    dice nada si ese combo esta apagado, y quien decide eso son los combos ya
+    prestados por [[combos_de_pase]].
+    """
+    def declaradas(fuente: str, combos: dict) -> dict[str, str]:
+        texto = normalise_newlines(fuente)
+        try:
+            texto = resolve_includes(texto, resolver)
+        except ShaderError:
+            pass
+        valores = parse_combos(texto)
+        valores.update(combos)
+        fuera: dict[str, str] = {}
+        for linea in strip_dead_branches(_strip_comments(texto), valores).splitlines():
+            m = _VARYING_DECL_RE.match(linea)
+            if m:
+                fuera[m.group(2)] = m.group(1)
+        return fuera
+
+    tipos_v = declaradas(fuente_v, combos_v)
+    tipos_f = declaradas(fuente_f, combos_f)
+    return {n: t for n, t in tipos_v.items()
+            if n in tipos_f and tipos_f[n] != t}
+
+
+def forzar_varyings(body: str, tipos: dict[str, str]) -> str:
+    """Reescribe el tipo de los varying que [[varyings_de_pase]] desempata."""
+    if not tipos:
+        return body
+    fuera: list[str] = []
+    for linea in body.splitlines():
+        m = _VARYING_DECL_RE.match(linea)
+        if m and m.group(2) in tipos and m.group(1) != tipos[m.group(2)]:
+            linea = linea.replace(m.group(1), tipos[m.group(2)], 1)
+        fuera.append(linea)
+    return "\n".join(fuera)
 
 
 def inyectar_lighting_v1(body: str) -> tuple[str, bool]:
@@ -354,6 +479,63 @@ def hoist_uniforms(body: str) -> tuple[str, list[str]]:
             continue
         kept.append(line)
     return "\n".join(kept), hoisted
+
+
+_DEFINE_OBJ_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(?([^\n]*)$", re.M)
+_DECL_NOMBRE_RE = re.compile(r"^uniform[ \t]+\w+[ \t]+([A-Za-z_]\w*)")
+
+
+def quitar_uniforms_muertos(body: str, hoisted: list[str]) -> list[str]:
+    """Descarta los uniform que el shader declara y no usa.
+
+    Un uniform sin usar no cambia un pixel, pero SI cuenta para el enlace: el
+    enlazador compara los uniform de las dos etapas por nombre antes de tirar
+    lo que no se usa, y si no coinciden en tipo se lleva el programa entero.
+    Pasa de verdad en `frame_builder`, donde el autor declaro
+    `vec2 u_refResolution` en el vertice y `float u_refResolution` en el
+    fragmento ---dos defaults distintos, "512 512" y 512--- y el fragmento no
+    lo toca. Mesa corta con:
+
+        error: uniform `u_refResolution' declared as type `float' and `vec2'
+
+    NVIDIA no se queja, que es lo que despista: son 3 pares del corpus y solo
+    fallan en el driver del escritorio.
+
+    Quitarlo es preferible a unificar el tipo a mano: no hay que elegir cual de
+    los dos defaults gana, y la etapa que si lo usa se queda como estaba.
+
+    Un `#define alias u_refResolution` cuenta como uso solo si `alias` se usa;
+    si no, la declaracion seguiria viva por una linea que nadie expande.
+
+    Del alias valen TODAS sus definiciones, no la primera: este traductor deja
+    los `#if` para el driver, asi que un mismo nombre llega definido varias
+    veces con cuerpos distintos. `genericimage4` define `M_MDL` como
+    `g_AltModelMatrix` y como `g_ModelMatrix`, y quedarse con una borraba la
+    otra ---la que usaba el pase base de casi toda imagen---.
+    """
+    macros: dict[str, list[tuple[int, str]]] = {}
+    pendientes: list[tuple[str, int]] = []
+    for n, linea in enumerate(body.splitlines()):
+        m = _DEFINE_OBJ_RE.match(linea)
+        if m:
+            macros.setdefault(m.group(1), []).append((n, m.group(2)))
+        elif not linea.lstrip().startswith("#"):
+            pendientes.extend((ident, n) for ident in IDENT_RE.findall(linea))
+
+    # El nombre solo expande si YA estaba definido donde aparece: en
+    # `frame_builder` el fragmento declara una variable local `res` mucho antes
+    # del `#define res u_refResolution`, y sin mirar el orden esa variable
+    # mantenia vivo el uniform que sobra --- justo el que rompe el enlace.
+    usados: set[str] = set()
+    while pendientes:
+        ident, linea = pendientes.pop()
+        usados.add(ident)
+        for n, cuerpo in macros.get(ident, ()):
+            if n < linea:
+                pendientes.extend((x, linea) for x in IDENT_RE.findall(cuerpo)
+                                  if x not in usados)
+    return [l for l in hoisted
+            if (m := _DECL_NOMBRE_RE.match(l)) is None or m.group(1) in usados]
 
 
 def equilibrar_condicionales(body: str) -> str:
@@ -937,6 +1119,51 @@ def literales_de_return(body: str) -> str:
 _ESCRIBE_VARYING_RE = re.compile(
     r"^[ \t]*(\w+)(?:\.[xyzwrgba]+)?[ \t]*(?:\+|-|\*|/)?=[^=]", re.M)
 
+# Una funcion tambien escribe en lo que le pasan por `out`/`inout`, y eso no
+# se parece a una asignacion. `auto_sway` llama `calNode(v_TexCoord, ...)` con
+# el primer parametro `inout`: el driver corta con "assignment to varying" y la
+# busqueda de asignaciones no lo ve venir.
+_PARAM_SALIDA_RE = re.compile(r"\b(out|inout)\b")
+
+
+def _posiciones_de_salida(body: str) -> dict[str, set[int]]:
+    """Por funcion, en que posiciones escribe sus argumentos."""
+    fuera: dict[str, set[int]] = {}
+    for m in weglsl._FUNC_RE.finditer(body):
+        crudo = m.group(3).strip()
+        if crudo in ("", "void"):
+            continue
+        sale = {i for i, trozo in enumerate(crudo.split(","))
+                if _PARAM_SALIDA_RE.search(trozo)}
+        if sale:
+            fuera[m.group(2)] = sale
+    return fuera
+
+
+def _varyings_por_argumento(body: str) -> set[str]:
+    """Los identificadores que alguna funcion recibe por `out`/`inout`."""
+    salidas = _posiciones_de_salida(body)
+    if not salidas:
+        return set()
+    tocados: set[str] = set()
+    for linea in body.splitlines():
+        if linea.lstrip().startswith("#"):
+            continue
+        pos = 0
+        while True:
+            m = _LLAMADA_RE.search(linea, pos)
+            if not m:
+                break
+            sale = salidas.get(m.group(1))
+            corte = _corta_argumentos(linea, m.end() - 1) if sale else None
+            if corte:
+                for i, arg in enumerate(corte[0]):
+                    nombre = arg.strip()
+                    if i in sale and re.fullmatch(r"\w+", nombre):
+                        tocados.add(nombre)
+            pos = m.end()
+    return tocados
+
 
 def varying_escribible(body: str, stage: str) -> str:
     """Da una copia local, DENTRO de `main`, a los varying sobre los que escribe.
@@ -955,27 +1182,61 @@ def varying_escribible(body: str, stage: str) -> str:
     if stage != "frag":
         return body
     escritos = {m.group(1) for m in _ESCRIBE_VARYING_RE.finditer(body)}
+    escritos |= _varyings_por_argumento(body)
     if not escritos:
         return body
-    tipos = {}
-    for m in re.finditer(r"^[ \t]*(?:varying|in)[ \t]+(\w+)[ \t]+(\w+)[ \t]*;",
-                         body, re.M):
-        if m.group(2) in escritos:
-            tipos[m.group(2)] = m.group(1)
+    # El tipo de cada varying escrito Y las guardas del preprocesador que lo
+    # rodean. Las guardas importan: si la declaracion vive dentro de
+    # `#if QUAD_MASK` y la copia se emite fuera, con ese combo apagado la copia
+    # apunta a una variable que no existe y el shader no compila. Pasa en
+    # `auto_sway`.
+    tipos: dict[str, str] = {}
+    guardas: dict[str, list[str]] = {}
+    pila: list[str] = []
+    decl = re.compile(r"^[ \t]*(?:varying|in)[ \t]+(\w+)[ \t]+(\w+)[ \t]*;")
+    for linea in body.splitlines():
+        limpia = linea.strip()
+        if COND_ABRE_RE.match(linea):
+            pila.append(limpia)
+        elif re.match(r"^[ \t]*#[ \t]*(elif|else)\b", linea):
+            if pila:
+                pila[-1] = limpia
+        elif re.match(r"^[ \t]*#[ \t]*endif\b", linea):
+            if pila:
+                pila.pop()
+        else:
+            m = decl.match(linea)
+            if m and m.group(2) in escritos:
+                tipos[m.group(2)] = m.group(1)
+                guardas[m.group(2)] = list(pila)
     if not tipos:
         return body
 
-    m = re.search(r"\bvoid[ \t]+main[ \t]*\([^)]*\)[ \t]*\{", body)
-    if not m:
+    # TODOS los `main`, no el primero. Un shader puede traer varias versiones
+    # de `main` guardadas por `#if`, y como este traductor no resuelve el
+    # preprocesador ---los `#define` los evalua el driver--- las tres estan en
+    # el texto. `auto_sway` tiene tres: arreglando solo la primera, la que el
+    # combo deje viva puede ser otra y el driver corta con "assignment to
+    # varying". Se recorren de atras adelante para que los indices no se muevan.
+    puntos = list(re.finditer(r"\bvoid[ \t]+main[ \t]*\([^)]*\)[ \t]*\{", body))
+    if not puntos:
         return body
-    fin = _grupo_llaves(body, m.end() - 1)
-    if fin < 0:
-        return body
-    cuerpo = body[m.end():fin - 1]
-    for nombre in tipos:
-        cuerpo = re.sub(rf"\b{re.escape(nombre)}\b", f"{nombre}_rw", cuerpo)
-    copias = "".join(f"\n\t{t} {n}_rw = {n};" for n, t in tipos.items())
-    return body[:m.end()] + copias + cuerpo + body[fin - 1:]
+    def copia_de(n: str, t: str) -> str:
+        dentro = guardas.get(n) or []
+        abre = "".join(f"\n{c}" for c in dentro)
+        cierra = "\n#endif" * len(dentro)
+        return f"{abre}\n\t{t} {n}_rw = {n};{cierra}"
+
+    copias = "".join(copia_de(n, t) for n, t in tipos.items())
+    for m in reversed(puntos):
+        fin = _grupo_llaves(body, m.end() - 1)
+        if fin < 0:
+            continue
+        cuerpo = body[m.end():fin - 1]
+        for nombre in tipos:
+            cuerpo = re.sub(rf"\b{re.escape(nombre)}\b", f"{nombre}_rw", cuerpo)
+        body = body[:m.end()] + copias + cuerpo + body[fin - 1:]
+    return body
 
 
 def _grupo_llaves(body: str, abre: int) -> int:
@@ -1196,12 +1457,15 @@ def translate(src: str,
               stage: str,
               resolver: Resolver,
               combos: dict[str, object] | None = None,
-              target: str = DEFAULT_TARGET) -> str:
+              target: str = DEFAULT_TARGET,
+              varyings: dict[str, str] | None = None) -> str:
     """Traduce un shader de WE a GLSL compilable.
 
     stage: "vert" o "frag".
     combos: valores del pase de scene.json; pisan los defaults de [COMBO].
     target: "gl330" (por defecto) o "es320". Ver TARGETS.
+    varyings: tipos que hay que forzar para que las dos etapas casen; los
+        calcula `varyings_de_pase`, que es quien ve las dos fuentes.
     """
     if stage not in ("vert", "frag"):
         raise ShaderError(f"etapa desconocida: {stage!r}")
@@ -1216,6 +1480,7 @@ def translate(src: str,
     values.update(combos or {})
 
     body = _strip_comments(expanded)
+    body = forzar_varyings(body, varyings or {})
 
     # `#require X` declara una dependencia de un modulo del motor; no es GLSL y
     # el driver la rechaza como directiva desconocida. En el corpus solo
@@ -1289,6 +1554,7 @@ def translate(src: str,
     # asi que hay shaders que los usan sin declararlos. Se declaran los que
     # falten, junto con los uniforms de tamano que WE genera en paralelo.
     body, hoisted = hoist_uniforms(body)
+    hoisted = quitar_uniforms_muertos(body, hoisted)
 
     declared = set(re.findall(r"\buniform\s+\w+\s+(\w+)", body))
     declared.update(re.findall(r"\buniform\s+\w+\s+(\w+)", "\n".join(hoisted)))

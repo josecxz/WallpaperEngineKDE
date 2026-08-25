@@ -30,6 +30,18 @@ static void (*p_glGetShaderiv)(GLuint, GLenum, GLint *);
 static void (*p_glGetShaderInfoLog)(GLuint, GLsizei, GLsizei *, GLchar *);
 static void (*p_glDeleteShader)(GLuint);
 static const GLubyte *(*p_glGetString)(GLenum);
+/* Para --link: compilar no basta. Un vertice y un fragmento pueden compilar
+ * cada uno por su lado y no poder enlazarse, porque lo que tiene que casar es
+ * la INTERFAZ entre los dos --- que el varying que uno escribe y el otro lee
+ * tengan el mismo tipo y la misma longitud. Ese error no lo ve nadie hasta que
+ * el motor intenta crear el programa y se queda sin pase. */
+static GLuint (*p_glCreateProgram)(void);
+static void (*p_glAttachShader)(GLuint, GLuint);
+static void (*p_glLinkProgram)(GLuint);
+static void (*p_glGetProgramiv)(GLuint, GLenum, GLint *);
+static void (*p_glGetProgramInfoLog)(GLuint, GLsizei, GLsizei *, GLchar *);
+static void (*p_glDeleteProgram)(GLuint);
+static void (*p_glBindAttribLocation)(GLuint, GLuint, const GLchar *);
 
 static int load_gl(void)
 {
@@ -40,6 +52,13 @@ static int load_gl(void)
     p_glGetShaderInfoLog = (void *)eglGetProcAddress("glGetShaderInfoLog");
     p_glDeleteShader = (void *)eglGetProcAddress("glDeleteShader");
     p_glGetString = (void *)eglGetProcAddress("glGetString");
+    p_glCreateProgram = (void *)eglGetProcAddress("glCreateProgram");
+    p_glAttachShader = (void *)eglGetProcAddress("glAttachShader");
+    p_glLinkProgram = (void *)eglGetProcAddress("glLinkProgram");
+    p_glGetProgramiv = (void *)eglGetProcAddress("glGetProgramiv");
+    p_glGetProgramInfoLog = (void *)eglGetProcAddress("glGetProgramInfoLog");
+    p_glDeleteProgram = (void *)eglGetProcAddress("glDeleteProgram");
+    p_glBindAttribLocation = (void *)eglGetProcAddress("glBindAttribLocation");
     return p_glCreateShader && p_glShaderSource && p_glCompileShader &&
            p_glGetShaderiv && p_glGetShaderInfoLog && p_glDeleteShader && p_glGetString;
 }
@@ -122,6 +141,60 @@ int main(int argc, char **argv)
         printf("GL_RENDERER : %s\n", p_glGetString(GL_RENDERER));
         printf("GLSL        : %s\n", p_glGetString(GL_SHADING_LANGUAGE_VERSION));
         return 0;
+    }
+
+    /* --link <v1> <f1> <v2> <f2> ...: compila cada par y lo ENLAZA. */
+    if (argc > first && strcmp(argv[first], "--link") == 0) {
+        int failed = 0;
+        for (int i = first + 1; i + 1 < argc; i += 2) {
+            GLuint prog = p_glCreateProgram();
+            int ok_compilar = 1;
+            for (int k = 0; k < 2; k++) {
+                long len;
+                char *src = read_file(argv[i + k], &len);
+                if (!src) { ok_compilar = 0; break; }
+                GLuint sh = p_glCreateShader(k == 0 ? GL_VERTEX_SHADER
+                                                   : GL_FRAGMENT_SHADER);
+                const char *pp = src;
+                p_glShaderSource(sh, 1, &pp, NULL);
+                p_glCompileShader(sh);
+                GLint ok = 0;
+                p_glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+                if (ok)
+                    p_glAttachShader(prog, sh);
+                else
+                    ok_compilar = 0;   /* ya lo reporta el modo normal */
+                p_glDeleteShader(sh);
+                free(src);
+            }
+            if (!ok_compilar) {
+                p_glDeleteProgram(prog);
+                continue;              /* no es fallo de enlace */
+            }
+            /* Los mismos atributos que ata el motor, o el enlazador puede
+             * quejarse de algo que en produccion no pasa. */
+            p_glBindAttribLocation(prog, 0, "a_Position");
+            p_glBindAttribLocation(prog, 0, "a_PositionVec4");
+            p_glBindAttribLocation(prog, 1, "a_TexCoord");
+            p_glLinkProgram(prog);
+            GLint ok = 0;
+            p_glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+            if (ok) {
+                printf("OK %s\n", argv[i]);
+            } else {
+                printf("FAIL %s\n", argv[i]);
+                GLint loglen = 0;
+                p_glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &loglen);
+                char *log = malloc(loglen + 1);
+                p_glGetProgramInfoLog(prog, loglen, NULL, log);
+                fprintf(stderr, "== enlace %s + %s ==\n%s\n",
+                        argv[i], argv[i + 1], log);
+                free(log);
+                failed++;
+            }
+            p_glDeleteProgram(prog);
+        }
+        return failed ? 1 : 0;
     }
 
     int failed = 0;

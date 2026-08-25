@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regresion end-to-end del grafo de escena.
 
-Dos criterios, los dos objetivos:
+Tres criterios, los tres objetivos:
 
   1. Toda referencia de toda escena tiene que resolverse: modelos,
      materiales, shaders, texturas y efectos. Una sola sin resolver es un
@@ -10,6 +10,12 @@ Dos criterios, los dos objetivos:
      compilar. Esto es mas exigente que test_weshader.py, que compila con
      los combos por defecto: aqui se usan los combos reales de cada pase,
      que es lo que se subira a la GPU.
+  3. Y el PAR tiene que enlazar. Compilar no basta: lo que tiene que casar
+     entre el vertice y el fragmento es la interfaz ---el tipo y la longitud
+     de cada varying, y el tipo de cada uniform con el mismo nombre--- y eso
+     no se mira hasta que se crea el programa. Con las dos etapas compilando
+     al 100 %, 14 pares de 297 no enlazaban y el motor se quedaba sin esos
+     pases sin decir nada.
 
 Uso:
     cc -O2 -o /tmp/glslcheck tools/glslcheck.c -lEGL
@@ -51,6 +57,7 @@ def main() -> int:
     unresolved = Counter()
     missing_tex = Counter()
     variants: list[Path] = []
+    pares: list[list[Path]] = []
     seen_variant: set[str] = set()
 
     for d in dirs:
@@ -96,9 +103,19 @@ def main() -> int:
             if key in seen_variant:
                 continue
             seen_variant.add(key)
-            for stage, src in (("vert", p.vert), ("frag", p.frag)):
+            # Las dos etapas se traducen con lo que el PAR acordo, igual que en
+            # `werender`: traducirlas por su cuenta es justo lo que producia los
+            # pares que compilan y no enlazan.
+            combos_v, combos_f = weshader.combos_de_pase(
+                p.vert, p.frag, sresolver, p.combos)
+            varyings = weshader.varyings_de_pase(
+                p.vert, p.frag, sresolver, combos_v, combos_f)
+            par: list[Path] = []
+            for stage, src, cmb in (("vert", p.vert, combos_v),
+                                    ("frag", p.frag, combos_f)):
                 try:
-                    out = weshader.translate(src, stage, sresolver, combos=p.combos)
+                    out = weshader.translate(src, stage, sresolver,
+                                             combos=cmb, varyings=varyings)
                 except Exception as e:
                     stats["traduccion_err"] += 1
                     unresolved[f"translate {p.shader}.{stage}: {e}"[:80]] += 1
@@ -107,6 +124,9 @@ def main() -> int:
                 dest = tmp / name
                 dest.write_text(out)
                 variants.append(dest)
+                par.append(dest)
+            if len(par) == 2:
+                pares.append(par)
 
     print("── resolucion del grafo ──")
     for k in ("escenas", "escena_err", "objetos", "obj_image", "obj_particle",
@@ -135,6 +155,26 @@ def main() -> int:
             ok += sum(1 for l in p.stdout.splitlines() if l.startswith("OK "))
         pct = 100.0 * ok / len(variants) if variants else 0.0
         print(f"  {label:<14} {ok}/{len(variants)}  ({pct:.1f}%)")
+
+    print(f"\n── enlace de {len(pares)} pares reales ──")
+    for label, env_extra in (("Mesa (Intel)", MESA_ENV), ("NVIDIA", {})):
+        env = {**os.environ, **env_extra}
+        ok, motivos = 0, Counter()
+        for i in range(0, len(pares), 60):
+            chunk = pares[i:i + 60]
+            args = [str(x) for par in chunk for x in par]
+            p = subprocess.run([str(check), "--desktop", "--link", *args],
+                               capture_output=True, text=True, env=env)
+            ok += sum(1 for l in p.stdout.splitlines() if l.startswith("OK "))
+            for bloque in p.stderr.split("== enlace ")[1:]:
+                log = bloque.partition("\n")[2]
+                motivo = next((l.strip() for l in log.splitlines()
+                               if "error" in l.lower()), log.strip())
+                motivos[motivo[:90]] += 1
+        pct = 100.0 * ok / len(pares) if pares else 0.0
+        print(f"  {label:<14} {ok}/{len(pares)}  ({pct:.1f}%)")
+        for m, n in motivos.most_common(6):
+            print(f"       {n} x {m}")
 
     print(f"\nvariantes en: {tmp}")
     return 0
