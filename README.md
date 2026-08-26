@@ -140,8 +140,8 @@ escritorio → Tipo de fondo: WallpaperEngine*.
 
 ### Cuando la escena no tiene la forma de tu pantalla
 
-Casi ninguna la tiene: **99 de las 125 escenas de esta biblioteca están hechas
-en 16:9**, así que en un panel 16:10 se recorta el 10% del ancho, y una escena
+Casi ninguna la tiene: **la gran mayoría de las escenas están hechas en
+16:9**, así que en un panel 16:10 se recorta el 10% del ancho, y una escena
 vertical sobre uno horizontal pierde dos tercios. En la configuración del fondo
 se elige qué hacer:
 
@@ -152,6 +152,21 @@ se elige qué hacer:
 Con *acercamiento* y los dos *recortes* se decide qué trozo se ve. Los recortes
 se apagan cuando no hay nada que elegir: una escena más ancha que la pantalla se
 recorta a lo ancho y ya se ve entera a lo alto.
+
+Y el fondo se dibuja **a la resolución que vas a ver**, no al lienzo del autor.
+El 72% de las escenas de esta biblioteca traen más píxeles de los que caben en
+el panel —cuatro de ellas son de 7680x4320, que son 33 millones de puntos para
+enseñar 2,3—. Dibujar solo los que se ven cuesta bastante menos, medido con el
+mismo plan en la gráfica integrada:
+
+```
+Sci-Fi Cyber City, 75 pases, lienzo 4K   99,9 ms -> 36,3 ms por fotograma
+la escena de 8K                          85,0 ms -> 12,2 ms
+```
+
+La imagen es la misma: de las 129 escenas renderizadas a las dos resoluciones,
+128 difieren menos de un 2%. No hay nada que configurar; si no se puede
+averiguar el tamaño de la pantalla, se dibuja al lienzo del autor como antes.
 
 ## Cómo funciona
 
@@ -201,18 +216,26 @@ NOTAS.md      documentación técnica de los formatos
 ## Estado
 
 Funciona sobre escenas reales de la biblioteca, incluidas algunas complejas
-(50 pases, 12 mallas animadas) a la tasa de refresco del monitor.
+(50 pases, 12 mallas animadas) a la tasa de refresco del monitor. Los shaders
+de las 129 escenas compilan **y enlazan**: los 3638 pares que salen de generar
+sus planes, en las dos tarjetas de esta máquina. Hasta hace poco 82 de esos
+pases se caían al enlazar —lo que tiene que casar ahí es la interfaz entre el
+vértice y el fragmento— y su capa desaparecía sin un solo error.
+
+Las superficies con mapa de normales y reflejo activado reflejan lo que hay
+detrás, leyéndolo del fotograma ya compuesto con la nitidez que le toque a su
+rugosidad. Son 7 pases en 3 escenas de esta biblioteca, y se nota sobre todo
+donde el relieve es marcado.
 
 Limitaciones conocidas:
 
-- 1 de 578 variantes de shader no llegan a compilar en el driver y su pase se
-  omite. Normalmente cuesta una capa, pero si la que cae es la capa base se
-  lleva todo lo que colgaba de ella.
+- Las capas cuya textura es un **vídeo** se ven congeladas en su primer
+  fotograma, no reproducidas. Son 3 escenas de 129.
 - El parallax por mapa de profundidad se dibuja en reposo: el motor todavía no
   sabe dónde está el puntero, así que la escena se ve centrada.
-- Luces puntuales sí; de tubo no, y una escena que traiga alguna se dibuja
-  plana entera —iluminar a medias la deja más oscura que no iluminarla—.
-  Sin reflejos.
+- Luces puntuales y de tubo sí; focos y direccionales no, y una escena que
+  traiga alguna se dibuja plana entera —iluminar a medias la deja más oscura
+  que no iluminarla—.
 - Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
   incluidas, y con el vocabulario del formato cubierto entero. Los operadores
   que siguen al cursor quedan inactivos hasta que el motor sepa dónde está el

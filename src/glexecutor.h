@@ -131,6 +131,11 @@ private:
         qsizetype targetIndex = kCompo; // Source::Target
         GlLocation location = -1;
         int unit = 0;
+        // `_rt_MipMappedFrameBuffer` es el mismo buffer de escena que
+        // `_rt_FullFrameBuffer`, pero con la piramide al dia: el reflejo elige
+        // el nivel con `roughness * g_TextureNMipMapInfo`. Hay que regenerarla
+        // en cada lectura, porque entre pase y pase se sigue dibujando encima.
+        bool mipmapped = false;
     };
 
     struct Uniform {
@@ -236,6 +241,7 @@ private:
     bool buildCompositeProgram();
     void beginObject();
     const Target &resolveTarget(qsizetype index) const;
+    void bindMipSampler(int unidad, GlName tex);
     void flushObjectToScene();
     bool buildProgram(Op &op);
     void resolve(Op &op);
@@ -251,6 +257,9 @@ private:
     Target m_compo[2];      // buffer del objeto en curso (ping-pong)
     Target m_scene;         // acumulado de todos los objetos
     GlName m_composite = 0; // programa para componer objeto -> escena
+    // Filtro mipmap para quien lee `_rt_MipMappedFrameBuffer`. Va aparte de la
+    // textura porque el buffer de escena se lee tambien sin mipmaps.
+    GlName m_mipSampler = 0;
     GlLocation m_compositeMvp = -1;
     float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     Compose m_compose = Compose::Normal;

@@ -71,6 +71,32 @@ static int compo_cur;
 /* Buffer donde se acumulan todos los objetos. Sin el, cada objeto pisaba al
  * anterior en el par ping-pong y solo sobrevivia la ultima capa. */
 static Target scene_rt;
+
+/* El filtro mipmap NO puede ir en la textura. `_rt_MipMappedFrameBuffer` y
+ * `_rt_FullFrameBuffer` son el MISMO buffer de escena, asi que dejarle a la
+ * textura `GL_LINEAR_MIPMAP_LINEAR` se lo cambia tambien a quien la lee por el
+ * otro nombre: medido, 4 escenas del corpus se iban hasta 10 puntos de
+ * luminancia porque un pase que minifica el fondo pasaba a leer un nivel
+ * borroso. Un sampler object ata el filtro a la UNIDAD de textura y deja la
+ * textura como estaba. */
+static GLuint mip_sampler;
+
+static void bind_mip_sampler(int unidad, GLuint tex)
+{
+    if (!mip_sampler) {
+        glGenSamplers(1, &mip_sampler);
+        glSamplerParameteri(mip_sampler, GL_TEXTURE_MIN_FILTER,
+                            GL_LINEAR_MIPMAP_LINEAR);
+        glSamplerParameteri(mip_sampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri(mip_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glSamplerParameteri(mip_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    /* Los niveles se regeneran en cada lectura: entre pase y pase se sigue
+     * dibujando sobre la escena. */
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindSampler(unidad, mip_sampler);
+}
 static GLuint composite_prog;
 static int object_open;
 /* Colocacion del objeto en curso: los pases corren en el espacio de la capa
@@ -898,6 +924,10 @@ int main(int argc, char **argv)
             for (int i = 0; i < n_samplers; i++) {
                 glActiveTexture(GL_TEXTURE0 + i);
                 glBindTexture(GL_TEXTURE_2D, bound[i]);
+                if (strcmp(samplers[i].src, "rt:_rt_MipMappedFrameBuffer") == 0)
+                    bind_mip_sampler(i, bound[i]);
+                else
+                    glBindSampler(i, 0);
                 GLint loc = glGetUniformLocation(prog, samplers[i].uni);
                 if (loc >= 0)
                     glUniform1i(loc, i);

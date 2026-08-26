@@ -354,7 +354,9 @@ void GlExecutor::resolve(Op &op)
             s.texture = it->id;
         } else if (src.startsWith("rt:")) {
             s.source = Source::Target;
-            s.targetIndex = targetIndex(QString::fromUtf8(src.mid(3)));
+            const QString nombre = QString::fromUtf8(src.mid(3));
+            s.targetIndex = targetIndex(nombre);
+            s.mipmapped = nombre == QLatin1String("_rt_MipMappedFrameBuffer");
         } else {
             s.source = Source::Previous;
         }
@@ -449,6 +451,29 @@ bool GlExecutor::buildCompositeProgram()
     }
     m_compositeMvp = glGetUniformLocation(m_composite, "mvp");
     return true;
+}
+
+void GlExecutor::bindMipSampler(int unidad, GlName tex)
+{
+    // El filtro mipmap NO puede ir en la textura: `_rt_MipMappedFrameBuffer` y
+    // `_rt_FullFrameBuffer` son el MISMO buffer de escena, asi que dejarselo a
+    // la textura se lo cambia tambien a quien la lee por el otro nombre.
+    // Medido en el renderizador offline: 4 escenas se iban hasta 10 puntos de
+    // luminancia porque un pase que minifica el fondo pasaba a leer un nivel
+    // borroso. Un sampler object ata el filtro a la UNIDAD.
+    if (!m_mipSampler) {
+        glGenSamplers(1, &m_mipSampler);
+        glSamplerParameteri(m_mipSampler, GL_TEXTURE_MIN_FILTER,
+                            GL_LINEAR_MIPMAP_LINEAR);
+        glSamplerParameteri(m_mipSampler, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glSamplerParameteri(m_mipSampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glSamplerParameteri(m_mipSampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    // Los niveles se regeneran en cada lectura: entre pase y pase se sigue
+    // dibujando sobre la escena.
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindSampler(unidad, m_mipSampler);
 }
 
 const GlExecutor::Target &GlExecutor::resolveTarget(qsizetype index) const
@@ -941,6 +966,10 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
                 tex = m_compo[m_compoCur].tex;
             glActiveTexture(GL_TEXTURE0 + s.unit);
             glBindTexture(GL_TEXTURE_2D, tex);
+            if (s.mipmapped)
+                bindMipSampler(s.unit, tex);
+            else
+                glBindSampler(s.unit, 0);
             glUniform1i(s.location, s.unit);
         }
 
