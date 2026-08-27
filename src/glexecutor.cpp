@@ -170,6 +170,8 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
                 case 1:  op.compose = Compose::Additive; break;
                 case 2:  op.compose = Compose::PremulOver; break;
                 case 3:  op.compose = Compose::PremulAdd; break;
+                case 4:  op.compose = Compose::Screen; break;
+                case 5:  op.compose = Compose::Lighten; break;
                 default: op.compose = Compose::Normal; break;
                 }
             // Capa que solo llena su buffer de composicion: se dibuja pero no
@@ -420,10 +422,18 @@ bool GlExecutor::buildCompositeProgram()
         "in vec3 a_Position; in vec2 a_TexCoord; out vec2 uv;\n"
         "uniform mat4 mvp;\n"
         "void main(){ uv = a_TexCoord; gl_Position = vec4(a_Position, 1.0) * mvp; }\n";
+    // `premul` lo encienden Screen y Lighten, que mezclan con el destino
+    // ignorando el alfa. El buffer de una capa con efectos NO viene
+    // premultiplicado ---los pases de efecto escriben con la mezcla apagada,
+    // o sea crudo--- asi que puede haber color vivo donde el alfa es cero, y
+    // sin premultiplicar esos modos lo cuelan igual.
     static const char *fs =
         "#version 330 core\n"
-        "in vec2 uv; out vec4 fragColor; uniform sampler2D src;\n"
-        "void main(){ fragColor = texture(src, uv); }\n";
+        "in vec2 uv; out vec4 fragColor;\n"
+        "uniform sampler2D src; uniform float premul;\n"
+        "void main(){ fragColor = texture(src, uv);\n"
+        "             fragColor.rgb = mix(fragColor.rgb,\n"
+        "                                 fragColor.rgb * fragColor.a, premul); }\n";
 
     auto build = [](const char *code, GLenum stage) {
         const GlName sh = glCreateShader(stage);
@@ -450,6 +460,7 @@ bool GlExecutor::buildCompositeProgram()
         return false;
     }
     m_compositeMvp = glGetUniformLocation(m_composite, "mvp");
+    m_compositePremul = glGetUniformLocation(m_composite, "premul");
     return true;
 }
 
@@ -527,10 +538,17 @@ void GlExecutor::flushObjectToScene()
     // Los `Premul*` no vuelven a multiplicar por el alfa: el buffer de un
     // sistema de particulas ya lo trae aplicado, y hacerlo otra vez apaga los
     // halos, que es donde vive casi todo el brillo de una particula.
+    glBlendEquation(GL_FUNC_ADD);
     switch (m_compose) {
     case Compose::Additive:   glBlendFunc(GL_SRC_ALPHA, GL_ONE); break;
     case Compose::PremulAdd:  glBlendFunc(GL_ONE, GL_ONE); break;
     case Compose::PremulOver: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
+    // 1-(1-A)(1-B) sale exacto de esta pareja de factores.
+    case Compose::Screen:     glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE); break;
+    case Compose::Lighten:
+        glBlendEquation(GL_MAX);
+        glBlendFunc(GL_ONE, GL_ONE);
+        break;
     case Compose::Normal:
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA,
                             GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -539,8 +557,14 @@ void GlExecutor::flushObjectToScene()
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_compo[m_compoCur].tex);
     glUniform1i(glGetUniformLocation(m_composite, "src"), 0);
+    glUniform1f(m_compositePremul,
+                (m_compose == Compose::Screen || m_compose == Compose::Lighten)
+                    ? 1.0f : 0.0f);
     glUniformMatrix4fv(m_compositeMvp, 1, GL_FALSE, m_placement);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    // La ecuacion es estado global: dejarla en MAX se llevaria por delante
+    // todo lo que se dibuje despues, incluido el resto de la escena.
+    glBlendEquation(GL_FUNC_ADD);
 }
 
 bool GlExecutor::initialize(QString *error)

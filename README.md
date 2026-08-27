@@ -229,6 +229,19 @@ donde el relieve es marcado.
 
 Limitaciones conocidas:
 
+- De los modos de fusión de capa (`colorBlendMode`) se aplican los cinco que
+  sabe hacer la tarjeta —aditivo, add, screen, lighten y max, 65 de los 79
+  usos de esta biblioteca—. Los que hacen falta leer el destino dentro del
+  shader, como *overlay*, se componen como una capa normal.
+- Sin **bloom**: el resplandor que el motor añade sobre la escena terminada.
+  Lo encienden 34 escenas de 129, y una que se apoye mucho en él se ve
+  apagada aunque los colores sean los correctos.
+- La ondulación del agua de algún wallpaper no cae exactamente donde su
+  preview la pone. La capa se coloca donde la escena dice; la diferencia está
+  en su cadena de efectos y sigue sin aclararse.
+- Los campos **animados** se congelan, no se animan: el plan es una foto y el
+  motor solo le cambia el reloj. Se congelan en reposo, que es como se ve un
+  wallpaper una vez arrancado.
 - Las capas cuya textura es un **vídeo** se ven congeladas en su primer
   fotograma, no reproducidas. Son 3 escenas de 129.
 - El parallax por mapa de profundidad se dibuja en reposo: el motor todavía no

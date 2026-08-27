@@ -494,10 +494,17 @@ static void init_composite(void)
         "layout(location=0) in vec3 p; layout(location=1) in vec2 t;\n"
         "uniform mat4 mvp;\n"
         "out vec2 uv; void main(){ uv=t; gl_Position=vec4(p,1.0)*mvp; }\n";
+    /* `premul` lo encienden los modos que mezclan con el destino ignorando el
+     * alfa ---screen y max---. El buffer de una capa con efectos NO viene
+     * premultiplicado: los pases de efecto escriben con `blend none`, o sea
+     * crudo, asi que puede haber color vivo donde el alfa es cero. Sin
+     * premultiplicar, esos modos lo cuelan igual: en `3082427731` dejaban el
+     * 28 % de la imagen saturada a blanco. */
     static const char *fs =
         "#version 330 core\n"
-        "in vec2 uv; out vec4 o; uniform sampler2D src;\n"
-        "void main(){ o = texture(src, uv); }\n";
+        "in vec2 uv; out vec4 o; uniform sampler2D src; uniform float premul;\n"
+        "void main(){ o = texture(src, uv);\n"
+        "             o.rgb = mix(o.rgb, o.rgb * o.a, premul); }\n";
     GLuint v = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(v, 1, &vs, NULL); glCompileShader(v);
     GLuint f = glCreateShader(GL_FRAGMENT_SHADER);
@@ -525,7 +532,19 @@ static void flush_object(void)
     glViewport(0, 0, scene_rt.w, scene_rt.h);
     glUseProgram(composite_prog);
     glEnable(GL_BLEND);
-    if (obj_aditivo == 3)
+    /* El modo lo elige `colorBlendMode` del objeto; ver MEZCLA_DE_OBJETO en
+     * werender.py. Los cuatro que se hacen aqui tienen el negro por elemento
+     * neutro, que es con lo que arranca el buffer del objeto: donde la capa no
+     * dibuja, no aporta. */
+    glBlendEquation(GL_FUNC_ADD);
+    if (obj_aditivo == 5) {
+        /* lighten / max */
+        glBlendEquation(GL_MAX);
+        glBlendFunc(GL_ONE, GL_ONE);
+    } else if (obj_aditivo == 4) {
+        /* screen: 1-(1-A)(1-B) sale exacto de esta pareja de factores. */
+        glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE);
+    } else if (obj_aditivo == 3)
         glBlendFunc(GL_ONE, GL_ONE);
     else if (obj_aditivo == 2)
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -537,10 +556,15 @@ static void flush_object(void)
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, compo[compo_cur].tex);
     glUniform1i(glGetUniformLocation(composite_prog, "src"), 0);
+    glUniform1f(glGetUniformLocation(composite_prog, "premul"),
+                (obj_aditivo == 4 || obj_aditivo == 5) ? 1.0f : 0.0f);
     glUniformMatrix4fv(glGetUniformLocation(composite_prog, "mvp"),
                        1, GL_FALSE, obj_mvp);
     glBindVertexArray(quad_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    /* La ecuacion es estado global: dejarla en MAX se llevaria por delante
+     * todo lo que se dibuje despues. */
+    glBlendEquation(GL_FUNC_ADD);
 }
 
 /* Cada objeto arranca transparente y aporta solo lo suyo; la mezcla con lo de

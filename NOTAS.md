@@ -7,6 +7,43 @@ para empezar, ver [README.md](README.md).
 
 Motor de animaciones para el escritorio, KDE Plasma 6 / Wayland.
 
+## Regla de trabajo: nada específico de un wallpaper
+
+Cuando un wallpaper sale mal, **el arreglo tiene que valer para todos**. Nunca
+un caso especial por id de escena, por nombre de capa, ni un campo del formato
+descartado porque «en esta escena estorba». Si la escena declara un dato, se
+lee; si el resultado no cuadra, lo que falta es entender el mecanismo, no
+esquivarlo.
+
+Por qué, y no es una preferencia de estilo:
+
+- **Un caso especial no se puede comprobar.** El criterio de este repositorio
+  es medir sobre las 129 escenas. Una excepción para una escena no la puede
+  validar el corpus: por construcción acierta en la única donde se probó y no
+  dice nada de las otras 128.
+- **Tapa la causa.** Pasa dos veces en estas notas y las dos veces salió caro:
+  el fallo de enlace que ocultaba el desbordamiento de godrays, y la regla de
+  «solo heredan los grupos», que era un parche a la mezcla del objeto. Las dos
+  parecían correcciones y eran vendas; en cuanto se arregló lo de debajo, el
+  parche estorbaba —ver [Compilar no es
+  enlazar](#compilar-no-es-enlazar-82-pases-que-se-perdían-sin-decir-nada) y
+  [Los recuadros
+  negros](#los-recuadros-negros-una-capa-negra-de-verdad-compuesta-con-la-mezcla-que-no-era)—.
+- **La biblioteca de cada uno es otra.** Este corpus son las escenas que hay en
+  esta máquina. Un motor que necesite una excepción por escena no funciona en
+  la biblioteca de nadie más, que es justo para lo que sirve el proyecto.
+
+Qué hacer cuando no se entiende un caso: **dejarlo escrito y no tocarlo**. Es
+lo que se hizo con la ondulación de `3299228616`, donde el barrido dice que
+cuadraría ignorando el desplazamiento que la capa declara —y por eso
+precisamente no se ignora—. Una diferencia documentada es información; un caso
+especial que la esconde es deuda que ya no se ve.
+
+Lo que sí es general, aunque salga de una sola escena: reponer un campo del
+formato que no leíamos, implementar un modo de mezcla que la tabla de WE
+define, o corregir una regla que se dedujo mal. Eso no es un caso especial: es
+el mecanismo, y se mide sobre el corpus entero como todo lo demás.
+
 ## Estado
 
 **El motor corre en vivo dentro de plasmashell**, partículas incluidas. Una
@@ -2946,6 +2983,245 @@ Mientras tanto, el fotograma congelado cuesta una llamada a `ffmpeg` en tiempo
 de generación del plan y no añade ninguna dependencia en ejecución. Si `ffmpeg`
 no está, se queda como estaba: sin textura.
 
+## Las dos escenas negras eran dos campos leídos de más
+
+Ninguna de las dos era un fallo de render. Las dos eran el mismo tipo de error
+en dos sitios distintos: **`value` no es el valor**. En el formato de WE hay
+campos que llegan como un objeto con un `value` dentro, y ese `value` es la
+copia que el campo tenía **en el instante en que el autor guardó la escena**.
+Quien manda es otra cosa. `is_visible` ya lo sabía para el campo `visible`; el
+resto del motor no.
+
+### `1518454472`: la Miku salía roja donde va cian
+
+El primer sitio son las propiedades configurables. Un campo puede venir como
+
+```json
+{"user": "neon_2", "value": "1 0 0"}
+```
+
+y el color de verdad está en la propiedad `neon_2` del `project.json`, que en
+esa escena vale `0 1 1`. Rojo y cian son **complementarios**, y eso es lo que
+delata que no era un problema de brillo sino de leer el campo equivocado: si
+fuera el brillo saldría el mismo tono más apagado, no el opuesto.
+
+Medido en el corpus: **450 campos atados a una propiedad, 92 con la copia
+desfasada, en 22 escenas.** Casi todos son constantes de material (77) y el
+resto colores y escalas de objeto. Se resuelve al cargar la escena, en un solo
+sitio, y se sustituye únicamente la copia: quien lea `user` sigue viendo lo
+mismo. Si `user` no nombra una propiedad conocida ---hay wallpapers donde es a
+su vez un objeto--- la copia se queda.
+
+Efecto: 7 escenas cambian, 5 se acercan a su preview y 2 se alejan.
+
+### `3577990983`: un telón de entrada que no se levantaba
+
+El segundo sitio son las animaciones, y aquí la escena no estaba «rota»: estaba
+**tapada**. Una capa de color sólido negro, a pantalla completa, con el `alpha`
+animado:
+
+```
+c0: fotograma 0 -> 1,  fotograma 60 -> 1,  fotograma 90 -> 0
+options: {fps: 30, length: 90, mode: "single"}
+```
+
+Es un fundido de entrada de tres segundos. WE lo guardó con la copia en `1`, o
+sea opaco, así que sin evaluar la curva ese telón se quedaba puesto para
+siempre. La escena salía negra menos un ramo de flores que se dibuja encima de
+él, y esa flor suelta sobre negro era toda la pista que había.
+
+Encontrarlo costó cortar el plan objeto a objeto: la escena sube hasta 45 de
+luminancia y **el objeto 28 de 30 la deja en cero**. Ese objeto es un
+`solidlayer` de un solo pase, sin samplers, con `g_Color4 0 0 0 1` y mezcla
+`translucent`: un rectángulo negro opaco sobre todo lo demás.
+
+Ahora se evalúa la curva. La interpolación es lineal: los fotogramas clave
+traen además tiradores de bézier en `front` y `back` y no se usan, porque sobre
+una rampa de fundido cambian la forma, no si acaba encendida o apagada.
+
+**El plan es una foto, y eso decide a qué instante se hornea.** El motor repite
+el plan cada fotograma cambiando solo `g_Time`, así que un campo animado se
+queda donde se hornee. Para el renderizador offline es el instante que le
+pidas. Para el plan del escritorio es el **reposo**, no el instante 0: en el 0
+el telón está opaco, y hornearlo ahí habría dejado el fondo negro en vivo
+exactamente igual que antes. Pasada su duración, una curva `single` ---33 de
+las 51 del corpus, y todas las de entrada--- ya vale su valor definitivo. Las
+`loop` y `mirror` quedan congeladas en ese instante, que es lo único que un
+plan estático puede dar; hoy tampoco se movían.
+
+### Lo que se llevó por delante
+
+No solo las dos que se buscaban:
+
+| escena | media | razón vs preview |
+|---|---|---|
+| `3577990983` | 1,95 → **45,22** | 0,029 → 0,664 |
+| `3285617191` | 20,60 → **56,76** | 0,198 → 0,544 |
+| `3053927686` | 31,88 → **48,50** | 0,354 → 0,539 |
+| `1518454472` | 3,88 → 6,26 | 0,055 → 0,089 |
+
+`3285617191` no estaba en ninguna lista: se daba por oscura y era otro campo
+animado. Y `3053927686` es la escena de la luz de tubo, que se quedó en el 0,35
+después de ponerle la luz entera; sube al 0,54 sola, así que su problema
+tampoco era la iluminación.
+
+De las 129: **3 escenas cambian por la animación y las 3 se acercan a su
+preview, 0 regresiones**. Las apagadas bajan de 2 a 1.
+
+### La que queda es bloom, y es un subsistema
+
+`1518454472` ya sale con los tonos correctos ---los contornos cian y el «01»
+rojo, como su preview--- pero mucho más apagada, y lo que le falta tiene
+nombre: la escena declara `bloom: true` con `bloomstrength: 5.0` y
+`bloomthreshold: 0.0`. Ese resplandor es la mitad del wallpaper.
+
+No es una escena: **34 de las 129 encienden el bloom del motor**. Es un pase
+final de post-proceso ---umbral de brillo, cadena de desenfoques a resolución
+decreciente y suma sobre la escena ya compuesta--- que hay que meter en el plan
+y en los dos ejecutores. Hay autores que lo montan a mano como cadena de
+efectos, y ese camino ya funciona: el propio `3577990983` trae uno de 18 pases
+del taller. Lo que falta es el del motor.
+
+## Los recuadros negros: una capa negra de verdad, compuesta con la mezcla que no era
+
+Tres escenas del corpus tenían un rectángulo pintado encima que no está en su
+preview: el velo de `3053927686`, el recuadro negro de la esquina inferior
+izquierda de Lonely Cat (`3299228616`) y un rombo negro girado en mitad de
+`2413651762`. Son el mismo fallo.
+
+### La capa no está rota: es negra a propósito
+
+`ripple1440p`, la de Lonely Cat, tiene una textura de 2560x1440 cuyo RGB medio
+es **3,8 sobre 255 y cuyo alfa es 255 en todos los píxeles**. Es negra y opaca
+de verdad. Lo que la hace invisible en WE es el `colorBlendMode` del objeto, que
+vale 9 —*add*—: sumar negro no aporta nada. Nosotros solo tratábamos el modo 31
+y componíamos el resto con alfa normal, así que esa capa pintaba su rectángulo
+allá donde cayera.
+
+La tabla está en `ApplyBlending`, en `common_blending.h`, y va del 1 al 32.
+En el corpus se usan 79 veces:
+
+| modo | usos | qué es |
+|---|---|---|
+| 31 | 42 | el aditivo de WE, `A + B*opacity` |
+| 6, 10 | 14 | lighten / max |
+| 11 | 8 | overlay |
+| 9 | 6 | add |
+| 7 | 3 | screen |
+| resto | 6 | softlight, colorburn, glow, luminosity… |
+
+Se traducen los que el hardware sabe hacer con `glBlendFunc` **y cuyo elemento
+neutro es el negro**, que es con lo que arranca el buffer del objeto: 31, 9, 7,
+6 y 10, o sea 65 de los 79. `multiply` y `darken` también los sabe hacer el
+hardware y quedan fuera aposta: multiplicarían igual donde la capa es
+transparente y apagarían la escena entera fuera de ella.
+
+### Por qué no se hace donde lo hace WE
+
+WE no lo hace al componer, lo hace **dentro del pase base**: el shader trae el
+bloque
+
+```glsl
+gl_FragColor.rgb = ApplyBlending(BLENDMODE, screen.rgb, gl_FragColor.rgb,
+                                 gl_FragColor.a);
+gl_FragColor.a   = screen.a;
+```
+
+con `screen` muestreado de `_rt_FullFrameBuffer` en `v_ScreenCoord`. Se probó y
+no vale aquí, y la razón es de arquitectura: **los pases de un objeto corren en
+el espacio de la capa**, y la colocación se aplica una sola vez al componerlo.
+Dentro del pase, `gl_Position` no es la pantalla, así que `v_ScreenCoord`
+apunta a cualquier sitio. Medido, por ese camino las cuatro escenas salen
+desbordadas —`3299228616` al 71 % de píxeles saturados—. Queda escrito por si
+algún día los pases se dibujan en coordenadas de pantalla.
+
+### El alfa hay que premultiplicarlo a mano
+
+`screen` y `max` mezclan con el destino ignorando el alfa de la fuente, y el
+buffer de una capa con efectos **no viene premultiplicado**: los pases de
+efecto escriben con la mezcla apagada, o sea crudo, así que puede haber color
+vivo donde el alfa vale cero. Sin premultiplicar, esos dos modos lo cuelan
+igual. El shader de composición —el único que el motor lleva dentro— lo hace
+ahora cuando toca.
+
+### Y entonces la regla de la herencia se cae sola
+
+Estas notas decían que solo heredan la transformación los hijos de un GRUPO,
+porque en Lonely Cat heredar de la imagen de fondo llevaba varias capas al
+centro y tapaba la escena. Era cierto, y la causa era esta: la capa que tapaba
+era `ripple1440p`, el rectángulo negro. Colocarla bien la hacía **más grande**,
+así que parecía que la culpa era de heredar.
+
+Con la mezcla puesta, el balance se da la vuelta. Sobre las 9 escenas con hijos
+de una capa que dibuja, heredar siempre mejora 7 y empata en 2:
+
+| escena | sin heredar | heredando |
+|---|---|---|
+| `3299228616` (Lonely Cat) | 0,541 | **0,790** |
+| `2867316322` | 1,111 | 1,036 |
+| `3462491575` | 1,157 | 1,104 |
+| `3238423642` | 0,826 | 0,850 |
+
+Es la misma lección de los pases que no enlazaban: el parche tapaba el fallo, y
+en cuanto el fallo se arregla el parche estorba. Ahora hereda todo hijo, que es
+lo que significa `parent`.
+
+### La invisibilidad no bajaba por la cadena de padres
+
+Apagar un grupo tiene que apagar lo que cuelga de él, que es para lo que sirve
+agrupar. Mirábamos solo el campo `visible` de cada objeto.
+
+Lonely Cat lo enseña de golpe: trae la escena **seis veces, una por idioma**, y
+apaga cinco *por el padre*. Sus hijos —campos de estrellas, destellos, la
+ondulación del agua— no dicen nada de si se ven, así que se dibujaban los seis
+juegos. De 125 objetos que parecían visibles, solo **18** lo están de verdad:
+107 de más. De ahí la nevada de puntos blancos que su preview no tiene, y los
+anillos de agua duros, que eran seis ondulaciones apiladas.
+
+En el corpus son **150 objetos de más en 4 escenas**: `3299228616` (107),
+`3238423642` (30), `3597772384` (12) y `3462491575` (1).
+
+Ojo con la medida: `test_luminancia` marca `3299228616` como regresión, de 70,81
+a 50,07. Es la corrección funcionando —quitar cinco campos de estrellas quita
+luz— y su preview tampoco sirve de juez: es un recorte central cuadrado de
+256x256, o sea la zona más brillante. Que la razón baje ahí no dice nada.
+
+### Lo que NO era: la Y del hijo
+
+Con las estrellas arregladas, la ondulación del agua sigue naciendo más abajo
+que en el preview. La tentación es invertir la Y del `origin` relativo, y está
+comprobado que no:
+
+- El reloj lo desmiente. Sus hijos declaran desplazamientos de +656 a +873 y
+  salen ARRIBA, igual que en el preview. Invirtiendo la Y se van al borde de
+  abajo.
+- La colocación sigue el dato: `ripple1440p` declara `origin` (9,86, −221,11)
+  bajo un padre en (1920, 1080), o sea (1929,9, 858,9), 221 px por debajo del
+  centro. Eso es lo que se dibuja.
+
+Así que lo que queda de diferencia está DENTRO de la capa, en su cadena de
+efectos ---`waterflow`, `waterripple` y sobre todo `perspective`, que trae
+`bottom: -0.49`---, no en dónde se pone el rectángulo. Los cuatro uniforms de
+la perspectiva se emiten bien (`g_Bottom -0.49`, modo UV). Aislando la capa,
+su energía cae centrada al 34 % de la altura y el rectángulo está al 60 %: la
+perspectiva la mueve, y cuánto debería moverla no se ha podido confirmar.
+Queda abierto.
+
+### Lo que se ve
+
+Los tres rectángulos desaparecen. Las ondas de Lonely Cat salen del centro
+—alrededor del gato, como en su preview— y la lluvia de `3053927686` cubre la
+pantalla en vez de una esquina.
+
+Sobre las 129: **12 escenas cambian, 6 se acercan a su preview, 5 se alejan y 0
+regresiones.** Las que se alejan lo hacen por arriba, de razones ya por encima
+de 1: son capas de brillo que antes aportaban de menos.
+
+La excepción a vigilar es `2413651762`, que pasa de 0,66 a 1,39. Ahí el rombo
+negro desaparece —eso está claro— pero la escena queda lavada y **su preview no
+sirve para juzgarlo**: es un retrato de cerca y lo nuestro es el plano ancho, o
+sea que la razón no compara lo mismo ni antes ni ahora.
+
 ## Lo siguiente
 
 Por orden de lo que más se nota:
@@ -2955,8 +3231,11 @@ Por orden de lo que más se nota:
    tampoco compila—. Y el fallo que el enlace supuestamente tapaba en godrays
    y glow no aparece al volver a medirlo; ver [Compilar no es
    enlazar](#compilar-no-es-enlazar-82-pases-que-se-perdían-sin-decir-nada).
-2. **Las 2 escenas negras que quedan**: `3577990983` y `1518454472`. Las otras
-   dos eran texturas de vídeo y ya se ven.
+2. ~~Las 2 escenas negras~~ **hecho**: ninguna era un fallo de render, las dos
+   leían la copia de un campo en vez del campo —ver [Las dos escenas
+   negras](#las-dos-escenas-negras-eran-dos-campos-leídos-de-más)—. Queda
+   `1518454472` apagada, y lo que le falta es **bloom**: 34 escenas de 129
+   lo encienden y es un pase de post-proceso que no tenemos.
 3. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
    glifos. Los materiales de fuente MSDF, que faltaban, aparecieron al pasar a
    la instalación real.

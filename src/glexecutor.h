@@ -122,7 +122,12 @@ private:
     enum class Source { Texture, Target, Previous };
 
     // Como se compone el buffer del objeto sobre la escena.
-    enum class Compose { Normal, Additive, PremulOver, PremulAdd };
+    // Como se lleva el buffer de un objeto a la escena. Los cuatro primeros
+    // son los de siempre; `Screen` y `Lighten` salen del `colorBlendMode` del
+    // objeto y son los unicos modos de la tabla de WE que el hardware sabe
+    // hacer sin leer el destino (ver MEZCLA_DE_OBJETO en werender.py).
+    enum class Compose { Normal, Additive, PremulOver, PremulAdd,
+                         Screen, Lighten };
 
     // Un sampler ya resuelto: sin cadenas, sin busquedas.
     struct Sampler {
@@ -260,6 +265,7 @@ private:
     // Filtro mipmap para quien lee `_rt_MipMappedFrameBuffer`. Va aparte de la
     // textura porque el buffer de escena se lee tambien sin mipmaps.
     GlName m_mipSampler = 0;
+    GlLocation m_compositePremul = -1;
     GlLocation m_compositeMvp = -1;
     float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     Compose m_compose = Compose::Normal;

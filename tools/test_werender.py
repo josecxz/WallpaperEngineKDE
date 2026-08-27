@@ -205,6 +205,161 @@ def prueba_sampler_por_defecto(fallos: list[str]) -> None:
                           f"se esperaba {espera!r} ({por_que})")
 
 
+def prueba_valor_de_usuario(fallos: list[str]) -> None:
+    """Un campo atado a una propiedad vale lo que la propiedad, no su copia.
+
+    `{"user": "neon", "value": "1 0 0"}` con `neon` en `0 1 1` vale CIAN. La
+    copia es del instante en que el autor guardo. Leerla dejaba la Miku de
+    1518454472 roja donde su preview es cian.
+    """
+    props = {"neon": {"type": "color", "value": "0 1 1"},
+             "apagado": {"type": "bool", "value": False}}
+    datos = {"objects": [{"color": {"user": "neon", "value": "1 0 0"},
+                          "passes": [{"constantshadervalues": {
+                              "c": {"user": "apagado", "value": True},
+                              "suelto": {"user": "no_existe", "value": "9 9 9"},
+                              "raro": {"user": {"anidado": 1}, "value": "7 7 7"}}}]}]}
+    wescene._refrescar_valores_de_usuario(datos, props)
+    o = datos["objects"][0]
+    if o["color"]["value"] != "0 1 1":
+        fallos.append(f"el color no se refresco: {o['color']}")
+    cs = o["passes"][0]["constantshadervalues"]
+    if cs["c"]["value"] is not False:
+        fallos.append(f"la constante no se refresco: {cs['c']}")
+    # Lo que no nombra una propiedad conocida se queda como estaba: es lo que
+    # el autor tenia en pantalla, y `user` no siempre es un nombre.
+    if cs["suelto"]["value"] != "9 9 9" or cs["raro"]["value"] != "7 7 7":
+        fallos.append(f"se toco lo que no habia que tocar: {cs}")
+
+
+def prueba_curva_de_animacion(fallos: list[str]) -> None:
+    """El valor de una curva de fotogramas clave en un instante dado.
+
+    El caso que importa es el telon de entrada de 3577990983: una capa negra
+    cuyo `alpha` va de 1 a 0 en 90 fotogramas y que WE guardo en 1. Sin
+    evaluar la curva se queda opaca para siempre y tapa el wallpaper.
+    """
+    telon = {"options": {"fps": 30, "length": 90, "mode": "single"},
+             "c0": [{"frame": 0, "value": 1}, {"frame": 60, "value": 1},
+                    {"frame": 90, "value": 0}]}
+    for t, espera, por_que in ((0.0, 1.0, "en el arranque, opaco"),
+                               (2.0, 1.0, "aun no empieza a irse"),
+                               (2.5, 0.5, "a mitad del fundido"),
+                               (3.0, 0.0, "justo al acabar"),
+                               (60.0, 0.0, "un minuto despues sigue apagado")):
+        v = wescene._valor_animado(telon, t)
+        if v is None or abs(v[0] - espera) > 1e-6:
+            fallos.append(f"telon en t={t}: {v} en vez de {espera} ({por_que})")
+
+    # `loop` vuelve a empezar; `mirror` va y vuelve. Un plan estatico los
+    # congela, pero en el instante que toca.
+    for modo, casos in (("loop", ((0.0, 0.0), (0.5, 15.0), (1.0, 0.0))),
+                        ("mirror", ((0.0, 0.0), (1.0, 30.0), (1.5, 15.0)))):
+        curva = {"options": {"fps": 30, "length": 30, "mode": modo},
+                 "c0": [{"frame": 0, "value": 0}, {"frame": 30, "value": 30}]}
+        for t, espera in casos:
+            v = wescene._valor_animado(curva, t)
+            if v is None or abs(v[0] - espera) > 1e-6:
+                fallos.append(f"{modo} en t={t}: {v} en vez de {espera}")
+
+    # Un vector anima un canal por componente.
+    tres = {"options": {"fps": 30, "length": 30, "mode": "single"},
+            "c0": [{"frame": 0, "value": 0}, {"frame": 30, "value": 3}],
+            "c1": [{"frame": 0, "value": 10}, {"frame": 30, "value": 20}],
+            "c2": [{"frame": 0, "value": 5}, {"frame": 30, "value": 5}]}
+    v = wescene._valor_animado(tres, 0.5)
+    if v is None or [round(x, 4) for x in v] != [1.5, 15.0, 5.0]:
+        fallos.append(f"tres canales dieron {v}")
+
+    # Una curva que no se entiende no puede reventar el render.
+    if wescene._valor_animado({"options": {}, "c0": []}, 1.0) is not None:
+        fallos.append("una curva vacia deberia dar None")
+
+
+def prueba_mezcla_de_objeto(fallos: list[str]) -> None:
+    """`colorBlendMode` decide como se compone la capa sobre la escena.
+
+    Solo se traducen los modos cuyo elemento neutro es el NEGRO, que es con lo
+    que arranca el buffer del objeto: si no, la capa pintaria tambien donde es
+    transparente. `multiply` y `darken` los sabe hacer el hardware y aun asi
+    quedan fuera por eso.
+
+    Costo de no tenerlo: la capa `ripple1440p` de Lonely Cat es negra y opaca
+    de verdad ---RGB 3.8, alfa 255--- y con modo `add` no aporta nada;
+    componiendola con alfa normal pintaba un rectangulo negro sobre la escena.
+    """
+    for modo, espera, por_que in ((31, 1, "el aditivo de WE"),
+                                  (9, 1, "add: el hardware satura igual"),
+                                  (7, 4, "screen"),
+                                  (6, 5, "lighten es un max"),
+                                  (10, 5, "max, lo mismo que lighten"),
+                                  (0, 0, "normal"),
+                                  (2, 0, "multiply apagaria fuera de la capa"),
+                                  (1, 0, "darken es un min, mismo problema"),
+                                  (11, 0, "overlay necesita leer el destino"),
+                                  (None, 0, "el objeto no lo declara")):
+        da = werender.MEZCLA_AL_COMPONER.get(modo, 0)
+        if da != espera:
+            fallos.append(f"colorBlendMode {modo} dio {da}, se esperaba "
+                          f"{espera} ({por_que})")
+
+
+def prueba_herencia_de_grupo(fallos: list[str]) -> None:
+    """El `origin` de un hijo es relativo al padre, dibuje el padre o no.
+
+    Durante un tiempo solo heredaban los hijos de un grupo vacio. Era un
+    parche a otro fallo ---la mezcla del objeto--- y se llevaba la lluvia de
+    3053927686 a la esquina del lienzo.
+    """
+    padre = wescene.SceneObject(id=1, name="fondo", kind="image",
+                                raw={"id": 1, "image": "models/f.json",
+                                     "origin": "1920 1080 0", "scale": "2 2 2"})
+    hijo = wescene.SceneObject(id=2, name="lluvia", kind="image",
+                               raw={"id": 2, "image": "models/l.json",
+                                    "parent": 1, "origin": "10 -20 0",
+                                    "scale": "3 3 3"})
+    org, esc, _ang = werender.transform_absoluto(hijo, {"1": padre, "2": hijo})
+    if [round(x, 4) for x in org] != [1940.0, 1040.0, 0.0]:
+        fallos.append(f"el origen del hijo no se compuso: {org}")
+    if [round(x, 4) for x in esc] != [6.0, 6.0, 6.0]:
+        fallos.append(f"la escala del hijo no se compuso: {esc}")
+    # Sin padre no cambia nada.
+    org, esc, _ang = werender.transform_absoluto(padre, {"1": padre})
+    if [round(x, 4) for x in org] != [1920.0, 1080.0, 0.0]:
+        fallos.append(f"un objeto sin padre no deberia moverse: {org}")
+
+
+def prueba_visibilidad_heredada(fallos: list[str]) -> None:
+    """Apagar un grupo apaga lo que cuelga de el.
+
+    Mirando solo el campo `visible` de cada objeto se dibujan capas que el
+    autor escondio dentro de un grupo apagado. Lonely Cat trae la escena SEIS
+    veces, una por idioma, y apaga cinco por el padre: sin heredar se
+    dibujaban 107 objetos de mas, y de ahi su nevada de puntos blancos.
+    """
+    datos = {"objects": [
+        {"id": 1, "name": "grupo apagado", "visible": False},
+        {"id": 2, "name": "hijo", "parent": 1},
+        {"id": 3, "name": "nieto", "parent": 2},
+        {"id": 4, "name": "grupo vivo"},
+        {"id": 5, "name": "hijo del vivo", "parent": 4},
+        {"id": 6, "name": "hijo apagado del vivo", "parent": 4, "visible": False},
+        {"id": 7, "name": "huerfano", "parent": 999},
+    ]}
+    v = wescene._visibilidad_heredada(datos, {})
+    for o in datos["objects"]:
+        espera = o["id"] in (4, 5, 7)
+        da = v[id(o)]
+        if da != espera:
+            fallos.append(f"{o['name']} (id {o['id']}): visible={da}, "
+                          f"se esperaba {espera}")
+
+    # Un ciclo en los datos no puede colgar el cargador.
+    ciclo = {"objects": [{"id": 1, "parent": 2}, {"id": 2, "parent": 1}]}
+    if len(wescene._visibilidad_heredada(ciclo, {})) != 2:
+        fallos.append("un ciclo de padres deberia resolverse igual")
+
+
 def prueba_niveles_mipmap(fallos: list[str]) -> None:
     """El nivel mas alto de la piramide del buffer de escena.
 
@@ -258,6 +413,9 @@ def main() -> int:
     for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
                    prueba_luces, prueba_empaquetado,
                    prueba_sampler_por_defecto, prueba_niveles_mipmap,
+                   prueba_valor_de_usuario, prueba_curva_de_animacion,
+                   prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
+                   prueba_visibilidad_heredada,
                    prueba_opacidad_del_objeto):
         prueba(fallos)
         print(f"  {prueba.__name__}")

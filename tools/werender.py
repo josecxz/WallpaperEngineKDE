@@ -54,14 +54,21 @@ def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[floa
     Una escena puede agrupar objetos: el hijo declara `parent` y su `origin` es
     RELATIVO al del grupo.
 
-    Solo heredan la transformacion los GRUPOS: objetos sin nada que dibujar,
-    que existen unicamente para mover a sus hijos. Si el padre es una capa
-    dibujable, el hijo ya viene en coordenadas del lienzo. No es una suposicion
-    de estilo, es lo que separa dos escenas reales: en Cyberpunk
-    Edgerunners-Lucy los padres son grupos vacios y sin componer la Tierra se
-    iba a la esquina inferior; en Lonely Cat el padre es la imagen de fondo a
-    pantalla completa y heredar de ella llevaba tres capas de 1920x1080 al
-    centro, tapando la escena --- de 38.05 de media a 8.01.
+    Hereda TODO hijo, dibuje o no su padre, que es lo que significa `parent`.
+
+    Hubo una temporada en que solo heredaban los hijos de un GRUPO ---un objeto
+    sin nada que dibujar, que existe solo para mover a los suyos--- porque en
+    Lonely Cat heredar de la imagen de fondo llevaba varias capas al centro y
+    tapaba la escena. Eso era cierto y la causa era otra: esas capas se
+    componian con mezcla normal en vez de con su `colorBlendMode`, asi que una
+    de ellas ---negra y opaca de verdad, con modo `add`--- pintaba un rectangulo
+    negro allá donde cayera. Colocarla bien la hacia mas grande, y por eso
+    parecia que la culpa era de heredar.
+
+    Con la mezcla del objeto puesta (ver MEZCLA_DE_OBJETO) el balance se da la
+    vuelta: heredar siempre mejora 7 de las 9 escenas con hijos de una capa que
+    dibuja y empata en las otras dos. La propia Lonely Cat pasa de 0.54 a 0.79
+    de su preview.
 
     Afecta a 476 objetos de 10 escenas, con hasta 5 niveles de anidamiento.
     """
@@ -75,9 +82,6 @@ def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[floa
         cadena.append(cur)
         padre = cur.raw.get("parent")
         cur = por_id.get(str(padre)) if (por_id and padre) else None
-        if cur is not None and any(cur.raw.get(k)
-                                   for k in ("image", "particle", "model", "text")):
-            cur = None              # el padre dibuja: no es un grupo
 
     org, esc, ang = [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
     # De la raiz hacia el objeto: cada nivel aplica su rotacion y escala al
@@ -281,6 +285,52 @@ CLASES_SIN_PONER = ("LIGHTS_SPOT", "LIGHTS_DIRECTIONAL")
 # Es un contador de compilacion de WE, no un dato de la escena; 62 es donde
 # cambia la convencion y la unica frontera que los shaders del corpus miran.
 SHADERVERSION = 62
+
+# El `colorBlendMode` del objeto se resuelve DENTRO del pase base, no al
+# componer. Los shaders de imagen traen la tabla entera de WE en
+# `ApplyBlending` ---`common_blending.h`, del 1 al 32--- y el bloque que la
+# usa hace exactamente esto:
+#
+#     gl_FragColor.rgb = ApplyBlending(BLENDMODE, screen.rgb, gl_FragColor.rgb,
+#                                      gl_FragColor.a);
+#     gl_FragColor.a   = screen.a;
+#
+# donde `screen` es el fotograma ya compuesto, que el shader muestrea de
+# `_rt_FullFrameBuffer`. O sea que la capa NO aporta su color: aporta el
+# resultado de mezclarlo con lo que hay detras, y luego se compone encima
+# normal. Por eso hay que emitir el combo y enlazar ese buffer.
+#
+# Hacerlo al componer, con `glBlendFunc`, parece equivalente y no lo es en
+# cuanto la capa declara `copybackground`: su buffer arranca con una COPIA de
+# la escena, asi que mezclarlo otra vez con la escena la cuenta dos veces. Con
+# `screen` sobre `3082427731` eso dejaba el 28 % de la imagen saturada a
+# blanco.
+
+# Aqui se hace al COMPONER, con el codigo que entienden los dos ejecutores en
+# la linea `object` del plan. Es una aproximacion y no la mecanica de WE, por
+# una razon concreta: los pases de un objeto corren en el espacio de la CAPA y
+# la colocacion se aplica una sola vez al componerlo, asi que dentro del pase
+# `gl_Position` no es la pantalla y `v_ScreenCoord` apuntaria a cualquier
+# sitio. Probado: por ese camino las cuatro escenas salen desbordadas.
+#
+# Solo entran los modos cuyo elemento neutro es el NEGRO, que es con lo que
+# arranca el buffer del objeto. `multiply` y `darken` los sabe hacer el
+# hardware y aun asi quedan fuera, porque multiplicarian tambien donde la capa
+# es transparente y apagarian la escena. Son 13 usos de 79 los que se quedan
+# sin traducir; se componen como siempre.
+MEZCLA_AL_COMPONER = {
+    31: 1,      # aditivo de WE: A + B*opacity
+    9: 1,       # add       min(A + B, 1) --- lo mismo, el hardware satura
+    7: 4,       # screen    1 - (1-A)(1-B)
+    6: 5,       # lighten   max(A, B)
+    10: 5,      # max       igual que lighten
+}
+
+# A que instante se hornea un campo animado en un plan que no se va a volver a
+# generar. Pasada su duracion, una curva `single` ---dos de cada tres del
+# corpus, y todas las de entrada--- vale ya su valor definitivo; una hora es
+# holgadamente mas que la mas larga que hay (4 segundos).
+TIEMPO_EN_REPOSO = 3600.0
 
 # Con que cae la luz entre su origen y su radio: `saturate(1 - d/radio)` elevado
 # a esto. Sale de la generacion anterior de shaders, que atenua el difuso con
@@ -825,6 +875,9 @@ class Renderer:
         self.res = AssetResolver.for_wallpaper(wallpaper, wepaths.we_assets())
         self.exec_path = exec_path
         self.time = time
+        # A que instante se congelan los campos animados. Por defecto el mismo
+        # que se renderiza; `emit_plan` lo lleva al reposo, ver TIEMPO_EN_REPOSO.
+        self.tiempo_animacion = time
         self.tmp = Path(tempfile.mkdtemp(prefix="werender-"))
         self.tex_ids: dict[str, int] = {}
         self.lines: list[str] = []   # cabecera: canvas, texturas y mallas
@@ -1887,7 +1940,9 @@ class Renderer:
 
     def _build(self, max_passes: int | None,
                only_base: bool = False) -> tuple[int, int]:
-        scene = load_scene(self.res)
+        # La escena se lee para un INSTANTE: los campos animados se congelan
+        # donde toque en vez de quedarse en la copia que guardo el autor.
+        scene = load_scene(self.res, tiempo=self.tiempo_animacion)
         general = scene.general
         proj = general.get("orthogonalprojection")
         # El tamano puede venir como numero o como cadena, y hasta como campo
@@ -1956,16 +2011,8 @@ class Renderer:
             # `colorBlendMode` del objeto: como se combina la capa con lo que
             # hay detras. Va aqui y no en el pase base porque el pase base
             # dibuja sobre el buffer VACIO del objeto -- la mezcla con la
-            # escena ocurre al componer, que es esto.
-            #
-            # El 31, 44 de los 91 usos del corpus, es `A + B*opacity`: aditivo
-            # puro, exactamente glBlendFunc(GL_SRC_ALPHA, GL_ONE). Sin el, la
-            # suciedad de lente de Asuka -- bokeh claro sobre negro -- tapaba
-            # la escena entera en vez de solo aportar sus brillos.
-            #
-            # Los demas modos son mezclas tipo Photoshop (multiply, darken...)
-            # sin equivalente en el hardware; se componen como siempre.
-            aditivo = 1 if obj.raw.get("colorBlendMode") == 31 else 0
+            # escena ocurre al componer, que es esto. Ver MEZCLA_DE_OBJETO.
+            aditivo = MEZCLA_AL_COMPONER.get(obj.raw.get("colorBlendMode"), 0)
             if obj.kind == "particle":
                 # El buffer de un sistema de particulas ya viene premultiplicado
                 # por el alfa de cada sprite; componerlo multiplicando otra vez
@@ -2074,6 +2121,12 @@ def emit_plan(wallpaper: Path, out_dir: Path,
     out_dir.mkdir(parents=True, exist_ok=True)
     destino = ruta_final if ruta_final is not None else out_dir
     r = Renderer(wallpaper, Path("/nonexistent"), 0.0, resolucion=resolucion)
+    # El plan es una FOTO: el motor lo repite cada fotograma cambiando solo
+    # `g_Time`, asi que un campo animado se queda donde se hornee. Se hornea en
+    # reposo y no en el instante 0 porque lo que el escritorio tiene que
+    # ensenar es el wallpaper ya arrancado. En el 0, el telon de entrada de
+    # `3577990983` esta OPACO y el fondo se queda negro para siempre.
+    r.tiempo_animacion = TIEMPO_EN_REPOSO
     canvas = r._build(None)
 
     remap: dict[str, str] = {}
