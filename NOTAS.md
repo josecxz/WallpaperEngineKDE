@@ -3222,6 +3222,36 @@ negro desaparece —eso está claro— pero la escena queda lavada y **su previe
 sirve para juzgarlo**: es un retrato de cerca y lo nuestro es el plano ancho, o
 sea que la razón no compara lo mismo ni antes ni ahora.
 
+## `254 - 255` no es −1: el flujo se invertía donde la máscara satura
+
+Un mapa de flujo de WE guarda un vector por píxel en RG, centrado en 0.498. Su
+buffer y el nuestro no tienen la V en el mismo sentido, así que al subirlo hay
+que **negar la componente vertical**, que sobre el byte es espejarla alrededor
+de 127: `G' = 254 - G`.
+
+Esa resta iba en `uint8`. Y en `uint8`, `254 - 255` no vale −1: **da la vuelta y
+vale 255**. O sea que el único valor que no se espejaba era justo el saturado, y
+salía con el signo cambiado: `+1.004` donde tocaba `−0.996`.
+
+No es un píxel raro. Estas máscaras están pintadas con brocha y **saturan en
+casi toda el área pintada**: 285306 de los 518400 píxeles del mapa de
+`2095917182`, y seis máscaras del corpus están al 100 %. Lo que se veía era el
+contorno donde la máscara pasa de 254 a 255 dibujado como una **grieta dura**,
+con la imagen arrastrada hacia un lado a un lado de la línea y hacia el otro al
+otro. En `2095917182` recortaba el oleaje siguiendo el perfil de la máscara y
+además empujaba la arena fuera del buffer por arriba, que es de donde salían las
+rayas verticales del borde superior. En `1527827385` no era una línea sino un
+desgarro: partes del casco se movían al revés que sus vecinas y las gafas salían
+partidas con un escalón en medio.
+
+El barrido sobre las 129 escenas: **53 de las 305 texturas de flujo distintas
+traen píxeles con G=255, repartidas en 30 escenas**. No son solo `waterflow`;
+la mayoría son máscaras de `shake`, que usa el mismo tipo de mapa.
+
+El arreglo es hacer la cuenta en `int16` y recortar a [0, 255]. Que un mapa
+sature no tiene nada de excepcional —significa «aquí el flujo va a tope»—, y era
+exactamente el caso que el tipo no aguantaba.
+
 ## Lo siguiente
 
 Por orden de lo que más se nota:
