@@ -142,10 +142,26 @@ def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
     # Una capa `passthrough` (composelayer, fullscreenlayer, projectlayer)
     # trabaja sobre el fotograma completo: su origin y su size describen el
     # rectangulo que el autor ve en el editor, no donde se dibuja.
+    #
+    # Lo dicen sus dos shaders, no una suposicion: `passthrough.vert` sin el
+    # combo TRANSFORM hace `gl_Position = vec4(a_Position, 1.0)` --- ni toca la
+    # MVP --- y `composelayer.vert` construye el vertice desde a_TexCoord,
+    # `position.xy * 2.0 - 1.0`, que es la pantalla entera pase lo que pase.
+    # El rectangulo declarado solo sirve para que el autor la agarre en el
+    # editor.
+    #
+    # Componerla en ese rectangulo metia el fotograma entero encogido dentro:
+    # la esquina inferior izquierda de 1173201544 (`Fullscreen` de 1624x696
+    # en un lienzo de 2500x1200) y las dos bandas horizontales de 2537500835
+    # (dos `composelayer` de 1920x540).
     origin, scale, angles = transform_absoluto(obj, por_id)
-    if not _floats(obj.raw.get("origin")):
+    paso = bool(obj.raw.get("_passthrough"))
+    if paso:
+        origin, scale, angles = [w / 2, h / 2, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
+    elif not _floats(obj.raw.get("origin")):
         origin = [w / 2, h / 2, 0.0]      # sin origin declarado: al centro
-    size = (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2]
+    size = ([float(w), float(h)] if paso else
+            (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2])
 
     # Semiextension y centro, normalizados a clip space (-1..1).
     if mesh:
@@ -165,7 +181,7 @@ def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
     # objetos de 448 --- los otros 397 dicen `center`, o sea nada.
     ax, ay = origin[0] + crop[0], origin[1] + crop[1]
     alin = obj.raw.get("alignment")
-    if isinstance(alin, str) and _floats(obj.raw.get("size")):
+    if isinstance(alin, str) and _floats(obj.raw.get("size")) and not paso:
         media_w, media_h = size[0] * scale[0] / 2.0, size[1] * scale[1] / 2.0
         # El eje Y del lienzo crece hacia arriba, como en clip space.
         if "left" in alin:
@@ -598,6 +614,8 @@ def por_tipo(luces: list[Luz]) -> dict[str, list[Luz]]:
 
 def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
     """Tamano del rectangulo de la capa en pixeles, sin escala ni colocacion."""
+    if obj.raw.get("_passthrough"):
+        return float(canvas[0]), float(canvas[1])
     size = (_floats(obj.raw.get("size")) + [float(canvas[0]), float(canvas[1])])[:2]
     return max(size[0], 1.0), max(size[1], 1.0)
 
@@ -1000,8 +1018,18 @@ class Renderer:
             rgba = np.ascontiguousarray(rgba[::-1])
         if mode == "flowmask":
             # G' espeja G alrededor del centro 0.498 (127 en 8 bits).
+            #
+            # La resta va en int16 y se recorta: en uint8, `254 - 255` no es
+            # -1, da la vuelta y vale 255. Justo el valor saturado ---y en
+            # estos mapas es la MAYORIA del area pintada: 285306 de los
+            # 518400 pixeles del mapa de 2095917182--- se quedaba sin
+            # espejar, asi que su flujo apuntaba al reves que el de sus
+            # vecinos con G=254. El salto de +1.004 a -0.996 caia justo en el
+            # contorno donde la mascara satura y dibujaba una grieta dura
+            # siguiendolo, con la imagen desplazada a un lado y no al otro.
             rgba = rgba.copy()
-            rgba[:, :, 1] = 254 - rgba[:, :, 1]
+            rgba[:, :, 1] = np.clip(254 - rgba[:, :, 1].astype(np.int16),
+                                    0, 255).astype(np.uint8)
 
         # Las mascaras estan pintadas sobre el rectangulo de la capa y los
         # pases de efecto las muestrean con a_TexCoord sobre TODO el buffer.
