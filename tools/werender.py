@@ -1010,8 +1010,18 @@ class Renderer:
             rgba = np.ascontiguousarray(rgba[::-1])
         if mode == "flowmask":
             # G' espeja G alrededor del centro 0.498 (127 en 8 bits).
+            #
+            # La resta va en int16 y se recorta: en uint8, `254 - 255` no es
+            # -1, da la vuelta y vale 255. Justo el valor saturado ---y en
+            # estos mapas es la MAYORIA del area pintada: 285306 de los
+            # 518400 pixeles del mapa de 2095917182--- se quedaba sin
+            # espejar, asi que su flujo apuntaba al reves que el de sus
+            # vecinos con G=254. El salto de +1.004 a -0.996 caia justo en el
+            # contorno donde la mascara satura y dibujaba una grieta dura
+            # siguiendolo, con la imagen desplazada a un lado y no al otro.
             rgba = rgba.copy()
-            rgba[:, :, 1] = 254 - rgba[:, :, 1]
+            rgba[:, :, 1] = np.clip(254 - rgba[:, :, 1].astype(np.int16),
+                                    0, 255).astype(np.uint8)
 
         # Las mascaras estan pintadas sobre el rectangulo de la capa y los
         # pases de efecto las muestrean con a_TexCoord sobre TODO el buffer.
