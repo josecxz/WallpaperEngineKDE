@@ -3222,6 +3222,47 @@ negro desaparece —eso está claro— pero la escena queda lavada y **su previe
 sirve para juzgarlo**: es un retrato de cerca y lo nuestro es el plano ancho, o
 sea que la razón no compara lo mismo ni antes ni ahora.
 
+## La capa `passthrough` se componía en su rectángulo del editor
+
+`composelayer`, `fullscreenlayer` y `projectlayer` son capas de utilidad: leen
+`_rt_FullFrameBuffer` y operan sobre el fotograma entero. Su modelo lo dice
+—`"passthrough": true`— y `wescene` ya lo anotaba en `_passthrough`. **Nadie
+leía esa marca.** El objeto se componía con su `origin` y su `size`, y como el
+pase base había dibujado el fotograma completo dentro de su buffer, el resultado
+era el fotograma entero **encogido dentro de un rectángulo**.
+
+Que el rectángulo no pinta nada no es deducción, lo dicen sus dos shaders:
+
+- `passthrough.vert`, sin el combo `TRANSFORM`, hace `gl_Position =
+  vec4(a_Position, 1.0)`: ni toca la MVP.
+- `composelayer.vert` construye el vértice desde las UV, `position.xy * 2.0 -
+  1.0`, que es la pantalla entera pase lo que pase.
+
+El `size` y el `origin` de esas capas son el asa con la que el autor las agarra
+en el editor, y nada más. Hasta ahora colaban porque **las que no declaran
+ninguno de los dos caían al lienzo por la rama del valor por defecto**: acertaba
+por accidente, y solo mientras el autor no tocara el rectángulo.
+
+En el corpus hay **85 capas passthrough; 32 de ellas, en 21 escenas, declaran un
+rectángulo que no es el lienzo**. Ahí es donde salían los recuadros:
+
+- `1173201544`: un `Fullscreen` de 1624x696 con origen en (0, 0) sobre un lienzo
+  de 2500x1200 —la escena entera metida en la esquina inferior izquierda—.
+- `2537500835`: dos `composelayer` de 1920x540 y uno de 800x800, que son las dos
+  bandas horizontales y el recuadro del centro.
+- `2396319149` y `3555933181` no salían con recuadro sino con el encuadre
+  cambiado y medio fotograma reventado de luz; los dos coinciden ahora con la
+  vista previa del autor.
+- `2162986216` traía un `composelayer` de **4x4 píxeles**: el fotograma entero
+  aplastado en cuatro píxeles.
+
+### Lo medido
+
+Las 129 escenas, media de luminancia sobre 6 fotogramas, contra la medida previa
+al arreglo: **una sola escena cambia**, `3555933181`, de 114,77 a 81,14. Y baja
+porque antes estaba mal: el `composelayer` desplazado le blanqueaba la mitad
+izquierda. La imagen nueva es la que cuadra con la vista previa que publicó su
+autor.
 ## `254 - 255` no es −1: el flujo se invertía donde la máscara satura
 
 Un mapa de flujo de WE guarda un vector por píxel en RG, centrado en 0.498. Su
