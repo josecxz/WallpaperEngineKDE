@@ -140,7 +140,7 @@ class RenderPass:
 class SceneObject:
     id: int
     name: str
-    kind: str                        # image | particle | sound | light | model
+    kind: str                        # image | particle | text | sound | light | model
     visible: object = True
     origin: str = ""
     angles: str = ""
@@ -525,6 +525,29 @@ def load_scene(res: AssetResolver, strict: bool = False,
                                                  None, None, []))
             except SceneError as e:
                 note(f"[{obj.name}] particulas: {e}")
+
+        elif kind == "text":
+            # Una capa de texto no nombra material: WE elige uno de
+            # `materials/fonts/` segun como este hecha la fuente. Se toma
+            # `basefont`, que es el camino de rasterizado corriente ---
+            # `g_Texture0` trae la cobertura y el shader la usa de alfa sobre
+            # `g_Color4` ---, porque el atlas lo fabricamos nosotros y no es un
+            # campo de distancias. Los otros cinco materiales son variantes:
+            # MSDF, fuente en color y las dos con profundidad.
+            #
+            # El fondo opaco (`fontbackground`, shader `flat`) se queda fuera a
+            # proposito: en el corpus `opaquebackground` es falso o no esta en
+            # los 167 objetos, asi que ese pase no lo pide nadie.
+            #
+            # La GEOMETRIA la pone el renderizador, como en las particulas: son
+            # los quads de las lineas ya rasterizadas, y el atlas se enlaza en
+            # `g_Texture0` sin pasar por el material.
+            try:
+                for mp in _load_material(res, "materials/fonts/basefont.json"):
+                    obj.passes.append(_make_pass(res, obj.name, "base", mp,
+                                                 None, None, []))
+            except SceneError as e:
+                note(f"[{obj.name}] texto: {e}")
 
         # ── cadena de efectos ──
         for eff in o.get("effects", []):

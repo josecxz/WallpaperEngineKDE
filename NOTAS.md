@@ -337,6 +337,7 @@ tools/
   wemdl.py                   decodificador de mallas .mdl
   wescene.py                 grafo de escena -> plan de render
   weparticles.py             sistemas de partículas -> fichero .psys
+  wetext.py                  capas de texto -> atlas de glifos + quads
   werender.py                renderizador offline (escena -> PNG)
   glexec.c                   ejecutor de planes headless (EGL surfaceless)
   glslcheck.c                compila shaders con el driver real (EGL surfaceless)
@@ -346,6 +347,7 @@ tools/
   test_weshader.py           regresión del traductor (combos por defecto)
   test_wescene.py            regresión end-to-end (combos reales)
   test_weparticles.py        contrato entre weparticles.py y weparticles.c
+  test_wetext.py             la unidad del texto, medida contra el corpus
   test_luminancia.py         regresión de LUZ: renderiza y mide cuánta sale
 src/
   glexecutor.cpp/.h          ejecutor de planes en vivo (port de glexec.c)
@@ -3222,6 +3224,144 @@ negro desaparece —eso está claro— pero la escena queda lavada y **su previe
 sirve para juzgarlo**: es un retrato de cerca y lo nuestro es el plano ancho, o
 sea que la razón no compara lo mismo ni antes ni ahora.
 
+## Un punto son 4,137 unidades de lienzo, y eso no lo dice el formato
+
+Una capa de texto es el único objeto de una escena que **no trae ni geometría
+ni material**. Trae una cadena, el nombre de una fuente, un `pointsize` y una
+caja. Quien la dibuja es `shaders/font`, que muestrea un atlas de glifos con
+`a_TexCoord` —exactamente el mismo layout de vértice que una malla puppet— y
+usa la cobertura como alfa sobre `g_Color4`. Así que todo el trabajo estaba en
+fabricar ese atlas y esos vértices; y de todo el trabajo, lo que costó fue una
+constante.
+
+### La unidad no está en el formato, pero la caja sí
+
+`pointsize` está en puntos y `size` en unidades de lienzo. Cuánto mide un punto
+no aparece por ninguna parte del `scene.json`, y adivinarlo por la vía de las
+DPI da candidatos plausibles y todos distintos: 96/72 = 1,333, 300/72 = 4,167.
+
+El oráculo es el corpus. WE guarda en `size` la caja que él mismo calculó al
+autoajustar la capa, así que **la caja es la respuesta ya escrita** y solo hay
+que despejar:
+
+    size = extensión_del_texto × K + 2 × padding
+
+Medido sobre las capas cuya fuente viene EN el wallpaper —las `systemfont_*` no
+valen, porque aquí se sustituyen y las métricas ya no son las del autor—, K
+sale **4,137**, y sale igual en un lienzo de 564×1120 y en uno de 3840×2160: es
+una constante, no una proporción de la pantalla. Dos cadenas del mismo
+wallpaper, de 23 y 34 caracteres, dan 4,1371 y 4,1368; la relación es
+proporcional pura y no esconde término independiente. No es 4,167, que sería
+300 DPI limpios: está a 0,7 %, y las medidas concuerdan entre sí a 0,1 %.
+
+Que el `padding` va **sin escalar** lo dice `3237641967`, que tiene la misma
+cadena con la misma fuente y `padding` 0 y 3: la caja mide 252 y 258, dos veces
+tres más.
+
+Con eso puesto, volver a calcular la caja de las 76 capas con fuente propia
+reproduce la que guardó WE: mediana 1,015 de ancho y 0,997 de alto, y **52 de
+las 76 caen en el intervalo del 1,0**.
+
+Las 24 de la cola no contradicen la constante: son capas cuya caja ya no mide
+ese texto. Unas traen un marcador —`<Date>`, `<Clock>`, `Text Layer`— en vez de
+la cadena que WE midió. Otras conservan la caja de antes de cambiar de fuente,
+y se reconocen: `3329533084` dibuja su reloj en Alcubierre y sigue declarando
+una caja de **156 de alto**, que es exactamente la del reloj que WE trae de
+fábrica en Consolas. Ahí el dato viejo es la caja, no la fuente.
+
+### Por línea, no por glifo
+
+El atlas se rasteriza **por línea**. Es menos código y mejor tipografía: PIL
+—FreeType con HarfBuzz debajo— resuelve kerning, ligaduras y shaping de una
+vez, y una capa de texto del corpus tiene como mucho dos líneas. Rasterizar
+glifo a glifo obligaría a reimplementar esa parte, y saldría peor.
+
+El tamaño de rasterizado no es el final sino el doble. No es lujo: la capa se
+dibuja primero en un buffer del tamaño del lienzo entero, con su rectángulo
+estirado dentro —un cuadro de 365 unidades ocupa los 3840 px de ancho—, y al
+componer se vuelve a encoger. Ese ida y vuelta son dos remuestreos bilineales,
+y con el atlas a tamaño final el texto sale lavado.
+
+### Tres sitios de donde sale una fuente, y uno no está aquí
+
+De los 167 objetos, **47 traen la fuente dentro de su propio `scene.pkg`**
+(`fonts/workshop/<id>/…`), 37 la toman de la instalación de WE y **83 piden una
+del sistema**: `systemfont_consolas` y `systemfont_arial`, que son fuentes de
+Windows. Para esas 83 se pregunta a fontconfig, que devuelve el sustituto
+—Arial cae en Liberation Sans, que es métricamente compatible—. Las 167
+resuelven.
+
+Pero el sustituto no tiene las métricas del original, y ahí la caja deja de
+cuadrar: esas 83 capas salen un 17 % más anchas y un 55 % más altas que el
+`size` que WE calculó. Como el buffer del objeto *es* esa caja, sin más el
+texto saldría cortado. Se arregla con el `margins` que ya usan las mallas
+deformadas: agranda el buffer sin mover ni reescalar la capa, solo le da sitio.
+
+### El ejecutor no se entera de que hay texto
+
+Ni una línea de C ni de C++. Los quads salen con el layout de una malla puppet
+—vec3 posición + vec2 UV, en unidades de capa respecto a su centro— y viajan
+por la directiva `mesh` que ya existía; el atlas es una textura corriente que
+se enlaza en `g_Texture0`. Es el mismo reparto de siempre: Python resuelve, el
+ejecutor ejecuta.
+
+La única sutileza es la mezcla, y es la de las partículas otra vez. El pase
+dibuja los glifos sobre el buffer VACÍO del objeto y ese buffer se compone
+después, así que con la mezcla corriente el alfa se eleva al cuadrado. En un
+glifo eso solo toca el borde antialiaseado —el interior vale 1— pero es justo
+donde vive la forma de la letra. Con `premul_alpha` en el pase y modo 2 al
+componer, que es lo que ya hacían las partículas, sale entero.
+
+### Lo que la distribución ahorró
+
+Mirar los valores y no los recuentos quita más trabajo del que deja:
+
+| campo | usos | qué hay de verdad |
+|---|---|---|
+| `horizontalalign` | 167 | **156 dicen `center`**, 8 `left`, 3 `right` |
+| `verticalalign` | 167 | **164 dicen `center`** |
+| `anchor` | 150 | 140 `none` y 9 `center`, que es lo que ya hace la colocación; queda **1** capa con `left` sin tratar |
+| `opaquebackground` | 167 | **falso o ausente en los 167**: el pase de fondo (`fontbackground`, shader `flat`) no lo pide nadie |
+| `blockalign` | 128 | falso en los 128 |
+| `spacing` | 21 | `"0 0"` en los 21 |
+| `maxrows` | 149 | 1 en los 149 |
+| `limitwidth` | 149 | cierto en 14 — el único que obliga a partir líneas |
+
+Sobre los shaders el añadido es exactamente el que cabía esperar: de 3512 a
+**3581 pases** (+69, los objetos de texto visibles), de 580 a **582 variantes**
+—`font.vert` y `font.frag`— y de 290 a **291 pares**, y el nuevo enlaza en los
+dos drivers.
+
+### Lo que se ve
+
+Sobre las 129: **25 escenas cambian, 0 regresiones y 0 dejan de renderizar.**
+Las 26 que llevan alguna capa de texto dibujable —contadas por separado, sin
+mirar la luminancia— son exactamente las que se mueven, salvo `2968771936`,
+cuyo texto va a `pointsize` 5 y no llega a mover la media de un 4K. Suben 24 y
+baja una, `3237641967`, que es lo que tiene que pasar: su reloj lleva debajo
+una segunda capa de texto NEGRA que hace de sombra. En *Lonely Cat* salen el reloj y
+`Monday, September 17` sobre el agua; en la Makima de *Chainsaw Man*, el `DAY`
+en Anurati con su sombra roja desplazada, que es una segunda capa de texto
+debajo de la primera, y el `<Date>` de la esquina, que es el marcador que
+guardó el autor y no una fecha.
+
+### Y el muro: 148 de los 167 son JavaScript
+
+Lo que se dibuja no es lo que el autor quiso, y no por un fallo de render.
+**148 de los 167 objetos traen el texto en un script**, y 133 de esos llaman a
+`new Date`: son relojes y fechas. Son 51 scripts distintos, casi todos copias
+de media docena de paquetes del taller.
+
+Sin motor de scripting lo que se dibuja es su `value`, la copia que el autor
+tenía en pantalla al guardar —`"12:34"` en 57 de ellos, `"2021 | 02 | 01 |
+Monday"` en 29, y `<Date>` de marcador en 15—. La tipografía sale bien; la hora
+está congelada, y en la mitad de las capas ni siquiera es una hora.
+
+Eso convierte «texto» y «scripting» en dos cosas distintas, y esta era la
+primera. La segunda es un intérprete de ES6 con la API del motor
+(`engine.registerAudioBuffers`, `createScriptProperties`, `engine.frametime`) y
+entra en la lista de lo que queda.
+
 ## Lo siguiente
 
 Por orden de lo que más se nota:
@@ -3236,9 +3376,15 @@ Por orden de lo que más se nota:
    negras](#las-dos-escenas-negras-eran-dos-campos-leídos-de-más)—. Queda
    `1518454472` apagada, y lo que le falta es **bloom**: 34 escenas de 129
    lo encienden y es un pase de post-proceso que no tenemos.
-3. **Texto** — 159 objetos en 28 escenas. Se lee el campo, no se rasterizan
-   glifos. Los materiales de fuente MSDF, que faltaban, aparecieron al pasar a
-   la instalación real.
+3. ~~Texto~~ **hecho**: se rasteriza y se dibuja, con las 167 capas del corpus
+   resolviendo su fuente y la caja reproducida a 1,015 de ancho y 0,997 de
+   alto —ver [Un punto son 4,137 unidades de
+   lienzo](#un-punto-son-4137-unidades-de-lienzo-y-eso-no-lo-dice-el-formato)—.
+   Lo que queda de esas capas ya no es texto sino **scripting**: 148 de las 167
+   traen la cadena en un script de ES6 y 133 llaman a `new Date`, así que se
+   dibuja la copia que guardó el autor y el reloj sale congelado. Hace falta un
+   intérprete con la API del motor, y con él entran también los otros campos
+   con script —origin en 23 capas, scale en 22— y el resto de la escena.
 4. **Reproducir vídeo** de verdad, en vez del fotograma congelado: 3 escenas
    con textura de vídeo y los 15 wallpapers de tipo vídeo de la biblioteca.
 5. **Elegir la GPU que renderiza** (ver abajo).

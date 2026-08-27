@@ -18,6 +18,9 @@ SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
 - **Escenas de Wallpaper Engine** con sus capas, efectos y shaders originales.
 - **Animación por huesos** (*puppet warp*): personajes que respiran, telas que
   ondean, parpadeos.
+- **Texto** con la fuente del wallpaper, la del motor o la que fontconfig
+  sustituya: relojes, fechas y créditos, rasterizados y compuestos como una
+  capa más.
 - **Integrado en Plasma** como plugin de fondo: respeta el z-order, la
   opacidad y los iconos del escritorio.
 - **Sin reiniciar nada**: cambiar de fondo, pararlo o arrancarlo es inmediato.
@@ -220,7 +223,8 @@ Funciona sobre escenas reales de la biblioteca, incluidas algunas complejas
 de las 129 escenas compilan **y enlazan**: los 3638 pares que salen de generar
 sus planes, en las dos tarjetas de esta máquina. Hasta hace poco 82 de esos
 pases se caían al enlazar —lo que tiene que casar ahí es la interfaz entre el
-vértice y el fragmento— y su capa desaparecía sin un solo error.
+vértice y el fragmento— y su capa desaparecía sin un solo error. El texto
+estrena un par más, `font`, que compila y enlaza en las dos.
 
 Las superficies con mapa de normales y reflejo activado reflejan lo que hay
 detrás, leyéndolo del fotograma ya compuesto con la nitidez que le toque a su
@@ -253,6 +257,11 @@ Limitaciones conocidas:
   incluidas, y con el vocabulario del formato cubierto entero. Los operadores
   que siguen al cursor quedan inactivos hasta que el motor sepa dónde está el
   puntero.
+- El **texto se dibuja, pero no se ejecuta**: 148 de las 167 capas de texto de
+  esta biblioteca traen la cadena en un script de JavaScript, y 133 de esas son
+  relojes o fechas. Se dibuja la copia que el autor guardó, así que la
+  tipografía es la correcta y la hora está congelada —a menudo en `12:34`—.
+  Falta el intérprete de scripts, no el texto.
 - Sin audio reactivo.
 
 ## Aviso

@@ -43,6 +43,7 @@ import wepaths
 import wescene
 import weshader
 import wetex
+import wetext
 from wescene import AssetResolver, SceneError, load_scene
 
 IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
@@ -914,9 +915,17 @@ class Renderer:
                       "video_congelado": 0,
                       "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0,
                       "psys": 0, "psys_parcial": 0, "psys_estela": 0,
-                      "psys_cinta": 0, "psys_sin_estela": 0}
+                      "psys_cinta": 0, "psys_sin_estela": 0,
+                      "texto": 0, "texto_vacio": 0, "texto_omitido": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
+        # Las texturas se numeran con un contador propio y no con el tamano de
+        # `tex_ids`: el atlas de una capa de texto tambien ocupa un hueco y no
+        # tiene clave de cache, asi que contarlas por el diccionario repetiria
+        # ids y una capa acabaria dibujando la textura de otra.
+        self._n_tex = 0
+        # Atlas de glifos por objeto de texto: `(id de textura, ancho, alto)`.
+        self.atlas: dict[int, tuple[int, int, int]] = {}
         # Sistema de particulas por objeto, con la misma clave que las mallas.
         self.psys: dict[int, int] = {}
         # Los tres numeros de `g_RenderVar0` de los objetos con `spritetrail`.
@@ -1014,10 +1023,24 @@ class Renderer:
             x0, y0 = (w1 - w0) // 2, (h1 - h0) // 2
             lienzo[y0:y0 + h0, x0:x0 + w0] = rgba
             rgba = lienzo
-        i = len(self.tex_ids)
+        i, w, h = self._subir(rgba)
+        self.tex_ids[clave] = i
+        return i, w, h
+
+    def _subir(self, rgba: "np.ndarray", flip: bool = False) -> tuple[int, int, int]:
+        """Registra en el plan una textura YA decodificada. `(id, ancho, alto)`.
+
+        Lo que hacia el final de `texture()`, separado para que lo pueda usar
+        quien fabrica sus pixeles en vez de leerlos de un `.tex`: hoy el atlas
+        de glifos. `flip` es para esos, porque los que vienen de `texture()`
+        llegan volteados ya.
+        """
+        if flip:
+            rgba = np.ascontiguousarray(rgba[::-1])
+        i = self._n_tex
+        self._n_tex += 1
         path = self.tmp / f"tex{i:03d}.rgba"
         path.write_bytes(rgba.tobytes())
-        self.tex_ids[clave] = i
         self._tex_dims[i] = (rgba.shape[1], rgba.shape[0])
         self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}")
         return i, rgba.shape[1], rgba.shape[0]
@@ -1208,6 +1231,71 @@ class Renderer:
         self.margins[id(obj)] = margen
         self.stats["puppet"] += 1
 
+    def _emit_text(self, obj) -> None:
+        """Rasteriza la capa de texto y la sube como atlas + quads.
+
+        No hay nada nuevo en el ejecutor: los quads salen con el mismo layout
+        que una malla puppet ---vec3 posicion + vec2 UV, en pixeles de capa
+        respecto a su centro--- y viajan por la misma directiva `mesh`. El
+        atlas es una textura corriente que se enlaza en `g_Texture0`.
+
+        El atlas se rasteriza al tamano al que se va a VER, que es lo que dice
+        `pixeles / canvas`, y no al del buffer del objeto: ese buffer tiene el
+        tamano del lienzo entero con el rectangulo de la capa estirado dentro,
+        asi que pedirle su resolucion serian miles de pixeles por linea para un
+        texto que en pantalla mide ciento y pico.
+
+        Si el texto no cabe en su `size` se agranda el buffer con el mismo
+        `margins` que usan las mallas deformadas, que no mueve ni reescala la
+        capa: solo le da sitio. Hace falta de verdad --- las 83 capas con
+        `systemfont_*` piden fuentes de Windows, aqui se sustituyen por las que
+        haya, y con otras metricas el texto se sale de la caja que WE calculo
+        en su dia. Sin margen se veria cortado por la mitad.
+        """
+        if os.environ.get("WE_NO_TEXT"):
+            return          # para aislar el texto al depurar
+        try:
+            disp = wetext.disponer(self.res, obj.raw,
+                                   self.pixeles[1] / max(1, self.canvas[1]))
+        except Exception as e:
+            # Ancho a proposito: por aqui pasa FreeType con la fuente que traiga
+            # el wallpaper, y una fuente rota es motivo para perder UNA capa, no
+            # el wallpaper entero.
+            self.stats["texto_omitido"] += 1
+            self.notes.append(f"texto sin disponer ({obj.name}): {e}")
+            return
+        if disp is None:
+            self.stats["texto_vacio"] += 1
+            return
+
+        self.atlas[id(obj)] = self._subir(disp.atlas, flip=True)
+
+        mid = len(self.mesh_files)
+        path = self.tmp / f"text{mid:03d}.bin"
+        with open(path, "wb") as fh:
+            fh.write(disp.vertices.tobytes())
+            fh.write(disp.indices.tobytes())
+        self.mesh_files.append(path)
+        self.lines.append(f"mesh {mid} {path} {disp.vertices.shape[0]} "
+                          f"{disp.indices.size}")
+        self.meshes[id(obj)] = mid
+
+        # El margen sale de lo que ocupan los QUADS y no de `extent`: `extent`
+        # es la caja de composicion ---avance por interlineado, que es lo que
+        # WE guarda en `size`--- y lo que hay que evitar recortar es la tinta,
+        # que sobresale un poco por los bearings y por el borde que el atlas
+        # deja alrededor de cada linea. Se mide desde el CENTRO y no como
+        # anchura, porque el margen agranda el rectangulo simetricamente: lo
+        # que tiene que cubrir es la esquina que mas se aleja. Con la anchura
+        # sola, una capa alineada a la izquierda que se sale por la derecha
+        # seguiria cortandose.
+        v = disp.vertices
+        ancho = 2.0 * float(max(abs(v[:, 0].min()), abs(v[:, 0].max())))
+        alto = 2.0 * float(max(abs(v[:, 1].min()), abs(v[:, 1].max())))
+        sw, sh = layer_size(obj, self.canvas)
+        self.margins[id(obj)] = max(1.0, ancho / sw, alto / sh)
+        self.stats["texto"] += 1
+
     def _mesh_anim(self, m, blob: bytes, rel: str) -> MeshAnim | None:
         """Empaqueta huesos y pistas para que el ejecutor deforme por fotograma.
 
@@ -1287,6 +1375,15 @@ class Renderer:
         particula = psys_id is not None and p.stage == "base"
         estela = self.estelas.get(id(obj)) if particula else None
         cinta = self.cintas.get(id(obj)) if particula else None
+
+        # El atlas de glifos no lo nombra ningun material: `basefont` no
+        # declara texturas y quien las fabrica es `_emit_text`. Se resuelve
+        # aqui arriba porque decide dos cosas lejanas entre si --- la mezcla
+        # del pase y el enlace del slot 0 --- y solo en el pase base: los de
+        # efecto son post-proceso sobre el buffer ya escrito y su slot 0 es
+        # `previous`.
+        atlas = (self.atlas.get(id(obj))
+                 if obj is not None and p.stage == "base" else None)
 
         fuente_v, fuente_f = p.vert, p.frag
         if cinta:
@@ -1473,6 +1570,10 @@ class Renderer:
             self.body.append("blend " + ("premul_additive"
                                          if p.blending == "additive"
                                          else "premul_alpha"))
+        elif atlas is not None:
+            # Ver la nota de `aditivo` en `_build`: el buffer del texto se
+            # compone con `premul` y tiene que llenarse en premultiplicado.
+            self.body.append("blend premul_alpha")
         else:
             self.body.append(f"blend {p.blending if p.stage == 'base' else 'none'}")
 
@@ -1481,7 +1582,12 @@ class Renderer:
             uni = f"g_Texture{slot}"
             name = p.textures[slot] if slot < len(p.textures) else None
             src = None
-            if name:
+            if slot == 0 and atlas is not None:
+                src = f"tex:{atlas[0]}"
+                self.body.append(
+                    f"u4f g_Texture0Resolution {atlas[1]} {atlas[2]} "
+                    f"{atlas[1]} {atlas[2]}")
+            elif name:
                 m_comp = COMPOSITE_RT_RE.match(name)
                 if m_comp and obj is not None and m_comp.group(1) == str(obj.raw.get("id")):
                     # `_rt_imageLayerComposite_<id propio>_a|_b` es el par
@@ -1981,16 +2087,25 @@ class Renderer:
         orden = ([o for o in scene.objects if getattr(o, "solo_buffer", False)]
                  + [o for o in scene.objects if not getattr(o, "solo_buffer", False)])
         for obj in orden:
-            if obj.kind not in ("image", "particle") or not obj.passes:
+            if obj.kind not in ("image", "particle", "text") or not obj.passes:
                 continue
-            if obj.kind == "particle":
-                self._emit_psys(obj)
-                # Sin sistema simulable no hay geometria: el pase se quedaria
-                # sin `psys` y dibujaria el quad a pantalla completa con la
-                # textura de la particula estirada por todo el lienzo.
-                if id(obj) not in self.psys:
+            if obj.kind == "text":
+                self._emit_text(obj)
+                # Sin quads no hay que dibujar: el pase se quedaria con el quad
+                # a pantalla completa y pintaria un rectangulo de color solido
+                # del tamano de la capa, que es peor que no dibujar nada.
+                if id(obj) not in self.meshes:
                     continue
-            self._emit_mesh(obj)
+            else:
+                if obj.kind == "particle":
+                    self._emit_psys(obj)
+                    # Sin sistema simulable no hay geometria: el pase se
+                    # quedaria sin `psys` y dibujaria el quad a pantalla
+                    # completa con la textura de la particula estirada por todo
+                    # el lienzo.
+                    if id(obj) not in self.psys:
+                        continue
+                self._emit_mesh(obj)
             # Marca de inicio de objeto. El ejecutor la usa para componer el
             # objeto anterior sobre la escena en vez de pisarlo. `copybackground`
             # dice si este objeto arranca desde una copia de lo que hay detras
@@ -2013,6 +2128,14 @@ class Renderer:
             # dibuja sobre el buffer VACIO del objeto -- la mezcla con la
             # escena ocurre al componer, que es esto. Ver MEZCLA_DE_OBJETO.
             aditivo = MEZCLA_AL_COMPONER.get(obj.raw.get("colorBlendMode"), 0)
+            if obj.kind == "text":
+                # Mismo problema que las particulas y misma solucion: el pase
+                # dibuja los glifos sobre el buffer VACIO del objeto y luego se
+                # compone, asi que con la mezcla corriente el alfa se eleva al
+                # cuadrado. En un glifo eso solo toca el borde antialiaseado
+                # ---el interior vale 1--- pero es justo donde vive la forma de
+                # la letra: el texto sale delgado y con los cantos duros.
+                aditivo = 2
             if obj.kind == "particle":
                 # El buffer de un sistema de particulas ya viene premultiplicado
                 # por el alfa de cada sprite; componerlo multiplicando otra vez
