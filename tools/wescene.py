@@ -167,6 +167,157 @@ class Scene:
         return [p for o in self.objects for p in o.passes]
 
 
+def _refrescar_valores_de_usuario(nodo, properties: dict) -> None:
+    """Pone al dia la copia de todo campo atado a una propiedad configurable.
+
+    Un campo del `scene.json` puede venir como
+    `{"user": "neon_2", "value": "1 0 0"}`. El `value` NO es el valor: es la
+    copia que el campo tenia cuando el autor guardo, y quien manda es la
+    propiedad del `project.json`. `is_visible` ya lo sabia para `visible`; el
+    resto de campos ---colores, alfas, escalas y sobre todo las constantes de
+    los materiales--- seguian leyendo la copia.
+
+    No es un detalle. En el corpus hay 450 campos atados a una propiedad y
+    **92 con la copia desfasada**, repartidos en 22 escenas. El caso que se ve
+    a simple vista es `1518454472`: sus contornos de neon declaran
+    `{"user": "neon_2", "value": "1 0 0"}` con `neon_2` en `0 1 1`, asi que la
+    Miku salia ROJA donde su preview es CIAN --- el color complementario, que
+    es lo que delata que no es un problema de brillo sino de leer el campo
+    equivocado.
+
+    Se sustituye solo la copia y se deja el resto del objeto intacto, para que
+    quien lea `user` ---`is_visible`--- siga viendo lo mismo. Si `user` no
+    nombra una propiedad conocida, la copia se queda: es lo que el autor tenia
+    en pantalla, y hay wallpapers donde `user` es a su vez un objeto.
+    """
+    if isinstance(nodo, dict):
+        clave = nodo.get("user")
+        if isinstance(clave, str) and "value" in nodo:
+            prop = properties.get(clave)
+            if isinstance(prop, dict) and "value" in prop:
+                nodo["value"] = prop["value"]
+        for v in nodo.values():
+            _refrescar_valores_de_usuario(v, properties)
+    elif isinstance(nodo, list):
+        for v in nodo:
+            _refrescar_valores_de_usuario(v, properties)
+
+
+def _valor_animado(anim: dict, t: float):
+    """El valor de una curva de fotogramas clave en el segundo `t`.
+
+    Devuelve una lista de floats, un canal por componente: `c0`, `c1`, `c2`
+    son la x, la y y la z de un `origin`, o el unico canal de un `alpha`.
+    Devuelve None si la curva no se entiende.
+
+    La interpolacion es LINEAL. Los fotogramas clave traen ademas tiradores de
+    bezier en `front` y `back`, y no se usan: sobre curvas de fundido ---que es
+    para lo que sirven en este corpus--- la diferencia es la forma de la rampa,
+    no si acaba encendida o apagada.
+    """
+    op = anim.get("options") or {}
+    fps = float(op.get("fps") or 30.0)
+    largo = float(op.get("length") or 0.0)
+    modo = str(op.get("mode") or "single")
+
+    f = t * fps
+    if largo > 0.0:
+        if modo == "loop":
+            f = f % largo
+        elif modo == "mirror":
+            f = f % (2.0 * largo)
+            if f > largo:
+                f = 2.0 * largo - f
+        else:                       # "single" y cualquier otro: se queda al final
+            f = min(f, largo)
+
+    fuera: list[float] = []
+    for nombre in sorted(k for k in anim if k != "options"):
+        claves = anim[nombre]
+        if not isinstance(claves, list) or not claves:
+            return None
+        try:
+            puntos = sorted((float(k["frame"]), float(k["value"])) for k in claves)
+        except (KeyError, TypeError, ValueError):
+            return None
+        if f <= puntos[0][0]:
+            fuera.append(puntos[0][1])
+            continue
+        if f >= puntos[-1][0]:
+            fuera.append(puntos[-1][1])
+            continue
+        for (f0, v0), (f1, v1) in zip(puntos, puntos[1:]):
+            if f0 <= f <= f1:
+                k = 0.0 if f1 == f0 else (f - f0) / (f1 - f0)
+                fuera.append(v0 + (v1 - v0) * k)
+                break
+    return fuera or None
+
+
+def _evaluar_animaciones(nodo, t: float) -> None:
+    """Pone al dia la copia de todo campo animado, al segundo `t`.
+
+    Igual que con las propiedades del usuario, `value` es una COPIA: la que el
+    campo tenia en el instante en que el autor guardo la escena, que no tiene
+    por que ser el valor de reposo. Un telon de entrada lo demuestra:
+    `3577990983` trae una capa de color solido negro cuyo `alpha` va de 1 a 0
+    en 90 fotogramas ---un fundido de tres segundos--- y guardada en el 1. Sin
+    evaluar la curva esa capa se queda OPACA para siempre y tapa el wallpaper
+    entero: la escena salia negra menos un ramo de flores que se dibuja encima.
+
+    El plan se genera para un instante, asi que esto no reproduce la animacion:
+    la congela donde toque. Para el modo `single`, que es el de los fundidos de
+    entrada y dos de cada tres curvas del corpus, congelar despues de su
+    duracion ES el valor definitivo. Los modos `loop` y `mirror` quedan en el
+    instante del plan, que es exactamente lo que un plan estatico puede dar.
+    """
+    if isinstance(nodo, dict):
+        anim = nodo.get("animation")
+        if isinstance(anim, dict) and "value" in nodo:
+            vals = _valor_animado(anim, t)
+            if vals is not None:
+                nodo["value"] = (vals[0] if len(vals) == 1 and
+                                 not isinstance(nodo["value"], str)
+                                 else " ".join(f"{v:.6g}" for v in vals))
+        for v in nodo.values():
+            _evaluar_animaciones(v, t)
+    elif isinstance(nodo, list):
+        for v in nodo:
+            _evaluar_animaciones(v, t)
+
+
+def _visibilidad_heredada(data: dict, properties: dict) -> dict[int, bool]:
+    """Por objeto, si se dibuja mirando TODA su cadena de padres.
+
+    Apagar un grupo apaga lo que cuelga de el, que es para lo que sirve
+    agrupar. Mirando solo el campo `visible` de cada objeto se dibujan capas
+    que el autor dejo escondidas dentro de un grupo apagado.
+
+    No es un caso raro: Lonely Cat (`3299228616`) trae la escena entera SEIS
+    veces, una por idioma, y apaga cinco por el padre. Sus hijos ---campos de
+    estrellas, destellos, la ondulacion del agua--- no dicen nada de si se ven,
+    asi que se dibujaban los seis juegos: 107 objetos de mas sobre 18 que
+    debian verse, y de ahi la nevada de puntos blancos que su preview no tiene.
+    En el corpus son 150 objetos de mas repartidos en 4 escenas.
+
+    Devuelve un mapa por `id()` del diccionario crudo y no por el campo `id`,
+    porque hay escenas que repiten identificadores.
+    """
+    por_id = {str(o.get("id")): o for o in data.get("objects", [])}
+    fuera: dict[int, bool] = {}
+    for o in data.get("objects", []):
+        cur, visto, ve = o, set(), True
+        while cur is not None and id(cur) not in visto:
+            visto.add(id(cur))
+            if not is_visible(cur.get("visible", True), properties):
+                ve = False
+                break
+            padre = cur.get("parent")
+            cur = por_id.get(str(padre)) if padre else None
+        fuera[id(o)] = ve
+    return fuera
+
+
 def is_visible(value, properties: dict) -> bool:
     """Resuelve el campo `visible` de un objeto o de un efecto.
 
@@ -275,7 +426,8 @@ def _ids_de_composicion(data: dict) -> set[str]:
     return fuera
 
 
-def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
+def load_scene(res: AssetResolver, strict: bool = False,
+               tiempo: float | None = None) -> Scene:
     data = res.read_json("scene.json")
     scene = Scene(general=data.get("general", {}), camera=data.get("camera", {}))
 
@@ -286,6 +438,9 @@ def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
     except SceneError:
         props = {}
     scene.properties = props or {}
+    _refrescar_valores_de_usuario(data, scene.properties)
+    if tiempo is not None:
+        _evaluar_animaciones(data, tiempo)
 
     # Capas que otra capa muestrea por su buffer de composicion.
     #
@@ -301,6 +456,7 @@ def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
     # Tierra, aunque sus tres capas --- textura, nubes y cara oculta --- esten
     # ahi y bien colocadas.
     ids_compuestos = _ids_de_composicion(data)
+    visible_de = _visibilidad_heredada(data, scene.properties)
 
     for o in data.get("objects", []):
         kind = _object_kind(o)
@@ -310,7 +466,7 @@ def load_scene(res: AssetResolver, strict: bool = False) -> Scene:
             angles=o.get("angles", ""), scale=o.get("scale", ""),
             parallax_depth=o.get("parallaxDepth", ""), raw=o,
         )
-        if not is_visible(o.get("visible", True), scene.properties):
+        if not visible_de[id(o)]:
             # Invisible pero muestreada por otra capa: hay que construir sus
             # pases igual. No se compone sobre la escena, solo llena su buffer.
             if str(o.get("id")) in ids_compuestos:
