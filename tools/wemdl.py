@@ -180,7 +180,7 @@ def parse_skeleton(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[
     Estructura, deducida del corpus:
 
         char[]  magic "MDLS000N" terminado en nul
-        u32     tamano restante
+        u32     DESPLAZAMIENTO ABSOLUTO del bloque siguiente
         u32     numero de huesos
         por hueso:
             u8      relleno
@@ -200,7 +200,7 @@ def parse_skeleton(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[
     ver, p = _cstring(buf, pos)
     if not ver.startswith("MDLS"):
         raise MdlError(f"{name}: se esperaba MDLS y hay {ver!r}")
-    _total, count = struct.unpack_from("<II", buf, p)
+    siguiente, count = struct.unpack_from("<II", buf, p)
     p += 8
     bones: list[Bone] = []
     for i in range(count):
@@ -213,7 +213,17 @@ def parse_skeleton(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[
         p += 64
         _bone_name, p = _cstring(buf, p)
         bones.append(Bone(parent=parent, matrix=m))
-    return bones, p
+    # El u32 de la cabecera no es el tamano del bloque: es el DESPLAZAMIENTO
+    # ABSOLUTO del bloque siguiente, y por ahi se sale. Recorrer los huesos no
+    # llega hasta ahi en 58 de los 95 puppets del corpus ---detras de la lista
+    # queda un bloque mas, distinto en cada fichero--- y quedarse donde acaba
+    # el recorrido dejaba la animacion invisible: `parse_animations` no veia
+    # MDLA, avisaba de "bytes sin identificar" y el puppet se dibujaba en su
+    # postura de reposo. En los 37 restantes el campo coincide EXACTO con el
+    # final del recorrido, que es lo que dice que el campo es esto y no otra
+    # cosa. Se comprueba antes de fiarse: tiene que caer detras de lo leido y
+    # dentro del fichero.
+    return bones, (siguiente if p <= siguiente <= len(buf) else p)
 
 
 @dataclass(frozen=True)
@@ -278,29 +288,26 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>",
       - y da siempre `fotogramas + 1` claves: el fotograma que cierra el bucle
     """
     ver, p = _cstring(buf, pos)
-    if not ver.startswith("MDLA") and bone_count:
-        # Seis mallas del corpus intercalan un bloque entre el esqueleto y la
-        # animacion. Su tamano sale exacto en las seis: 13 + 80*huesos.
-        #
-        #   12 bytes     cabecera
-        #   por hueso    76 b = 3 float + una matriz 4x4 (rotacion y
-        #                traslacion, mismo layout de vector-fila que el resto)
-        #   u32[huesos]  lista de indices 0,1,2...
-        #   1 byte       relleno
-        #
-        # No hace falta interpretarlo para leer la animacion que va detras, y
-        # sin saltarlo el bloque MDLA0003 queda invisible: eran los 6 unicos
-        # ficheros del corpus que parecian no tener animacion.
-        p2 = pos + 13 + 80 * bone_count
-        if p2 < len(buf):
-            ver2, p3 = _cstring(buf, p2)
-            if ver2.startswith("MDLA"):
-                ver, p = ver2, p3
+    # Entre el esqueleto y la animacion puede haber bloques que no sabemos
+    # leer --- `MDAT0001` en 5 mallas del corpus. No hay que interpretarlos:
+    # TODO bloque empieza por su etiqueta y un u32 con el desplazamiento
+    # ABSOLUTO del siguiente, asi que se salta por ahi. Antes se saltaba uno
+    # solo y con un tamano fijo, `13 + 80*huesos`, que cuadraba en las seis
+    # mallas donde se midio y en ninguna otra: el bloque intermedio no tiene
+    # tamano fijo. La cadena termina apuntando al final del fichero, que es
+    # como se sabe que un puppet no trae animacion.
+    for _ in range(8):
+        if ver.startswith("MDLA") or p + 4 > len(buf):
+            break
+        sig = struct.unpack_from("<I", buf, p)[0]
+        if not (pos < sig < len(buf)):
+            break
+        pos = sig
+        ver, p = _cstring(buf, pos)
     if not ver.startswith("MDLA"):
-        # Seis mallas del corpus (DRAGON 1-3, WOMEN, SWORD y una Rider) llegan
-        # aqui sin tag y con cientos de bytes que NO son relleno: tras el
-        # esqueleto hay otro bloque sin identificar. No es un fallo del lector
-        # de animaciones, asi que se distingue del caso "tag equivocado".
+        # Sin bloque de animacion: el puppet se queda en su postura de reposo.
+        # Se distingue del caso "tag equivocado" porque no es un fallo del
+        # lector, es que la cadena de bloques se acaba.
         resto = len(buf) - pos
         raise MdlError(f"{name}: se esperaba MDLA y hay {ver!r} "
                        f"({resto} b sin identificar tras el esqueleto)")

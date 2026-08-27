@@ -3361,6 +3361,143 @@ Eso convierte «texto» y «scripting» en dos cosas distintas, y esta era la
 primera. La segunda es un intérprete de ES6 con la API del motor
 (`engine.registerAudioBuffers`, `createScriptProperties`, `engine.frametime`) y
 entra en la lista de lo que queda.
+## El puppet se quedaba en reposo: el campo de la cabecera es un desplazamiento
+
+Un `.mdl` de puppet encadena bloques: geometría, `MDLS` (esqueleto) y `MDLA`
+(animación). Tras el esqueleto, `parse_animations` no encontraba `MDLA` en **58
+de los 95 puppets** de esta biblioteca, avisaba de «bytes sin identificar» y el
+puppet se dibujaba **en su postura de reposo**.
+
+Y la postura de reposo no es la imagen que se ve. En estos wallpapers el autor
+dibuja la pieza colgante apartada en la textura y son los huesos los que la
+llevan a su sitio, así que sin animación se queda donde la dibujó:
+
+- `3775394622`: la columna vertebral dorada del casco de Agamenón, aparcada
+  contra el borde derecho del lienzo en vez de colgando del penacho.
+- `3238423642`: **la cabeza del personaje flotando suelta en la esquina
+  superior izquierda**, separada del cuerpo.
+
+La causa es un campo mal interpretado. La cabecera de `MDLS` es `magic` + `u32`,
+y ese `u32` estaba documentado aquí como «tamaño restante». No lo es: es el
+**desplazamiento absoluto del bloque siguiente**. Dos medidas lo fijan, y
+ninguna sale de suponer nada:
+
+- En los 37 puppets que sí funcionaban, el campo coincide **exacto** con la
+  posición donde termina de recorrer la lista de huesos.
+- En 89 de los 95, el byte al que apunta es `MDLA` o `MDAT`. En el que falta,
+  apunta al final del fichero: ese puppet no trae animación y es correcto.
+
+O sea que detrás de la lista de huesos hay otro bloque, de tamaño distinto en
+cada fichero, que el recorrido no salta. Ya se había tropezado con él y se
+parcheó con una constante —`13 + 80 * huesos`— medida sobre las seis mallas
+donde se vio. La constante cuadraba en esas seis y en ninguna más; el bloque no
+tiene tamaño fijo. Siguiendo el campo no hace falta interpretarlo.
+
+La regla vale para toda la cadena, no solo para `MDLS`. En
+`2867316322/puppet_puppet.mdl`: `MDLS` → 15106, ahí hay un `MDAT0001` cuyo campo
+dice 15198, ahí hay `MDLA0006`, y el suyo dice 17495, que es el último byte del
+fichero. Así que `parse_animations` salta cualquier bloque que no sepa leer por
+su propio campo, en vez de conocerlos de antemano.
+
+**54 puppets de 11 escenas recuperan su animación**; de 37 animados se pasa a 91
+de 95.
+
+### Y entonces `mirror` deja de ser un detalle
+
+Los dos ejecutores dan por hecho que **la última clave repite la primera**: por
+eso el periodo son `nkeys - 1` intervalos. Las pistas de modo `loop` cumplen eso
+—60 de 74 exactamente, y las 14 restantes por debajo de 0,08—. Las de modo
+`mirror` **no lo cumplen ninguna**: son las 47 del corpus y acaban lejos de donde
+empiezan, hasta 13,34 unidades en el brazo de `2868108515`. Se reproducen yendo
+y volviendo, no en bucle.
+
+Reproducirlas como bucle da un tirón en cada vuelta, y hasta ahora casi no se
+notaba porque la mayoría de esas pistas ni se leían. Se hornea la ida y vuelta
+**en Python**, no en el ejecutor: las claves salen al plan en el orden en que se
+reproducen —`0..K-1`, `K-2..1`, `0`, que son `2K-1` con la última igual a la
+primera— y la duración va doblada. El ejecutor sigue haciendo lo único que sabe,
+y no hay una regla nueva que dos implementaciones puedan entender distinto.
+
+Queda un `single` en el corpus, que WE reproduce una vez y se para; nosotros lo
+repetimos.
+
+### Lo medido
+
+Las 129 escenas, luminancia media sobre 6 fotogramas: **ninguna regresión**.
+De las 11 escenas con puppets recuperados, las dos que más cambian son
+`3050043876` (23,4 % de los píxeles: el pelo, que ahora ondea) y `3238423642`
+(16,0 %: la cabeza, que vuelve al cuerpo). Las dos coinciden ahora con la vista
+previa de su autor.
+## La capa `passthrough` se componía en su rectángulo del editor
+
+`composelayer`, `fullscreenlayer` y `projectlayer` son capas de utilidad: leen
+`_rt_FullFrameBuffer` y operan sobre el fotograma entero. Su modelo lo dice
+—`"passthrough": true`— y `wescene` ya lo anotaba en `_passthrough`. **Nadie
+leía esa marca.** El objeto se componía con su `origin` y su `size`, y como el
+pase base había dibujado el fotograma completo dentro de su buffer, el resultado
+era el fotograma entero **encogido dentro de un rectángulo**.
+
+Que el rectángulo no pinta nada no es deducción, lo dicen sus dos shaders:
+
+- `passthrough.vert`, sin el combo `TRANSFORM`, hace `gl_Position =
+  vec4(a_Position, 1.0)`: ni toca la MVP.
+- `composelayer.vert` construye el vértice desde las UV, `position.xy * 2.0 -
+  1.0`, que es la pantalla entera pase lo que pase.
+
+El `size` y el `origin` de esas capas son el asa con la que el autor las agarra
+en el editor, y nada más. Hasta ahora colaban porque **las que no declaran
+ninguno de los dos caían al lienzo por la rama del valor por defecto**: acertaba
+por accidente, y solo mientras el autor no tocara el rectángulo.
+
+En el corpus hay **85 capas passthrough; 32 de ellas, en 21 escenas, declaran un
+rectángulo que no es el lienzo**. Ahí es donde salían los recuadros:
+
+- `1173201544`: un `Fullscreen` de 1624x696 con origen en (0, 0) sobre un lienzo
+  de 2500x1200 —la escena entera metida en la esquina inferior izquierda—.
+- `2537500835`: dos `composelayer` de 1920x540 y uno de 800x800, que son las dos
+  bandas horizontales y el recuadro del centro.
+- `2396319149` y `3555933181` no salían con recuadro sino con el encuadre
+  cambiado y medio fotograma reventado de luz; los dos coinciden ahora con la
+  vista previa del autor.
+- `2162986216` traía un `composelayer` de **4x4 píxeles**: el fotograma entero
+  aplastado en cuatro píxeles.
+
+### Lo medido
+
+Las 129 escenas, media de luminancia sobre 6 fotogramas, contra la medida previa
+al arreglo: **una sola escena cambia**, `3555933181`, de 114,77 a 81,14. Y baja
+porque antes estaba mal: el `composelayer` desplazado le blanqueaba la mitad
+izquierda. La imagen nueva es la que cuadra con la vista previa que publicó su
+autor.
+## `254 - 255` no es −1: el flujo se invertía donde la máscara satura
+
+Un mapa de flujo de WE guarda un vector por píxel en RG, centrado en 0.498. Su
+buffer y el nuestro no tienen la V en el mismo sentido, así que al subirlo hay
+que **negar la componente vertical**, que sobre el byte es espejarla alrededor
+de 127: `G' = 254 - G`.
+
+Esa resta iba en `uint8`. Y en `uint8`, `254 - 255` no vale −1: **da la vuelta y
+vale 255**. O sea que el único valor que no se espejaba era justo el saturado, y
+salía con el signo cambiado: `+1.004` donde tocaba `−0.996`.
+
+No es un píxel raro. Estas máscaras están pintadas con brocha y **saturan en
+casi toda el área pintada**: 285306 de los 518400 píxeles del mapa de
+`2095917182`, y seis máscaras del corpus están al 100 %. Lo que se veía era el
+contorno donde la máscara pasa de 254 a 255 dibujado como una **grieta dura**,
+con la imagen arrastrada hacia un lado a un lado de la línea y hacia el otro al
+otro. En `2095917182` recortaba el oleaje siguiendo el perfil de la máscara y
+además empujaba la arena fuera del buffer por arriba, que es de donde salían las
+rayas verticales del borde superior. En `1527827385` no era una línea sino un
+desgarro: partes del casco se movían al revés que sus vecinas y las gafas salían
+partidas con un escalón en medio.
+
+El barrido sobre las 129 escenas: **53 de las 305 texturas de flujo distintas
+traen píxeles con G=255, repartidas en 30 escenas**. No son solo `waterflow`;
+la mayoría son máscaras de `shake`, que usa el mismo tipo de mapa.
+
+El arreglo es hacer la cuenta en `int16` y recortar a [0, 255]. Que un mapa
+sature no tiene nada de excepcional —significa «aquí el flujo va a tope»—, y era
+exactamente el caso que el tipo no aguantaba.
 
 ## Lo siguiente
 

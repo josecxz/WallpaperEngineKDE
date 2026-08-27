@@ -143,10 +143,26 @@ def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
     # Una capa `passthrough` (composelayer, fullscreenlayer, projectlayer)
     # trabaja sobre el fotograma completo: su origin y su size describen el
     # rectangulo que el autor ve en el editor, no donde se dibuja.
+    #
+    # Lo dicen sus dos shaders, no una suposicion: `passthrough.vert` sin el
+    # combo TRANSFORM hace `gl_Position = vec4(a_Position, 1.0)` --- ni toca la
+    # MVP --- y `composelayer.vert` construye el vertice desde a_TexCoord,
+    # `position.xy * 2.0 - 1.0`, que es la pantalla entera pase lo que pase.
+    # El rectangulo declarado solo sirve para que el autor la agarre en el
+    # editor.
+    #
+    # Componerla en ese rectangulo metia el fotograma entero encogido dentro:
+    # la esquina inferior izquierda de 1173201544 (`Fullscreen` de 1624x696
+    # en un lienzo de 2500x1200) y las dos bandas horizontales de 2537500835
+    # (dos `composelayer` de 1920x540).
     origin, scale, angles = transform_absoluto(obj, por_id)
-    if not _floats(obj.raw.get("origin")):
+    paso = bool(obj.raw.get("_passthrough"))
+    if paso:
+        origin, scale, angles = [w / 2, h / 2, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
+    elif not _floats(obj.raw.get("origin")):
         origin = [w / 2, h / 2, 0.0]      # sin origin declarado: al centro
-    size = (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2]
+    size = ([float(w), float(h)] if paso else
+            (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2])
 
     # Semiextension y centro, normalizados a clip space (-1..1).
     if mesh:
@@ -166,7 +182,7 @@ def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
     # objetos de 448 --- los otros 397 dicen `center`, o sea nada.
     ax, ay = origin[0] + crop[0], origin[1] + crop[1]
     alin = obj.raw.get("alignment")
-    if isinstance(alin, str) and _floats(obj.raw.get("size")):
+    if isinstance(alin, str) and _floats(obj.raw.get("size")) and not paso:
         media_w, media_h = size[0] * scale[0] / 2.0, size[1] * scale[1] / 2.0
         # El eje Y del lienzo crece hacia arriba, como en clip space.
         if "left" in alin:
@@ -599,6 +615,8 @@ def por_tipo(luces: list[Luz]) -> dict[str, list[Luz]]:
 
 def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
     """Tamano del rectangulo de la capa en pixeles, sin escala ni colocacion."""
+    if obj.raw.get("_passthrough"):
+        return float(canvas[0]), float(canvas[1])
     size = (_floats(obj.raw.get("size")) + [float(canvas[0]), float(canvas[1])])[:2]
     return max(size[0], 1.0), max(size[1], 1.0)
 
@@ -834,8 +852,8 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
         return np.asarray(mesh.positions, dtype=np.float64)
     try:
         bones, p = wemdl.parse_skeleton(blob, mesh.consumed, rel)
-        if blob[p:p + 4] != b"MDLA":
-            raise wemdl.MdlError("sin bloque de animacion")
+        # Sin comprobar aqui el magic: entre el esqueleto y la animacion puede
+        # ir otro bloque, y seguir la cadena es cosa de `parse_animations`.
         anims, _ = wemdl.parse_animations(blob, p, rel, len(bones))
     except wemdl.MdlError as e:
         notes.append(f"puppet sin animacion ({rel}): {e}")
@@ -846,8 +864,16 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
     a = anims[0]
     keys = a.tracks.shape[1]
     # El ultimo fotograma repite el primero para cerrar el bucle, asi que el
-    # periodo son `keys - 1` intervalos.
-    k = int(round((float(t) / max(a.duration, 1e-6)) * (keys - 1))) % max(keys - 1, 1)
+    # periodo son `keys - 1` intervalos. En `mirror` el periodo es el doble
+    # ---va y vuelve--- y la vuelta se refleja; igual que lo que `_mesh_anim`
+    # hornea en las claves que van al plan.
+    span = max(keys - 1, 1)
+    if a.mode == "mirror":
+        k = int(round((float(t) / max(a.duration, 1e-6)) * span)) % (2 * span)
+        if k > span:
+            k = 2 * span - k
+    else:
+        k = int(round((float(t) / max(a.duration, 1e-6)) * span)) % span
 
     v = np.concatenate([np.asarray(mesh.positions, dtype=np.float64),
                         np.ones((mesh.vertex_count, 1))], axis=1)
@@ -1001,8 +1027,18 @@ class Renderer:
             rgba = np.ascontiguousarray(rgba[::-1])
         if mode == "flowmask":
             # G' espeja G alrededor del centro 0.498 (127 en 8 bits).
+            #
+            # La resta va en int16 y se recorta: en uint8, `254 - 255` no es
+            # -1, da la vuelta y vale 255. Justo el valor saturado ---y en
+            # estos mapas es la MAYORIA del area pintada: 285306 de los
+            # 518400 pixeles del mapa de 2095917182--- se quedaba sin
+            # espejar, asi que su flujo apuntaba al reves que el de sus
+            # vecinos con G=254. El salto de +1.004 a -0.996 caia justo en el
+            # contorno donde la mascara satura y dibujaba una grieta dura
+            # siguiendolo, con la imagen desplazada a un lado y no al otro.
             rgba = rgba.copy()
-            rgba[:, :, 1] = 254 - rgba[:, :, 1]
+            rgba[:, :, 1] = np.clip(254 - rgba[:, :, 1].astype(np.int16),
+                                    0, 255).astype(np.uint8)
 
         # Las mascaras estan pintadas sobre el rectangulo de la capa y los
         # pases de efecto las muestrean con a_TexCoord sobre TODO el buffer.
@@ -1317,10 +1353,26 @@ class Renderer:
         a = anims[0]
         keys = int(a.tracks.shape[1])
         nb = len(bones)
+        if keys < 2 or nb == 0:
+            return None
 
         mats = np.empty((keys, nb, 12), dtype="<f4")
         for k in range(keys):
             mats[k] = _skin_matrices(bones, a, k)[:, :, 0:3].reshape(nb, 12)
+
+        # `mirror` va y vuelve; el bucle corriente solo va. Se hornea aqui la
+        # ida y la vuelta en vez de ensenarle el modo al ejecutor, que son dos
+        # y no pueden divergir: el plan sale con las claves ya en el orden en
+        # que se reproducen y el ejecutor sigue haciendo lo unico que sabe.
+        #
+        # Los dos ejecutores dan por hecho que la ULTIMA clave repite la
+        # primera ---por eso el periodo son `nkeys - 1` intervalos---, y una
+        # pista `mirror` no cumple eso: las 47 del corpus acaban lejos de donde
+        # empiezan, hasta 13,34 unidades en el brazo de 2868108515. Reproducida
+        # como bucle daba un tiron en cada vuelta. La ida y vuelta cierra sola.
+        if a.mode == "mirror":
+            mats = np.concatenate([mats, mats[-2:0:-1], mats[:1]])
+            keys = int(mats.shape[0])           # 2K-1, con la ultima == primera
 
         # Los indices de hueso son u32 en el .mdl, pero ningun puppet del
         # corpus pasa de unas decenas de huesos: caben de sobra en u16.
@@ -1363,7 +1415,8 @@ class Renderer:
             ext = np.maximum(ext, np.abs(out[:, 0:2]).max(axis=0))
 
         self.stats["puppet_animado"] += 1
-        return MeshAnim(nb, keys, float(a.duration),
+        dur = float(a.duration) * (2.0 if a.mode == "mirror" else 1.0)
+        return MeshAnim(nb, keys, dur,
                         (idx16.tobytes(), pesos.tobytes(), mats.tobytes()),
                         (float(ext[0]), float(ext[1])))
 
