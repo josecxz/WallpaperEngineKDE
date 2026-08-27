@@ -833,8 +833,8 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
         return np.asarray(mesh.positions, dtype=np.float64)
     try:
         bones, p = wemdl.parse_skeleton(blob, mesh.consumed, rel)
-        if blob[p:p + 4] != b"MDLA":
-            raise wemdl.MdlError("sin bloque de animacion")
+        # Sin comprobar aqui el magic: entre el esqueleto y la animacion puede
+        # ir otro bloque, y seguir la cadena es cosa de `parse_animations`.
         anims, _ = wemdl.parse_animations(blob, p, rel, len(bones))
     except wemdl.MdlError as e:
         notes.append(f"puppet sin animacion ({rel}): {e}")
@@ -845,8 +845,16 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
     a = anims[0]
     keys = a.tracks.shape[1]
     # El ultimo fotograma repite el primero para cerrar el bucle, asi que el
-    # periodo son `keys - 1` intervalos.
-    k = int(round((float(t) / max(a.duration, 1e-6)) * (keys - 1))) % max(keys - 1, 1)
+    # periodo son `keys - 1` intervalos. En `mirror` el periodo es el doble
+    # ---va y vuelve--- y la vuelta se refleja; igual que lo que `_mesh_anim`
+    # hornea en las claves que van al plan.
+    span = max(keys - 1, 1)
+    if a.mode == "mirror":
+        k = int(round((float(t) / max(a.duration, 1e-6)) * span)) % (2 * span)
+        if k > span:
+            k = 2 * span - k
+    else:
+        k = int(round((float(t) / max(a.duration, 1e-6)) * span)) % span
 
     v = np.concatenate([np.asarray(mesh.positions, dtype=np.float64),
                         np.ones((mesh.vertex_count, 1))], axis=1)
@@ -1229,10 +1237,26 @@ class Renderer:
         a = anims[0]
         keys = int(a.tracks.shape[1])
         nb = len(bones)
+        if keys < 2 or nb == 0:
+            return None
 
         mats = np.empty((keys, nb, 12), dtype="<f4")
         for k in range(keys):
             mats[k] = _skin_matrices(bones, a, k)[:, :, 0:3].reshape(nb, 12)
+
+        # `mirror` va y vuelve; el bucle corriente solo va. Se hornea aqui la
+        # ida y la vuelta en vez de ensenarle el modo al ejecutor, que son dos
+        # y no pueden divergir: el plan sale con las claves ya en el orden en
+        # que se reproducen y el ejecutor sigue haciendo lo unico que sabe.
+        #
+        # Los dos ejecutores dan por hecho que la ULTIMA clave repite la
+        # primera ---por eso el periodo son `nkeys - 1` intervalos---, y una
+        # pista `mirror` no cumple eso: las 47 del corpus acaban lejos de donde
+        # empiezan, hasta 13,34 unidades en el brazo de 2868108515. Reproducida
+        # como bucle daba un tiron en cada vuelta. La ida y vuelta cierra sola.
+        if a.mode == "mirror":
+            mats = np.concatenate([mats, mats[-2:0:-1], mats[:1]])
+            keys = int(mats.shape[0])           # 2K-1, con la ultima == primera
 
         # Los indices de hueso son u32 en el .mdl, pero ningun puppet del
         # corpus pasa de unas decenas de huesos: caben de sobra en u16.
@@ -1275,7 +1299,8 @@ class Renderer:
             ext = np.maximum(ext, np.abs(out[:, 0:2]).max(axis=0))
 
         self.stats["puppet_animado"] += 1
-        return MeshAnim(nb, keys, float(a.duration),
+        dur = float(a.duration) * (2.0 if a.mode == "mirror" else 1.0)
+        return MeshAnim(nb, keys, dur,
                         (idx16.tobytes(), pesos.tobytes(), mats.tobytes()),
                         (float(ext[0]), float(ext[1])))
 

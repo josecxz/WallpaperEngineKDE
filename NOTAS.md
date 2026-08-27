@@ -3222,6 +3222,74 @@ negro desaparece —eso está claro— pero la escena queda lavada y **su previe
 sirve para juzgarlo**: es un retrato de cerca y lo nuestro es el plano ancho, o
 sea que la razón no compara lo mismo ni antes ni ahora.
 
+## El puppet se quedaba en reposo: el campo de la cabecera es un desplazamiento
+
+Un `.mdl` de puppet encadena bloques: geometría, `MDLS` (esqueleto) y `MDLA`
+(animación). Tras el esqueleto, `parse_animations` no encontraba `MDLA` en **58
+de los 95 puppets** de esta biblioteca, avisaba de «bytes sin identificar» y el
+puppet se dibujaba **en su postura de reposo**.
+
+Y la postura de reposo no es la imagen que se ve. En estos wallpapers el autor
+dibuja la pieza colgante apartada en la textura y son los huesos los que la
+llevan a su sitio, así que sin animación se queda donde la dibujó:
+
+- `3775394622`: la columna vertebral dorada del casco de Agamenón, aparcada
+  contra el borde derecho del lienzo en vez de colgando del penacho.
+- `3238423642`: **la cabeza del personaje flotando suelta en la esquina
+  superior izquierda**, separada del cuerpo.
+
+La causa es un campo mal interpretado. La cabecera de `MDLS` es `magic` + `u32`,
+y ese `u32` estaba documentado aquí como «tamaño restante». No lo es: es el
+**desplazamiento absoluto del bloque siguiente**. Dos medidas lo fijan, y
+ninguna sale de suponer nada:
+
+- En los 37 puppets que sí funcionaban, el campo coincide **exacto** con la
+  posición donde termina de recorrer la lista de huesos.
+- En 89 de los 95, el byte al que apunta es `MDLA` o `MDAT`. En el que falta,
+  apunta al final del fichero: ese puppet no trae animación y es correcto.
+
+O sea que detrás de la lista de huesos hay otro bloque, de tamaño distinto en
+cada fichero, que el recorrido no salta. Ya se había tropezado con él y se
+parcheó con una constante —`13 + 80 * huesos`— medida sobre las seis mallas
+donde se vio. La constante cuadraba en esas seis y en ninguna más; el bloque no
+tiene tamaño fijo. Siguiendo el campo no hace falta interpretarlo.
+
+La regla vale para toda la cadena, no solo para `MDLS`. En
+`2867316322/puppet_puppet.mdl`: `MDLS` → 15106, ahí hay un `MDAT0001` cuyo campo
+dice 15198, ahí hay `MDLA0006`, y el suyo dice 17495, que es el último byte del
+fichero. Así que `parse_animations` salta cualquier bloque que no sepa leer por
+su propio campo, en vez de conocerlos de antemano.
+
+**54 puppets de 11 escenas recuperan su animación**; de 37 animados se pasa a 91
+de 95.
+
+### Y entonces `mirror` deja de ser un detalle
+
+Los dos ejecutores dan por hecho que **la última clave repite la primera**: por
+eso el periodo son `nkeys - 1` intervalos. Las pistas de modo `loop` cumplen eso
+—60 de 74 exactamente, y las 14 restantes por debajo de 0,08—. Las de modo
+`mirror` **no lo cumplen ninguna**: son las 47 del corpus y acaban lejos de donde
+empiezan, hasta 13,34 unidades en el brazo de `2868108515`. Se reproducen yendo
+y volviendo, no en bucle.
+
+Reproducirlas como bucle da un tirón en cada vuelta, y hasta ahora casi no se
+notaba porque la mayoría de esas pistas ni se leían. Se hornea la ida y vuelta
+**en Python**, no en el ejecutor: las claves salen al plan en el orden en que se
+reproducen —`0..K-1`, `K-2..1`, `0`, que son `2K-1` con la última igual a la
+primera— y la duración va doblada. El ejecutor sigue haciendo lo único que sabe,
+y no hay una regla nueva que dos implementaciones puedan entender distinto.
+
+Queda un `single` en el corpus, que WE reproduce una vez y se para; nosotros lo
+repetimos.
+
+### Lo medido
+
+Las 129 escenas, luminancia media sobre 6 fotogramas: **ninguna regresión**.
+De las 11 escenas con puppets recuperados, las dos que más cambian son
+`3050043876` (23,4 % de los píxeles: el pelo, que ahora ondea) y `3238423642`
+(16,0 %: la cabeza, que vuelve al cuerpo). Las dos coinciden ahora con la vista
+previa de su autor.
+
 ## Lo siguiente
 
 Por orden de lo que más se nota:
