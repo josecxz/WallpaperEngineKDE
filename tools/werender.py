@@ -400,7 +400,7 @@ def vp_de(mvp: list[float], mundo: list[float]) -> list[float]:
 
 
 def uniforms_de_tinte(col: list[float], alfa: float, brillo: float) -> list[str]:
-    """Color, brillo y opacidad del objeto, por los tres nombres que se leen.
+    """Color, brillo y opacidad del objeto, por los cuatro nombres que se leen.
 
     Cada generacion de shaders lee la opacidad de un sitio, y son ramas
     excluyentes del mismo fichero: `genericimage2` aplica `g_Color4` entero
@@ -408,13 +408,36 @@ def uniforms_de_tinte(col: list[float], alfa: float, brillo: float) -> list[str]
     rgb y `g_UserAlpha` sobre el alfa. Mandarla solo en `g_Alpha` la perdia en
     las dos: ese nombre lo usan otros seis shaders, ninguno de estos.
 
+    El cuarto es `g_Color`, un vec3, y es el del shader de color plano. Lo leen
+    `flat`, `flatpoint` y `editorsprite` de la libreria comun ---y NADIE mas:
+    ningun shader de las 129 escenas del corpus lo menciona---. Ahi el rgb no
+    tiene otra fuente: `flat.frag` entero es
+
+        gl_FragColor = vec4(g_Color, g_Alpha);
+
+    asi que sin emitirlo GL lo daba a cero y la capa salia NEGRA OPACA, tapando
+    todo lo que hubiera debajo. Son 44 capas en 15 escenas; 27 de ellas piden
+    un color que no es negro, asi que 17 se salvaban por casualidad ---las que
+    de verdad querian negro---. La mas cara es la capa `Solid` de Sci-Fi Cyber
+    City (2262142032): es la base blanca sobre la que el pase de nubes dibuja,
+    la tercera de 77, y al salir negra borraba el cielo y dejaba la ciudad
+    entera como siluetas sobre negro.
+
+    El brillo va multiplicado dentro del rgb, no aparte: estos tres shaders no
+    declaran `g_Brightness` y no hay otro sitio donde meterlo. No cambia nada
+    medible ---ninguna de las 44 capas trae brillo distinto de 1--- pero deja
+    la semantica igual que en las otras generaciones si alguna lo trae.
+
     No se aplica dos veces: en toda la libreria no hay un `.frag` que lea dos
-    de los tres.
+    de los cuatro, y los tres que leen `g_Color` sacan el alfa de `g_Alpha`,
+    que es un nombre distinto.
     """
     return [f"u4f g_Color4 {col[0]:.6g} {col[1]:.6g} {col[2]:.6g} {alfa:.6g}",
             f"u1f g_Brightness {brillo:.6g}",
             f"u1f g_UserAlpha {alfa:.6g}",
-            f"u1f g_Alpha {alfa:.6g}"]
+            f"u1f g_Alpha {alfa:.6g}",
+            f"u3f g_Color {col[0] * brillo:.6g} {col[1] * brillo:.6g} "
+            f"{col[2] * brillo:.6g}"]
 
 
 def primer_fotograma(mp4: bytes) -> "np.ndarray | None":

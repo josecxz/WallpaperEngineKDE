@@ -2314,6 +2314,87 @@ opacas:
 Las dos están miradas contra su preview, no solo medidas: siguen dibujando la
 obra de su autor, con menos velo encima.
 
+## El cuarto nombre del tinte: `g_Color`, y la ciudad que salía en siluetas
+
+`2262142032` ---*Sci-Fi Cyber City*, 77 pases--- se dibujaba con el cielo negro
+y la ciudad entera reducida a siluetas pálidas: las luces de las ventanas y los
+neones caían donde tocaba y con su color, pero el atardecer, el planeta y la
+bruma del fondo no estaban. Ninguna herramienta protestaba: 77 pases dibujados,
+0 sin programa, 0 shaders perdidos, 0 texturas ausentes.
+
+Cortando el plan por pases ---`werender.py --passes N`--- el corte es limpio y
+no hace falta mirar mucho: con 2 pases la escena es **exacta al preview**, y con
+3 es un rectángulo negro. El PNG lo dice hasta sin abrirlo, porque uno pesa
+8,8 MB y el otro 37 KB.
+
+El pase 3 es el base del objeto `Solid` ---`models/util/solidlayer.json`, la
+capa blanca sobre la que el pase siguiente pinta las nubes---, y su fragmento es
+`flat.frag` de la librería común, que entero es esto:
+
+```glsl
+uniform mediump float g_Alpha;
+uniform mediump vec3  g_Color;
+
+void main() {
+	gl_FragColor = vec4(g_Color, g_Alpha);
+}
+```
+
+El plan le mandaba `g_Alpha`, `g_Color4`, `g_Brightness` y `g_UserAlpha`. De los
+cuatro, ese shader solo lee dos, y el que lleva el rgb ---`g_Color`, un `vec3`,
+un quinto nombre que nadie emitía--- no iba. Sin asignar, GL da el uniform a
+cero: **negro opaco a pantalla completa**, encima de un cielo que ya estaba bien
+dibujado. El alfa sí llegaba, y por eso el quad tapaba en vez de desaparecer.
+
+Es el mismo fallo que el del vinilo una capa más abajo: el tinte del objeto
+viaja por tantos nombres como generaciones de shaders hay, y faltaba una. La
+diferencia es que aquí el nombre que faltaba no llevaba la opacidad sino el
+color, así que en vez de una capa demasiado opaca daba una capa negra.
+
+### Alcance: 44 capas en 15 escenas, y 17 acertaban por casualidad
+
+`g_Color` lo leen tres shaders de la librería común ---`flat`, `flatpoint` y
+`editorsprite`--- y **nadie más**: ni uno de los shaders de las 129 escenas del
+corpus lo menciona. Ninguno de los tres lee `g_Color4`, `g_Brightness` ni
+`g_UserAlpha`, así que no hay doble aplicación posible; los tres sacan el alfa
+de `g_Alpha`, que es un nombre distinto. La regla de la sección anterior sigue
+en pie con el cuarto dentro: en toda la librería no hay un `.frag` que lea dos
+de los cuatro.
+
+De las 44 capas del corpus que usan esos shaders, **27 piden un color que no es
+negro**. Las otras 17 querían negro de verdad y se veían bien por accidente ---
+un `color: "0 0 0"` y un uniform sin asignar dan el mismo píxel---, que es
+justo por lo que el fallo duró: en la mayoría de las escenas afectadas no se
+notaba nada.
+
+El brillo va multiplicado dentro del rgb en vez de aparte, porque estos tres
+shaders no declaran `g_Brightness` y no hay otro sitio donde meterlo. No cambia
+ningún píxel medible ---ninguna de las 44 capas trae brillo distinto de 1---
+pero deja la semántica igual que en las otras generaciones.
+
+Medido sobre las 129 escenas: **0 regresiones**, 6 escenas ganan luz y una
+cambia −0,09 de media, que es el ruido de sus partículas ---no tiene ninguna
+capa `flat`, y un `u3f` cuyo nombre el programa no declara es un no-op:
+`glexec.c` hace `if (loc < 0) continue;`---.
+
+| escena | antes | después | qué se ve |
+|---|---|---|---|
+| 2864255069 | 29,33 | 145,56 | el fondo amarillo de *Edgerunners*, que salía negro entero |
+| 2262142032 | 21,82 | 81,07 | el atardecer, el planeta y la bruma; la ciudad deja de ser siluetas |
+| 3237641967 | 95,43 | 117,85 | la salpicadura de sangre deja de ser una mancha negra |
+| 2311315748 | 8,22 | 12,45 | `Circuit Glow` y `Big Pulse`, dos capas blancas que no encendían |
+| 2867316322 | 158,21 | 161,20 | el morado del fondo, que era negro |
+| 3624164256 | 71,21 | 71,69 | el `Mover` del reproductor |
+
+Las dos primeras están miradas contra su preview, no solo medidas.
+
+Vale la pena el detalle de `2311315748` ---*Samurai - Cyberpunk 2077*---: en la
+sección de la regresión de luz figuraba como «arte oscuro, correcta» con razón
+0,25 contra su preview. Lo era a medias: es una obra deliberadamente oscura Y
+además le faltaban dos capas. Ahora va a 0,58. Una escena puede estar en la
+lista de las oscuras por dos motivos a la vez, y el que sea legítima no
+garantiza que no tenga nada roto encima.
+
 ## La función de iluminación no está en los assets
 
 Ocho shaders de la librería común llaman a `PerformLighting_V1`, y ninguno la
