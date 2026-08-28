@@ -408,6 +408,43 @@ def prueba_opacidad_del_objeto(fallos: list[str]) -> None:
         fallos.append("con alpha 1 la capa no queda neutra")
 
 
+def prueba_color_del_shader_plano(fallos: list[str]) -> None:
+    """El rgb tiene que salir tambien por `g_Color`, el del shader plano.
+
+    `flat.frag` ---y `flatpoint` y `editorsprite`--- no leen ninguno de los
+    otros tres nombres: su fragmento entero es `vec4(g_Color, g_Alpha)`. Sin
+    emitirlo GL lo da a cero y la capa sale NEGRA OPACA, tapando lo de debajo.
+    Son 44 capas en 15 escenas; la mas cara es la base blanca de las nubes de
+    2262142032, que borraba el cielo y dejaba la ciudad en siluetas.
+    """
+    por_nombre = {l.split()[1]: l.split()[2:]
+                  for l in werender.uniforms_de_tinte([1.0, 0.5, 0.25], 1.0, 1.0)}
+
+    if "g_Color" not in por_nombre:
+        fallos.append("no se emite g_Color: el shader plano se dibuja negro")
+    elif [float(x) for x in por_nombre["g_Color"]] != [1.0, 0.5, 0.25]:
+        fallos.append(f"el color no llega a g_Color: {por_nombre['g_Color']}")
+
+    # El blanco por defecto es el caso que rompia la escena: sin g_Color, un
+    # `Solid` de color 1 1 1 salia a 0 0 0.
+    por_nombre = {l.split()[1]: l.split()[2:]
+                  for l in werender.uniforms_de_tinte([1.0, 1.0, 1.0], 1.0, 1.0)}
+    if [float(x) for x in por_nombre.get("g_Color", [])] != [1.0, 1.0, 1.0]:
+        fallos.append(f"una capa blanca no sale blanca: {por_nombre.get('g_Color')}")
+
+    # Estos shaders no declaran g_Brightness, asi que el brillo solo puede
+    # llegar multiplicado dentro del rgb.
+    por_nombre = {l.split()[1]: l.split()[2:]
+                  for l in werender.uniforms_de_tinte([1.0, 0.5, 0.0], 1.0, 2.0)}
+    if [float(x) for x in por_nombre.get("g_Color", [])] != [2.0, 1.0, 0.0]:
+        fallos.append(f"el brillo no entra en g_Color: {por_nombre.get('g_Color')}")
+
+    # La opacidad NO va en g_Color: la lee g_Alpha, que es otro nombre. Si se
+    # colara aqui se aplicaria dos veces.
+    if len(por_nombre.get("g_Color", [])) != 3:
+        fallos.append("g_Color tiene que ser un vec3, no llevar el alfa")
+
+
 def main() -> int:
     fallos: list[str] = []
     for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
@@ -416,7 +453,8 @@ def main() -> int:
                    prueba_valor_de_usuario, prueba_curva_de_animacion,
                    prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
                    prueba_visibilidad_heredada,
-                   prueba_opacidad_del_objeto):
+                   prueba_opacidad_del_objeto,
+                   prueba_color_del_shader_plano):
         prueba(fallos)
         print(f"  {prueba.__name__}")
     if fallos:
