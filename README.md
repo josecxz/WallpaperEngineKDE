@@ -4,9 +4,9 @@ Fondos de escritorio animados para **KDE Plasma 6 / Wayland**, capaces de
 ejecutar escenas de [Wallpaper Engine](https://store.steampowered.com/app/431960/)
 de forma nativa.
 
-No es un reproductor de vídeo ni un envoltorio: lee el `scene.pkg` original,
-decodifica sus texturas, traduce sus shaders a GLSL y ejecuta el grafo de
-render completo con OpenGL, dentro del propio plasmashell.
+No es un envoltorio: lee el `scene.pkg` original, decodifica sus texturas,
+traduce sus shaders a GLSL y ejecuta el grafo de render completo con OpenGL,
+dentro del propio plasmashell. Y donde una capa **es** un vídeo, lo reproduce.
 
 ```
 SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
@@ -19,22 +19,30 @@ SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
 - **Animación por huesos** (*puppet warp*): personajes que respiran, telas que
   ondean, parpadeos.
 - **Texto** con la fuente del wallpaper, la del motor o la que fontconfig
-  sustituya: relojes, fechas y créditos, rasterizados y compuestos como una
-  capa más.
+  sustituya, rasterizado y compuesto como una capa más. Los **relojes y las
+  fechas dan la hora de verdad**: su cadena viene de un script de JavaScript,
+  que el motor interpreta para deducir el formato y luego rehace cada minuto
+  ---en el idioma que el script traiga, que en esta biblioteca son seis---.
 - **Integrado en Plasma** como plugin de fondo: respeta el z-order, la
   opacidad y los iconos del escritorio.
+- **Vídeo**: tanto las capas cuya textura es un MP4 dentro del `.tex` como los
+  wallpapers que son un vídeo y nada más. Se decodifica en un hilo aparte, en
+  bucle, y se para solo cuando el fondo no se ve.
 - **Sin reiniciar nada**: cambiar de fondo, pararlo o arrancarlo es inmediato.
 - **No dibuja lo que no se ve**: mide cuánta pantalla tapan las ventanas y para
   el motor cuando no queda fondo a la vista —también con dos ventanas en
   mosaico, donde ninguna está maximizada (98,2 % → 0,1 % de la GPU)—. Al
   destapar sigue donde estaba.
 
-No soporta wallpapers de tipo vídeo ni web, ni audio reactivo.
+No soporta wallpapers de tipo web, ni audio: ni el reactivo ni la pista de
+sonido de los vídeos.
 
 ## Instalación
 
-Requiere Qt 6, OpenGL, Python 3 con NumPy y Pillow, y una instalación de
-Wallpaper Engine (por Steam o Proton) de la que leer los assets.
+Requiere Qt 6, OpenGL, las bibliotecas de desarrollo de ffmpeg
+(`libavformat`, `libavcodec`, `libavutil`, `libswscale`), Python 3 con NumPy y
+Pillow, y una instalación de Wallpaper Engine (por Steam o Proton) de la que
+leer los assets.
 
 ```sh
 make build && make install
@@ -90,13 +98,29 @@ una traducción de ese material, así que hereda su propiedad: se queda en
 ## Uso
 
 ```sh
-wectl list [texto]      lista tus wallpapers; el * marca el preparado
+wectl list [texto]      lista tus wallpapers con su tipo; el * marca el preparado
 wectl set <id|texto>    prepara uno y lo pone en el escritorio
 wectl shuffle           pone uno al azar de toda la biblioteca
 wectl shuffletime <t>    ajusta cada cuánto rota, sin cambiar el fondo
 wectl start / stop      activa o para el motor
 wectl status            qué hay puesto y cómo va
 ```
+
+```
+$ wectl list irelia
+   1341136509   video  [1080p 60FPS] Nightblade Irelia - Animated wallpaper
+   2128224409   scene  [Animated] League of Legends - High Noon Irelia
+ * 2527248676   scene  Sentinel Irelia - League of Legends
+   ...
+
+6 wallpapers: 5 scene, 1 video. El * es el que hay preparado.
+```
+
+El tipo es el que declara el propio `project.json`. La lista los enseña
+**todos**, incluidos los `web`, que este motor no pone: un wallpaper que no
+aparece no se distingue de uno que no está instalado, y esa es justo la duda
+de quien no encuentra el suyo. El pie dice cuáles no se pueden poner, y
+`set` sobre uno de ellos lo explica en vez de decir que no existe.
 
 ```
 $ wectl set jeanne
@@ -210,10 +234,12 @@ scene.pkg ─┬─ pkg_inspect ─ contenedor
 ## Estructura
 
 ```
-src/          motor C++: plugin QML de Plasma y ejecutor OpenGL
-tools/        herramientas Python: formatos, plan y CLI
-plugin/       paquete de fondo de Plasma (KPackage)
-NOTAS.md      documentación técnica de los formatos
+src/             motor C++: plugin QML de Plasma y ejecutor OpenGL
+tools/           herramientas Python: formatos, plan y CLI
+plugin/          paquete de fondo de Plasma (KPackage)
+NOTAS.md         documentación técnica de los formatos
+NOTAS-INDICE.md  qué resuelve cada sección de NOTAS.md, y en qué línea
+CLAUDE.md        mapa del repositorio: reglas, cadena, tests
 ```
 
 ## Estado
@@ -231,23 +257,33 @@ detrás, leyéndolo del fotograma ya compuesto con la nitidez que le toque a su
 rugosidad. Son 7 pases en 3 escenas de esta biblioteca, y se nota sobre todo
 donde el relieve es marcado.
 
+El vídeo se reproduce: las 3 escenas cuya capa de fondo es un MP4 dentro del
+`.tex` y los 15 wallpapers que son un vídeo y nada más. Cada fotograma que
+entrega el decodificador es idéntico pixel a pixel al que saca `ffmpeg` —54 de
+54 comparaciones sobre los 18 vídeos de la biblioteca—, y en el hilo de render
+cuesta menos de una centésima de milisegundo porque la decodificación va en
+otro hilo, que se duerme solo cuando el fondo queda tapado.
+
 Limitaciones conocidas:
 
 - De los modos de fusión de capa (`colorBlendMode`) se aplican los cinco que
   sabe hacer la tarjeta —aditivo, add, screen, lighten y max, 65 de los 79
   usos de esta biblioteca—. Los que hacen falta leer el destino dentro del
   shader, como *overlay*, se componen como una capa normal.
-- Sin **bloom**: el resplandor que el motor añade sobre la escena terminada.
-  Lo encienden 34 escenas de 129, y una que se apoye mucho en él se ve
-  apagada aunque los colores sean los correctos.
+- El **bloom** —el resplandor que el motor añade sobre la escena terminada—
+  se hace con la cadena de WE: umbral a un cuarto, dos desenfoques de 13 taps
+  a un octavo y suma. Lo encienden 33 escenas de 129. Nueve piden además el
+  camino **HDR**, con su pirámide de iteraciones y un buffer en coma flotante,
+  y se quedan con la cadena normal.
 - La ondulación del agua de algún wallpaper no cae exactamente donde su
   preview la pone. La capa se coloca donde la escena dice; la diferencia está
   en su cadena de efectos y sigue sin aclararse.
 - Los campos **animados** se congelan, no se animan: el plan es una foto y el
   motor solo le cambia el reloj. Se congelan en reposo, que es como se ve un
   wallpaper una vez arrancado.
-- Las capas cuya textura es un **vídeo** se ven congeladas en su primer
-  fotograma, no reproducidas. Son 3 escenas de 129.
+- El **vídeo va por CPU**: no hay VAAPI ni NVDEC. Un 2160p a 60 fps se
+  sostiene (57 de cada 60 fotogramas), pero cuesta un núcleo. Y su pista de
+  audio no suena.
 - El parallax por mapa de profundidad se dibuja en reposo: el motor todavía no
   sabe dónde está el puntero, así que la escena se ve centrada.
 - Luces puntuales y de tubo sí; focos y direccionales no, y una escena que
@@ -257,11 +293,12 @@ Limitaciones conocidas:
   incluidas, y con el vocabulario del formato cubierto entero. Los operadores
   que siguen al cursor quedan inactivos hasta que el motor sepa dónde está el
   puntero.
-- El **texto se dibuja, pero no se ejecuta**: 148 de las 167 capas de texto de
-  esta biblioteca traen la cadena en un script de JavaScript, y 133 de esas son
-  relojes o fechas. Se dibuja la copia que el autor guardó, así que la
-  tipografía es la correcta y la hora está congelada —a menudo en `12:34`—.
-  Falta el intérprete de scripts, no el texto.
+- El **texto se ejecuta a medias**: 148 de las 172 capas de texto traen la
+  cadena en un script de JavaScript, y de esas **123 dan la hora en vivo**, en
+  20 escenas. Las 25 restantes se quedan con la copia que el autor guardó
+  —tipografía correcta, hora congelada, a menudo en `12:34`—: unas usan
+  `engine`, `import` o expresiones regulares, que el intérprete no cubre, y
+  otras no son relojes (un contador de fps, dos títulos de canción vacíos).
 - Sin audio reactivo.
 
 ## Aviso

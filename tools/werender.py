@@ -43,7 +43,9 @@ import wepaths
 import wescene
 import weshader
 import wetex
+import wevideo
 import wetext
+import wescript
 from wescene import AssetResolver, SceneError, load_scene
 
 IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
@@ -89,6 +91,15 @@ def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[floa
     # origin del siguiente, que viene expresado en el marco del padre.
     for nodo in reversed(cadena):
         o = (_floats(nodo.raw.get("origin")) + [0.0, 0.0, 0.0])[:3]
+        # Una capa con `attachment` no cuelga del ORIGEN de su padre sino de un
+        # punto del rig puppet del padre, y su `origin` es relativo a ese
+        # punto. `_anclaje` es donde cae ese punto en el marco del padre; lo
+        # resuelve el renderizador, que es quien puede leer el `.mdl`. Suma
+        # aqui y no aparte para que se le apliquen la escala y el giro de los
+        # ancestros igual que al `origin`, que es lo que le pasa de verdad.
+        anc = nodo.raw.get("_anclaje")
+        if anc:
+            o = [o[0] + anc[0], o[1] + anc[1], o[2]]
         s = (_floats(nodo.raw.get("scale")) + [1.0, 1.0, 1.0])[:3]
         a = (_floats(nodo.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
         c, sn = math.cos(ang[2]), math.sin(ang[2])
@@ -98,6 +109,16 @@ def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[floa
         esc = [esc[0] * s[0], esc[1] * s[1], esc[2] * s[2]]
         ang = [ang[0] + a[0], ang[1] + a[1], ang[2] + a[2]]
     return org, esc, ang
+
+
+def _escapa(s: str) -> str:
+    """Una cadena dentro de una linea del plan, que se parte por espacios.
+
+    Solo hay dos caracteres que escapar ---el espacio y la propia barra--- y
+    hacen falta de verdad: los nombres de dia del vietnamita de `3299228616`
+    son `Thu Sau` con espacio. Lo desescapa `desescapa()` en `wereloj.c`.
+    """
+    return s.replace("\\", "\\\\").replace(" ", "\\s") or "\\s"
 
 
 def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
@@ -182,6 +203,19 @@ def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
     # objetos de 448 --- los otros 397 dicen `center`, o sea nada.
     ax, ay = origin[0] + crop[0], origin[1] + crop[1]
     alin = obj.raw.get("alignment")
+    # Una capa de TEXTO no trae `alignment` --- ninguno de los 172 del corpus
+    # ---, trae `horizontalalign` y `verticalalign`, y hacen lo mismo: dicen a
+    # que punto de la caja se refiere `origin`. Se traducen a un `alignment`
+    # equivalente para que el desplazamiento lo haga un solo sitio.
+    #
+    # Se ve en el reloj de `3029745918`, que dice `horizontalalign: right`:
+    # en WE la hora acaba EN el origen y aqui salia media caja ---646 px de
+    # lienzo--- mas a la derecha, encima del coche. Solo mueve a 12 de los 172:
+    # los demas dicen `center`, que es lo que este calculo ya asumia.
+    if alin is None and obj.raw.get("text") is not None:
+        h_al = str(obj.raw.get("horizontalalign") or "center")
+        v_al = str(obj.raw.get("verticalalign") or "center")
+        alin = f"{v_al} {h_al}"
     if isinstance(alin, str) and _floats(obj.raw.get("size")) and not paso:
         media_w, media_h = size[0] * scale[0] / 2.0, size[1] * scale[1] / 2.0
         # El eje Y del lienzo crece hacia arriba, como en clip space.
@@ -440,38 +474,18 @@ def uniforms_de_tinte(col: list[float], alfa: float, brillo: float) -> list[str]
             f"{col[2] * brillo:.6g}"]
 
 
-def primer_fotograma(mp4: bytes) -> "np.ndarray | None":
-    """El primer fotograma de una textura de video, como RGBA.
+def _mp4_a_plan(self_tmp: Path, i: int, mp4: bytes) -> Path:
+    """Deja el MP4 de una textura de video junto al resto de los assets.
 
-    Hay capas cuyo `.tex` no lleva pixeles sino un MP4 entero ---el bandera
-    IS_VIDEO del contenedor--- y `wetex` se niega a interpretarlo como pixeles,
-    con razon: hacerle caso al `format` de la cabecera da ruido en vez de un
-    error. Hasta ahora eso dejaba la capa SIN textura, y una capa de fondo sin
-    textura no se ve: dos de las cuatro escenas negras del corpus son esto.
-
-    Congelar el primer fotograma no es reproducir el video, pero la diferencia
-    entre una imagen quieta y una pantalla negra es toda. En la escena de
-    referencia (3624053922) el fotograma da 71,31 de media y su propio preview
-    esta en 70,68.
-
-    Devuelve None si no hay `ffmpeg` o si no lo entiende; el que llama se queda
-    entonces como estaba, sin textura.
+    Hasta aqui una capa de video se resolvia congelando su primer fotograma con
+    `ffmpeg`: mejor que el negro que salia antes ---una capa de fondo sin
+    textura no se ve--- pero era una imagen quieta. Ahora el MP4 viaja entero
+    en el plan y lo decodifican los ejecutores con `src/wevideo.c`, asi que
+    Python no lo abre siquiera: no tiene que decidir nada sobre el.
     """
-    from PIL import Image
-    tmp = Path(tempfile.mkdtemp(prefix="wevideo-"))
-    try:
-        (tmp / "v.mp4").write_bytes(mp4)
-        r = subprocess.run(
-            ["ffmpeg", "-y", "-v", "error", "-i", str(tmp / "v.mp4"),
-             "-frames:v", "1", str(tmp / "f.png")],
-            capture_output=True, text=True)
-        if r.returncode != 0 or not (tmp / "f.png").is_file():
-            return None
-        return np.array(Image.open(tmp / "f.png").convert("RGBA"))
-    except (OSError, ValueError):
-        return None
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    ruta = self_tmp / f"vid{i:03d}.mp4"
+    ruta.write_bytes(mp4)
+    return ruta
 
 
 def textura_por_defecto(meta_uni: dict | None) -> str:
@@ -653,6 +667,67 @@ COMPOSITE_RT_RE = re.compile(r"^_rt_imageLayerComposite_(\d+)_[ab]$")
 BUFFERS_DEL_MOTOR = ("_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer")
 
 
+# ── bloom ───────────────────────────────────────────────────────────────────
+#
+# El halo suave que WE deja alrededor de todo lo brillante. No es un efecto de
+# una capa: lo declara la ESCENA ---`bloom`, `bloomstrength`, `bloomthreshold`,
+# `bloomtint`--- y se aplica una vez sobre todo lo dibujado. 34 escenas de las
+# 129 lo piden.
+#
+# Los tres shaders son de WE y estan en sus assets, asi que no hay que escribir
+# GLSL: los traduce el mismo `weshader` que el resto. La cadena sale de sus
+# nombres y de lo que hace cada uno:
+#
+#   escena  --downsample_quarter_bloom-->  Quarter   umbral, saturacion, fuerza
+#   Quarter --downsample_eighth_blur_v-->  Eighth    13 taps en X
+#   Eighth  --blur_h_bloom-------------->  Eighth    13 taps en Y   (si, la `h`
+#                                                    del nombre desenfoca en Y)
+#   Eighth  --composicion--------------->  pantalla  se SUMA a la escena
+#
+# `g_TexelSize` es el texel de PANTALLA en los tres, que es la lectura que
+# cuadra sola: los dos desenfoques espacian sus taps `g_TexelSize * 8`, o sea 8
+# px, que es exactamente un texel del buffer Eighth donde trabajan. Con 13 taps
+# de pesos gaussianos eso da una sigma de ~2 espaciados = **16 px**, y 16 px es
+# justo el radio que mide la captura de WE de `2821288001`: correlando la
+# diferencia contra el mismo umbral desenfocado a varias sigmas, el maximo cae
+# limpio en 16 (0,395) frente a 4 (0,291) y 64 (0,191). Ver NOTAS.
+#
+# El umbral se aplica DESPUES de promediar los cuatro taps, que es lo que dice
+# el shader y no un detalle: un pixel brillante suelto se promedia con sus
+# vecinos oscuros, baja del umbral y no aporta halo. Por eso el bloom de WE
+# rodea zonas brillantes y no puntos sueltos.
+BLOOM_UMBRAL = "downsample_quarter_bloom"
+BLOOM_BLUR_X = "downsample_eighth_blur_v"
+BLOOM_BLUR_Y = "blur_h_bloom"
+BLOOM_RT_UMBRAL = "_rt_bloomQuarter"
+BLOOM_RT_X = "_rt_bloomEighthX"
+BLOOM_RT_Y = "_rt_bloomEighthY"
+
+# La suma final. WE la hace dentro de su motor, asi que aqui no hay shader que
+# traducir y es el unico GLSL escrito a mano del renderizador. Escribe alfa
+# CERO a proposito: el objeto se compone en modo 3 ---`glBlendFunc(GL_ONE,
+# GL_ONE)`, ver `flush_object`--- que suma los cuatro canales, y sumar alfa
+# volveria opaca la escena entera.
+BLOOM_COMPOSICION_VERT = """#version 330 core
+in vec3 a_Position;
+in vec2 a_TexCoord;
+out vec2 v_TexCoord;
+void main() {
+    gl_Position = vec4(a_Position, 1.0);
+    v_TexCoord = a_TexCoord;
+}
+"""
+
+BLOOM_COMPOSICION_FRAG = """#version 330 core
+in vec2 v_TexCoord;
+out vec4 wpFragColor;
+uniform sampler2D g_Texture0;
+void main() {
+    wpFragColor = vec4(texture(g_Texture0, v_TexCoord).rgb, 0.0);
+}
+"""
+
+
 def niveles_mipmap(w: int, h: int) -> int:
     """Cuantos niveles tiene la piramide de un buffer de w x h.
 
@@ -700,15 +775,24 @@ def resolucion_de_dibujo(canvas: tuple[int, int],
     modos de encaje**. Si se usara el del modo concreto, la resolucion quedaria
     atada al encaje, que hoy se cambia en caliente sin regenerar el plan.
 
-    Y nunca por encima de 1: pintar mas puntos de los que dibujo el autor no
-    anade detalle, solo gasto.
-
     Medido con el mismo plan en la iGPU: 44,5 ms por fotograma a 3840x2160
     contra 16,2 a 1920x1200, o sea 2,8x mas rapido.
+
+    **El factor tambien sube de 1**, y esto costo encontrarlo. Aqui habia un
+    `min(1.0, ...)` con el razonamiento de que "pintar mas puntos de los que
+    dibujo el autor no anade detalle". Es falso: el lienzo de WE es un ESPACIO
+    DE COORDENADAS, no un raster. Una escena de lienzo 1280x720 lleva texturas
+    de 4K, shaders y particulas, y su detalle no acaba en 720 lineas.
+
+    Lo que hacia el tope era dibujar esas escenas pequenas y dejar que el blit
+    final las AMPLIARA hasta la pantalla: todo mas gordo y mas borroso, con las
+    particulas mas juntas porque se ve menos escena. Se veia en el diario del
+    motor en vivo ---`escena 1280x720 -> se ve 1152x720 -> destino 1920x1200`---
+    y afecta a **38 de las 129**, con mediana x1,11 y hasta x3,40.
     """
     if not pantalla or canvas[0] <= 0 or canvas[1] <= 0:
         return canvas
-    k = min(1.0, max(pantalla[0] / canvas[0], pantalla[1] / canvas[1]))
+    k = max(pantalla[0] / canvas[0], pantalla[1] / canvas[1])
     return (max(1, int(round(canvas[0] * k))), max(1, int(round(canvas[1] * k))))
 
 
@@ -858,6 +942,74 @@ def _skin_matrices(bones, anim, k: int) -> np.ndarray:
     return np.stack([np.linalg.inv(G[j]) @ P[j] for j in range(len(bones))])
 
 
+def _mundo_de_reposo(bones) -> list[np.ndarray]:
+    """Matriz de reposo de cada hueso compuesta hasta la raiz.
+
+    Es la `G_j` de `_skin_matrices`; aqui aparte porque la resolucion de
+    anclajes la necesita sin la parte animada. Los padres van siempre antes
+    que sus hijos en el MDLS, asi que basta un recorrido en orden.
+    """
+    g: list[np.ndarray] = []
+    for j, b in enumerate(bones):
+        m = np.asarray(b.matrix, dtype=np.float64)
+        g.append(m @ g[b.parent] if 0 <= b.parent < j else m)
+    return g
+
+
+def _pistas_de_huesos(bones, anim) -> tuple[np.ndarray, int]:
+    """Las matrices de skinning de todas las claves: (claves, huesos, 12).
+
+    Son 12 y no 16 porque la ultima columna es siempre (0,0,0,1).
+
+    `mirror` va y vuelve; el bucle corriente solo va. Se despliega aqui la ida
+    y la vuelta en vez de ensenarle el modo al ejecutor, que son dos y no
+    pueden divergir: el plan sale con las claves ya en el orden en que se
+    reproducen y el ejecutor sigue haciendo lo unico que sabe.
+
+    Los dos ejecutores dan por hecho que la ULTIMA clave repite la primera
+    ---por eso el periodo son `nkeys - 1` intervalos---, y una pista `mirror`
+    no cumple eso: las 47 del corpus acaban lejos de donde empiezan, hasta
+    13,34 unidades en el brazo de 2868108515. Reproducida como bucle daba un
+    tiron en cada vuelta. La ida y vuelta cierra sola.
+
+    Lo lee el bloque de animacion que va al plan Y la resolucion de anclajes,
+    que tiene que hornear su posicion base sobre EXACTAMENTE las mismas claves
+    que va a interpolar el ejecutor; si no, el desplazamiento que este suma no
+    saldria de cero en el instante horneado.
+    """
+    keys = int(anim.tracks.shape[1])
+    nb = len(bones)
+    mats = np.empty((keys, nb, 12), dtype="<f4")
+    for k in range(keys):
+        mats[k] = _skin_matrices(bones, anim, k)[:, :, 0:3].reshape(nb, 12)
+    if anim.mode == "mirror":
+        mats = np.concatenate([mats, mats[-2:0:-1], mats[:1]])
+    return mats, int(mats.shape[0])
+
+
+def _punto_animado(mats: np.ndarray, keys: int, duration: float,
+                   punto, hueso: int, t: float) -> tuple[float, float]:
+    """Donde cae `punto` al deformarlo con el hueso `hueso` en el instante `t`.
+
+    Es la misma cuenta que hace el skinning con un vertice ---`v * M`, con M
+    por filas--- y la misma fase e interpolacion que los dos ejecutores, para
+    que el punto horneado en el plan y el que ellos recalculan por fotograma
+    coincidan en el instante del horneado.
+    """
+    span = max(keys - 1, 1)
+    fase = math.fmod(t / max(duration, 1e-6), 1.0)
+    if fase < 0.0:
+        fase += 1.0
+    fk = fase * span
+    k0 = min(int(fk), span - 1)
+    fr = fk - k0
+    a = mats[k0][hueso].astype(np.float64).reshape(4, 3)
+    b = mats[k0 + 1][hueso].astype(np.float64).reshape(4, 3)
+    m = a + (b - a) * fr
+    return (punto[0] * m[0, 0] + punto[1] * m[1, 0] + m[3, 0],
+            punto[0] * m[0, 1] + punto[1] * m[1, 1] + m[3, 1])
+
+
 def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
     """Deforma la malla por huesos en el instante WE_PUPPET_TIME.
 
@@ -961,11 +1113,13 @@ class Renderer:
         self.mesh_files: list[Path] = []
         self.notes: list[str] = []
         self.stats = {"pases": 0, "sin_shader": 0, "sin_textura": 0,
-                      "video_congelado": 0,
+                      "video": 0,
                       "puppet": 0, "puppet_omitido": 0, "puppet_animado": 0,
+                      "anclaje": 0, "anclaje_omitido": 0,
                       "psys": 0, "psys_parcial": 0, "psys_estela": 0,
                       "psys_cinta": 0, "psys_sin_estela": 0,
-                      "texto": 0, "texto_vacio": 0, "texto_omitido": 0}
+                      "texto": 0, "texto_vacio": 0, "texto_omitido": 0,
+                      "reloj": 0, "bloom": 0, "psys_hijo": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
         # Las texturas se numeran con un contador propio y no con el tamano de
@@ -977,6 +1131,12 @@ class Renderer:
         self.atlas: dict[int, tuple[int, int, int]] = {}
         # Sistema de particulas por objeto, con la misma clave que las mallas.
         self.psys: dict[int, int] = {}
+        # `(psys del hijo, id del objeto padre, rafaga)` de los `eventspawn`.
+        # Se resuelve al final de `_build`, cuando ya estan todos los psys.
+        self.hijos: list[tuple[int, str, int]] = []
+        # id de objeto de la escena -> indice de su `.psys`, para atar los hijos
+        # a su padre cuando ya estan todos declarados.
+        self.psys_por_id: dict[str, int] = {}
         # Los tres numeros de `g_RenderVar0` de los objetos con `spritetrail`.
         self.estelas: dict[int, tuple[float, float, float]] = {}
         # `(modo, puntos, intervalo)` de los objetos con `rope` o `ropetrail`.
@@ -1005,13 +1165,32 @@ class Renderer:
             tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
             mip = tex.images[0][0]
             if getattr(mip, "video", False):
-                rgba = primer_fotograma(mip.raw)
-                if rgba is None:
-                    self.stats["sin_textura"] += 1
-                    return None
-                self.stats["video_congelado"] += 1
-            else:
-                rgba = mip.to_rgba(tex.format)
+                # El `.tex` no lleva pixeles sino un MP4 entero. No se abre
+                # aqui: se pasa al plan y lo decodifica el ejecutor.
+                #
+                # El tamano que se pide es el de la IMAGEN, no el del mip: WE
+                # rellena hasta potencia de dos y el MP4 de dentro puede venir a
+                # otra resolucion. swscale escala a lo que se le pida, asi que
+                # esto resuelve el relleno y el desajuste de una vez, y sin el
+                # recorte que hace falta con los pixeles crudos.
+                iw, ih = tex.image_size
+                w = iw if iw > 0 else mip.width
+                h = ih if ih > 0 else mip.height
+                if not flip:
+                    # Nunca ha pasado en el corpus ---las hojas de particula no
+                    # son video--- pero si pasa, que quede escrito y no como una
+                    # imagen del reves sin explicacion.
+                    self.notes.append(f"textura de video sin voltear ({name}): "
+                                      "el ejecutor la voltea igual")
+                i = self._n_tex
+                self._n_tex += 1
+                self.lines.append(
+                    f"video {i} {_mp4_a_plan(self.tmp, i, mip.raw)} {w} {h}")
+                self._tex_dims[i] = (w, h)
+                self.tex_ids[clave] = i
+                self.stats["video"] += 1
+                return i, w, h
+            rgba = mip.to_rgba(tex.format)
         except Exception:
             self.stats["sin_textura"] += 1
             return None
@@ -1193,9 +1372,27 @@ class Renderer:
         # misma escena dejan de correr en paralelo.
         org, _, _ = transform_absoluto(obj, self.por_id)
         weparticles.desplazar_ruido(sis, org)
+
+        # Un hijo `eventspawn` no emite por su cuenta: solo estalla donde muere
+        # un padre. Su `maxcount` es el deposito para todos los estallidos a la
+        # vez ---lo dice la entrada de `children`, no el preset--- y la RAFAGA,
+        # o sea cuantas suelta por evento, es el `maxcount` que el preset
+        # declara, que es lo que describe UN estallido. Ver `_hijos_eventspawn`.
+        rafaga = 0
+        if obj.raw.get("_padre") is not None:
+            rafaga = max(1, sis.maxcount)
+            deposito = obj.raw.get("_deposito")
+            if isinstance(deposito, int) and deposito > 0:
+                sis.maxcount = deposito
+            if sis.emit:
+                sis.emit[0] = 0.0
+
         weparticles.escribir(sis, destino, semilla)
         self.lines.append(f"psys {i} {destino}")
+        if rafaga:
+            self.hijos.append((i, str(obj.raw.get("_padre")), rafaga))
         self.psys[id(obj)] = i
+        self.psys_por_id[str(obj.raw.get("id"))] = i
         self.stats["psys"] += 1
         if sis.estela:
             self.estelas[id(obj)] = sis.estela
@@ -1207,6 +1404,136 @@ class Renderer:
             self.stats["psys_sin_estela"] += 1
 
     # ── un pase ───────────────────────────────────────────────────────────
+    def _resolver_anclajes(self, scene) -> None:
+        """Coloca las capas que cuelgan de un hueso del puppet de su padre.
+
+        Un objeto con `attachment: "<nombre>"` no se situa respecto al ORIGEN
+        de su padre sino respecto a un punto con nombre del rig de su padre.
+        Sin resolverlo la capa se queda donde caiga su `origin` a secas: el
+        pelo de 3462491575 salia 826 px por debajo de la cabeza y el personaje
+        se veia calvo.
+
+        El nombre no esta en el esqueleto ---los huesos del MDLS no lo
+        llevan--- sino en el bloque MDAT, que hasta ahora se saltaba entero.
+
+        Se guardan DOS cosas, y son distintas:
+
+          `_anclaje`  donde cae el punto en el instante que se hornea. Va al
+                      `origin` compuesto y con eso el fotograma sale bien.
+          `anclajes`  el punto en reposo y el hueso, para que los ejecutores
+                      recalculen por fotograma. Hace falta porque el hueso se
+                      MUEVE: en el corpus hasta 285 px, asi que hornear y ya
+                      dejaria la capa despegada en cuanto arranque la
+                      animacion.
+        """
+        self.anclajes: dict[int, tuple] = {}
+        for obj in scene.objects:
+            nombre = obj.raw.get("attachment")
+            if not isinstance(nombre, str) or not nombre:
+                continue
+            padre = self.por_id.get(str(obj.raw.get("parent")))
+            if padre is None:
+                continue
+            img = padre.raw.get("image")
+            if not isinstance(img, str) or not img:
+                continue
+            try:
+                rel = self.res.read_json(img).get("puppet")
+                if not isinstance(rel, str) or not rel:
+                    continue
+                blob = self.res.read_bytes(rel)
+                m = wemdl.parse_mdl(blob, rel)
+                bones, p = wemdl.parse_skeleton(blob, m.consumed, rel)
+                anclajes, p = wemdl.parse_attachments(blob, p, rel)
+            except (SceneError, wemdl.MdlError, KeyError, ValueError) as e:
+                self.stats["anclaje_omitido"] += 1
+                self.notes.append(f"anclaje sin rig ({nombre!r} en {img}): {e}")
+                continue
+            att = next((a for a in anclajes if a.name == nombre), None)
+            if att is None or not (0 <= att.bone < len(bones)):
+                self.stats["anclaje_omitido"] += 1
+                self.notes.append(
+                    f"anclaje {nombre!r} no esta en {rel}: "
+                    f"hay {[a.name for a in anclajes]}")
+                continue
+
+            # Punto del anclaje en la pose de REPOSO, en pixeles locales del
+            # puppet. Es el mismo marco en que vienen los vertices de la malla,
+            # asi que deformarlo es literalmente skinnear un vertice mas.
+            G = _mundo_de_reposo(bones)
+            punto = (np.asarray(att.matrix, dtype=np.float64) @ G[att.bone])[3, 0:2]
+
+            # A que instante se hornea. Con WE_PUPPET_TIME el skinning ya se
+            # hizo en CPU y el plan no lleva huesos: ahi el anclaje se hornea
+            # al mismo instante y no se pide seguimiento a nadie.
+            congelado = os.environ.get("WE_PUPPET_TIME")
+            t = float(congelado) if congelado is not None else self.tiempo_animacion
+            base = tuple(punto)
+            seguible = False
+            try:
+                anims, _ = wemdl.parse_animations(blob, p, rel, len(bones))
+            except wemdl.MdlError:
+                anims = []
+            if anims and int(anims[0].tracks.shape[1]) >= 2 and bones:
+                mats, keys = _pistas_de_huesos(bones, anims[0])
+                base = _punto_animado(mats, keys, anims[0].duration,
+                                      punto, att.bone, t)
+                seguible = congelado is None
+
+            crop = ((_floats(padre.raw.get("_cropoffset")) + [0.0, 0.0])[:2]
+                    if APPLY_CROP else [0.0, 0.0])
+            obj.raw["_anclaje"] = [base[0] + crop[0], base[1] + crop[1]]
+            self.stats["anclaje"] += 1
+            if seguible:
+                self.anclajes[id(obj)] = (padre, att.bone, punto, base)
+
+    def _linea_de_anclaje(self, obj, canvas: tuple[int, int]) -> str | None:
+        """La directiva `anclaje` de este objeto, si cuelga de un hueso.
+
+        El anclaje no lo declara la capa que dibuja sino un GRUPO por encima
+        ---en 3462491575 el grupo `头发`, que no tiene geometria propia y por
+        tanto no llega a emitir un `object`---, asi que hay que subir por la
+        cadena de padres igual que hace `transform_absoluto`.
+
+        Lo que se manda es lo justo para que el ejecutor rehaga por fotograma
+        la traslacion que aqui va horneada:
+
+          - la malla y el hueso, que el ejecutor ya deforma de todos modos
+          - el punto en reposo, que se skinnea como un vertice mas
+          - donde cayo ese punto en el instante horneado, para restarlo
+          - y la 2x2 que lleva ese desplazamiento a clip space, con la escala
+            y el giro de los ancestros ya dentro
+
+        En el corpus ningun anclaje cuelga de otro anclaje ---los 16 cuelgan
+        directamente de una capa con puppet---, asi que se emite uno y basta.
+        """
+        cadena, visto, cur = [], set(), obj
+        while cur is not None and id(cur) not in visto:
+            visto.add(id(cur))
+            cadena.append(cur)
+            padre_id = cur.raw.get("parent")
+            cur = self.por_id.get(str(padre_id)) if padre_id else None
+        dato = next((self.anclajes[id(n)] for n in cadena
+                     if id(n) in self.anclajes), None)
+        if dato is None:
+            return None
+        padre, hueso, punto, base = dato
+        mid = self.meshes.get(id(padre))
+        if mid is None:
+            # El padre no llego a subir su malla: sin ella no hay a quien
+            # seguir. La posicion horneada sigue siendo la buena.
+            return None
+        # La escala y el giro que acumula la cadena HASTA el padre son los que
+        # se le aplican al `origin` del hijo, y por tanto tambien a esto.
+        _, esc, ang = transform_absoluto(padre, self.por_id)
+        c, sn = math.cos(ang[2]), math.sin(ang[2])
+        w, h = canvas
+        e00, e01 = 2.0 * esc[0] * c / w, -2.0 * esc[1] * sn / w
+        e10, e11 = 2.0 * esc[0] * sn / h, 2.0 * esc[1] * c / h
+        return (f"anclaje {mid} {hueso} {punto[0]:.6g} {punto[1]:.6g} "
+                f"{base[0]:.6g} {base[1]:.6g} "
+                f"{e00:.9g} {e01:.9g} {e10:.9g} {e11:.9g}")
+
     def _emit_mesh(self, obj) -> None:
         """Sube la malla puppet del objeto, si la tiene y sabemos leerla.
 
@@ -1327,6 +1654,9 @@ class Renderer:
             self.stats["texto_vacio"] += 1
             return
 
+        if self._emit_reloj(obj):
+            return
+
         self.atlas[id(obj)] = self._subir(disp.atlas, flip=True)
 
         mid = len(self.mesh_files)
@@ -1355,6 +1685,105 @@ class Renderer:
         self.margins[id(obj)] = max(1.0, ancho / sw, alto / sh)
         self.stats["texto"] += 1
 
+    def _emit_reloj(self, obj) -> bool:
+        """Si la capa es un reloj, sube su ALFABETO en vez de su cadena.
+
+        Un reloj no puede llevar los quads horneados: la cadena cambia cada
+        minuto. Lo que viaja en el plan es la plantilla que `wescript` dedujo
+        del JavaScript de la capa, la tabla de nombres de dia o de mes cuando
+        los tiene, y las metricas de cada caracter que la plantilla puede
+        llegar a escribir; los quads los rehace `src/wereloj.c` en los dos
+        ejecutores.
+
+        La malla se reserva para el PEOR caso ---el texto mas largo que la
+        plantilla puede dar--- porque el buffer se pide una vez, y se hornea
+        con la hora de ahora para que un ejecutor que no sepa de relojes siga
+        dibujando algo en vez de un rectangulo vacio.
+
+        Devuelve False cuando la capa no es un reloj o su script no se pudo
+        traducir, y entonces sigue el camino de siempre: la cadena congelada
+        que el autor dejo guardada.
+        """
+        try:
+            fmt = wescript.reloj_de(obj.raw)
+        except Exception as e:                 # ancho a proposito: ver `_emit_text`
+            self.notes.append(f"reloj sin deducir ({obj.name}): {e}")
+            return False
+        if fmt is None:
+            return False
+        alfabeto = fmt.alfabeto
+        max_glifos = fmt.max_longitud()
+        if not alfabeto or max_glifos <= 0:
+            return False
+        try:
+            r = wetext.disponer_reloj(self.res, obj.raw, alfabeto, max_glifos,
+                                      self.pixeles[1] / max(1, self.canvas[1]))
+        except Exception as e:
+            self.notes.append(f"reloj sin disponer ({obj.name}): {e}")
+            return False
+        if r is None:
+            return False
+
+        self.atlas[id(obj)] = self._subir(r.atlas, flip=True)
+
+        import datetime as _dt
+        verts = wetext.quads_de_reloj(r, fmt.render(_dt.datetime.now()))
+        idx = wetext.indices_de_reloj(max_glifos)
+        mid = len(self.mesh_files)
+        path = self.tmp / f"text{mid:03d}.bin"
+        with open(path, "wb") as fh:
+            fh.write(verts.tobytes())
+            fh.write(idx.tobytes())
+        self.mesh_files.append(path)
+        self.lines.append(f"mesh {mid} {path} {verts.shape[0]} {idx.size}")
+        self.meshes[id(obj)] = mid
+
+        alin = {"left": 0, "top": 0, "center": 1, "right": 2, "bottom": 2}
+        self.lines.append(
+            f"reloj {mid} {fmt.periodo:g} {r.caja[0]:g} {r.caja[1]:g} "
+            f"{r.pad[0]:g} {r.pad[1]:g} "
+            f"{alin.get(r.halign, 1)} {alin.get(r.valign, 1)} "
+            f"{r.u:.9g} {r.alto_linea:.9g} {max_glifos}")
+        self.lines.append(f"relojfmt {mid} {_escapa(fmt.plantilla)}")
+        for codigo, tabla in fmt.tablas.items():
+            palabras = " ".join(_escapa(x) for x in tabla)
+            self.lines.append(f"relojtab {mid} {codigo} {len(tabla)} {palabras}")
+        for g in r.glifos:
+            self.lines.append(
+                f"relojglifo {mid} {g.cp} {g.avance:.6g} "
+                + " ".join(f"{x:.6g}" for x in g.ink)
+                + " " + " ".join(f"{x:.9g}" for x in g.uv))
+
+        # El margen se mide sobre el peor caso, no sobre la hora de ahora: a
+        # las 11:11 la tinta ocupa mucho menos que a las 08:38, y el buffer se
+        # reserva una vez.
+        #
+        # Sobre los MISMOS instantes que `Formato.max_longitud`, que es quien
+        # dimensiona la malla. Antes se cortaba en los 200 primeros y ese corte
+        # no era inocente: los instantes que cubren a proposito las 24 horas,
+        # los 12 meses y los 7 dias de la semana van DETRAS del barrido largo,
+        # asi que el corte se los llevaba TODOS y dejaba solo los 278 primeros
+        # dias del barrido. Con `%B` en la plantilla, el mes mas ancho podia no
+        # medirse nunca y la hora salia recortada contra su propio quad.
+        #
+        # Se miden las CADENAS distintas y no los instantes, porque lo que
+        # decide el ancho es lo que se escribe. Deduplicar ahorra menos de lo
+        # que parece ---de los 1079 instantes salen 611 cadenas distintas en el
+        # reloj mediano del corpus, porque casi todas las plantillas llevan
+        # minutos o segundos--- pero el coste da igual: medido sobre
+        # `3299228616` ---la escena a la que le pasaba---, el render tarda
+        # 2,42 s con las cadenas y 2,42 s con el corte de 200.
+        cadenas = {fmt.render(t) for t in wescript._instantes_de_prueba()}
+        peor = max((wetext.quads_de_reloj(r, s) for s in cadenas),
+                   key=lambda v: float(np.abs(v[:, :2]).max()), default=verts)
+        ancho = 2.0 * float(np.abs(peor[:, 0]).max())
+        alto = 2.0 * float(np.abs(peor[:, 1]).max())
+        sw, sh = layer_size(obj, self.canvas)
+        self.margins[id(obj)] = max(1.0, ancho / sw, alto / sh)
+        self.stats["texto"] += 1
+        self.stats["reloj"] += 1
+        return True
+
     def _mesh_anim(self, m, blob: bytes, rel: str) -> MeshAnim | None:
         """Empaqueta huesos y pistas para que el ejecutor deforme por fotograma.
 
@@ -1379,23 +1808,7 @@ class Renderer:
         if keys < 2 or nb == 0:
             return None
 
-        mats = np.empty((keys, nb, 12), dtype="<f4")
-        for k in range(keys):
-            mats[k] = _skin_matrices(bones, a, k)[:, :, 0:3].reshape(nb, 12)
-
-        # `mirror` va y vuelve; el bucle corriente solo va. Se hornea aqui la
-        # ida y la vuelta en vez de ensenarle el modo al ejecutor, que son dos
-        # y no pueden divergir: el plan sale con las claves ya en el orden en
-        # que se reproducen y el ejecutor sigue haciendo lo unico que sabe.
-        #
-        # Los dos ejecutores dan por hecho que la ULTIMA clave repite la
-        # primera ---por eso el periodo son `nkeys - 1` intervalos---, y una
-        # pista `mirror` no cumple eso: las 47 del corpus acaban lejos de donde
-        # empiezan, hasta 13,34 unidades en el brazo de 2868108515. Reproducida
-        # como bucle daba un tiron en cada vuelta. La ida y vuelta cierra sola.
-        if a.mode == "mirror":
-            mats = np.concatenate([mats, mats[-2:0:-1], mats[:1]])
-            keys = int(mats.shape[0])           # 2K-1, con la ultima == primera
+        mats, keys = _pistas_de_huesos(bones, a)
 
         # Los indices de hueso son u32 en el .mdl, pero ningun puppet del
         # corpus pasa de unas decenas de huesos: caben de sobra en u16.
@@ -2120,6 +2533,94 @@ class Renderer:
             self.stats["error"] = r.stderr[-2000:]
         return self.stats
 
+    def _emit_bloom(self, general: dict, sresolver) -> None:
+        """La cadena de bloom de la escena, detras de todos los objetos.
+
+        Va como un objeto mas ---el ultimo--- para no tocar los ejecutores: sus
+        pases escriben en buffers con nombre y el ultimo deja el halo en el
+        buffer del objeto, que se compone SUMANDO (`aditivo 3`). Ni `glexec.c`
+        ni `glexecutor.cpp` se enteran de que esto es bloom.
+
+        Los buffers se llaman `...Quarter` y `...Eighth` porque de ahi sacan su
+        resolucion los dos ejecutores; ver `rt_size` y `find_rt`.
+        """
+        # `_floats(False)` es `[0.0]`, que es una lista NO vacia: preguntar por
+        # la lista aplicaba bloom a las 129 escenas en vez de a las 34 que lo
+        # piden. Lo que decide es el valor, no que el campo exista.
+        if (_floats(general.get("bloom")) + [0.0])[0] <= 0.0:
+            return
+        # `bloomstrength: 0` es apagarlo por otro camino, y hay una escena que
+        # lo hace: emitir la cadena para multiplicar por cero es trabajo tirado.
+        fuerza = (_floats(general.get("bloomstrength")) + [2.0])[0]
+        if fuerza <= 0.0:
+            return
+        umbral = (_floats(general.get("bloomthreshold")) + [0.65])[0]
+        tinte = _floats(general.get("bloomtint"))
+        tinte = (tinte * 3 if len(tinte) == 1 else tinte + [1.0, 1.0, 1.0])[:3]
+
+        w, h = self.pixeles
+        # Sin un Eighth de al menos un pixel no hay cadena que valga; ninguna
+        # escena del corpus dibuja tan pequeno, pero `--pantalla` acepta
+        # cualquier cosa y un buffer de cero no lo detecta nadie.
+        if min(w, h) < 8:
+            return
+        # El objeto del bloom no se coloca: cubre la pantalla y ya esta en
+        # coordenadas de lienzo, como el buffer de una capa de particulas.
+        place = " ".join(f"{x:.6g}" for x in IDENTITY)
+        self.body.append(f"object 0 {place} 3 0")
+
+        def escribe(nombre: str) -> tuple[Path, Path]:
+            """Traduce un shader de WE y deja el par de ficheros del pase."""
+            n = self.stats["pases"]
+            vp = self.tmp / f"p{n:03d}.vert"
+            fp = self.tmp / f"p{n:03d}.frag"
+            vp.write_text(weshader.translate(
+                sresolver.read(f"{nombre}.vert"), "vert", sresolver,
+                combos={}, varyings={}))
+            fp.write_text(weshader.translate(
+                sresolver.read(f"{nombre}.frag"), "frag", sresolver,
+                combos={}, varyings={}))
+            return vp, fp
+
+        def pase(vp: Path, fp: Path, destino: str, fuente: str,
+                 extra: tuple[str, ...] = ()) -> None:
+            fw, fh = ((w, h) if fuente in BUFFERS_DEL_MOTOR
+                      else rt_size(fuente, self.pixeles))
+            self.body.append("pass")
+            self.body.append(f"prog {vp} {fp}")
+            self.body.append(f"target {destino}")
+            # Post-proceso: cada pase reescribe su destino entero. Con la
+            # mezcla activada el alfa se hunde pase a pase, igual que en los
+            # pases de efecto de una capa.
+            self.body.append("blend none")
+            self.body.append(f"sampler g_Texture0 rt:{fuente}")
+            self.body.append(f"u4f g_Texture0Resolution {fw} {fh} {fw} {fh}")
+            # El texel de PANTALLA, no el del buffer: es lo que hace que los
+            # `* 8.0` de los dos desenfoques midan un texel del Eighth.
+            self.body.append(f"u2f g_TexelSize {1.0 / w:.9g} {1.0 / h:.9g}")
+            for linea in extra:
+                self.body.append(linea)
+            self.body.append("endpass")
+            self.stats["pases"] += 1
+
+        vp, fp = escribe(BLOOM_UMBRAL)
+        pase(vp, fp, BLOOM_RT_UMBRAL, "_rt_FullFrameBuffer",
+             (f"u1f g_BloomStrength {fuerza:.6g}",
+              f"u1f g_BloomThreshold {umbral:.6g}",
+              "u3f g_BloomTint " + " ".join(f"{c:.6g}" for c in tinte)))
+        vp, fp = escribe(BLOOM_BLUR_X)
+        pase(vp, fp, BLOOM_RT_X, BLOOM_RT_UMBRAL)
+        vp, fp = escribe(BLOOM_BLUR_Y)
+        pase(vp, fp, BLOOM_RT_Y, BLOOM_RT_X)
+
+        n = self.stats["pases"]
+        vp = self.tmp / f"p{n:03d}.vert"
+        fp = self.tmp / f"p{n:03d}.frag"
+        vp.write_text(BLOOM_COMPOSICION_VERT)
+        fp.write_text(BLOOM_COMPOSICION_FRAG)
+        pase(vp, fp, "SCREEN", BLOOM_RT_Y)
+        self.stats["bloom"] = 1
+
     def _build(self, max_passes: int | None,
                only_base: bool = False) -> tuple[int, int]:
         # La escena se lee para un INSTANTE: los campos animados se congelan
@@ -2150,12 +2651,19 @@ class Renderer:
         # Instante al que deformar las mallas. Solo lo usa glexec, que no
         # tiene reloj propio: el motor en vivo pasa su tiempo real.
         self.lines.append(f"meshtime {self.time:.6f}")
+        # El instante del que sale el fotograma de video. Va en el plan y no
+        # en un reloj de pared por lo mismo que `meshtime`: offline se
+        # renderiza UN instante y se repite N veces para que converjan los
+        # efectos temporales, asi que las N tienen que dar la misma imagen.
+        # En vivo esta linea sobra: el ejecutor usa su propio reloj.
+        self.lines.append(f"videotime {self.time:.6f}")
         we = wepaths.we_assets()
         sresolver = weshader.Resolver(
             overlay=self.res.entries, roots=[we, we / "shaders"])
         # Lo necesita `emit_pass` para colocar las particulas, que se resuelven
         # pase a pase y no en este bucle.
         por_id = self.por_id
+        self._resolver_anclajes(scene)
         self.buffers_de = _buffers_de_composicion(scene)
         # Las capas que solo llenan un buffer se dibujan ANTES que nadie: asi
         # el buffer esta listo cuando la composicion lo muestrea, sin depender
@@ -2222,6 +2730,9 @@ class Renderer:
             # sobre la escena: otra la muestreara por nombre.
             solo = 1 if getattr(obj, "solo_buffer", False) else 0
             self.body.append(f"object {copybg} {place} {aditivo} {solo}")
+            anc = self._linea_de_anclaje(obj, canvas)
+            if anc:
+                self.body.append(anc)
             buffers = self.buffers_de.get(str(obj.raw.get("id")), ())
             for p in obj.passes:
                 if p.command == "copy":
@@ -2242,6 +2753,22 @@ class Renderer:
             # buffers con nombre que otra capa va a muestrear.
             for nombre in buffers:
                 self.body.append(f"copy prev {nombre}")
+        # El bloom lee la escena YA compuesta, asi que va detras del ultimo
+        # objeto. Los dos modos de depuracion piden lo contrario --- `--only-base`
+        # solo el pase base de cada capa, `--passes N` una escena a medias --- y
+        # un post-proceso sobre media escena no dice nada.
+        # Atar cada hijo `eventspawn` a su padre. Va en la CABECERA, detras de
+        # todos los `psys`: los dos sistemas tienen que estar cargados antes del
+        # primer `update`, porque a partir de ahi el padre da el paso de los
+        # dos. Ver `we_psys_seguir`.
+        for i_hijo, padre, rafaga in self.hijos:
+            i_padre = self.psys_por_id.get(padre)
+            if i_padre is None:
+                continue
+            self.lines.append(f"psyspadre {i_hijo} {i_padre} {rafaga}")
+            self.stats["psys_hijo"] += 1
+        if not only_base and max_passes is None:
+            self._emit_bloom(general, sresolver)
         self.stats["canvas"] = canvas
         self.stats["pixeles"] = self.pixeles
         # Se devuelve lo que MIDE el volcado, que son los pixeles de dibujo.
@@ -2300,6 +2827,142 @@ class Renderer:
         return self.stats
 
 
+# ── wallpapers de tipo video ────────────────────────────────────────────────
+# Los 15 de la biblioteca que no son una escena sino un MP4 y nada mas. No
+# tienen `scene.pkg`, ni grafo, ni shaders: hasta ahora `wectl` ni los listaba.
+# Como el ejecutor ya sabe decodificar video ---lo necesitaba para las tres
+# escenas con textura IS_VIDEO---, lo unico que les falta es un plan, y su plan
+# es el mas corto que este motor puede escribir: un quad con la textura encima.
+
+_VIDEO_VERT = """#version 330 core
+in vec3 a_Position;
+in vec2 a_TexCoord;
+out vec2 v_TexCoord;
+uniform mat4 g_ModelViewProjectionMatrix;
+void main() {
+    v_TexCoord = a_TexCoord;
+    gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);
+}
+"""
+
+# El alfa se fuerza a 1: el fotograma llega opaco, pero el buffer del objeto se
+# compone despues sobre la escena y un alfa que no fuera 1 dejaria el fondo
+# translucido sobre negro, o sea el video apagado.
+_VIDEO_FRAG = """#version 330 core
+in vec2 v_TexCoord;
+out vec4 fragColor;
+uniform sampler2D g_Texture0;
+void main() {
+    fragColor = vec4(texture(g_Texture0, v_TexCoord).rgb, 1.0);
+}
+"""
+
+
+def video_de(wallpaper: Path) -> Path | None:
+    """El MP4 de un wallpaper de tipo `video`, o None si no lo es."""
+    pj = wallpaper / "project.json"
+    if not pj.is_file():
+        return None
+    try:
+        j = json.loads(pj.read_text(errors="replace"))
+    except (ValueError, OSError):
+        return None
+    if str(j.get("type", "")).lower() != "video":
+        return None
+    f = wallpaper / str(j.get("file", ""))
+    return f if f.is_file() else None
+
+
+def plan_de_video(mp4: Path, out_dir: Path, destino: Path,
+                  resolucion: tuple[int, int] | None,
+                  marca: str) -> tuple[list[str], tuple[int, int], dict]:
+    """El plan entero de un wallpaper de video. `(lineas, lienzo, stats)`.
+
+    El MP4 NO se copia junto al plan como se hace con las texturas: los del
+    corpus van de 9 MB a 560 MB y duplicar medio giga por cambiar de fondo no
+    tiene sentido cuando el original vive en la biblioteca de Steam y no se
+    mueve. Se enlaza con un nombre generado.
+
+    Y ENLAZARLO NO ES UN DETALLE: el plan es un texto que se parte por
+    espacios, en los dos ejecutores. Nombrar el MP4 donde esta dejaba la ruta
+    truncada en el primer espacio, la textura sin abrir y el fondo NEGRO ---en
+    9 de los 15 wallpapers de video del corpus, que es justo la fraccion de
+    nombres con espacios ("AKALI BIKE.mp4", "Mass Effect Andromeda [No
+    Arrow].mp4")---. El resto de los assets del plan no tenia el problema
+    porque sus nombres los genera este fichero (`tex000.rgba`, `p001.frag`);
+    este es el primero que se nombra tal cual venia de la biblioteca.
+    """
+    ancho, alto = wevideo.dimensiones(mp4)
+    canvas = resolucion or (ancho, alto)
+    # Cubrir la pantalla, no caber en ella: un fondo con franjas negras no es
+    # un fondo. El quad se sale y el recorte lo hace el viewport.
+    sx, sy = wevideo.encaje((ancho, alto), canvas)
+
+    vert = out_dir / "video.vert"
+    frag = out_dir / "video.frag"
+    vert.write_text(_VIDEO_VERT)
+    frag.write_text(_VIDEO_FRAG)
+
+    # Enlace absoluto: `wectl.preparar` construye el plan en un directorio
+    # hermano y lo cambia por un rename, y un enlace relativo no sobreviviria a
+    # ese cambio de nombre.
+    enlace = out_dir / "video.mp4"
+    enlace.unlink(missing_ok=True)
+    try:
+        enlace.symlink_to(mp4.resolve())
+    except OSError:
+        # Sin enlaces simbolicos (un sistema de ficheros que no los tenga) se
+        # copia: cuesta el tamano del video, pero un fondo que se ve vale mas.
+        shutil.copyfile(mp4, enlace)
+
+    mvp = [sx, 0, 0, 0,  0, sy, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
+    ident = " ".join("1" if i % 5 == 0 else "0" for i in range(16))
+    lineas = [
+        f"canvas {canvas[0]} {canvas[1]}",
+        # `0 0` es "el tamano nativo del video": aqui no hay ningun `.tex` que
+        # declare medidas y el decodificador ya las sabe.
+        f"video 0 {destino / 'video.mp4'} 0 0",
+        f"videotime {marca}",
+        "frame",
+        f"object 0 {ident} 0 0",
+        "pass",
+        f"prog {destino / 'video.vert'} {destino / 'video.frag'}",
+        "target SCREEN",
+        "sampler g_Texture0 tex:0",
+        "umat4 g_ModelViewProjectionMatrix " + " ".join(f"{x:.6g}" for x in mvp),
+        "blend none",
+        "endpass",
+    ]
+    stats = {"pases": 1, "video": 1, "canvas": canvas,
+             "resolucion_video": (ancho, alto),
+             "encaje": (round(sx, 4), round(sy, 4))}
+    return lineas, canvas, stats
+
+
+def render_video(mp4: Path, out_png: Path, exec_path: Path,
+                 tiempo: float, resolucion: tuple[int, int] | None) -> dict:
+    """Renderiza un wallpaper de video a PNG, por el mismo camino que una escena."""
+    tmp = Path(tempfile.mkdtemp(prefix="wevideo-"))
+    try:
+        lineas, canvas, stats = plan_de_video(mp4, tmp, tmp, resolucion,
+                                              f"{tiempo:.5f}")
+        raw = tmp / "out.rgba"
+        (tmp / "plan.txt").write_text("\n".join(lineas + [f"output {raw}"]) + "\n")
+        r = subprocess.run([str(exec_path), str(tmp / "plan.txt")],
+                           capture_output=True, text=True)
+        stats["glexec"] = r.stdout.strip()
+        if r.returncode != 0 or not raw.is_file():
+            stats["error"] = r.stderr[-2000:]
+            return stats
+        px = np.frombuffer(raw.read_bytes(), dtype=np.uint8)
+        px = px.reshape(canvas[1], canvas[0], 4)[::-1]
+        Image.fromarray(px, "RGBA").save(out_png)
+        stats["salida"] = str(out_png)
+        return stats
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def emit_plan(wallpaper: Path, out_dir: Path,
               ruta_final: Path | None = None,
               resolucion: tuple[int, int] | None = None) -> dict:
@@ -2319,6 +2982,27 @@ def emit_plan(wallpaper: Path, out_dir: Path,
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     destino = ruta_final if ruta_final is not None else out_dir
+
+    # Un wallpaper de tipo video no tiene grafo que resolver. Se despacha aqui
+    # y no en quien llama para que `wectl` ---y cualquier otro--- no tenga que
+    # saber de que tipo es lo que esta poniendo.
+    mp4 = video_de(wallpaper)
+    if mp4 is not None:
+        lineas, canvas, stats = plan_de_video(mp4, out_dir, destino,
+                                              resolucion, "@TIME@")
+        titulo = wallpaper.name
+        pj = wallpaper / "project.json"
+        if pj.is_file():
+            try:
+                titulo = json.loads(pj.read_text(errors="replace")).get(
+                    "title", titulo)
+            except Exception:
+                pass
+        (out_dir / "plan.txt").write_text(
+            "\n".join([f"title {titulo} ({wallpaper.name})"] + lineas) + "\n")
+        return {"pases": 1, "canvas": canvas, "assets": 2,
+                "video": str(mp4), "plan": str(destino / "plan.txt")}
+
     r = Renderer(wallpaper, Path("/nonexistent"), 0.0, resolucion=resolucion)
     # El plan es una FOTO: el motor lo repite cada fotograma cambiando solo
     # `g_Time`, asi que un campo animado se queda donde se hornee. Se hornea en
@@ -2330,7 +3014,7 @@ def emit_plan(wallpaper: Path, out_dir: Path,
 
     remap: dict[str, str] = {}
     for src in sorted(r.tmp.iterdir()):
-        if src.suffix in (".rgba", ".vert", ".frag", ".bin", ".psys"):
+        if src.suffix in (".rgba", ".vert", ".frag", ".bin", ".psys", ".mp4"):
             dst = out_dir / src.name
             dst.write_bytes(src.read_bytes())
             remap[str(src)] = str(destino / src.name)
@@ -2389,6 +3073,12 @@ def main() -> int:
     if "--pantalla" in sys.argv:
         w, _, h = sys.argv[sys.argv.index("--pantalla") + 1].partition("x")
         pantalla = (int(w), int(h))
+
+    mp4 = video_de(wallpaper)
+    if mp4 is not None:
+        for k, v in render_video(mp4, out, exec_path, t, pantalla).items():
+            print(f"  {k}: {v}")
+        return 0
 
     r = Renderer(wallpaper, exec_path, t, resolucion=pantalla)
     mp = None

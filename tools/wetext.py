@@ -382,6 +382,191 @@ def disponer(res: AssetResolver, obj: dict,
         lineas=n)
 
 
+# ── relojes: el mismo texto, pero rehecho cada minuto ───────────────────────
+#
+# Una capa de reloj no puede llevar sus quads horneados: la cadena cambia. Lo
+# que se hornea es el ALFABETO ---un atlas con cada carácter que la plantilla
+# puede llegar a escribir, que para `%H:%M` son once--- más lo que mide cada
+# uno, y el ejecutor rehace los quads con su reloj. Ver `tools/wescript.py`,
+# que es quien deduce la plantilla, y `src/wereloj.c`, que es quien la rellena.
+#
+# Se rasteriza glifo a glifo y no por línea, al revés que `disponer`: con la
+# cadena cambiando no hay línea que rasterizar. Se pierde el kerning, y con
+# dígitos y dos puntos no se nota ---las cifras de una fuente de reloj son
+# tabulares--- pero conviene saberlo si algún día se ve un nombre de mes
+# apretado.
+
+
+@dataclass
+class Glifo:
+    cp: int                            # punto de código Unicode
+    avance: float                      # lo que empuja el cursor, en px del atlas
+    ink: tuple[float, float, float, float]   # caja de tinta respecto al cursor
+    uv: tuple[float, float, float, float]
+
+
+@dataclass
+class Reloj:
+    """El alfabeto de una capa de reloj, con todo lo que hace falta para
+    colocarlo. Las unidades son las mismas que en `Disposicion`: el atlas en
+    píxeles y la capa en unidades de lienzo, y `u` convierte de una a otra."""
+    atlas: np.ndarray
+    glifos: list[Glifo]
+    u: float                           # unidades de lienzo por píxel del atlas
+    alto_linea: float                  # px del atlas
+    caja: tuple[float, float]          # `size` de la capa, en unidades
+    pad: tuple[float, float]
+    halign: str
+    valign: str
+    max_glifos: int                    # el peor caso de la plantilla
+
+
+def _metricas_del_alfabeto(font, alfabeto: str) -> tuple[list[Glifo], list[Image.Image]]:
+    imgs: list[Image.Image] = []
+    glifos: list[Glifo] = []
+    for c in alfabeto:
+        try:
+            avance = float(font.getlength(c))
+            x0, y0, x1, y1 = font.getbbox(c)
+        except Exception:
+            # Un carácter que la fuente no sabe modelar ---HarfBuzz se cae con
+            # un salto de línea suelto--- vale un glifo, no la capa entera.
+            glifos.append(Glifo(ord(c), 0.0, (0.0, 0.0, 0.0, 0.0),
+                                (0.0, 0.0, 0.0, 0.0)))
+            imgs.append(None)
+            continue
+        if x1 <= x0 or y1 <= y0:       # un espacio: empuja y no pinta
+            glifos.append(Glifo(ord(c), avance, (0.0, 0.0, 0.0, 0.0),
+                                (0.0, 0.0, 0.0, 0.0)))
+            imgs.append(None)
+            continue
+        w = max(1, x1 - x0 + 2 * BORDE)
+        h = max(1, y1 - y0 + 2 * BORDE)
+        img = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(img).text((BORDE - x0, BORDE - y0), c, font=font, fill=255)
+        glifos.append(Glifo(ord(c), avance,
+                            (x0 - BORDE, y0 - BORDE, x0 - BORDE + w, y0 - BORDE + h),
+                            (0.0, 0.0, 0.0, 0.0)))
+        imgs.append(img)
+    return glifos, imgs
+
+
+def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
+                   max_glifos: int, px_por_unidad: float = 1.0) -> Reloj | None:
+    """El atlas y las métricas del alfabeto de una capa de reloj.
+
+    `alfabeto` sale de `wescript.Formato.alfabeto` y `max_glifos` de lo más
+    largo que la plantilla pueda escribir. El resto del cálculo ---el tamaño de
+    la em, el tope del atlas, la fuente--- es el mismo que en `disponer`, y
+    tiene que serlo: las dos rutas dibujan en el mismo espacio.
+    """
+    puntos = _numeros(obj.get("pointsize"), 1, 0.0)[0]
+    if puntos <= 0 or not alfabeto:
+        return None
+    em = puntos * UNIDADES_POR_PUNTO
+    px = int(round(em * px_por_unidad * SUPERMUESTREO))
+    px = max(PX_MIN, min(PX_MAX, px))
+    u = em / px
+
+    blob = resolver_fuente(res, obj.get("font"))
+    font = ImageFont.truetype(io.BytesIO(blob), px)
+
+    # El tope de ancho del atlas se mide sobre la LÍNEA más larga que la
+    # plantilla puede escribir, no sobre el atlas: el atlas de un alfabeto se
+    # empaqueta en rejilla y no se acerca al tope, pero la línea sí puede
+    # pasarse y hay que rebajar el tamaño igual que hace `disponer`.
+    ancho_linea = max_glifos * max((font.getlength(c) for c in alfabeto), default=0.0)
+    if ancho_linea > ANCHO_ATLAS_MAX:
+        px = max(PX_MIN, int(px * ANCHO_ATLAS_MAX / ancho_linea))
+        font = ImageFont.truetype(io.BytesIO(blob), px)
+        u = em / px
+
+    glifos, imgs = _metricas_del_alfabeto(font, alfabeto)
+    pintados = [(g, im) for g, im in zip(glifos, imgs) if im is not None]
+    if not pintados:
+        return None
+
+    # Rejilla de una columna: es el mismo empaquetado que usa `disponer` para
+    # sus líneas y no hace falta más --- un alfabeto de reloj son once glifos,
+    # y el más grande de este corpus son 47.
+    aw = max(im.width for _, im in pintados)
+    ah = sum(im.height for _, im in pintados)
+    atlas = np.zeros((ah, aw, 4), dtype=np.uint8)
+    y = 0
+    for g, im in pintados:
+        w, h = im.width, im.height
+        atlas[y:y + h, 0:w, :] = np.asarray(im, dtype=np.uint8)[:, :, None]
+        g.uv = (0.0, y / ah, w / aw, (y + h) / ah)
+        y += h
+
+    asc, desc = font.getmetrics()
+    return Reloj(atlas=atlas, glifos=glifos, u=u, alto_linea=float(asc + desc),
+                 caja=tuple(_numeros(obj.get("size"), 2, 0.0)),
+                 pad=tuple(_numeros(obj.get("padding"), 2, 0.0)),
+                 halign=str(obj.get("horizontalalign") or "center"),
+                 valign=str(obj.get("verticalalign") or "center"),
+                 max_glifos=max_glifos)
+
+
+def quads_de_reloj(r: Reloj, texto: str) -> np.ndarray:
+    """Los vértices de una cadena concreta, en unidades de lienzo.
+
+    Es la MISMA cuenta que hace `src/wereloj.c` cada fotograma, y está aquí
+    para dos cosas: hornear el primer fotograma en el plan ---para que un
+    ejecutor que no sepa de relojes siga dibujando algo--- y para que la prueba
+    pueda comparar el resultado de las dos, que es el contrato entre los dos
+    lados igual que en las partículas.
+    """
+    tabla = {g.cp: g for g in r.glifos}
+    glifos = [tabla[ord(c)] for c in texto if ord(c) in tabla]
+    util_w = max(0.0, r.caja[0] - 2 * r.pad[0])
+    util_h = max(0.0, r.caja[1] - 2 * r.pad[1])
+    avance = sum(g.avance for g in glifos)
+
+    if "left" in r.halign:
+        x_linea = 0.0
+    elif "right" in r.halign:
+        x_linea = util_w / r.u - avance
+    else:
+        x_linea = (util_w / r.u - avance) / 2.0
+    if "top" in r.valign:
+        y_linea = 0.0
+    elif "bottom" in r.valign:
+        y_linea = util_h / r.u - r.alto_linea
+    else:
+        y_linea = (util_h / r.u - r.alto_linea) / 2.0
+
+    verts = np.zeros((4 * r.max_glifos, 5), dtype="<f4")
+    pluma = 0.0
+    n = 0
+    for g in glifos:
+        if g.ink[2] > g.ink[0] and n < r.max_glifos:
+            x_a = (x_linea + pluma + g.ink[0]) * r.u
+            x_b = (x_linea + pluma + g.ink[2]) * r.u
+            y_a = (y_linea + g.ink[1]) * r.u
+            y_b = (y_linea + g.ink[3]) * r.u
+            X0 = -r.caja[0] / 2.0 + r.pad[0] + x_a
+            X1 = -r.caja[0] / 2.0 + r.pad[0] + x_b
+            Y0 = r.caja[1] / 2.0 - r.pad[1] - y_a
+            Y1 = r.caja[1] / 2.0 - r.pad[1] - y_b
+            u0, v0, u1, v1 = g.uv
+            for j, (x, yv, tu, tv) in enumerate((
+                    (X0, Y0, u0, 1.0 - v0), (X1, Y0, u1, 1.0 - v0),
+                    (X1, Y1, u1, 1.0 - v1), (X0, Y1, u0, 1.0 - v1))):
+                verts[4 * n + j] = (x, yv, 0.0, tu, tv)
+            n += 1
+        pluma += g.avance
+    return verts
+
+
+def indices_de_reloj(max_glifos: int) -> np.ndarray:
+    idx = np.zeros(6 * max_glifos, dtype="<u2")
+    for n in range(max_glifos):
+        idx[6 * n:6 * n + 6] = (4 * n, 4 * n + 1, 4 * n + 2,
+                                4 * n, 4 * n + 2, 4 * n + 3)
+    return idx
+
+
 def main() -> int:
     """Barrido del corpus: que se dibujaria de cada capa de texto."""
     import json

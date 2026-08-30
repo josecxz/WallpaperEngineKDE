@@ -492,3 +492,56 @@ def tabla_global(body: str) -> dict[str, tuple[str, int]]:
             if t is not None:
                 fuera[nombre] = t
     return fuera
+
+
+# La misma declaracion de variable, pero buscable en todo el cuerpo y no linea
+# a linea: `tabla_global` la aplica por lineas para quedarse solo con lo que
+# esta a profundidad cero, y aqui hacen falta tambien las locales.
+_DECL_VAR_M_RE = re.compile(_DECL_VAR_RE.pattern, re.M)
+
+# Como `_FUNC_RE` pero admitiendo la llave en la linea siguiente, que es como
+# `auto_sway` escribe sus tres funciones largas ---las dos `preCalcNode` entre
+# ellas---. No se toca `_FUNC_RE`: de el cuelgan `tabla_de_funciones` y
+# `tabla_de_parametros`, y ampliarlo daria por conocido el tipo de retorno de
+# funciones que hoy no lo estan, lo que mueve decisiones de truncacion en todo
+# el corpus. Aqui solo se leen NOMBRES de parametros, que no truncan nada.
+_FIRMA_RE = re.compile(
+    r"^[ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
+    r"(\w+)[ \t]+(\w+)[ \t]*\(([^)]*)\)[ \t]*\r?\n?[ \t]*\{", re.M)
+
+
+def tipos_por_nombre(body: str) -> dict[str, tuple[str, int]]:
+    """Tipo de cada nombre del shader: globales, macros, locales Y PARAMETROS.
+
+    `tabla_global` no basta para saber que `nodeNum` es un `int`: los
+    parametros de una funcion no se parecen a una declaracion. Y `auto_sway`
+    escribe `step(0.5, nodeNum)` con `nodeNum` declarado `in int`, que HLSL
+    promociona solo y el compilador de NVIDIA rechaza por ambiguo contra sus
+    sobrecargas con calificador de precision.
+
+    Los ambitos se mezclan, asi que un nombre declarado con DOS tipos
+    distintos en dos sitios NO entra en la tabla. Es la diferencia con
+    `tabla_global`, que resuelve el choque quedandose con el primero: alli lo
+    que se decide con el tipo es truncar ---y truncar de mas se nota---,
+    mientras que quien lea esto va a envolver la expresion en un constructor,
+    y hacerlo con el tipo del otro ambito no compila. Ante la duda, fuera.
+    """
+    visto: dict[str, tuple[str, int] | None] = {}
+
+    def anota(nombre: str, t: tuple[str, int]) -> None:
+        if nombre in visto and visto[nombre] != t:
+            visto[nombre] = None            # ambiguo: nadie se fia de el
+        else:
+            visto.setdefault(nombre, t)
+
+    for nombre, t in tabla_global(body).items():
+        anota(nombre, t)
+    for m in _DECL_VAR_M_RE.finditer(body):
+        if m.group(1) in ANCHO_TIPO:
+            anota(m.group(2), (BASE_TIPO[m.group(1)], ANCHO_TIPO[m.group(1)]))
+    for m in _FIRMA_RE.finditer(body):
+        for trozo in m.group(3).split(","):
+            piezas = [x for x in trozo.split() if x not in _CALIF]
+            if len(piezas) == 2 and piezas[0] in ANCHO_TIPO and "[" not in piezas[1]:
+                anota(piezas[1], (BASE_TIPO[piezas[0]], ANCHO_TIPO[piezas[0]]))
+    return {k: v for k, v in visto.items() if v is not None}

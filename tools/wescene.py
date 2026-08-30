@@ -426,6 +426,59 @@ def _ids_de_composicion(data: dict) -> set[str]:
     return fuera
 
 
+def _hijos_eventspawn(res: AssetResolver, o: dict, pdef: dict) -> list[SceneObject]:
+    """Los sistemas que cuelgan de este y estallan donde muere cada particula.
+
+    Un preset puede declarar `children`. El hijo es un sistema COMPLETO ---su
+    material, su textura, su mezcla--- y por eso no cabe dentro del pase del
+    padre: se devuelve como un objeto hermano, colocado igual y dibujado justo
+    detras. De ahi en adelante el resto del motor no tiene que saber que es un
+    hijo; lo unico que los ata es la linea `psyspadre` del plan.
+
+    Solo `eventspawn`. Los otros dos modos ---`eventfollow`, que pega el hijo a
+    la particula VIVA, y `static`, que lo clava al emisor--- piden estado que
+    este camino no lleva, y se dejan fuera a proposito en vez de aproximarlos.
+
+    El `maxcount` del hijo sale de la entrada de `children`, no del preset: el
+    preset describe UN estallido ---`shootingstarglow` son 4 particulas con
+    `instantaneous`--- y la entrada dice cuantas caben entre todos los
+    estallidos a la vez (500 en la `City`).
+    """
+    hijos: list[SceneObject] = []
+    for n, c in enumerate(pdef.get("children") or []):
+        if not isinstance(c, dict) or c.get("type") != "eventspawn":
+            continue
+        ruta = c.get("name")
+        if not isinstance(ruta, str) or not ruta:
+            continue
+        raw = {k: o.get(k) for k in ("origin", "angles", "scale",
+                                     "parallaxDepth", "instanceoverride")}
+        raw["particle"] = ruta
+        # Id propio y estable: cuelga del padre y del puesto en `children`, asi
+        # que dos hijos del mismo padre no comparten la semilla del `.psys`.
+        raw["id"] = f"{o.get('id')}h{n}"
+        raw["visible"] = True
+        raw["_padre"] = o.get("id")
+        if isinstance(c.get("maxcount"), (int, float)):
+            raw["_deposito"] = int(c["maxcount"])
+        hijo = SceneObject(
+            id=raw["id"], name=f"{o.get('name', '')} > hijo",
+            kind="particle", visible=True, origin=o.get("origin", ""),
+            angles=o.get("angles", ""), scale=o.get("scale", ""),
+            parallax_depth=o.get("parallaxDepth", ""), raw=raw)
+        # El bucle de `load_scene` recorre `data["objects"]` y este objeto no
+        # esta ahi, asi que sus pases se arman aqui o no los arma nadie.
+        hdef = res.read_json(ruta)
+        if not hdef.get("material"):
+            continue
+        for mp in _load_material(res, hdef["material"]):
+            hijo.passes.append(_make_pass(res, hijo.name, "base", mp,
+                                          None, None, []))
+        if hijo.passes:
+            hijos.append(hijo)
+    return hijos
+
+
 def load_scene(res: AssetResolver, strict: bool = False,
                tiempo: float | None = None) -> Scene:
     data = res.read_json("scene.json")
@@ -523,6 +576,8 @@ def load_scene(res: AssetResolver, strict: bool = False,
                 for mp in _load_material(res, pdef["material"]):
                     obj.passes.append(_make_pass(res, obj.name, "base", mp,
                                                  None, None, []))
+                for hijo in _hijos_eventspawn(res, o, pdef):
+                    scene.objects.append(hijo)
             except SceneError as e:
                 note(f"[{obj.name}] particulas: {e}")
 

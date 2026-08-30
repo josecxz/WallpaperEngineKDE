@@ -17,7 +17,8 @@ Formato (descubierto comparando los 84 .mdl de la biblioteca):
     vertice[]      ver LAYOUT
     u32            TAMANO EN BYTES del bloque de indices, tampoco su numero
     u16[]          indices, triangulos
-    ...            bloques MDLS (esqueleto) y MDLA (animacion), sin decodificar
+    ...            bloques MDLS (esqueleto), MDAT (anclajes) y MDLA (animacion),
+                   sin decodificar
     byte[]         relleno a cero; algunos exportadores rellenan a 1 MiB
 
 Los dos tamanos son en bytes y no en elementos: leerlos como numero de
@@ -224,6 +225,65 @@ def parse_skeleton(buf: bytes, pos: int, name: str = "<memoria>") -> tuple[list[
     # cosa. Se comprueba antes de fiarse: tiene que caer detras de lo leido y
     # dentro del fichero.
     return bones, (siguiente if p <= siguiente <= len(buf) else p)
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """Punto de anclaje del rig: donde se engancha OTRA capa.
+
+    Es lo que cita el campo `attachment` de un objeto de `scene.json`. La
+    matriz es local al hueso, con la misma convencion de vector-fila que las
+    de reposo: la traslacion va en la fila 3.
+    """
+
+    name: str
+    bone: int
+    matrix: np.ndarray         # (4, 4) float32, por filas
+
+
+def parse_attachments(buf: bytes, pos: int,
+                      name: str = "<memoria>") -> tuple[list[Attachment], int]:
+    """Lee el bloque MDAT, si es el que hay en `pos`.
+
+        char[]     magic "MDAT000N" terminado en nul
+        u32        DESPLAZAMIENTO ABSOLUTO del bloque siguiente
+        u16        numero de anclajes
+        por anclaje:
+            u16        indice del hueso del que cuelga
+            char[]     nombre, terminado en nul
+            float[16]  matriz local respecto a ese hueso
+
+    Es el bloque que `parse_skeleton` deja atras: su cabecera apunta ya al
+    siguiente, y `parse_animations` lo salta sin mirarlo para llegar al MDLA.
+    Aqui SI se mira, porque el nombre que guarda es la unica forma de resolver
+    el `attachment` de una capa --- los huesos del MDLS no tienen nombre, lo
+    que parece serlo es un JSON con los limites de la articulacion.
+
+    El recuento es u16 y no u32: con u32 el primer anclaje empieza dos bytes
+    tarde y el nombre sale descuadrado. Lo confirma que el recorrido termina
+    EXACTO en el desplazamiento que declara la cabecera en los cuatro puppets
+    del corpus que traen el bloque, y que los nombres que salen son los mismos
+    que citan sus escenas.
+
+    Devuelve la lista vacia ---y `pos` sin tocar--- si ahi no hay un MDAT, que
+    es el caso de 81 de los 85 puppets.
+    """
+    if buf[pos:pos + 4] != b"MDAT":
+        return [], pos
+    ver, p = _cstring(buf, pos)
+    siguiente, = struct.unpack_from("<I", buf, p)
+    p += 4
+    count, = struct.unpack_from("<H", buf, p)
+    p += 2
+    fuera: list[Attachment] = []
+    for i in range(count):
+        hueso, = struct.unpack_from("<H", buf, p)
+        p += 2
+        nombre, p = _cstring(buf, p)
+        m = np.frombuffer(buf, "<f4", 16, p).reshape(4, 4)
+        p += 64
+        fuera.append(Attachment(name=nombre, bone=hueso, matrix=m))
+    return fuera, (siguiente if p <= siguiente <= len(buf) else p)
 
 
 @dataclass(frozen=True)

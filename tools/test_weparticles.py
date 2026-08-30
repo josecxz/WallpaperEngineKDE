@@ -63,7 +63,7 @@ PSYS_DECIMALES = """\
 maxcount 10
 starttime 0.5
 anim 0 1.5
-emit sphererandom 20.5 0 0 0 750.25 750.25 750.25 1 0.1 1 350.5 750.5 0 0 0 0 0 0
+emit sphererandom 20.5 0 0 0 750.25 750.25 750.25 1 0.1 1 350.5 750.5 0 0 0 0 0 0 12.5 34.5
 init lifetimerandom 16.5 20.5 2.5
 init alpharandom 0.25 0.75 1.5
 oper alphafade 0.1 0.9
@@ -235,10 +235,10 @@ def main() -> int:
                 if len(vals) != oper_c.get(nombre, -1):
                     fallos.append(f"{d.name}: oper {nombre} emite {len(vals)} "
                                   f"floats, el C espera {oper_c.get(nombre)}")
-            # El emisor son 18 floats fijos; ver `we_psys_load`.
-            if s.emisor and len(s.emit) != 18:
+            # El emisor son 20 floats fijos; ver `we_psys_load`.
+            if s.emisor and len(s.emit) != 20:
                 fallos.append(f"{d.name}: emit emite {len(s.emit)} floats, "
-                              f"el C espera 18")
+                              f"el C espera 20")
 
             if s.cinta:
                 st["cintas"] += 1

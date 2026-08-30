@@ -23,12 +23,20 @@
 #include <QString>
 #include <QVector>
 
+// El decodificador de video es C y lo comparte el ejecutor offline: la misma
+// regla que `weparticles.h`. Si la decodifica viviera dos veces, el render
+// offline dejaria de predecir lo que se ve en el escritorio.
+#include "wevideo.h"
+
 // Los identificadores de GL son `unsigned int` y las localizaciones `int`.
 // Se usan los tipos del lenguaje en vez de declarar `using GLuint = ...` aqui:
 // esta cabecera no incluye GL, y falsificar sus nombres en el ambito global
 // choca con el GL/gl.h real en cuanto alguien lo incluya despues.
 using GlName = unsigned int;      // glGenTextures, glCreateProgram...
 using GlLocation = int;           // glGetUniformLocation (-1 = no existe)
+
+// Definido en `src/wereloj.h`; aqui basta el tipo opaco.
+struct WeReloj;
 
 class GlExecutor
 {
@@ -163,6 +171,16 @@ private:
         Compose compose = Compose::Normal;
         // La capa no se compone: solo deja su resultado en un buffer con nombre.
         bool soloBuffer = false;
+        // Anclaje (BeginObject): la capa cuelga de un hueso del puppet de otra,
+        // asi que su colocacion no es fija. `placement` trae la del instante en
+        // que se horneo el plan y esto corrige, por fotograma, lo que el hueso
+        // se haya movido desde entonces. -1 en `anclajeMesh` = no cuelga de
+        // nada, que es el caso de casi todas las capas.
+        int anclajeMesh = -1;
+        int anclajeBone = 0;
+        float anclajePunto[2] = {0.0f, 0.0f};   // el punto, en pose de reposo
+        float anclajeBase[2] = {0.0f, 0.0f};    // donde cayo al hornear
+        float anclajeEje[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // 2x2 a clip space
         // Pass
         QString vert, frag;             // solo hasta initialize()
         QString targetName;             // idem
@@ -199,6 +217,12 @@ private:
         QString path;
         int w = 0, h = 0;
         GlName id = 0;
+
+        // Una capa de video es una textura corriente que ademas cambia. Todo
+        // lo que la muestrea ---samplers, pases, composicion--- la trata igual
+        // que a las demas; lo unico distinto es quien le pone los pixeles.
+        bool video = false;
+        WeVideo *dec = nullptr;
     };
 
     // Malla puppet. El fichero trae los vertices intercalados (posicion vec3 +
@@ -222,6 +246,11 @@ private:
         int lastKey = -1;           // ultima clave subida; -1 fuerza la subida
 
         bool animated() const { return boneCount > 0 && keyCount > 1; }
+
+        // Capa de reloj: la malla no es fija, la rehace `src/wereloj.c` con la
+        // hora del sistema. Es el mismo modulo que usa el ejecutor offline.
+        WeReloj *reloj = nullptr;
+        long long ultimoTic = -1;   // segundo en el que se rehizo por ultima vez
     };
 
     // Sistema de particulas. La simulacion la lleva `src/weparticles.c`,
@@ -241,6 +270,21 @@ private:
     // Deforma las mallas animadas y reescribe sus VBO. Una vez por fotograma,
     // no una por pase: varias pasadas comparten la misma malla.
     void skinMeshes(float time);
+    // En que par de claves cae `time` en una malla animada, y con cuanta
+    // mezcla. Lo comparten el skinning y `bonePoint`: si cada uno eligiera su
+    // clave, la capa colgada se separaria de la malla justo al interpolar.
+    bool meshKey(const MeshSpec &m, float time, int *k0, float *fr) const;
+    // Donde cae un punto suelto al deformarlo con UN hueso. Es la misma cuenta
+    // que el skinning hace con cada vertice, para un punto que no esta en la
+    // malla: el anclaje del que cuelga otra capa.
+    bool bonePoint(int mesh, int bone, float px, float py, float time,
+                   float *ox, float *oy) const;
+    // Rehace los quads de las capas de reloj. Va con el reloj de
+    // PARED y no con el de la escena: lo que un reloj tiene que
+    // ensenar es la hora del escritorio.
+    void updateClocks();
+    // Sube a la GPU el fotograma que toca de cada textura de video.
+    void updateVideos(float time);
 
     qsizetype targetIndex(const QString &name);   // crea el target si no existe
     bool buildCompositeProgram();
@@ -255,6 +299,10 @@ private:
     QHash<int, TexSpec> m_textures;
     QHash<int, MeshSpec> m_meshes;
     QHash<int, PsysSpec> m_psys;
+    // `psyspadre`: (hijo, padre, rafaga). Se aplica cuando los dos sistemas ya
+    // estan cargados; a partir de ahi el padre da el paso de los dos.
+    struct PsysPadre { int hijo, padre, rafaga; };
+    QVector<PsysPadre> m_psysPadre;
     int m_meshCount = 0, m_meshPassCount = 0, m_meshAnimCount = 0;
     int m_psysCount = 0, m_psysUnknownParts = 0;
     QVector<Target> m_targets;              // indexable y estable

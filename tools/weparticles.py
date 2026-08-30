@@ -125,15 +125,50 @@ def _expo(e):
     return [_f1(e.get("exponent"), 1.0)]
 
 
-def _init_tam(e):    return [_f1(e.get("min"), 32.0), _f1(e.get("max"), 32.0)] + _expo(e)
+# El vertice lleva la SEMIANCHURA del sprite, no el `size` que declara el
+# preset. `ComputeParticlePosition` de WE reparte `in_ParticleSize` entre
+# `u-0.5` y `u+0.5`, o sea que el quad mide justo ese valor; lo que el motor de
+# WE le pasa es la mitad de `sizerandom`.
+#
+# Medido con el perfil RADIAL de los destellos contra la captura de Windows
+# ---promediando anillos alrededor de cada pico, sin componentes conexas--- el
+# radio a media altura sale 1,28 px en WE y 2,93 en el nuestro: x2,29. Con la
+# mitad baja a 1,54, o sea x1,20, y la distribucion se estrecha hasta parecerse
+# a la de WE (p25-p75 de 0,29 px contra 0,51).
+#
+# La medida por COMPONENTES CONEXAS decia lo contrario y hay que desconfiar de
+# ella aqui: junta el nucleo con la meseta tenue de la textura, que el bloom
+# levanta por encima del umbral, y convierte un nucleo pequeno en una mancha
+# grande. Con ella el x0,5 parecia empeorar; con el perfil radial es al reves.
+#
+# Cuadra ademas con lo que ya decia el humo de Sniper Girl: 600 unidades por la
+# escala 0,2 predecian 120 px de lienzo y su preview ensena unos 60. Aquello se
+# explico como "una particula al 40% de su crecimiento"; era la mitad.
+ESCALA_SPRITE = 0.5
+
+# Semieje del emisor cuando el preset no declara `distancemax`; ver `cargar`.
+DISTANCIA_POR_DEFECTO = 512.0
+
+
+def _init_tam(e):
+    return [ESCALA_SPRITE * _f1(e.get("min"), 32.0),
+            ESCALA_SPRITE * _f1(e.get("max"), 32.0)] + _expo(e)
 def _init_alfa(e):   return [_f1(e.get("min"), 1.0), _f1(e.get("max"), 1.0)] + _expo(e)
 
 
 def _init_color(e):
-    # Los colores de particula van de 0 a 255; el shader los quiere de 0 a 1.
-    # Sin `max` el color es fijo: 145 sistemas del corpus solo declaran `min`.
+    """Los colores de particula van de 0 a 255; el shader los quiere de 0 a 1.
+
+    Sin `max`, el sorteo llega hasta NEGRO, no se queda en `min`. Lo dice el
+    propio corpus: 158 objetos de 47 escenas escriben `max` IGUAL a `min`, y
+    nadie repite un campo redundante 158 veces --- lo escriben porque es la
+    unica forma de pedir un color constante. En esta misma escena conviven las
+    dos formas: `shootingstarglow` declara los dos blancos y los `Star_0N` solo
+    el `min`, que es lo que hace parpadear un campo de estrellas. Toca a 160
+    objetos de 22 escenas.
+    """
     mn = _v3(e.get("min"), 255.0)
-    mx = _v3(e.get("max"), 255.0) if e.get("max") is not None else list(mn)
+    mx = _v3(e.get("max"), 255.0) if e.get("max") is not None else [0.0, 0.0, 0.0]
     return [c / 255.0 for c in mn] + [c / 255.0 for c in mx] + _expo(e)
 
 
@@ -423,10 +458,26 @@ def _cinta(e: dict) -> tuple[int, int, float]:
     no se usa --- los segmentos salen rectos.
     """
     modo = 1 if e.get("name") == "rope" else 2
-    puntos = e.get("segments")
-    puntos = int(puntos) if isinstance(puntos, (int, float)) else CINTA_PUNTOS
     largo = e.get("length")
     largo = float(largo) if isinstance(largo, (int, float)) else CINTA_SEGUNDOS
+    puntos = e.get("segments")
+    if isinstance(puntos, (int, float)):
+        puntos = int(puntos)
+    else:
+        # Sin `segments`, la cola la marca `length`. Antes se caia a un 8 fijo y
+        # ese 8 GANABA al `length` que el autor si escribe: el `min` de abajo se
+        # quedaba con el menor de los dos. O sea que el campo declarado lo
+        # pisaba el defecto del campo ausente, que es justo al reves.
+        #
+        # Se ve en las estrellas fugaces de la `City`: piden `length: 0.4` ---24
+        # pasos a 60 Hz--- y salian con 8, o sea 0,13 s de cola. La estela es
+        # corta y gorda donde WE la ensena fina y larga. El propio
+        # `shootingstar.json` de WE hace lo mismo con `length: 0.2` y tampoco
+        # declara `segments`.
+        #
+        # Son **68 de las 74 cintas del corpus** las que no declaran `segments`,
+        # y 30 de ellas si declaran `length`.
+        puntos = round(largo / CINTA_PASO)
     # `length` NO es el espaciado entre puntos. Repartirlo ---`length/segments`---
     # da 3 segundos por segmento en las `star trail` de `3238423642`, que declaran
     # `length: 30`: cada segmento se convierte en una cuerda recta de cientos de
@@ -621,14 +672,43 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         # `distancemax` es un escalar en la esfera (el radio) y un vector en la
         # caja (los tres semiejes). `_v3` reparte el escalar a los tres, que es
         # justo lo que hace falta en los dos casos.
+        #
+        # Sin declarar NO es cero, es 512. Lo prueba el propio formato por dos
+        # caminos: el corpus escribe `distancemax: 0` **153 veces** ---nadie
+        # escribe un campo 153 veces si es el defecto--- y `exampleturbolence`,
+        # que trae el propio WE, declara `distancemin: 256` y omite el maximo:
+        # con cero, el minimo seria mayor que el maximo. 512 es ademas el valor
+        # mas declarado del corpus (195 usos) y el que llevan `example.json`,
+        # `starfield`, `fog1`, `fog2`, `lightning1`, `fireflies` y `powerup`.
+        #
+        # Sin esto, un emisor que omite el campo pone TODAS sus particulas en el
+        # mismo punto. Es lo que hacia que la lluvia de estrellas de la `City`
+        # saliera entera por el mismo sitio en vez de cruzar el fondo. Son 6
+        # presets-emisor del corpus, en 7 escenas.
         s.emit = ([_f1(e.get("rate"), 0.0)]
                   + _v3(e.get("distancemin"), 0.0)
-                  + _v3(e.get("distancemax"), 0.0)
+                  + _v3(e.get("distancemax"), DISTANCIA_POR_DEFECTO)
                   + _v3(e.get("directions"), 1.0)
                   + _v3(e.get("origin"), 0.0)
                   + _v3(e.get("sign"), 0.0)
                   + [_f1(e.get("instantaneous"), 0.0),
-                     _f1(e.get("duration"), 0.0)])
+                     _f1(e.get("duration"), 0.0)]
+                  # La rapidez con la que la particula SALE del emisor, hacia
+                  # afuera. La declaran 20 emisores del corpus, y en 12 de ellos
+                  # es la unica velocidad que hay: sin leerla, esos sistemas
+                  # nacen quietos y solo los mueven los operadores. En
+                  # `3219398263` eso se ve: en WE las cintas son rayas CORTAS y
+                  # RADIALES ---medidas sobre una captura del escritorio de
+                  # Windows: unos 75 px de lienzo, que a 0,117 s de cola y
+                  # escala 5 son 128 unidades por segundo, justo lo que declara
+                  # el emisor--- y aqui no habia ninguna.
+                  #
+                  # Va al FINAL de la linea a proposito: un ejecutor anterior
+                  # lee sus 18 floats y se salta estos dos, en vez de
+                  # descolocarse. Importa porque plasmashell conserva mapeada
+                  # la `.so` con la que arranco y puede leer un plan nuevo.
+                  + [_f1(e.get("speedmin"), 0.0),
+                     _f1(e.get("speedmax"), 0.0)])
 
     # Una pieza que esta en la tabla pero devuelve None es una VARIANTE que no
     # sabemos traducir --- otro canal de `remapvalue`, otra funcion de ruido ---
@@ -670,27 +750,42 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
             s.sin_soporte.append(f"renderer:{e.get('name')}")
 
     _aplicar_override(s, ov)
-    _ritmo_implicito(s)
+    _ritmo_implicito(s, _f1((ov or {}).get("rate"), 1.0))
     return s
 
 
-def _ritmo_implicito(s: Sistema) -> None:
-    """Sin `rate` declarado, el emisor mantiene el deposito lleno.
+# Ocupacion del cupo que sostiene un emisor tipico del corpus: para los 463
+# que SI declaran ritmo, la mediana de `rate * vida / maxcount` es 0,48 y solo
+# uno de cada cuatro llega a saturar. `maxcount` es un tope de seguridad, no la
+# densidad buscada --- las propias plantillas de WE lo dicen: `example.json`
+# sostiene 80 de 500 y `examplecursoravoid` 800 de 1000.
+OCUPACION_TIPICA = 0.48
 
-    64 sistemas de 35 escenas no declaran ritmo de emision. Tomarlo como cero
-    --- que es lo que dice el JSON --- deja el sistema sin emitir NUNCA: la
+
+def _ritmo_implicito(s: Sistema, factor: float = 1.0) -> None:
+    """Sin `rate` declarado, el emisor sostiene la ocupacion tipica del corpus.
+
+    72 emisores de 36 escenas no declaran ritmo de emision --- dos de ellos son
+    plantillas del propio WE, `ember_small` y `dust_motes_0`, asi que el campo
+    falta porque WE no lo escribe, no porque el autor lo olvidara. Tomarlo como
+    cero ---que es lo que dice el JSON--- deja el sistema sin emitir NUNCA: la
     escena carga, el pase dibuja y no sale nada, sin un solo error por medio.
 
-    La lectura razonable es que quien no fija ritmo esta controlando la densidad
-    con `maxcount`: para sostener N particulas de vida media V hacen falta N/V
-    nacimientos por segundo. Se calcula despues del `instanceoverride`, para que
-    un `count` de 1.5 suba tambien el ritmo y la densidad salga la pedida.
+    Se estima con `maxcount` y la vida, que es lo unico que hay, pero NO al
+    ritmo que deja el deposito lleno: eso es el extremo, el percentil 76 del
+    corpus, y se nota. En la `City` (2821288001) dejaba 31 estrellas fugaces a
+    la vez donde una captura de WE ensena menos de diez: la «rafaga de puntos»
+    que se veia cruzar el escritorio.
+
+    El `factor` es el `rate` del `instanceoverride`, que hasta ahora se perdia:
+    se aplicaba sobre el cero del preset ---0 x 1,2 sigue siendo 0--- y luego
+    esta funcion lo sobrescribia. Son 12 de los 72 emisores.
     """
     if not s.emisor or s.emit[0] > 0:
         return
     vida = dict(s.inits).get("lifetimerandom")
     media = (vida[0] + vida[1]) / 2.0 if vida else 1.0
-    s.emit[0] = s.maxcount / max(media, 1e-3)
+    s.emit[0] = OCUPACION_TIPICA * s.maxcount / max(media, 1e-3) * factor
 
 
 def _aplicar_override(s: Sistema, ov: dict) -> None:
