@@ -28,6 +28,10 @@
  * se distingue de sesenta en un sistema en regimen, y no bloquea nada. */
 #define MAX_SEG_PRIMERA 60.0f
 #define MAX_SEG_POR_LLAMADA 1.0f
+/* Muertes de un padre que caben en un paso. El corpus mas denso emite 700 por
+ * segundo, que a paso de 1/60 son 12 por paso: 64 sobra y no crece la
+ * estructura de forma apreciable. */
+#define WE_MAX_MUERTES 64
 
 /* ── vocabulario ───────────────────────────────────────────────────────────
  *
@@ -113,6 +117,7 @@ struct WeParticleSystem {
     int emisor;                     /* -1 si el sistema no emite */
     float rate, dmin[3], dmax[3], dir[3], org[3], signo[3];
     float instantaneo, duracion;
+    float velmin, velmax;           /* rapidez de salida, hacia afuera */
 
     int n_init, n_oper;
     Pieza init[MAX_PIEZAS], oper[MAX_PIEZAS];
@@ -143,6 +148,31 @@ struct WeParticleSystem {
     float vivido;                   /* segundos simulados, para `duracion` */
     unsigned int rng;
     int arrancado;
+
+    /* ── hijos `eventspawn` ────────────────────────────────────────────────
+     * Un sistema puede colgar otro que estalla DONDE muere cada particula
+     * suya: el destello que deja una estrella al apagarse. Los dos son
+     * sistemas completos y separados ---cada uno con su material y su pase---
+     * pero no se pueden simular por separado, porque el hijo necesita saber
+     * en que PASO ha muerto cada padre. Asi que el padre lo lleva de la mano:
+     * `we_psys_update` del padre da el paso de los dos, y el `update` del hijo
+     * se limita a rehacer sus vertices. Ver `we_psys_seguir`.
+     *
+     * Un padre puede tener VARIOS hijos ---`Flare_(Parent)` de 2937370591
+     * declara dos---, asi que `hijo` es la cabeza de una lista y cada hijo
+     * apunta al siguiente por `hermano`. Con un solo puntero, el segundo
+     * `we_psys_seguir` pisaba al primero y lo dejaba congelado para siempre:
+     * seguia con `padre != NULL` ---o sea sin dar pasos por su cuenta--- y ya
+     * no lo apuntaba nadie que se los diera. */
+    WeParticleSystem *hijo;         /* cabeza de la lista de hijos */
+    WeParticleSystem *hermano;      /* siguiente hijo del MISMO padre */
+    WeParticleSystem *padre;        /* != NULL: no doy pasos por mi cuenta */
+    int rafaga;                     /* particulas por evento */
+    /* Donde han muerto los padres en el paso en curso. Se llena en `paso` y lo
+     * vacia el hijo en el mismo paso, asi que no necesita crecer: con mas
+     * muertes que huecos, las de mas no tendrian donde estallar igualmente. */
+    float muertes[WE_MAX_MUERTES][3];
+    int n_muertes;
 };
 
 /* ── aleatoriedad ──────────────────────────────────────────────────────────
@@ -287,7 +317,7 @@ static int busca(const Entrada *tabla, int n, const char *nombre, int *nfloats)
  *   seed      <entero>
  *   anim      <0 secuencia | 1 fotograma fijo> <repeticiones por vida>
  *   emit  <sphererandom|boxrandom> <rate> <dmin[3]> <dmax[3]> <dir[3]>
- *         <origen[3]> <signo[3]> <instantaneas> <duracion>
+ *         <origen[3]> <signo[3]> <instantaneas> <duracion> <velmin> <velmax>
  *   cp    <indice> <x> <y> <z>
  *   init  <nombre> <floats...>
  *   oper  <nombre> <floats...>
@@ -352,8 +382,8 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
             if (sscanf(resto, "%63s", nombre) != 1)
                 continue;
             s->emisor = strcmp(nombre, "boxrandom") == 0 ? EM_CAJA : EM_ESFERA;
-            float v[18] = {0};
-            lee_floats(tras_palabra(resto), v, 18);
+            float v[20] = {0};
+            lee_floats(tras_palabra(resto), v, 20);
             s->rate = v[0];
             for (int i = 0; i < 3; i++) {
                 s->dmin[i] = v[1 + i];
@@ -364,6 +394,8 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
             }
             s->instantaneo = v[16];
             s->duracion = v[17];
+            s->velmin = v[18];
+            s->velmax = v[19];
         } else if (strcmp(kw, "cp") == 0) {
             float v[4] = {0};
             if (lee_floats(resto, v, 4) == 4) {
@@ -501,6 +533,19 @@ static void emite(WeParticleSystem *s, Particula *q)
         if (s->signo[i] > 0.0f && d[i] < 0.0f) d[i] = -d[i];
         else if (s->signo[i] < 0.0f && d[i] > 0.0f) d[i] = -d[i];
         q->pos[i] = s->org[i] + d[i];
+    }
+
+    /* La rapidez de salida del emisor, HACIA AFUERA: la direccion es la que ya
+     * eligio el sorteo de la posicion, que en la esfera es la normal. Es la
+     * unica velocidad de 12 sistemas del corpus ---sin ella nacen quietos--- y
+     * en `3219398263` es lo que se ve en WE: rayas cortas y radiales, no el
+     * anillo que salia de dejar mandando al vortice. */
+    if (s->velmax != 0.0f || s->velmin != 0.0f) {
+        float n = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        float rapidez = mezcla(s->velmin, s->velmax, azar(&s->rng));
+        if (n > 1e-4f)
+            for (int i = 0; i < 3; i++)
+                q->vel[i] = d[i] / n * rapidez;
     }
 
     /* `mapsequencebetweencontrolpoints` reparte las particulas por PUESTOS a lo
@@ -659,7 +704,16 @@ static void paso(WeParticleSystem *s, float dt)
         if (!q->viva)
             continue;
         q->edad += dt;
-        if (q->edad >= q->vida) { q->viva = 0; continue; }
+        if (q->edad >= q->vida) {
+            q->viva = 0;
+            /* Solo se anota si hay quien escuche: sin hijo esto es un `if` por
+             * particula muerta y nada mas. */
+            if (s->hijo && s->n_muertes < WE_MAX_MUERTES) {
+                float *m = s->muertes[s->n_muertes++];
+                m[0] = q->pos[0]; m[1] = q->pos[1]; m[2] = q->pos[2];
+            }
+            continue;
+        }
 
         for (int j = 0; j < s->n_oper; j++) {
             const float *v = s->oper[j].f;
@@ -716,16 +770,12 @@ static void paso(WeParticleSystem *s, float dt)
             case OP_VORTICE: {
                 float d[3] = {q->pos[0], q->pos[1], q->pos[2]};
                 float n = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                if (n > 1e-4f) {
+                float e[3] = {v[4], v[5], v[6]};
+                float en = sqrtf(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+                if (n > 1e-4f && en > 1e-4f && n <= v[1]) {
+                    for (int k = 0; k < 3; k++) e[k] /= en;
                     float t = sujeta((n - v[0]) / (v[1] - v[0] + 1e-6f), 0.0f, 1.0f);
                     float vel = mezcla(v[2], v[3], t);
-                    /* Tangente = eje x radio, normalizada por el radio para que
-                     * la velocidad pedida sea lineal y no angular. */
-                    float e[3] = {v[4], v[5], v[6]};
-                    float tg[3] = {e[1] * d[2] - e[2] * d[1],
-                                   e[2] * d[0] - e[0] * d[2],
-                                   e[0] * d[1] - e[1] * d[0]};
-                    float tn = sqrtf(tg[0] * tg[0] + tg[1] * tg[1] + tg[2] * tg[2]);
                     /* ARRASTRA, no empuja: mueve la posicion y deja la
                      * velocidad como estaba. Sumandolo a la velocidad, la
                      * particula acumula tangencial sin nada que la retenga y
@@ -735,10 +785,31 @@ static void paso(WeParticleSystem *s, float dt)
                      * Fijar la velocidad tampoco vale: con `speedouter: 0`
                      * ---los petalos de `2788036464`--- congelaria todo lo que
                      * cae fuera del radio. Como campo de arrastre los cuatro
-                     * grupos del corpus se sostienen a la vez. */
-                    if (tn > 1e-4f)
+                     * grupos del corpus se sostienen a la vez.
+                     *
+                     * Y arrastra GIRANDO, no avanzando por la tangente: un
+                     * paso recto sobre la tangente es una CUERDA, asi que cada
+                     * paso deja la particula mas lejos del eje. Con las 2500
+                     * unidades por segundo a radio 256 de `3219398263` el radio
+                     * crece un 65% en una sola vida y el anillo se abre hasta
+                     * llenar el cielo. Rodrigues da el mismo ritmo angular
+                     * ---la velocidad pedida es lineal, o sea angulo por
+                     * radio--- y deja el radio exacto. */
+                    float cr[3] = {e[1] * d[2] - e[2] * d[1],
+                                   e[2] * d[0] - e[0] * d[2],
+                                   e[0] * d[1] - e[1] * d[0]};
+                    /* |e x d| es el radio PERPENDICULAR al eje, que es sobre el
+                     * que gira la particula; en una escena plana con el eje en
+                     * Z coincide con `n`. */
+                    float rp = sqrtf(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]);
+                    if (rp > 1e-4f) {
+                        float ang = vel * dt / rp;
+                        float c = cosf(ang), s2 = sinf(ang);
+                        float ed = e[0] * d[0] + e[1] * d[1] + e[2] * d[2];
                         for (int k = 0; k < 3; k++)
-                            q->pos[k] += tg[k] / tn * vel * dt;
+                            q->pos[k] = d[k] * c + cr[k] * s2
+                                      + e[k] * ed * (1.0f - c);
+                    }
                 }
                 break;
             }
@@ -1019,10 +1090,90 @@ static int construye(WeParticleSystem *s)
     return n;
 }
 
+/* Un estallido del hijo en la posicion donde murio un padre.
+ *
+ * El hijo se coloca con su PROPIO emisor ---`shootingstarglow` usa una esfera
+ * de radio 0, o sea el punto exacto; `Flare` una caja de 100x100, o sea un
+ * corro alrededor--- y luego se desplaza al sitio del evento. Asi el preset
+ * sigue decidiendo la forma del estallido y el evento solo dice donde. */
+static void estalla(WeParticleSystem *s, const float *donde)
+{
+    for (int n = 0; n < s->rafaga; n++) {
+        int hueco = -1;
+        for (int k = 0; k < s->maxcount; k++) {
+            int i = s->cursor + k;
+            if (i >= s->maxcount) i -= s->maxcount;
+            if (!s->p[i].viva) { hueco = i; break; }
+        }
+        if (hueco < 0)
+            return;                 /* deposito lleno: el estallido se pierde */
+        s->cursor = hueco + 1 >= s->maxcount ? 0 : hueco + 1;
+        emite(s, &s->p[hueco]);
+        for (int k = 0; k < 3; k++)
+            s->p[hueco].pos[k] += donde[k];
+    }
+}
+
+/* Un paso del sistema y, dentro de el, el de todos sus hijos `eventspawn`.
+ *
+ * El hijo va DENTRO del paso del padre, no despues: si se dejara para su
+ * propio `update`, las muertes de una recuperacion de 60 s le llegarian todas
+ * juntas y estallaria el sistema entero de golpe en vez de repartido por el
+ * tiempo.
+ *
+ * Las muertes se vacian cuando ya las han visto TODOS los hijos, no dentro del
+ * bucle: si no, el primero se las llevaria y el segundo no estallaria nunca.
+ *
+ * Recursivo porque un hijo puede tener hijos suyos, y el `update` de un
+ * sistema con padre no da pasos por su cuenta ---seria el mismo congelamiento
+ * por otro camino---. `we_psys_seguir` rechaza los ciclos, asi que la
+ * recursion termina. */
+static void paso_con_hijos(WeParticleSystem *s, float h)
+{
+    paso(s, h);
+    if (!s->hijo)
+        return;
+    for (WeParticleSystem *c = s->hijo; c; c = c->hermano)
+        for (int i = 0; i < s->n_muertes; i++)
+            estalla(c, s->muertes[i]);
+    s->n_muertes = 0;
+    for (WeParticleSystem *c = s->hijo; c; c = c->hermano)
+        paso_con_hijos(c, h);
+}
+
+void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga)
+{
+    if (!hijo || !padre || hijo == padre)
+        return;
+    /* Un hijo cuelga de UN padre. Colgarlo dos veces lo enlazaria en dos
+     * listas con un solo `hermano` y una de las dos se romperia. */
+    if (hijo->padre)
+        return;
+    /* Y el padre no puede descender del hijo: la lista se cerraria en ciclo y
+     * `paso_con_hijos` no volveria nunca. */
+    for (WeParticleSystem *a = padre; a; a = a->padre)
+        if (a == hijo)
+            return;
+    hijo->padre = padre;
+    hijo->rafaga = rafaga > 0 ? rafaga : 1;
+    /* Al final de la lista y no a la cabeza, para que estallen en el orden en
+     * que el plan los declara. */
+    WeParticleSystem **p = &padre->hijo;
+    while (*p)
+        p = &(*p)->hermano;
+    *p = hijo;
+}
+
 int we_psys_update(WeParticleSystem *s, float t)
 {
     if (!s)
         return 0;
+
+    /* Un hijo `eventspawn` ya ha dado su paso dentro del de su padre: aqui
+     * solo rehace los vertices. Dejarle avanzar tambien por su cuenta lo
+     * simularia dos veces por fotograma. */
+    if (s->padre)
+        return construye(s);
 
     float dt, tope = MAX_SEG_POR_LLAMADA;
     if (!s->arrancado) {
@@ -1059,7 +1210,7 @@ int we_psys_update(WeParticleSystem *s, float t)
      * de plasmashell. */
     while (dt > 0.0f) {
         float h = dt > PASO ? PASO : dt;
-        paso(s, h);
+        paso_con_hijos(s, h);
         dt -= h;
     }
     return construye(s);

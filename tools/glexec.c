@@ -13,9 +13,14 @@
  *
  *   canvas <w> <h>
  *   tex <id> <ruta.rgba> <w> <h>       textura RGBA8 cruda ya decodificada
+ *   video <id> <ruta.mp4> <w> <h>      textura que sale de decodificar un video
+ *   videotime <t>                      instante del que sacar los fotogramas
  *   mesh <id> <ruta.bin> <nvert> <nidx> [<nhuesos> <nclaves> <duracion>]
  *   psys <id> <ruta.psys>              sistema de particulas a simular
+ *   psyspadre <hijo> <padre> <rafaga>  el hijo estalla donde muere el padre
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
+ *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
+ *                                      el objeto cuelga de un hueso de <malla>
  *   pass                               abre un pase
  *     prog <vert> <frag>
  *     target <nombre|SCREEN>           SCREEN = buffer acumulado del objeto
@@ -45,6 +50,8 @@
 #include <string.h>
 
 #include "weparticles.h"
+#include "wereloj.h"
+#include "wevideo.h"
 
 #define MAX_TEX 64
 #define MAX_RT 64
@@ -62,6 +69,15 @@ typedef struct {
 static Target rts[MAX_RT];
 static int n_rts;
 static GLuint textures[MAX_TEX];
+/* Videos abiertos, indexados por el MISMO id que las texturas: para el resto
+ * del ejecutor una capa de video es una textura corriente que ademas cambia. */
+static WeVideo *videos[MAX_TEX];
+/* Instante del que sacar los fotogramas. Lo fija `videotime`, igual que
+ * `meshtime` fija el de las mallas: offline se renderiza UN instante ---y se
+ * repite N veces para que converjan los efectos temporales--- asi que el
+ * fotograma tiene que salir del plan y no de un reloj de pared, o dos
+ * ejecuciones del mismo plan darian imagenes distintas. */
+static float video_time = 0.0f;
 
 /* Buffer acumulado del objeto, con ping-pong: no se puede leer y escribir
  * la misma textura en un pase. */
@@ -130,6 +146,8 @@ static struct {
     float *weights;           /* (nvert, 4) */
     float *mats;              /* (nkeys, nbones, 12) ya compuestas */
     float *skinned;           /* destino, se reusa */
+    /* Capa de reloj: la malla no es fija, se rehace con la hora. */
+    WeReloj *reloj;
 } meshes[MAX_MESHES];
 static int n_meshes;
 /* Instante al que deformar las mallas. Lo fija la directiva `meshtime`; sin
@@ -137,30 +155,66 @@ static int n_meshes;
 static float mesh_time = -1.0f;
 static int meshes_skinned;
 
-/* Deforma una malla en el instante `t` y reescribe su VBO.
+/* En que par de claves cae el instante `t`, y con cuanta mezcla.
  *
- * Las matrices llegan del plan ya resueltas -- inversa de reposo, compuesta
- * con la del padre y evaluada en cada clave -- asi que aqui solo queda la
- * suma ponderada: v' = suma_j w_j * (v * M_j). Son 12 floats por hueso, por
- * filas; la columna que falta es siempre (0,0,0,1).
+ * La ultima clave repite la primera para cerrar el bucle: el periodo son
+ * nkeys-1 intervalos, no nkeys. Entre clave y clave se interpola: a 13 claves
+ * por segundo, saltar a la mas cercana se ve escalonado.
  *
- * Se toma la clave mas cercana, sin interpolar. */
-static void skin_mesh(int id, float t)
+ * Aparte porque lo usan dos: el skinning de la malla y el punto de anclaje del
+ * que cuelga otra capa. Si cada uno eligiera su clave, la capa colgada se
+ * separaria de la malla justo al interpolar. */
+static int mesh_clave(int id, float t, int *k0, float *fr)
 {
-    if (id < 0 || id >= MAX_MESHES) return;
-    if (meshes[id].nbones <= 0 || meshes[id].nkeys <= 1) return;
-
-    /* La ultima clave repite la primera para cerrar el bucle: el periodo son
-     * nkeys-1 intervalos, no nkeys. Entre clave y clave se interpola: a 13
-     * claves por segundo, saltar a la mas cercana se ve escalonado. */
+    if (id < 0 || id >= MAX_MESHES) return 0;
+    if (meshes[id].nbones <= 0 || meshes[id].nkeys <= 1) return 0;
     int span = meshes[id].nkeys - 1;
     float dur = meshes[id].duration > 1e-6f ? meshes[id].duration : 1e-6f;
     double fase = fmod((double)t / dur, 1.0);
     if (fase < 0.0) fase += 1.0;
     double fk = fase * span;
-    int k0 = (int)fk;
-    if (k0 >= span) k0 = span - 1;
-    float fr = (float)(fk - k0);
+    int k = (int)fk;
+    if (k >= span) k = span - 1;
+    *k0 = k;
+    *fr = (float)(fk - k);
+    return 1;
+}
+
+/* Donde cae un punto suelto al deformarlo con UN hueso, en el instante `t`.
+ *
+ * Es la misma cuenta que hace el skinning con cada vertice ---`p * M`, con M
+ * por filas--- pero para un punto que no esta en la malla: el anclaje del rig
+ * del que cuelga otra capa. Devuelve 0 si la malla no esta animada, y entonces
+ * quien llama se queda con la posicion que el plan trae horneada. */
+static int bone_point(int id, int bone, float px, float py, float t,
+                      float *ox, float *oy)
+{
+    int k0;
+    float fr;
+    if (!mesh_clave(id, t, &k0, &fr)) return 0;
+    int nb = meshes[id].nbones;
+    if (bone < 0 || bone >= nb) return 0;
+    const float *a = meshes[id].mats + ((size_t)k0 * nb + bone) * 12;
+    const float *b = a + (size_t)nb * 12;          /* k0+1 <= nkeys-1 */
+    float m[12];
+    for (int i = 0; i < 12; i++)
+        m[i] = a[i] + (b[i] - a[i]) * fr;
+    *ox = px * m[0 * 3 + 0] + py * m[1 * 3 + 0] + m[3 * 3 + 0];
+    *oy = px * m[0 * 3 + 1] + py * m[1 * 3 + 1] + m[3 * 3 + 1];
+    return 1;
+}
+
+/* Deforma una malla en el instante `t` y reescribe su VBO.
+ *
+ * Las matrices llegan del plan ya resueltas -- inversa de reposo, compuesta
+ * con la del padre y evaluada en cada clave -- asi que aqui solo queda la
+ * suma ponderada: v' = suma_j w_j * (v * M_j). Son 12 floats por hueso, por
+ * filas; la columna que falta es siempre (0,0,0,1). */
+static void skin_mesh(int id, float t)
+{
+    int k0;
+    float fr;
+    if (!mesh_clave(id, t, &k0, &fr)) return;
 
     int nb = meshes[id].nbones;
     const float *m0 = meshes[id].mats + (size_t)k0 * nb * 12;
@@ -193,12 +247,54 @@ static void skin_mesh(int id, float t)
                     meshes[id].skinned);
 }
 
+/* Lo que hay tras la siguiente palabra de la linea, ya sin espacios. */
+static const char *tras_palabra(const char *s)
+{
+    while (*s && *s != ' ' && *s != '\t') s++;
+    while (*s == ' ' || *s == '\t') s++;
+    return s;
+}
+
 static void skin_all(void)
 {
     if (meshes_skinned || mesh_time < 0.0f) return;
     meshes_skinned = 1;
     for (int i = 0; i < n_meshes; i++)
         skin_mesh(i, mesh_time);
+}
+
+/* Rehace los quads de las capas de reloj con la hora del sistema.
+ *
+ * Va con el reloj de PARED y no con `meshtime`: `meshtime` es el instante de
+ * la escena, y la hora que un reloj tiene que enseñar es la del escritorio. Se
+ * hace en cada fotograma porque cuesta menos que comprobar si hace falta:
+ * cuatro decenas de vértices. */
+/* Una vez por ejecucion, como `meshes_skinned`: offline se renderiza UN
+ * instante y se repite el cuerpo del plan para que converjan los efectos
+ * temporales, asi que las repeticiones tienen que dar la misma imagen. */
+static int relojes_hechos;
+
+static void relojes_all(void)
+{
+    if (relojes_hechos)
+        return;
+    relojes_hechos = 1;
+    for (int i = 0; i < MAX_MESHES; i++) {
+        if (!meshes[i].reloj || !meshes[i].vbo)
+            continue;
+        int nv = we_reloj_nvertices(meshes[i].reloj);
+        if (nv <= 0)
+            continue;
+        float *v = malloc((size_t)nv * 5 * sizeof *v);
+        if (!v)
+            continue;
+        if (we_reloj_vertices(meshes[i].reloj, time(NULL), v)) {
+            glBindBuffer(GL_ARRAY_BUFFER, meshes[i].vbo);
+            glBufferSubData(GL_ARRAY_BUFFER, 0,
+                            (GLsizeiptr)nv * 5 * sizeof(float), v);
+        }
+        free(v);
+    }
 }
 
 static void load_mesh(int id, const char *path, int nvert, int nidx,
@@ -683,6 +779,57 @@ static GLuint load_texture(const char *path, int w, int h)
     return t;
 }
 
+/* Abre un video y le reserva la textura, todavia vacia. */
+static GLuint load_video(int id, const char *path, int w, int h)
+{
+    videos[id] = wevideo_open(path, w, h, WEVIDEO_EXACTO);
+    if (!videos[id]) {
+        fprintf(stderr, "video: %s\n", wevideo_error(NULL));
+        return 0;
+    }
+    /* El tamano lo dice el decodificador, no el plan: con `0 0` significa
+     * "el nativo del video", que es lo que pide un wallpaper de tipo video,
+     * donde no hay ningun `.tex` que declare medidas. */
+    w = wevideo_ancho(videos[id]);
+    h = wevideo_alto(videos[id]);
+    GLuint t;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    /* Sin mipmaps, y por dos motivos. Uno: regenerarlos a 2160p en cada
+     * fotograma cuesta mas que decodificar. Dos: con GL_LINEAR_MIPMAP_LINEAR y
+     * la piramide sin construir la textura queda INCOMPLETA y se muestrea
+     * NEGRA, que es justo el sintoma que se venia a arreglar. Una capa de
+     * video se ve a tamano completo; la piramide no le hace falta. */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    return t;
+}
+
+/* Pone al dia todas las texturas de video para `video_time`. Se llama en el
+ * mismo sitio que `skin_all`: el ultimo momento antes de dibujar, cuando la
+ * cabecera del plan ya se leyo entera y da igual en que orden vinieran
+ * `videotime` y las directivas `video`. */
+static void video_all(void)
+{
+    for (int i = 0; i < MAX_TEX; i++) {
+        if (!videos[i] || !textures[i])
+            continue;
+        const uint8_t *px = NULL;
+        /* Solo se sube si el fotograma CAMBIO: al repetir el plan para que
+         * converjan los efectos temporales, el instante es el mismo y volver a
+         * subir 33 MB por repeticion no pinta nada distinto. */
+        if (wevideo_frame(videos[i], video_time, &px) <= 0 || !px)
+            continue;
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                        wevideo_ancho(videos[i]), wevideo_alto(videos[i]),
+                        GL_RGBA, GL_UNSIGNED_BYTE, px);
+    }
+}
+
 static void set_blend(const char *mode)
 {
     if (strcmp(mode, "none") == 0 || strcmp(mode, "opaque") == 0) {
@@ -794,6 +941,24 @@ int main(int argc, char **argv)
             /* Capa que solo llena su buffer de composicion: se dibuja pero no
              * se compone sobre la escena, que la muestreara otra por nombre. */
             obj_solo_buffer = (n >= 19) ? solo : 0;
+        } else if (strcmp(kw, "anclaje") == 0 && !in_pass) {
+            /* Esta capa cuelga de un hueso del puppet de otra. El plan trae la
+             * posicion ya horneada dentro de la matriz del `object`; aqui solo
+             * se corrige lo que el hueso se haya movido desde ese instante.
+             * Offline los dos instantes son el mismo y esto no suma nada; en
+             * vivo es lo que hace que el pelo siga a la cabeza. */
+            int mid, hueso;
+            float px, py, bx, by, e00, e01, e10, e11;
+            if (sscanf(line, "%*s %d %d %f %f %f %f %f %f %f %f",
+                       &mid, &hueso, &px, &py, &bx, &by,
+                       &e00, &e01, &e10, &e11) == 10 && mesh_time >= 0.0f) {
+                float qx, qy;
+                if (bone_point(mid, hueso, px, py, mesh_time, &qx, &qy)) {
+                    float dx = qx - bx, dy = qy - by;
+                    obj_mvp[3] += e00 * dx + e01 * dy;
+                    obj_mvp[7] += e10 * dx + e11 * dy;
+                }
+            }
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
             char path[512];
@@ -819,6 +984,27 @@ int main(int argc, char **argv)
             glViewport(0, 0, scene_rt.w, scene_rt.h);
             glClearColor(0, 0, 0, 0);
             glClear(GL_COLOR_BUFFER_BIT);
+        } else if (strcmp(kw, "video") == 0 && !in_pass) {
+            int id, w, h;
+            char path[512];
+            if (sscanf(line, "%*s %d %511s %d %d", &id, path, &w, &h) == 4 &&
+                id >= 0 && id < MAX_TEX)
+                textures[id] = load_video(id, path, w, h);
+        } else if (strcmp(kw, "videotime") == 0) {
+            sscanf(line, "%*s %f", &video_time);
+        } else if (strncmp(kw, "reloj", 5) == 0 && !in_pass) {
+            /* `reloj <id> ...` y sus tres compañeras. El identificador es el
+             * de la MALLA que rehacen, así que la línea se parte aquí y el
+             * resto lo entiende `src/wereloj.c`, que es el mismo módulo que
+             * usa el ejecutor de plasmashell. */
+            int id = -1;
+            if (sscanf(line, "%*s %d", &id) == 1 && id >= 0 && id < MAX_MESHES) {
+                if (!meshes[id].reloj)
+                    meshes[id].reloj = we_reloj_nuevo();
+                const char *resto = tras_palabra(tras_palabra(line));
+                if (meshes[id].reloj)
+                    we_reloj_linea(meshes[id].reloj, kw, resto);
+            }
         } else if (strcmp(kw, "meshtime") == 0) {
             sscanf(line, "%*s %f", &mesh_time);
         } else if (strcmp(kw, "psys") == 0 && !in_pass) {
@@ -860,6 +1046,15 @@ int main(int argc, char **argv)
                                   GL_COLOR_BUFFER_BIT, GL_LINEAR);
                 glBindFramebuffer(GL_FRAMEBUFFER, 0);
             }
+        } else if (strcmp(kw, "psyspadre") == 0 && !in_pass) {
+            /* Cuelga un sistema de otro. Tiene que llegar con los dos ya
+             * cargados ---la cabecera declara todos los `psys` antes del
+             * primer pase--- porque a partir de aqui el padre da el paso de
+             * los dos; ver `we_psys_seguir`. */
+            int h, pa, raf;
+            if (sscanf(line, "%*s %d %d %d", &h, &pa, &raf) == 3 &&
+                h >= 0 && h < MAX_PSYS && pa >= 0 && pa < MAX_PSYS)
+                we_psys_seguir(psys[h].sys, psys[pa].sys, raf);
         } else if (strcmp(kw, "output") == 0) {
             /* Va fuera de cualquier pase: hay que atenderla antes de la
              * guarda de !in_pass o se pierde silenciosamente. */
@@ -868,6 +1063,8 @@ int main(int argc, char **argv)
             /* Ultimo momento antes de dibujar: ya se leyo toda la cabecera,
              * asi que `meshtime` y las mallas estan cargadas en cualquier orden. */
             skin_all();
+            relojes_all();
+            video_all();
             in_pass = 1;
             prog = 0;
             n_samplers = n_unis = 0;

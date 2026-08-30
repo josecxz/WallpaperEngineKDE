@@ -6,6 +6,7 @@
 
 #include "glexecutor.h"
 #include "weparticles.h"
+#include "wereloj.h"
 
 #include <QElapsedTimer>
 #include <QVarLengthArray>
@@ -110,12 +111,37 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
     }
 
     m_ops.clear();
+    // El decodificador de una capa de video NO es memoria a secas: son un hilo
+    // desacoplado y su anillo de fotogramas. Vaciar el mapa sin cerrarlo deja
+    // el hilo decodificando un wallpaper que ya no se ve. `releaseResources`
+    // tambien los cierra, pero solo la llama el destructor, y esta funcion
+    // esta escrita para poder volver a entrar ---vacia los pases, los
+    // simuladores y los relojes---, asi que aqui hace falta igual. La textura
+    // de GL no se toca: soltarla pide contexto activo y de eso se encarga
+    // `releaseResources`.
+    for (TexSpec &t : m_textures) {
+        if (t.dec) {
+            wevideo_close(t.dec);
+            t.dec = nullptr;
+        }
+    }
     m_textures.clear();
     // Los simuladores son memoria propia, no handles de GL: se pueden soltar
     // aqui, sin contexto activo.
     for (PsysSpec &p : m_psys)
         we_psys_free(p.sys);
     m_psys.clear();
+    // Las parejas `eventspawn` nombran a sus sistemas por el indice del plan,
+    // asi que una terna del plan anterior apuntaria a otro sistema distinto en
+    // el nuevo --- y colgarle un padre que no es el suyo lo deja sin dar pasos.
+    m_psysPadre.clear();
+    // Los relojes también son memoria propia. Las mallas NO se vacían aquí
+    // ---sus handles de GL solo se pueden soltar con contexto, y de eso se
+    // encarga `releaseGL`---, así que basta con dejar el puntero a cero.
+    for (MeshSpec &m : m_meshes) {
+        we_reloj_free(m.reloj);
+        m.reloj = nullptr;
+    }
     m_psysCount = m_psysUnknownParts = 0;
     m_passCount = 0;
 
@@ -141,6 +167,18 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             t.w = tok[3].toInt();
             t.h = tok[4].toInt();
             m_textures.insert(tok[1].toInt(), t);
+        } else if (kw == QLatin1String("video") && tok.size() >= 5) {
+            // Mismo espacio de ids que `tex`: el resto del plan la nombra con
+            // `tex:<id>` sin saber que detras hay un MP4.
+            TexSpec t;
+            t.path = tok[2];
+            t.w = tok[3].toInt();
+            t.h = tok[4].toInt();
+            t.video = true;
+            m_textures.insert(tok[1].toInt(), t);
+        } else if (kw == QLatin1String("videotime")) {
+            // Solo la usa el ejecutor offline, que renderiza un instante fijo.
+            // Aqui el instante lo pone `render()`, que es el reloj de verdad.
         } else if (kw == QLatin1String("mesh") && tok.size() >= 5) {
             MeshSpec m;
             m.path = tok[2];
@@ -154,10 +192,32 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
                 m.duration = tok[7].toFloat();
             }
             m_meshes.insert(tok[1].toInt(), m);
+        } else if (kw.startsWith(QLatin1String("reloj")) && tok.size() >= 3) {
+            // `reloj <id de malla> ...` y sus companeras. El identificador es
+            // el de la MALLA que rehacen; el resto lo entiende
+            // `src/wereloj.c`, el mismo modulo que usa `tools/glexec.c`.
+            const int id = tok[1].toInt();
+            MeshSpec &m = m_meshes[id];
+            if (!m.reloj)
+                m.reloj = we_reloj_nuevo();
+            const QByteArray kwb = kw.toUtf8();
+            // Se recorta la linea original y no `tok`: la plantilla y los
+            // nombres viajan con los espacios escapados y `tok` ya los ha
+            // partido por los que quedan.
+            int corte = 0;
+            for (int k = 0; k < 2; ++k) {
+                while (corte < line.size() && !line.at(corte).isSpace()) ++corte;
+                while (corte < line.size() && line.at(corte).isSpace()) ++corte;
+            }
+            const QByteArray resto = line.mid(corte).toUtf8();
+            if (m.reloj)
+                we_reloj_linea(m.reloj, kwb.constData(), resto.constData());
         } else if (kw == QLatin1String("psys") && tok.size() >= 3) {
             PsysSpec p;
             p.path = tok[2];
             m_psys.insert(tok[1].toInt(), p);
+        } else if (kw == QLatin1String("psyspadre") && tok.size() >= 4) {
+            m_psysPadre.append({tok[1].toInt(), tok[2].toInt(), tok[3].toInt()});
         } else if (kw == QLatin1String("object")) {
             Op op;
             op.kind = Op::BeginObject;
@@ -178,6 +238,21 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             // se compone sobre la escena, que la muestreara otra por nombre.
             op.soloBuffer = tok.size() >= 20 && tok[19] == QLatin1String("1");
             m_ops.append(op);
+        } else if (kw == QLatin1String("anclaje") && tok.size() >= 11
+                   && !m_ops.isEmpty()
+                   && m_ops.last().kind == Op::BeginObject) {
+            // Va pegada al `object` al que corrige, asi que se anota sobre el
+            // que se acaba de crear. La colocacion del plan es la del instante
+            // en que se horneo; esto deja lo que hace falta para rehacerla.
+            Op &op = m_ops.last();
+            op.anclajeMesh = tok[1].toInt();
+            op.anclajeBone = tok[2].toInt();
+            op.anclajePunto[0] = tok[3].toFloat();
+            op.anclajePunto[1] = tok[4].toFloat();
+            op.anclajeBase[0] = tok[5].toFloat();
+            op.anclajeBase[1] = tok[6].toFloat();
+            for (int i = 0; i < 4; ++i)
+                op.anclajeEje[i] = tok[7 + i].toFloat();
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
             op.kind = Op::Copy;
@@ -696,10 +771,52 @@ bool GlExecutor::initialize(QString *error)
         }
         ++m_psysCount;
     }
+
+    // Atar los hijos `eventspawn` a su padre, con los dos ya cargados. A partir
+    // de aqui el `update` del padre da el paso de los dos y el del hijo solo
+    // rehace vertices; ver `we_psys_seguir` en src/weparticles.h.
+    for (const PsysPadre &e : m_psysPadre) {
+        const auto h = m_psys.constFind(e.hijo);
+        const auto pa = m_psys.constFind(e.padre);
+        if (h != m_psys.constEnd() && pa != m_psys.constEnd()
+            && h->sys && pa->sys)
+            we_psys_seguir(h->sys, pa->sys, e.rafaga);
+    }
     glBindVertexArray(m_vao);
 
     for (auto it = m_textures.begin(); it != m_textures.end(); ++it) {
         TexSpec &t = it.value();
+        if (t.video) {
+            // WEVIDEO_HILO: la decodificacion va en un hilo aparte con una
+            // cola de fotogramas. En el de render no cabe --- el presupuesto
+            // son 39 ms por fotograma en la escena 4K de referencia, medidos
+            // con el cronometro de GPU, y un H.264 de 2160p no entra ahi.
+            t.dec = wevideo_open(t.path.toUtf8().constData(), t.w, t.h,
+                                 WEVIDEO_HILO);
+            if (!t.dec) {
+                m_log += QStringLiteral("video: %1\n")
+                             .arg(QString::fromUtf8(wevideo_error(nullptr)));
+                continue;
+            }
+            // El tamano lo dice el decodificador, no el plan: con `0 0`
+            // significa "el nativo del video", que es lo que pide un wallpaper
+            // de tipo video, donde no hay ningun `.tex` que declare medidas.
+            t.w = wevideo_ancho(t.dec);
+            t.h = wevideo_alto(t.dec);
+            glGenTextures(1, &t.id);
+            glBindTexture(GL_TEXTURE_2D, t.id);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, t.w, t.h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, nullptr);
+            // Sin mipmaps: regenerarlos a 2160p en cada fotograma cuesta mas
+            // que decodificar, y con GL_LINEAR_MIPMAP_LINEAR y la piramide sin
+            // construir la textura queda INCOMPLETA y se muestrea NEGRA. Una
+            // capa de video se ve a tamano completo; no le hacen falta.
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            continue;
+        }
         const QByteArray data = readAll(t.path);
         if (data.size() < qsizetype(t.w) * t.h * 4) {
             m_log += QStringLiteral("textura corta: %1\n").arg(t.path);
@@ -753,6 +870,77 @@ bool GlExecutor::initialize(QString *error)
 
 // ── dibujado ────────────────────────────────────────────────────────────────
 
+void GlExecutor::updateClocks()
+{
+    // Se rehace cuando cambia el TRAMO que la plantilla puede distinguir: el
+    // minuto, o el segundo si lleva `%S`. Reconstruir unas decenas de
+    // vertices sesenta veces por segundo no compra nada, y el reloj no puede
+    // ir atrasado mas de lo que dura su propio tramo.
+    const long long ahora = (long long)::time(nullptr);
+    for (auto it = m_meshes.begin(); it != m_meshes.end(); ++it) {
+        MeshSpec &m = it.value();
+        if (!m.reloj || m.vbo == 0)
+            continue;
+        const long long periodo =
+            std::max(1LL, (long long)we_reloj_periodo(m.reloj));
+        const long long tic = ahora - (ahora % periodo);
+        if (m.ultimoTic == tic)
+            continue;
+        m.ultimoTic = tic;
+        const int nv = we_reloj_nvertices(m.reloj);
+        if (nv <= 0)
+            continue;
+        QVarLengthArray<float, 1024> v(nv * 5);
+        if (!we_reloj_vertices(m.reloj, (time_t)ahora, v.data()))
+            continue;
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0,
+                        GLsizeiptr(nv) * 5 * GLsizeiptr(sizeof(float)), v.data());
+    }
+}
+
+bool GlExecutor::meshKey(const MeshSpec &m, float time, int *k0, float *fr) const
+{
+    if (!m.animated())
+        return false;
+    // La ultima clave repite la primera para cerrar el bucle, asi que el
+    // periodo son keyCount-1 intervalos. Entre clave y clave se interpola: a
+    // 13 claves por segundo, saltar a la mas cercana se ve escalonado.
+    const int span = m.keyCount - 1;
+    const float dur = m.duration > 1e-6f ? m.duration : 1e-6f;
+    double fase = std::fmod(double(time) / dur, 1.0);
+    if (fase < 0.0)
+        fase += 1.0;
+    const double fk = fase * span;
+    int k = int(fk);
+    if (k >= span)
+        k = span - 1;
+    *k0 = k;
+    *fr = float(fk - k);
+    return true;
+}
+
+bool GlExecutor::bonePoint(int mesh, int bone, float px, float py, float time,
+                           float *ox, float *oy) const
+{
+    const auto it = m_meshes.constFind(mesh);
+    if (it == m_meshes.constEnd())
+        return false;
+    const MeshSpec &m = it.value();
+    int k0 = 0;
+    float fr = 0.0f;
+    if (!meshKey(m, time, &k0, &fr) || bone < 0 || bone >= m.boneCount)
+        return false;
+    const float *a = m.mats.constData() + (qsizetype(k0) * m.boneCount + bone) * 12;
+    const float *b = a + qsizetype(m.boneCount) * 12;   // k0+1 cabe
+    float o[12];
+    for (int i = 0; i < 12; ++i)
+        o[i] = a[i] + (b[i] - a[i]) * fr;
+    *ox = px * o[0 * 3 + 0] + py * o[1 * 3 + 0] + o[3 * 3 + 0];
+    *oy = px * o[0 * 3 + 1] + py * o[1 * 3 + 1] + o[3 * 3 + 1];
+    return true;
+}
+
 void GlExecutor::skinMeshes(float time)
 {
     for (auto it = m_meshes.begin(); it != m_meshes.end(); ++it) {
@@ -760,20 +948,10 @@ void GlExecutor::skinMeshes(float time)
         if (!m.animated() || m.vbo == 0)
             continue;
 
-        // La ultima clave repite la primera para cerrar el bucle, asi que el
-        // periodo son keyCount-1 intervalos. Entre clave y clave se
-        // interpola: a 13 claves por segundo, saltar a la mas cercana se ve
-        // escalonado.
-        const int span = m.keyCount - 1;
-        const float dur = m.duration > 1e-6f ? m.duration : 1e-6f;
-        double fase = std::fmod(double(time) / dur, 1.0);
-        if (fase < 0.0)
-            fase += 1.0;
-        const double fk = fase * span;
-        int k0 = int(fk);
-        if (k0 >= span)
-            k0 = span - 1;
-        const float fr = float(fk - k0);
+        int k0 = 0;
+        float fr = 0.0f;
+        if (!meshKey(m, time, &k0, &fr))
+            continue;
 
         // Las matrices llegan del plan ya resueltas, 12 floats por hueso por
         // filas (la columna que falta es (0,0,0,1)); aqui solo queda
@@ -908,6 +1086,25 @@ void GlExecutor::gpuTimerEnd()
     gpuTimerPoll();
 }
 
+void GlExecutor::updateVideos(float time)
+{
+    for (auto it = m_textures.begin(); it != m_textures.end(); ++it) {
+        TexSpec &t = it.value();
+        if (!t.dec || !t.id)
+            continue;
+        const uint8_t *px = nullptr;
+        // <= 0 es "no hay fotograma nuevo": o el mismo de antes ---a 30 fps
+        // sobre una pantalla a 60 eso es la mitad de las llamadas--- o el
+        // decodificador aun no ha llegado. En los dos casos la textura ya
+        // tiene algo bueno y no se toca. Esta llamada NO bloquea nunca.
+        if (wevideo_frame(t.dec, double(time), &px) <= 0 || !px)
+            continue;
+        glBindTexture(GL_TEXTURE_2D, t.id);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.w, t.h,
+                        GL_RGBA, GL_UNSIGNED_BYTE, px);
+    }
+}
+
 void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 {
     if (!m_ready)
@@ -915,6 +1112,8 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 
     gpuTimerBegin();
     skinMeshes(time);
+    updateClocks();
+    updateVideos(time);
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -942,6 +1141,21 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             // componer, despues adoptar la del que empieza.
             beginObject();
             memcpy(m_placement, op.placement, sizeof m_placement);
+            // Si la capa cuelga de un hueso, corregir lo que ese hueso se haya
+            // movido desde el instante en que se horneo el plan. La malla ya
+            // esta deformada para este fotograma ---`skinMeshes` va antes---,
+            // asi que las dos leen la misma clave y no se separan.
+            if (op.anclajeMesh >= 0) {
+                float qx = 0.0f, qy = 0.0f;
+                if (bonePoint(op.anclajeMesh, op.anclajeBone,
+                              op.anclajePunto[0], op.anclajePunto[1],
+                              time, &qx, &qy)) {
+                    const float dx = qx - op.anclajeBase[0];
+                    const float dy = qy - op.anclajeBase[1];
+                    m_placement[3] += op.anclajeEje[0] * dx + op.anclajeEje[1] * dy;
+                    m_placement[7] += op.anclajeEje[2] * dx + op.anclajeEje[3] * dy;
+                }
+            }
             m_compose = op.compose;
             m_soloBuffer = op.soloBuffer;
             continue;
@@ -1237,6 +1451,12 @@ void GlExecutor::releaseResources()
         if (t.id)
             glDeleteTextures(1, &t.id);
         t.id = 0;
+        // Cierra tambien el hilo decodificador: sin esto cada cambio de
+        // wallpaper deja uno vivo decodificando un video que ya no se ve.
+        if (t.dec) {
+            wevideo_close(t.dec);
+            t.dec = nullptr;
+        }
     }
     for (Target &t : m_targets) {
         glDeleteTextures(1, &t.tex);
@@ -1259,6 +1479,8 @@ void GlExecutor::releaseResources()
         if (m.ibo) glDeleteBuffers(1, &m.ibo);
         if (m.vao) glDeleteVertexArrays(1, &m.vao);
         m.vao = m.vbo = m.ibo = 0;
+        we_reloj_free(m.reloj);
+        m.reloj = nullptr;
     }
     for (PsysSpec &p : m_psys) {
         if (p.vbo) glDeleteBuffers(1, &p.vbo);

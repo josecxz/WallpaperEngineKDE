@@ -15,6 +15,14 @@ ENVDIR  := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/environme
 ENVFILE := $(ENVDIR)/50-wallpaperengine.conf
 
 QT_MODULES := Qt6Quick Qt6Qml Qt6Gui Qt6Core Qt6DBus
+
+# Decodificacion de video. La alternativa era una tuberia de `ffmpeg`, y no
+# sale: el corpus tiene cuatro videos a 3840x2160 y cuatro a 60 fps, que en
+# RGBA por una tuberia son 2 GB/s. Ademas un fondo necesita bucle y pausa, y
+# por tuberia eso solo se hace matando el proceso.
+AV_MODULES := libavformat libavcodec libavutil libswscale
+AV_CFLAGS  := $(shell pkg-config --cflags $(AV_MODULES))
+AV_LIBS    := $(shell pkg-config --libs $(AV_MODULES))
 # Las cabeceras de QRhi viven en una ruta versionada: es API semipublica, sin
 # garantia de compatibilidad entre versiones menores de Qt.
 QT_VER  := $(shell pkg-config --modversion Qt6Core)
@@ -26,24 +34,24 @@ PRIVINC := -I/usr/include/qt6/QtGui/$(QT_VER) -I/usr/include/qt6/QtGui/$(QT_VER)
 # objetos que veian layouts distintos de la misma clase. Eso produce fallos que
 # no se reproducen tras un `make clean`, que es justo lo que paso.
 CXXFLAGS := -O2 -fPIC -std=c++20 -Wall -Wextra -Wno-unused-parameter -MMD -MP \
-            $(shell pkg-config --cflags $(QT_MODULES)) $(PRIVINC)
+            $(shell pkg-config --cflags $(QT_MODULES)) $(PRIVINC) $(AV_CFLAGS)
 # -z nodelete: la biblioteca no se descarga nunca. Es buena practica en un
 # plugin de QML -- el motor puede descargarlo con objetos aun vivos -- pero que
 # quede claro: NO fue lo que arreglo los SIGBUS. La causa era instalar con `cp`
 # sobre la .so mapeada (ver install-qml).
-CFLAGS   := -O2 -fPIC -std=c11 -Wall -Wextra -MMD -MP
+CFLAGS   := -O2 -fPIC -std=c11 -Wall -Wextra -MMD -MP $(AV_CFLAGS)
 LDFLAGS  := -shared -Wl,-z,nodelete
-LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL
+LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL $(AV_LIBS) -lpthread
 
 MOC     := /usr/lib/qt6/moc
 BUILD   := obj
 OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o \
            $(BUILD)/escritorio.o $(BUILD)/moc_escritorio.o \
-           $(BUILD)/weparticles.o \
+           $(BUILD)/weparticles.o $(BUILD)/wevideo.o $(BUILD)/wereloj.o \
            $(BUILD)/moc_sceneview.o
 
 .PHONY: all build glexec psysprobe install install-qml install-package \
-        install-env uninstall reload status clean plan
+        install-env uninstall reload status clean plan indice
 
 all: build
 
@@ -87,13 +95,17 @@ $(BUILD)/$(LIB): $(OBJS)
 	@echo "construido: $@"
 
 # ── ejecutor offline ────────────────────────────────────────────────────────
-# Enlaza el MISMO src/weparticles.c que el modulo QML: si hubiera que
-# construirlo a mano cada vez, tarde o temprano se compilaria uno sin el otro y
-# el render offline dejaria de predecir lo que hace el escritorio.
+# Enlaza los MISMOS src/weparticles.c, src/wevideo.c y src/wereloj.c que el
+# modulo QML: si
+# hubiera que construirlos a mano cada vez, tarde o temprano se compilaria uno
+# sin el otro y el render offline dejaria de predecir lo que hace el
+# escritorio.
 glexec: $(BUILD)/glexec
 
-$(BUILD)/glexec: tools/glexec.c src/weparticles.c src/weparticles.h | $(BUILD)
-	$(CC) $(CFLAGS) -Isrc -o $@ tools/glexec.c src/weparticles.c -lEGL -lGL -lm
+$(BUILD)/glexec: tools/glexec.c src/weparticles.c src/weparticles.h \
+                src/wevideo.c src/wevideo.h src/wereloj.c src/wereloj.h | $(BUILD)
+	$(CC) $(CFLAGS) -Isrc -o $@ tools/glexec.c src/weparticles.c src/wevideo.c \
+	      src/wereloj.c -lEGL -lGL -lm $(AV_LIBS) -lpthread
 	@echo "construido: $@"
 
 # ── sonda de simulacion ─────────────────────────────────────────────────────
@@ -200,6 +212,13 @@ status:
 		grep 'wallpaperplugin=' \
 			$(HOME)/.config/plasma-org.kde.plasma.desktop-appletsrc 2>/dev/null \
 			| sort | uniq -c
+
+# ── indice de NOTAS ─────────────────────────────────────────────────────────
+# Los numeros de linea de NOTAS-INDICE.md apuntan dentro de NOTAS.md y se
+# mueven con cualquier edicion. Un numero que miente manda a leer el trozo
+# equivocado sin avisar, asi que se recalculan casando por titulo.
+indice:
+	@python3 tools/indice.py --escribir
 
 clean:
 	@rm -rf $(BUILD)

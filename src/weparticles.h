@@ -68,6 +68,16 @@ void we_psys_free(WeParticleSystem *s);
  * el tiempo reinicia el sistema, que es lo unico razonable. */
 int we_psys_update(WeParticleSystem *s, float t);
 
+/* Cuelga `hijo` de `padre` como `eventspawn`: cada vez que muere una particula
+ * del padre, el hijo suelta `rafaga` particulas ahi mismo.
+ *
+ * Los dos siguen siendo sistemas separados ---cada uno con su material, su
+ * pase y su `.psys`--- pero se simulan en tandem: el `we_psys_update` del
+ * padre da el paso de los dos y el del hijo solo rehace vertices. Por eso el
+ * ejecutor tiene que llamar a esto DESPUES de cargar los dos y ANTES del
+ * primer `update`. */
+void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga);
+
 const float *we_psys_vertices(const WeParticleSystem *s);
 
 /* 0 = sprites sueltos, 1 = `rope`, 2 = `ropetrail`. Decide el layout del

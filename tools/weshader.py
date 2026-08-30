@@ -1018,6 +1018,15 @@ def literales_de_llamada(body: str) -> str:
     sobrecarga `max(int, vec3)` que no existe y corta. Solo se toca un argumento
     que sea un literal entero PELADO, y solo si otro argumento de la misma
     llamada es de base flotante --- eso lo afirma el parser, no una heuristica.
+
+    Un argumento de TIPO entero ---no un literal--- se promociona igual, y por
+    la misma razon, pero hace falta que el parser afirme su tipo: `auto_sway`
+    escribe `step(0.5, nodeNum)` con `nodeNum` declarado `in int`. La norma de
+    GLSL 330 admite esa conversion y Mesa la acepta; el compilador de NVIDIA la
+    corta por ambigua contra sus sobrecargas con calificador de precision
+    (`ambiguous overloaded function reference "step(float, int)"`). Los dos
+    ejecutores del proyecto no usan el mismo driver, asi que emitir la llamada
+    ya sin ambiguedad es lo unico que vale en los dos.
     """
     # Aqui se miran TODAS las declaraciones, tambien las locales de cualquier
     # funcion: la tabla global no basta porque `albedo` se declara dentro de
@@ -1031,6 +1040,12 @@ def literales_de_llamada(body: str) -> str:
             glob.setdefault(m.group(2), (weglsl.BASE_TIPO[m.group(1)],
                                          weglsl.ANCHO_TIPO[m.group(1)]))
     funcs = weglsl.tabla_de_funciones(body)
+    # Tabla aparte, y no `glob`, para promocionar los argumentos que no son
+    # literales: esta incluye los PARAMETROS de cada funcion ---donde vive
+    # `nodeNum`--- y deja fuera los nombres que cambian de tipo entre ambitos.
+    # `glob` se queda como estaba para que ninguna decision de truncacion que
+    # ya funciona se mueva por este arreglo.
+    tipos = weglsl.tipos_por_nombre(body)
     fuera, i = [], 0
     patron = re.compile(r"\b(" + "|".join(_GENTIPO) + r")[ \t]*\(")
     while True:
@@ -1059,9 +1074,18 @@ def literales_de_llamada(body: str) -> str:
                 # `1e-5`, y un barrido con expresion regular no lo sabe --- se
                 # llevo por delante 6 variantes que ya compilaban.
                 a = a.strip()
-                if not _LITERAL_ENTERO_RE.match(a):
+                if _LITERAL_ENTERO_RE.match(a):
+                    return f"{a}.0" if ancho == 1 else f"vec{ancho}({a}.0)"
+                # Lo demas solo se toca si el parser AFIRMA que es entero. Un
+                # `None` ---que es lo que devuelve ante cualquier duda--- deja
+                # el argumento como estaba.
+                t = weglsl.tipo(a, tipos, funcs)
+                if t is None or t[0] not in ("int", "uint"):
                     return a
-                return f"{a}.0" if ancho == 1 else f"vec{ancho}({a}.0)"
+                # Un `ivecN` conserva su ancho; un entero escalar toma el del
+                # argumento flotante, igual que el literal de arriba.
+                destino = t[1] if t[1] > 1 else ancho
+                return f"float({a})" if destino == 1 else f"vec{destino}({a})"
             args = [flota(a) for a in args]
             # HLSL trunca el argumento mas ancho al mas estrecho:
             # `mix(vec4, vec3, float)` es `mix(vec4.rgb, vec3, float)`.
@@ -1273,6 +1297,39 @@ def declaracion_sin_swizzle(body: str) -> str:
     toca.
     """
     return _DECL_SWIZZLE_RE.sub(r"\1;", body)
+
+
+_SQUARE_TO_QUAD_RE = re.compile(r"\bmat3\s+squareToQuad\s*\([^)]*\)\s*\{")
+
+
+def homografia_por_filas(body: str) -> str:
+    """`squareToQuad` sale TRANSPUESTA en GLSL; se devuelve por filas.
+
+    Es el unico sitio del corpus donde un shader construye una matriz con
+    indices ---`m[0][1] = ...`--- en vez de con el constructor, y ahi los dos
+    lenguajes no dicen lo mismo: `m[i][j]` es fila-columna en HLSL y
+    columna-fila en GLSL. Escrita igual, la matriz sale transpuesta.
+
+    En todo lo demas la convencion aguanta sola: las matrices que suben por
+    uniform se escriben por filas y GL las lee por columnas, asi que la
+    variable del shader acaba siendo la MISMA matriz que ve HLSL y
+    `mul(v, M)` ---o sea `v * M`--- da lo que da alli. Una matriz construida
+    DENTRO del shader no pasa por esa subida y se queda del otro lado.
+
+    Se ve en el reloj de `3029745918`: su capa de texto lleva el efecto
+    `perspective`, y con la matriz transpuesta la hora salia con el tamano
+    correcto pero puesta donde no toca ---la transpuesta de una homografia
+    conserva la parte lineal y cambia de sitio la traslacion---. Toca a los
+    10 efectos que incluyen `common_perspective.h`: perspective, clouds,
+    reflection, swing, lightshafts, watercaustics, waterwaves, cursorripple y
+    fluidsimulation.
+    """
+    m = _SQUARE_TO_QUAD_RE.search(body)
+    if not m:
+        return body
+    fin = _grupo_llaves(body, m.end() - 1)
+    cuerpo = body[m.end() - 1:fin + 1].replace("return m;", "return transpose(m);")
+    return body[:m.end() - 1] + cuerpo + body[fin + 1:]
 
 
 def _strip_comments(src: str) -> str:
@@ -1489,6 +1546,7 @@ def translate(src: str,
     body, luz_puesta = inyectar_lighting_v1(body)
     body = equilibrar_condicionales(body)
     body = declaracion_sin_swizzle(body)
+    body = homografia_por_filas(body)
     body = bool_a_float(body)
     body = const_no_constante(body)
     body = truncar_asignaciones(body)

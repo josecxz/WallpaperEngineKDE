@@ -338,6 +338,7 @@ tools/
   wescene.py                 grafo de escena -> plan de render
   weparticles.py             sistemas de partículas -> fichero .psys
   wetext.py                  capas de texto -> atlas de glifos + quads
+  wevideo.py                 cabecera MP4 y encaje del vídeo en la pantalla
   werender.py                renderizador offline (escena -> PNG)
   glexec.c                   ejecutor de planes headless (EGL surfaceless)
   glslcheck.c                compila shaders con el driver real (EGL surfaceless)
@@ -348,10 +349,13 @@ tools/
   test_wescene.py            regresión end-to-end (combos reales)
   test_weparticles.py        contrato entre weparticles.py y weparticles.c
   test_wetext.py             la unidad del texto, medida contra el corpus
+  test_wevideo.py            contrato del vídeo, con ffmpeg de oráculo
   test_luminancia.py         regresión de LUZ: renderiza y mide cuánta sale
+  indice.py                  recalcula las líneas de NOTAS-INDICE.md
 src/
   glexecutor.cpp/.h          ejecutor de planes en vivo (port de glexec.c)
   weparticles.c/.h           simulador de partículas, COMPARTIDO por los dos
+  wevideo.c/.h               decodificador libav, COMPARTIDO por los dos
   sceneview.cpp/.h           QQuickRhiItem que compone la escena
   escritorio.cpp/.h          le pregunta a KWin si muestra el escritorio
   plugin.cpp, qmldir         registro del módulo QML
@@ -3026,6 +3030,12 @@ interfaz.
 
 ## Vídeo en el motor: qué haría falta
 
+> **Resuelto.** Lo que sigue es el estado de entonces, y las dudas que plantea
+> están decididas en [Vídeo de
+> verdad](#vídeo-de-verdad-un-decodificador-compartido-y-dos-entregas-distintas).
+> Dos correcciones a lo que se creía aquí: las escenas con textura de vídeo son
+> **tres**, no dos, y el fotograma congelado ya no existe.
+
 Dos de las cuatro escenas negras del corpus lo eran por lo mismo: su capa
 principal no es una imagen, es un **MP4 entero dentro del `.tex`**. El
 contenedor lo marca con `IS_VIDEO` y `wetex` se niega a leerlo como píxeles
@@ -3580,6 +3590,201 @@ El arreglo es hacer la cuenta en `int16` y recortar a [0, 255]. Que un mapa
 sature no tiene nada de excepcional —significa «aquí el flujo va a tope»—, y era
 exactamente el caso que el tipo no aguantaba.
 
+## Vídeo de verdad: un decodificador compartido, y dos entregas distintas
+
+El [apaño de congelar el primer fotograma](#vídeo-en-el-motor-qué-haría-falta)
+se retira. El MP4 viaja entero en el plan y lo decodifica `src/wevideo.c`, que
+enlazan **los dos ejecutores** —la misma regla que `weparticles.c`—.
+
+Y el corpus no eran dos escenas, eran **tres**: `3053927686` también lleva un
+MP4 dentro del `.tex` y nunca había aparecido en estas notas porque su capa de
+vídeo es una lluvia gris sobre negro, no un fondo. Contarlas bien costó un
+barrido de los 129 `scene.pkg`, no de los que se sabían.
+
+### Por qué libav y no una tubería de `ffmpeg`
+
+La duda que dejaron abierta estas notas. La decide una cuenta:
+
+| | RGBA por la tubería |
+|---|---|
+| 3840×2160 @60 (cuatro del corpus) | **1,99 GB/s** |
+| 1920×1080 @30 | 249 MB/s |
+
+Y encima un fondo necesita **bucle y pausa**, y por tubería eso solo se hace
+matando el proceso y relanzándolo. Con `libavformat`/`libavcodec`/`libswscale`
+el coste es una dependencia de enlace más en el plugin; a cambio, el consumidor
+no copia nada.
+
+### Los dos modos no son un lujo: son dos requisitos incompatibles
+
+`wevideo.c` entrega el mismo fotograma por dos caminos, y quitar uno rompe algo:
+
+- **`WEVIDEO_EXACTO`** decodifica dentro de la llamada hasta el instante pedido.
+  Lo necesita el offline: `werender.py` renderiza **un** instante y lo repite N
+  veces para que converjan los efectos temporales, así que las N repeticiones
+  tienen que dar el mismo fotograma. Con un decodificador asíncrono,
+  `test_luminancia` mediría lo que tardó el disco.
+- **`WEVIDEO_HILO`** decodifica por delante a un anillo y **nunca bloquea**. Lo
+  necesita el vivo: el presupuesto del hilo de render son 39 ms por fotograma en
+  la escena 4K de referencia, y un H.264 de 2160p no cabe ahí.
+
+Medido con el consumidor pidiendo a 60 Hz:
+
+```
+2560×1440 @29,97   30,0 fotogramas nuevos/s   wevideo_frame: 0,008 ms medio
+3840×2160 @60      57,4 fotogramas nuevos/s   wevideo_frame: 0,007 ms medio
+1920×1080 @30      29,8 fotogramas nuevos/s   wevideo_frame: 0,032 ms el peor
+```
+
+Es decir: en el hilo de render el vídeo cuesta **una centésima de milisegundo**
+y una subida de textura. Todo lo caro pasa en el otro hilo.
+
+**La pausa sale gratis y no por casualidad.** Si el reloj del motor se para
+—plasmashell pausa el fondo cuando las ventanas lo tapan—, el instante pedido
+deja de avanzar, el consumidor deja de consumir, el anillo se llena y el hilo
+productor se duerme en su condición. Sin eso, el ahorro de GPU de la pausa se lo
+comería la CPU decodificando lo que nadie ve.
+
+### El bucle de seeks que dejaba el vídeo clavado
+
+El fallo que no se veía en una prueba corta. El consumidor pide rebobinar cuando
+el fotograma que tiene queda a más de medio segundo del instante pedido. Pero
+**un seek cae en el fotograma clave anterior**, y con un GOP largo eso puede
+estar segundos atrás: el productor publicaba desde ahí, el consumidor lo veía
+todavía más lejos y pedía otro seek. Y otro.
+
+Se ve solo si el reloj **arranca lejos de cero**, que es justo lo que pasa
+cuando el escritorio despausa tras media hora tapado:
+
+```
+arranque en t=3000 s     0,2 fotogramas nuevos/s   <- clavado
+tras el arreglo         28,8 fotogramas nuevos/s
+```
+
+El arreglo es que el productor decodifique **en vacío** hasta pisar el instante
+pedido antes de publicar nada, y que el rebobinado tenga tres estados y no dos:
+sin él, el consumidor volvía a pedir mientras el productor aún estaba saltando.
+
+### Y el fichero no siempre empieza en cero
+
+`Mass Effect Andromeda [No Arrow].mp4` arranca en `start_time = 0,0333`. Los pts
+se comparaban crudos contra el instante pedido, así que el vídeo iba **un
+fotograma desfasado** y, peor, el bucle se desplazaba esa cantidad en cada
+vuelta. Ahora todos los pts salen ya restado el arranque: la línea de tiempo que
+ve el resto del motor empieza en 0 y el bucle cierra exacto sobre la duración.
+
+Lo delató el oráculo, no la vista: diferencia máxima de 85 sobre 255 con una
+media de 0,4, que es la firma de «otro fotograma» y no la de «otro color».
+
+### Nueve fondos negros por un espacio en el nombre
+
+Los 15 wallpapers de tipo vídeo salían… nueve de ellos en negro. No era el
+decodificador: **el plan es un texto que se parte por espacios**, en los dos
+ejecutores, y `AKALI BIKE.mp4` o `Mass Effect Andromeda [No Arrow].mp4` dejaban
+la ruta truncada en el primer espacio.
+
+Nueve de quince es exactamente la fracción de nombres con espacio. El resto de
+los assets del plan nunca lo había sufrido porque **sus nombres los genera
+`werender.py`** —`tex000.rgba`, `p001.frag`—; el MP4 de un wallpaper de vídeo es
+el primer asset que se nombraba tal cual venía de la biblioteca. Se enlaza con
+un nombre generado (`video.mp4`) y no se copia: los del corpus van de 9 MB a
+560 MB.
+
+### Lo que había que decidir, y dónde se decidió
+
+- **Sin mipmaps en una textura de vídeo.** Regenerar la pirámide de un 2160p en
+  cada fotograma cuesta más que decodificar. Y hay una trampa: con
+  `GL_LINEAR_MIPMAP_LINEAR` y la pirámide sin construir, la textura queda
+  **incompleta y se muestrea negra** —el síntoma que se venía a arreglar—.
+- **El volteo, con paso negativo.** Las texturas de WE se guardan con el origen
+  arriba y las UV de GL van al revés; `werender.py` ya voltea las que decodifica
+  en Python. Un fotograma llega igual, así que swscale escribe desde la última
+  fila con paso negativo: copiar el buffer para darle la vuelta serían otros
+  33 MB por fotograma a 4K.
+- **BT.709 cuando el fichero lo dice, y también cuando calla.** Por defecto
+  swscale asume BT.601 y todo el corpus es HD o mayor: leído como 601, un 709
+  vira los verdes y los tonos de piel. Cinco de los 15 wallpapers **no declaran**
+  su espacio de color; ahí se decide por altura —a partir de 720 líneas, 709—,
+  que es lo que hace `mpv` y lo que de verdad traen los H.264 en HD. Es una
+  convención, no un hecho del fichero, y por eso está escrito aquí.
+- **El anillo se dimensiona por memoria, no por fotogramas.** A 4K un RGBA son
+  33 MB. Con el tope en 64 MB, un 1080p tiene cuatro huecos y un 2160p dos, que
+  es lo justo para que el hilo no se quede sin trabajo.
+
+### Los wallpapers de tipo vídeo salen casi gratis
+
+Los 15 que no son una escena sino un MP4 y nada más. No tienen `scene.pkg`, ni
+grafo, ni shaders, así que `wectl` ni los listaba. Con el decodificador ya
+puesto, lo único que les faltaba era un plan, y su plan es el más corto que este
+motor puede escribir: `canvas`, `video`, un `object` y un pase con un quad.
+
+Encajan **cubriendo** la pantalla, no cabiendo en ella: un fondo con franjas
+negras no es un fondo. El quad se pasa de la pantalla y el recorte lo hace el
+viewport, que es exacto y gratis.
+
+Las dimensiones se leen de la caja `tkhd` del MP4 en Python y no preguntándole a
+`ffprobe`: el apaño anterior ataba la generación del plan a que hubiera un
+binario de ffmpeg en el PATH, y ahora que decodifica `libavcodec` dentro del
+motor, volver a necesitar el ejecutable para leer dos enteros sería un paso
+atrás.
+
+### El oráculo: pixel a pixel contra ffmpeg
+
+Una capa de vídeo no falla de forma ruidosa. Del revés, con los colores virados
+o congelada, el plan se genera igual y el ejecutor no se queja: sale una imagen.
+Así que `test_wevideo.py` no opina, compara:
+
+- las dimensiones que saca `wevideo.dimensiones` de las cajas del MP4 contra
+  `ffprobe`, en los 18 vídeos de la biblioteca: **18/18**;
+- el fotograma que entrega el arnés contra el que saca `ffmpeg` en ese mismo
+  instante, **pixel a pixel**: **54/54** —que es lo que ata a la vez el volteo,
+  el espacio de color, el rango y el instante elegido: los cuatro pueden
+  equivocarse en silencio—;
+- que el modo exacto sea determinista y que el bucle cierre.
+
+A los cinco ficheros que no declaran espacio de color se le pone a `ffmpeg` la
+**misma** matriz que elige el motor. Si no, el test acusaría de fallo de
+decodificación lo que es una convención distinta, y dejaría de mirar lo que sí
+importa.
+
+### Lo medido sobre las 129
+
+`test_luminancia` con referencia contra la medida de antes del cambio:
+
+```
+129/129 renderizan     regresiones: 0
+124 de 128 escenas dan EXACTAMENTE la misma luz que antes
+```
+
+Las que se mueven son las tres de vídeo:
+
+| escena | congelado | reproduciendo |
+|---|---|---|
+| `2968771936` (3840×2160 @60) | 132,13 | **133,32** |
+| `3053927686` (1920×1080 @30) | 57,83 | **58,54** |
+| `3624053922` (2560×1440 @29,97) | 72,59 | **72,58** |
+
+La cuarta que cambia, `3097749052` (+0,27), **no tiene vídeo**: repetida tres
+veces da 37,86 / 37,86 / 38,11 por su cuenta. Es indeterminismo que ya estaba.
+
+Y los 15 wallpapers de tipo vídeo, que antes ni se listaban, renderizan los 15.
+
+> Un aviso de método, pagado aquí: la primera pasada dio una escena que «no
+> renderiza» con `OSError`. No era el cambio —`2242388122` mide 113,41 antes y
+> 113,41 después—, era `/tmp` lleno por correr dos trabajos pesados a la vez.
+> `/tmp` es un tmpfs de 7,7 GB y una pasada de las 129 no deja sitio para otra.
+
+### Lo que sigue sin estar
+
+- **El audio.** Dos de las tres escenas con textura de vídeo traen pista AAC y
+  los wallpapers de vídeo también; no se reproduce ninguna.
+- **Decodificación por hardware.** Todo va por CPU. Un 2160p@60 se sostiene
+  —57,4 de 60 fotogramas—, pero es trabajo que VAAPI o NVDEC harían casi gratis.
+- **El `.tex` de vídeo con relleno a potencia de dos.** Ninguno del corpus lo
+  tiene: los tres declaran el mismo tamaño que su MP4. Se le pide a swscale el
+  tamaño de la imagen y ya, pero no está probado contra un caso real porque no
+  lo hay.
+
 ## Lo siguiente
 
 Por orden de lo que más se nota:
@@ -3603,8 +3808,12 @@ Por orden de lo que más se nota:
    dibuja la copia que guardó el autor y el reloj sale congelado. Hace falta un
    intérprete con la API del motor, y con él entran también los otros campos
    con script —origin en 23 capas, scale en 22— y el resto de la escena.
-4. **Reproducir vídeo** de verdad, en vez del fotograma congelado: 3 escenas
-   con textura de vídeo y los 15 wallpapers de tipo vídeo de la biblioteca.
+4. ~~Reproducir vídeo~~ **hecho**: `src/wevideo.c` lo decodifica con libav y lo
+   comparten los dos ejecutores; las 3 escenas con textura de vídeo se mueven y
+   los 15 wallpapers de tipo vídeo entran en la biblioteca —ver [Vídeo de
+   verdad](#vídeo-de-verdad-un-decodificador-compartido-y-dos-entregas-distintas)—.
+   Queda el **audio** (pista AAC en dos de las tres escenas y en los 15
+   wallpapers) y la **decodificación por hardware**: hoy todo va por CPU.
 5. **Elegir la GPU que renderiza** (ver abajo).
 6. ~~Reflejos y luces de tubo~~ **hecho**: el reflejo solo pedía la pirámide de
    mipmaps del buffer de escena, y el tubo venía en `controlpoint` desde el
@@ -3701,3 +3910,1049 @@ del mismo:
   fondo no se ve. Semana larga, y **con un riesgo que puede tumbarlo**: que Mesa
   no pueda importar el dmabuf que exporta NVIDIA. Se resuelve con una sonda de
   ~150 líneas antes de comprometerse.
+
+## El anillo del vórtice, y las dos velocidades que faltaban
+
+Capturas del escritorio de Windows con el WE de verdad —el mejor oráculo que ha
+tenido este motor, por encima del `preview.jpg`, porque es la misma escena a la
+misma resolución— pusieron tres cosas encima de la mesa a la vez. Las tres
+salieron de `3219398263`, la del agujero negro, donde el cielo se llenaba de
+**anillos blancos concéntricos** que en WE no existen.
+
+### La tangente es una cuerda: el radio crecía solo
+
+El `vortex` [se dejó como campo de arrastre](#el-vortex-estaba-inerte-en-9-de-sus-12-usos)
+—mueve la posición y no toca la velocidad—, y eso sigue siendo lo correcto. Lo
+que estaba mal era **cómo** la movía: un paso recto sobre la tangente no es un
+arco, es una **cuerda**, y cada paso deja la partícula más lejos del eje.
+
+Con las 2500 unidades por segundo a radio 256 del preset `magic_vortex_1`, el
+paso de 1/60 s mide 41,7 unidades y el radio pasa de 256 a `√(256² + 41,7²)`
+cada vez: **de 256 a 424 en una sola vida**, un 65 %. Por eso lo que se veía no
+era un anillo sino una espiral gorda repetida por 256 partículas.
+
+Se cambia por un giro de Rodrigues alrededor del eje, con el mismo ritmo
+angular —la velocidad que pide el campo es lineal, o sea ángulo por radio— y el
+radio exacto. Es un arreglo de integración, no de lectura del formato: vale sea
+cual sea lo que signifiquen `speedinner` y `speedouter`.
+
+### `distanceouter` es hasta dónde llega, no dónde se satura
+
+Aun con el radio quieto seguía sobrando un anillo entero. El preset declara
+`distanceinner: 0`, `distanceouter: 32` y emite a **256**: interpolando y
+saturando, toda partícula del sistema cae en el extremo y gira a 2500
+unidades/s, que a radio 256 son 9,8 rad/s —vuelta y media por vida—.
+
+La captura dice otra cosa. Las estelas de WE son **rayas cortas y radiales**:
+medida sobre la del ángulo superior izquierdo, va de (307, 217) a (440, 140) en
+la pantalla, o sea una pendiente de −30°; el radio desde el origen del sistema
+—(1920, 1016) del lienzo— cae a −33° y la tangente a +57°. Es radial, no
+tangencial: **ahí el vórtice no actúa**.
+
+Así que `distanceouter` acota el alcance del campo, y fuera de él el operador no
+hace nada. Sobre los cinco usos del corpus solo cambia a dos: los otros tres
+—`Cherry_Blossoms_2` con `speedouter: 0`, `deku-circular_star_trail` con
+`distanceouter: 7000` sobre un emisor de 1600, y el `vortex` sin distancias de
+`Stars_copy1`— ya daban cero fuera del radio por su cuenta.
+
+### El emisor tenía una velocidad y nadie la leía
+
+Y si el vórtice no las mueve, algo tiene que hacerlo. Lo tenía delante:
+`sphererandom` declara `speedmin: 128, speedmax: 128` y `weparticles.py` no
+leía ese campo. Las partículas **nacían quietas**.
+
+Cuadra con la medida: la cola de cinta son 8 puntos a 1/60 s, o sea 0,117 s; a
+128 unidades/s y escala 5 del objeto son 75 px de lienzo, y las rayas de la
+captura miden entre 72 y 90.
+
+En el corpus lo declaran **20 emisores, y en 12 de ellos es la única velocidad
+que hay** —no traen `velocityrandom`—. Todos son esferas menos uno, así que la
+dirección es la normal: la que ya sorteó la posición. Los dos floats van al
+final de la línea `emit` a propósito, para que un ejecutor anterior lea sus 18
+y se salte estos dos en vez de descolocarse; importa porque plasmashell
+conserva mapeada la `.so` con la que arrancó.
+
+**No** se escala con el `speed` del `instanceoverride`, que sigue tocando solo a
+`velocityrandom`: con el 0,3 que declara este objeto las rayas medirían 22 px y
+la captura las tiene a 75.
+
+### Lo medido sobre las 129
+
+Una pasada de luminancia antes y otra después: **cambian 8 escenas y solo dos de
+forma apreciable**. `3219398263` baja de 100,72 a 62,51 —es el arreglo: dejar de
+pintar un anillo blanco saturado por medio cielo *tiene* que bajar la media, y
+[ya pasó antes con esta misma escena](#el-vortex-estaba-inerte-en-9-de-sus-12-usos)—.
+La otra es `3577990983`, y es del arreglo de la homografía que viene ahora.
+
+## La homografía salía transpuesta: `m[i][j]` no es lo mismo en los dos lenguajes
+
+La segunda captura, la del reloj de `3029745918`, tenía la hora del sitio y del
+tamaño equivocados. El tamaño lo explicaba el efecto `perspective` de la capa,
+que sí se aplicaba; el sitio, no.
+
+`common_perspective.h` construye la matriz **por índices** —`m[0][1] = ...`— y
+es el **único fichero del corpus que lo hace**: todos los demás usan el
+constructor. Y ahí los dos lenguajes no dicen lo mismo: `m[i][j]` es
+fila-columna en HLSL y **columna-fila** en GLSL. Escrita igual, sale
+transpuesta.
+
+En todo lo demás la convención aguanta sola, y conviene entender por qué: las
+matrices que suben por uniform se escriben **por filas** y GL las lee **por
+columnas**, así que la variable del shader acaba siendo la misma matriz que ve
+HLSL y `mul(v, M)` —o sea `v * M`— da lo que da allí. Una matriz construida
+DENTRO del shader no pasa por esa subida y se queda del otro lado.
+
+Transponer una homografía no es un detalle cosmético: conserva la parte lineal
+—por eso la hora salía del tamaño correcto— y **cambia de sitio la traslación**.
+
+Se arregla en el traductor, devolviendo `transpose(m)` en `squareToQuad`, y
+alcanza a los **10 efectos que incluyen ese header**: `perspective`, `clouds`,
+`reflection`, `swing`, `lightshafts`, `watercaustics`, `waterwaves`,
+`cursorripple`, `fluidsimulation` e `iris`. Sobre las 129 mueve la luz de una
+sola escena, `3577990983`, de 46,31 a 40,96: sus cinco `waterwaves` dejan de
+sembrar el cielo de rayas verticales blancas que su preview no tiene.
+
+## Una capa de texto se ancla por su alineación, no por su centro
+
+Y el resto del desplazamiento del reloj era del otro lado. Una capa de imagen
+dice a qué punto de su rectángulo se refiere `origin` con `alignment`; una capa
+de texto **no trae `alignment`** —ninguno de los 172 del corpus— sino
+`horizontalalign` y `verticalalign`, y hacen exactamente lo mismo.
+
+El reloj dice `horizontalalign: right`: su hora acaba EN el origen, y aquí salía
+media caja —646 px de lienzo— más a la derecha, encima del coche.
+
+Se traducen los dos campos a un `alignment` equivalente para que el
+desplazamiento lo siga haciendo un solo sitio. Solo mueve a **12 de los 172**:
+11 declaran `horizontalalign` distinto de `center` —8 `left` y 3 `right`— y 3
+declaran `verticalalign` —2 `top` y 1 `bottom`—; los demás dicen `center`, que
+es lo que el cálculo ya asumía. Ocho de los doce son los títulos de canción y
+artista de los dos wallpapers con reproductor, que se guardan vacíos y no
+dibujan nada; los que sí se ven son los dos relojes.
+
+Con las dos cosas puestas, y forzando la misma cadena que la captura para poder
+superponerlas, la hora cae a **17 px de pantalla** de donde WE la pone, sobre
+1918 de ancho.
+
+### Y lo que faltaba: la hora era la del autor
+
+La posición ya es la de WE; el **contenido** no lo era. `3029745918` calcula su
+hora con un script de JavaScript y aquí se dibujaba el `value` que el autor
+tenía en pantalla al guardar —"12:00"—: 148 de las 172 capas de texto traen
+script y 133 llaman a `new Date`.
+
+Lo que se pensó entonces, y que resultó ser la mitad de la historia: un reloj no
+necesita un motor de JavaScript, necesita un atlas con el alfabeto en vez de con
+la cadena congelada, una directiva en el plan con el formato, y que el ejecutor
+rehaga los quads —lo mismo que ya hace `skinMeshes` con las mallas puppet, y en
+los dos ejecutores a la vez, como siempre—. La otra mitad, la de deducir ese
+formato sin ejecutar JavaScript, está en
+[la sección siguiente](#la-hora-de-verdad-interpretar-el-script-sin-un-motor-de-javascript).
+
+## La hora de verdad: interpretar el script sin un motor de JavaScript
+
+La capa de reloj ya cae donde WE la pone, pero enseñaba las 12:00 del día que
+el autor guardó el wallpaper. La cadena no está en la escena: está en un
+`export function update(value)` que la calcula con `new Date()`. Son **148 de
+las 172 capas de texto** del corpus, y **133 llaman a `new Date`**.
+
+### Por qué no vale con ejecutarlo una vez
+
+Y por qué no vale un motor de JavaScript, aunque lo hubiera: ejecutar el script
+al preparar el plan cambia una hora congelada de 2021 por una congelada de hoy.
+El plan es una **foto** —el ejecutor lo repite cada fotograma cambiando solo
+`g_Time`— así que lo que tiene que viajar en él no es la cadena sino el
+**formato**, y el ejecutor rellenarlo con su reloj. Eso parte el trabajo en
+tres, y los tres tienen que decir lo mismo:
+
+```
+wescript.py   el JavaScript  -> la plantilla («%H:%M») y sus tablas de nombres
+wetext.py     la plantilla   -> un atlas con el ALFABETO y las métricas
+wereloj.c     la plantilla   -> los quads, cada minuto, en LOS DOS ejecutores
+```
+
+### Un intérprete, no un motor
+
+En esta máquina no hay `node`, ni `qjs`, ni `deno`, ni un intérprete de
+JavaScript en Python; y meter uno como dependencia de un fondo de escritorio no
+sale a cuenta. Tampoco hace falta: el vocabulario de los **51 scripts
+distintos** es diminuto y cerrado. Sale de contarlo, no de suponerlo:
+
+| | |
+|---|---|
+| palabras clave | `if`/`else`, `let`/`var`/`const`, `for`, `while`, `switch`/`case`/`break`, `return`, `new`, `typeof` |
+| métodos | `slice` 52, `toString` 30, `getMonth` 53, `getDate` 47, `getHours` 33, `getDay` 28, `getFullYear` 27, `getMinutes` 18, `getSeconds` 17, `padStart` 1 |
+
+Un léxico, un parser de precedencia y un evaluador de árbol: 129 de los 148
+salen. Los 19 que no son los que usan `engine` (el objeto global de WE, 5),
+`import` (2), una expresión regular literal (1) y ocho que ni siquiera exportan
+`update`.
+
+Lo que más costó no fue el intérprete sino **`createScriptProperties()`**. Es
+una cadena de `.addCheckbox({...}).addText({...}).finish()` que declara las
+propiedades **con su valor por defecto**, y la escena solo guarda en
+`scriptproperties` las que el usuario tocó. Sin construir esa cadena, un
+`if (!scriptProperties.use24hFormat)` lee `undefined` y da la vuelta al reloj.
+Con ella, el salto fue de **6 scripts a 129**.
+
+### Deducir el formato: cortar siete muestras a la vez
+
+Con el intérprete se puede preguntar qué escribe el script en cualquier
+instante. Falta pasar de eso a una plantilla, y ahí hay dos maneras de
+equivocarse.
+
+La primera es **deducirla de una sola cadena**: en `21:46` el `21` puede ser la
+hora, el día o el mes. La segunda es **diferenciar dos cadenas cortas**:
+`SequenceMatcher` empareja el `2` de `21:46` con el de `16:22` y se lleva por
+delante los dos puntos, que es el único carácter que de verdad era literal. Con
+eso el barrido bajó de 82 formatos a 23.
+
+Lo que funciona es cortar **siete muestras a la vez**, con vuelta atrás: un
+campo solo vale si encaja en las siete, y un literal solo vale si las siete
+traen el mismo carácter. Las siete no comparten ni hora, ni minuto, ni día, ni
+mes, ni año, e incluyen los sitios donde un formato se rompe —la medianoche y
+el mediodía del reloj de 12 horas, y los valores de una sola cifra, que separan
+el campo rellenado con ceros del que no—.
+
+### Los nombres no se adivinan: se reconocen
+
+`Friday, November 19` necesita una tabla de siete palabras y otra de doce, y en
+esta biblioteca las hay en inglés, español, francés, ruso, vietnamita y chino.
+No se traducen: **están escritas en el script**, como literales de cadena, y lo
+que hay que hacer es reconocer cuál va con cuál.
+
+Se barre el campo y se mira qué literal del script aparece en la salida. Con
+**una** muestra por valor no basta: barriendo los doce meses el día de la
+semana también cambia, y `Wednesday` sale en marzo y en ningún otro mes igual
+que `March`. Con **tres** muestras por valor —años y días distintos— el nombre
+del mes es el único literal que está en las tres. Eso subió de 82 a 124.
+
+El tercer campo de tabla no tiene equivalente en `strftime` y lleva código
+propio: la franja del día. `2821288001` escribe `晚上` de siete a once de la
+noche, y como tabla de 24 horas cae sola.
+
+### Lo que da la garantía es la comprobación, no la deducción
+
+Nada de lo anterior decide nada por su cuenta. Un formato solo se declara si
+**reproduce lo que devuelve el script en ~1050 instantes** repartidos por
+cuatro años, que recorren las 24 horas en punto y en su último segundo, los
+doce meses, los siete días y un bisiesto. Con una sola diferencia se descarta y
+la capa se queda con su cadena congelada, que es exactamente lo que hacía
+antes. Por eso esto no puede empeorar ninguna escena: o acierta o no toca nada.
+
+Ahí se cayó `2946362143`, y por un motivo que conviene tener escrito: su tabla
+de días empieza el sábado por `\n`. Es un reloj de **dos líneas** y la
+disposición del ejecutor es de una, así que se descarta a propósito en vez de
+dibujarlo en el renglón que no es.
+
+### El alfabeto, y lo que se pierde
+
+`wetext` rasteriza el texto **por línea** —PIL resuelve kerning, ligaduras y
+shaping de una vez— y con un reloj no hay línea que rasterizar. Así que la ruta
+del reloj rasteriza **glifo a glifo**: un atlas con cada carácter que la
+plantilla puede llegar a escribir, que para `%H:%M` son once y para la fecha
+más larga del corpus 47, más lo que mide cada uno.
+
+Se pierde el kerning. Con dígitos no se nota —las cifras de una fuente de
+reloj son tabulares— y está medido: la misma cadena por las dos rutas da los
+mismos avances hasta el último decimal en la fuente de `3029745918`. En un
+nombre de mes sí podría notarse, y queda escrito por si algún día se ve
+apretado.
+
+La malla se reserva para el **peor caso** de la plantilla, porque el búfer se
+pide una vez y la cadena cambia; los glifos que sobran salen degenerados. Y se
+hornea con la hora de generación del plan, para que un ejecutor que no sepa de
+relojes siga dibujando algo en vez de un rectángulo vacío.
+
+### Y la locale, otra vez
+
+`wereloj.c` lee sus métricas del plan con `strtof`, y `strtof` mira
+`LC_NUMERIC`. Dentro de plasmashell, que es `es_ES`, `0.899` se lee como `0` y
+el alfabeto entero se va a cero **sin un solo error por medio**: es el mismo
+agujero por el que [se cayeron las partículas](#y-luego-en-el-escritorio). La
+cura es la misma —`uselocale` para este hilo y solo la parte numérica— y
+`test_wereloj.py` lo comprueba con la locale puesta, que es la única manera de
+que la prueba pruebe algo.
+
+### Lo medido sobre las 129
+
+**123 capas de reloj en 20 escenas** dan la hora de verdad. Las dos mitades
+—`quads_de_reloj` en Python y `we_reloj_vertices` en C— coinciden en las 123,
+en seis instantes que cruzan la medianoche, el cambio de mes y un 29 de
+febrero, y con las locales `C` y `es_ES` las dos.
+
+Las 25 capas con script que se quedan sin reloj están contadas arriba: 19 que
+el intérprete no cubre, una de dos líneas y cinco que no son un reloj —un
+contador de fps, un `undefined` y tres títulos de canción vacíos—.
+
+## `wectl list` dice de qué tipo es cada wallpaper
+
+La lista enseñaba id y título, y con eso no se distingue una escena de un
+vídeo —que se preparan por caminos completamente distintos— ni se entiende por
+qué falta uno que sí está instalado.
+
+El tipo lo declara `project.json`, y **hay que normalizarlo**: 24 de los 148
+lo escriben con mayúscula inicial. Contarlo tal cual parte la biblioteca en
+seis tipos en vez de tres.
+
+| | |
+|---|---|
+| `scene` | **129** — las del corpus |
+| `video` | **15** |
+| `web` | **4** — no se ponen |
+
+### Enseñar también los que no se pueden poner
+
+`biblioteca()` solo devolvía lo que el motor sabe poner, así que los cuatro
+`web` no salían en la lista. Y ahí está el problema: **un wallpaper que no
+aparece no se distingue de uno que no está instalado**, que es justo la duda
+de quien no encuentra el suyo.
+
+Así que `list` pasa a enseñar el inventario entero con su tipo, y el pie dice
+cuáles no se pueden poner. Pero **`set` y `shuffle` siguen viendo solo los
+144 que funcionan**: por eso son dos funciones y no una —`inventario()` y
+`biblioteca()`—, porque son dos preguntas distintas y mezclarlas dejaría a la
+rotación eligiendo un `web` cada pocas vueltas.
+
+De ahí sale un cabo que había que atar: `set` sobre un `web` respondía «ningún
+wallpaper coincide», y desde que la lista los enseña eso es **falso**. Ahora
+dice el motivo —`es de tipo web, y este motor no pone los de ese tipo`—, y lo
+dice tanto por id como por título.
+
+### El que no es un wallpaper
+
+`2336642563` es el único directorio sin `type`, y no es que le falte: trae
+`category: Asset`. Es un paquete de materiales que otros wallpapers importan
+—`contents/` con `materials`, `models`, `particles` y `shaders`—, no un fondo.
+Antes se caía de la lista por no tener `scene.pkg`, que era la razón
+equivocada; ahora se cae por no ser un wallpaper, que es la buena.
+
+## Las estrellas no parpadeaban: `colorrandom` sin `max` sortea hasta negro
+
+Otra captura del escritorio de Windows, esta de `2821288001` —la *City*—, con
+dos quejas: los destellos redondos salen **más gordos y más duros** que en WE, y
+por la parte de arriba cruza una **lluvia de estrellas fugaces** que allí no
+está. Son dos fallos distintos con la misma captura por oráculo.
+
+El oráculo se monta restando: se renderiza la escena **solo con el fondo** —el
+resto de objetos invisibles— y se resta de la captura. El fondo de esta escena
+no se mueve (`t=20` y `t=27` dan el mismo píxel), así que lo que queda es
+exactamente lo que WE añade encima: sus partículas, y su *bloom*. Alineado 1:1
+en (106, 0), que es el recorte «cubrir» de un 16:9 en un panel 16:10; se
+comprueba que la captura es nativa y no un reescalado midiendo el gradiente
+medio —4,266 contra 4,248 del render propio, y 3,522 si se baja y se sube a 2x—.
+
+### El tamaño del sprite: el brillo explicaba una parte, no toda
+
+La primera sospecha fue que el quad saliera al doble. Se descartó con el rayo
+—`lightning1` declara `size` 800–1000 y el nuestro sale de 129 px de ancho, el
+de la captura mide 92— pero **ese descarte no vale**, y conviene dejarlo escrito
+antes de que alguien se apoye en él: el rayo nuestro sale de **451x129** y el de
+WE de **92x251**, o sea *girado 90°*, y encima son fotogramas distintos de una
+hoja de 64. Comparar el 129 con el 92 supone que los ejes se corresponden, y no
+se corresponden. El rayo no decide nada; hay un cabo suelto en la orientación de
+la hoja de sprites y otro en el tamaño. Ver «Pendiente».
+
+Lo que sí explicaba una buena parte era el **brillo**. En la misma ventana de 1400x1060:
+
+| | luz añadida | píxeles > +30 | > +100 | > +200 |
+|---|---|---|---|---|
+| WE | 4,69 M | 28 897 | 883 | **30** |
+| nosotros | 1,79 M | 17 322 | 5 354 | **448** |
+
+WE mete **más** luz total y **quince veces menos** píxeles saturados: la reparte,
+nosotros la concentramos. Un `halo_6` es un disco de alfa 255 plano, así que a
+alfa alto son 8 px de blanco puro —el «destello gordo y duro»—, y al bajarlo se
+queda en la punta, que es el punto pequeño y nítido de la captura.
+
+### La pista estaba en un campo escrito de más
+
+`shootingstarglow.json` declara `colorrandom` con `min` **y** `max`, los dos
+`255 255 255`. Escribir un campo redundante no tiene sentido… salvo que no sea
+redundante. Y no lo es: en el corpus **158 objetos de 47 escenas** escriben
+`max` igual a `min`, y nadie repite eso 158 veces por gusto. Lo escriben porque
+es la única forma de pedir un color **constante**.
+
+Luego el defecto de `max` no es `min`, que es lo que hacíamos: es **negro**. Sin
+`max` el sorteo va del color declarado a cero con [el factor único de siempre](#decisiones-que-son-lecturas-no-hechos),
+o sea el mismo tono a un brillo cualquiera. Es justo lo que hace parpadear un
+campo de estrellas, y lo que separa los `Star_0N` del autor —que solo declaran
+`min`— de su propio `shootingstarglow`, que declara los dos.
+
+Con eso, los píxeles saturados pasan de 448 a **63** (WE: 30) y los de más de
++100 de 5 354 a **1 868** (WE: 883). Toca a **160 objetos de 22 escenas**.
+
+### El ritmo implícito estaba en el extremo, y se comía el `instanceoverride`
+
+La lluvia de fugaces es otra cosa. `Shooting_Star_01` no declara `rate`, y
+[el ritmo implícito](#el-reparto) lo estimaba como `maxcount / vida`: el ritmo
+exacto que deja el depósito **lleno**, o sea 35 estrellas a la vez para siempre.
+La captura de WE enseña menos de diez.
+
+Ese «lleno» es el extremo, no la costumbre. Medido sobre los **961 emisores del
+corpus que sí declaran ritmo**, la mediana de `rate · vida / maxcount` es
+**0,48** y solo uno de cada cuatro llega a saturar. Las propias plantillas de WE
+lo dicen: `example.json` sostiene 80 de 500 y `examplecursoravoid` 800 de 1000.
+`maxcount` es un tope de seguridad, no la densidad buscada.
+
+Y de paso, el `rate` del `instanceoverride` **se perdía**: se multiplicaba sobre
+el cero del preset —0 × 1,2 sigue siendo 0— y después esta función lo
+sobrescribía. Son 12 de los 72 emisores sin ritmo.
+
+Con la ocupación típica y el factor recuperado, la *City* pasa de 31 fugaces
+vivas a 19. Que el campo falte no es descuido del autor: `ember_small` y
+`dust_motes_0`, **plantillas del propio WE**, tampoco lo traen.
+
+### Lo medido sobre las 129
+
+Cambian **42 escenas**, casi todas por debajo del 1 %, y **cero regresiones**.
+La única que se mueve de verdad es `2868108515` —*god of war ragnarok*, con 25
+copias del mismo sistema blanco—, que baja de 133,30 a 113,34: frente a su
+`preview.jpg`, que es un fotograma de WE, pasa de **1,425 a 1,212**. Era la
+escena más sobreexpuesta del corpus y ahora lo es menos.
+
+### La otra mitad era el bloom
+
+La resta contra la captura enseña un **halo suave alrededor de todo lo
+brillante**, bordes de edificio incluidos, y el fondo propio es idéntico y
+estático: ese halo no es nuestro. Es el *bloom*, que esta escena declara
+—`bloom: true`, `bloomstrength 2.0`, `bloomthreshold 0.65`— y que el motor no
+implementaba. Lo pide una escena de cada cuatro: **33 de las 129**.
+
+## El bloom son tres shaders de WE y un objeto más
+
+No hubo que escribir GLSL: los tres shaders están en los assets de WE y los
+traduce el mismo `weshader` que todo lo demás. Lo único que había que deducir
+es **la cadena** —qué lee cada uno y a qué resolución escribe— y eso lo dicen
+sus nombres:
+
+```
+escena  --downsample_quarter_bloom-->  Quarter   umbral, saturación, fuerza
+Quarter --downsample_eighth_blur_v-->  Eighth    13 taps en X
+Eighth  --blur_h_bloom-------------->  Eighth    13 taps en Y
+Eighth  --composición--------------->  pantalla  se SUMA a la escena
+```
+
+(La `h` de `blur_h_bloom` desenfoca en Y y la `v` de `downsample_eighth_blur_v`
+en X. Los nombres están cambiados en WE; manda el código.)
+
+### `g_TexelSize` es el texel de PANTALLA, y lo dice la captura
+
+La única incógnita real era a qué se ata `g_TexelSize`, porque los dos
+desenfoques espacian sus taps `g_TexelSize * 8.0` y de ahí sale todo el radio.
+Tres lecturas posibles —texel del buffer que lee, del que escribe, o de la
+pantalla— y una diferencia de 8x entre la primera y la última.
+
+Lo decide la medida. Correlando la diferencia contra la captura con el mismo
+umbral desenfocado a varias sigmas, el máximo cae **limpio en 16 px**:
+
+| sigma | 4 | 8 | 12 | **16** | 24 | 32 | 64 | 128 |
+|---|---|---|---|---|---|---|---|---|
+| correlación | 0,291 | 0,349 | 0,381 | **0,395** | 0,387 | 0,356 | 0,191 | 0,025 |
+
+Y 16 px es exactamente lo que sale del texel de pantalla: espaciado `8 · 1/W`,
+o sea 8 px, que además es **un texel justo del buffer Eighth** donde trabajan
+los dos desenfoques —el kernel queda bien muestreado, no a saltos—, y 13 taps
+gaussianos sobre ese espaciado dan sigma ≈ 2 espaciados. Las tres cosas cuadran
+a la vez, que es lo que separa una lectura de una coincidencia. Es además el
+valor que `werender.py` ya emitía para el resto de la escena.
+
+### El umbral va DESPUÉS de promediar, y eso se ve
+
+`downsample_quarter_bloom` promedia sus cuatro taps y **luego** aplica el
+umbral. No es un detalle de orden: un píxel brillante suelto se promedia con
+sus vecinos oscuros, baja del umbral y no aporta halo. Por eso el bloom de WE
+rodea zonas brillantes —un rótulo de neón, una nube— y no puntos sueltos, y por
+eso simularlo umbralizando a resolución completa daba de más.
+
+### No hay que tocar los ejecutores
+
+Va como **un objeto más**, el último: sus pases escriben en buffers con nombre
+y el último deja el halo en el buffer del objeto, que se compone sumando
+(`aditivo 3`, o sea `glBlendFunc(GL_ONE, GL_ONE)`). Ni `glexec.c` ni
+`glexecutor.cpp` se enteran de que eso es bloom; los buffers se llaman
+`...Quarter` y `...Eighth` porque de ahí sacan su resolución los dos, que ya
+sabían hacerlo.
+
+El único GLSL escrito a mano del renderizador es la suma final —WE la hace
+dentro de su motor, así que no hay nada que traducir—, y escribe **alfa cero**
+a propósito: el modo 3 suma los cuatro canales, y sumar alfa volvería opaca la
+escena entera.
+
+### Lo medido sobre las 129
+
+| | la City contra la captura | |
+|---|---|---|
+| | luz añadida | píxeles > +200 |
+| Wallpaper Engine | 4,69 M | 30 |
+| antes de esta sesión | 1,79 M | 448 |
+| con `colorrandom` y el ritmo | 0,83 M | 63 |
+| **con bloom** | **4,25 M** | **65** |
+
+Sobre el corpus cambian **39 escenas** —las 33 que lo declaran, más seis que se
+mueven ±0,14, que es el ruido de repetición que ya tenían—. Frente al
+`preview.jpg` de cada autor, que es un fotograma de WE, la mediana de
+`|razón − 1|` baja de **0,171 a 0,135**: 24 escenas se acercan y 10 se alejan
+—todas las que ya estaban por encima de 1 por otro motivo—.
+
+Y `test_luminancia` pasa **por primera vez sin escenas apagadas**:
+`1518454472` sube de 6,26 a 16,77 de media —razón 0,089 → 0,239— y deja de
+estar por debajo del 15 % de su preview. Llevaba marcada toda la sesión.
+
+**Lo que se deja fuera a propósito.** Nueve de las 33 declaran además
+`hdr: true`, con su propio juego de parámetros (`bloomhdrthreshold`,
+`bloomhdrscatter`, `bloomhdriterations`). Ese camino pide un buffer en coma
+flotante y una pirámide de iteraciones, y aquí se les aplica la cadena LDR con
+sus parámetros LDR: es lo que hay sin buffers HDR, y ninguna de las nueve
+empeora.
+
+## Pendiente: tres cabos de las partículas, medidos y sin cerrar
+
+Anotado a propósito para retomarlo en frío. Los tres salen de comparar
+`2821288001` contra la captura de Windows, y los tres tienen ya la medida hecha:
+lo que falta es la lectura del formato que los explique, no volver a medir.
+
+### 1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado
+
+A ojo los puntos redondos salen más gordos que en WE, y es verdad. Lo que **no**
+es verdad es que sea un problema de escala, y conviene dejarlo cerrado porque es
+la trampa obvia.
+
+**El oráculo, que ya no depende de una captura suelta.** El `preview.jpg` que
+sube el autor es un fotograma de WE. Localizado por correlación normalizada
+—barriendo lado y origen del recorte— cubre **1720x1720 del lienzo desde
+(1060, 220)**, o sea escala 0,5023, con correlación **0,982**. A partir de ahí
+las dos imágenes se comparan a la misma escala restando el fondo. Es
+reproducible sin nada externo.
+
+Medido así, con el fondo restado y el mismo umbral en las dos:
+
+| manchas redondas (px) | <3 | 3–4 | 5–6 | 7–8 | 9–11 | grandes |
+|---|---|---|---|---|---|---|
+| WE (captura) | 1 | **26** | 1 | 1 | 3 | 23, 39, 51 |
+| nosotros | 0 | 0 | 8 | 11 | 4 | 21, 36 |
+| nosotros x0,5 | 0 | 5 | 9 | 0 | 0 | 34 |
+
+Y por sistema, aislando cada uno sobre el mismo fondo:
+
+| sistema | textura | `size` | ancho medido |
+|---|---|---|---|
+| `Star_01` | `halo` (gaussiana ancha) | 15–20 | 4–6 px |
+| `Star_02` / `Star_06` | `halo_6` (**disco plano**) | 14–18 | 6–8 px |
+| `Star_04` | estrella de 4 puntas | 150–180 | 25–31 px |
+
+**Tres cosas que descartan el factor de escala:**
+
+1. **Los sprites grandes ya coinciden.** `Star_04` sale de 25–31 px y las manchas
+   grandes de WE miden 23–51. Un factor global movería también estos, y los
+   sacaría de rango: probado, se quedan en 34 y pierden una de las tres.
+2. **El camino de geometry shader no dobla nada.** Era la sospecha buena —WE en
+   Windows usa GS y nosotros la ruta sin GS— pero `genericparticle.geom` llama a
+   la **misma** `ComputeParticlePosition` con `sprite ∈ {0,1}²`. El quad mide
+   `size` por los dos caminos.
+3. **La forma de la distribución no es la de un reescalado.** WE tiene un pico
+   estrecho en 3–4 px y un HUECO en 5–8. Multiplicar por 0,5 desplaza nuestra
+   campana pero no la estrecha: quedan 5 en 3–4 y 9 en 5–6 donde WE tiene 26 y 1.
+   Un factor mueve una población; aquí faltan manchas de un tipo que no
+   producimos.
+
+Así que el diámetro nuestro no está mal: **falta la población pequeña**.
+
+### 1a. Descartado: no es la resolución, y cuidado con medir anchos
+
+Sospecha razonable —que el sprite no se adapte a la resolución de la pantalla y
+por eso se vea gordo—. **No es.** Renderizando `Star_01` aislado a cuatro
+resoluciones, el área encendida va como el cuadrado de la escala con razón
+**1,00** en las cuatro: el sprite escala exacto.
+
+Y una trampa de método que estuvo a punto de colar lo contrario. La primera
+medida fue la MEDIANA DEL ANCHO de las manchas, y daba 16,2 / 9,0 / 8,1 / 6,0
+unidades de lienzo al bajar la resolución —o sea, aparentemente, un sprite que
+no encoge—. Es un artefacto: a baja resolución quedan pocas manchas por encima
+del umbral y la mediana de un puñado de enteros pequeños es ruido. **El área
+sobre todo el cuadro no tiene ese problema y es la que decide.**
+
+El camino en vivo tampoco escala: con `FitMode` en cubrir y un lienzo de
+2133x1200 sobre una vista de 1920x1200, `qMax(1920/2133, 1200/1200)` da 1,0, o
+sea recorte 1:1 sin estirar. Lo que ve plasmashell es lo mismo que el render
+offline, recortado.
+
+### 1b. Lo que falta son los sistemas HIJOS
+
+De dónde salen esos cientos de puntitos de 3–4 px, brillantes y con un halo
+tenue alrededor: de `shootingstarglow`, que `Star_04` cuelga como hijo
+`eventspawn` con `maxcount: 500`. Su textura es `halo_4`, y `halo_4` es
+justo eso —un **núcleo brillante que ocupa el 8 % de la textura** sobre una
+meseta tenue—. A `size` 100–150 el quad mide 50–75 px y el núcleo **3–5 px**:
+exactamente el pico de WE, con su halo tenue explicando de paso por qué el
+resto de la mancha no llega al umbral.
+
+Y no los dibujamos: `weparticles.py` recorre `children` para el censo pero solo
+emite un `.psys` por objeto de la escena. En el corpus son **232 sistemas con
+hijos en 61 escenas** —69 `eventfollow`, 23 `eventspawn`, 34 `static` y 286 sin
+`type`—, o sea uno de cada cinco.
+
+**Cómo cerrarlo.** Es un subsistema, no un ajuste: hace falta que un sistema
+pueda emitir otro en la muerte (`eventspawn`), pegado a la partícula viva
+(`eventfollow`) o clavado al emisor (`static`), y que cada hijo tenga su propio
+pase con su material. El reparto natural es el de siempre —`weparticles.py`
+resuelve el hijo como un `.psys` más y `werender.py` le da su pase—, y lo que
+hay que decidir es de dónde saca el hijo su origen en cada uno de los tres
+modos. Empezar por `eventspawn`, que es el de esta escena y el que no necesita
+seguir a nada.
+
+### 2. La lluvia de estrellas sale toda del mismo punto
+
+En la captura las fugaces entran por sitios distintos del cielo; aquí salen
+todas del mismo. La causa está a la vista en el preset: el emisor de
+`Shooting_Star_01` es un `boxrandom` con `origin: "-250 250 0"` y **sin
+`distancemax`**, así que la caja mide cero y las partículas nacen todas en el
+mismo punto.
+
+Son **30 emisores de 7 escenas** los que no declaran `distancemax`, contra 1060
+que sí. Que WE lo omita quiere decir que su defecto no es cero —igual que pasó
+con [`rate`](#el-ritmo-implicito-estaba-en-el-extremo-y-se-comia-el-instanceoverride)
+y con [`max` de `colorrandom`](#la-pista-estaba-en-un-campo-escrito-de-mas)—, y
+el patrón se repite: **el campo que falta no vale cero, vale el defecto del
+editor**. Aquí ni siquiera hace falta adivinar el número exacto para mejorar:
+cualquier caja no degenerada reparte la lluvia.
+
+**Cómo cerrarlo.** Mirar la distribución de `distancemax` declarado en los otros
+1060 emisores del mismo tipo, y ver si los 30 sin declarar comparten preset con
+alguno que sí lo declare —que es como se cazó lo del `rate`—.
+
+### 3. La estela es corta y gorda; debería ser fina y larga
+
+Dos cosas distintas, y la segunda tiene el culpable localizado:
+
+- **Gorda**: es el punto 1. El ancho de una cinta es `2 · size` por la escala
+  del objeto; con `size` 3–5 y escala 3 salen 10–17 px de lienzo donde WE
+  enseña 1,5 de FWHM.
+- **Corta**: `_cinta` deja la cola en `CINTA_PUNTOS = 8` pasos, o sea 0,13 s,
+  cuando el preset declara `length: 0.4` —24 pasos a 60 Hz—. El `min()` de
+  `_cinta` deja ganar al defecto de `segments` sobre el `length` declarado.
+  **68 de las 74 cintas del corpus no declaran `segments`**, y 30 de ellas sí
+  declaran `length` (0,2 / 0,4 / 0,5 / 0,6 / 3 / 30). O sea: el campo que el
+  autor escribe lo pisa el defecto del campo que no escribe.
+
+**Cómo cerrarlo.** Es el más barato de los tres y el más contenido: cuando no
+hay `segments`, la cola debería salir de `length`, no de un 8 fijo. Sube el
+coste de simulación de 68 sistemas, así que hay que mirar el tope de 32 pasos y
+medirlo con `test_luminancia` antes y después.
+
+## El lienzo del autor no es un límite de resolución: 38 escenas salían ampliadas
+
+Síntoma: en el escritorio los destellos se ven **más gordos y más juntos** que
+en el render offline de la misma escena. La sospecha razonable —que algo no se
+adapte a la resolución— resultó ser cierta, pero no donde se buscaba.
+
+Lo dice el diario del propio motor en vivo, que ya traza el encaje:
+
+```
+escena 1280x720  -> se ve 1152x720  -> destino 1920x1200   x1,67
+escena 1024x1024 -> se ve 1024x640  -> destino 1920x1200   x1,88
+escena 1920x1080 -> se ve 1728x1080 -> destino 1920x1200   x1,11
+escena 2133x1200 -> se ve 1920x1200 -> destino 1920x1200   x1,00
+```
+
+Las tres primeras se dibujan a un lienzo **más pequeño que la pantalla** y el
+blit final las amplía. Todo sale más gordo y más borroso, y las partículas más
+juntas porque se ve menos escena en el mismo panel.
+
+La causa era un `min(1.0, ...)` en `resolucion_de_dibujo`, puesto con este
+razonamiento: *«pintar más puntos de los que dibujó el autor no añade detalle,
+solo gasto»*. **Es falso.** El lienzo de WE es un ESPACIO DE COORDENADAS, no un
+raster: una escena de lienzo 1280x720 lleva texturas de 4K, shaders, partículas
+y texto, y su detalle no acaba en 720 líneas. WE dibuja a la resolución de la
+pantalla y usa el lienzo solo para colocar.
+
+Quitando el tope, el factor sigue bajando para las escenas grandes —que es para
+lo que se puso, y sigue valiendo: el 72 % de la biblioteca pinta de más— y ahora
+también sube para las pequeñas.
+
+### Lo medido
+
+**38 de las 129** tenían el lienzo más pequeño que un panel de 1920x1200:
+mediana x1,11 y hasta x3,40. Renderizadas las 38 a resolución de pantalla:
+**38 OK, 0 con problema** —ninguna falla, ninguna sale negra y todas dan
+exactamente el tamaño esperado—. La más extrema, `2946362143`, pasa de un
+lienzo de 564x1120 a dibujar 1920x3813 y sigue tardando 0,8 s.
+
+`test_luminancia` sale igual, y conviene saber **por qué no vale como oráculo
+aquí**: construye `Renderer(esc, glexec, 4.0)` sin resolución de pantalla, así
+que dibuja al lienzo del autor y este camino no se ejercita. Sus cifras salen
+idénticas línea a línea, lo cual es correcto y no es evidencia. La media de
+luminancia además es casi invariante a la resolución: lo que cambia es la
+nitidez, y eso no lo mide.
+
+### Lo que NO explica
+
+La City (`2821288001`) tiene lienzo 3840x2160, o sea que ya se dibujaba a
+2133x1200 y **no se ampliaba**. Su diámetro de destello sigue donde estaba; ver
+«Pendiente». Este arreglo explica el síntoma en el escritorio para 38 escenas,
+no para esa.
+
+## Sistemas hijos: `eventspawn`
+
+Un preset de partículas puede colgar otro en `children`. El caso de la `City`:
+`Star_04` cuelga `shootingstarglow` con `type: "eventspawn"`, o sea **el hijo
+estalla donde muere cada partícula del padre**. En el corpus hay 232 sistemas
+con hijos en 61 escenas —69 `eventfollow`, 23 `eventspawn`, 34 `static` y 286
+sin `type`—; aquí se implementa **solo `eventspawn`**.
+
+### El hijo es un objeto hermano, no un pase más del padre
+
+`shootingstarglow` trae su propio material, su propia textura (`halo_4`) y su
+propia mezcla. Eso no cabe dentro del pase del padre, así que `wescene` lo
+devuelve como un **objeto hermano** —misma colocación, dibujado justo detrás— y
+de ahí en adelante el resto del motor no tiene que saber que es un hijo: se le
+arma su `.psys`, su pase y su composición como a cualquier otro.
+
+Lo único que los ata es una línea nueva del plan:
+
+```
+psyspadre <hijo> <padre> <ráfaga>
+```
+
+### La lectura del formato
+
+- **El depósito sale de `children`, la ráfaga del preset.** `shootingstarglow`
+  declara `maxcount: 4` y la entrada de `children` dice `maxcount: 500`. Son dos
+  cosas distintas y encajan: el preset describe UN estallido —4 partículas, con
+  `instantaneous`— y la entrada dice cuántas caben entre todos los estallidos a
+  la vez. Leerlo al revés daría 500 partículas por muerte.
+- **El emisor libre del hijo se apaga.** Un hijo `eventspawn` solo nace por
+  evento. `shootingstarglow` ya trae `rate: 0`, pero `Flare` no declara ritmo y
+  [el ritmo implícito](#el-ritmo-implicito-estaba-en-el-extremo-y-se-comia-el-instanceoverride)
+  le daría uno: emitiría por su cuenta además de por evento.
+
+### Por qué se simulan en tándem, y no uno detrás de otro
+
+Es la decisión que cuesta si se hace mal. Los dos son sistemas separados y cada
+ejecutor los actualiza por su lado, así que la tentación es que el padre apunte
+sus muertes en una cola y el hijo la vacíe en su propio `update`.
+
+No vale: la primera llamada del padre **recupera hasta 60 s de golpe**, y esas
+muertes llegarían todas juntas. El hijo estallaría entero en un solo instante en
+vez de repartido por el tiempo, y con el depósito lleno de partículas de la
+misma edad, que además morirían a la vez.
+
+Así que el padre lo lleva de la mano: su `we_psys_update` da el paso de los dos
+—muertes de ESE paso, estallidos de ESE paso, y luego el paso del hijo—, y el
+`update` del hijo se limita a rehacer sus vértices. Con eso el resultado no
+depende de en qué orden dibuje el plan ni de cuántas veces se llame.
+
+Como todo eso vive en `src/weparticles.c`, que enlazan los dos ejecutores,
+`glexec.c` y `glexecutor.cpp` solo tienen que **parsear una línea y llamar a
+`we_psys_seguir`**. Ni uno ni otro sabe qué es un hijo.
+
+### Lo medido
+
+Sonda directa sobre el par de la `City` —cargar los dos `.psys`, atarlos y
+avanzar—: el hijo pasa de 0 partículas a **60–92 en régimen**, que es lo que
+predice la cuenta (35 padres de vida 4–8 s son ~5,8 muertes/s, por 4 de ráfaga,
+por 3 s de vida del hijo).
+
+**10 escenas del corpus** tienen hijos `eventspawn`, con 17 sistemas entre
+todas: las 10 renderizan, ninguna sale negra. `test_weparticles` y
+`test_werender` pasan. `test_luminancia` no se mueve —6 escenas cambian ±0,2,
+que es su ruido de repetición— y **eso no es evidencia**: mide a `t=4,0`, y con
+padres de vida 4–8 s apenas ha muerto ninguno. Por eso se valida aparte.
+
+### Lo que NO arregla
+
+La distribución de manchas de la `City` sigue sin cuadrar con la captura de WE.
+Con los hijos dibujando, las manchas redondas pasan de 23 a 74 —van en la
+dirección buena— pero siguen cayendo en 5–8 px donde WE tiene su pico en 3–4, y
+las grandes suben de 7 a 14 contra las 7 de WE. Los hijos aportan halos anchos y
+suaves, no los núcleos pequeños y duros que se ven en la captura. El cabo del
+diámetro sigue abierto; ver «Pendiente».
+
+`eventfollow` (69 usos) y `static` (34) siguen sin implementar. `eventfollow`
+necesita que el hijo siga a una partícula VIVA, o sea un vínculo por partícula y
+no por muerte, que es otro estado.
+
+## `distancemax` sin declarar no es cero: la lluvia salía toda del mismo punto
+
+Las estrellas fugaces de la `City` entraban **todas por el mismo punto de
+arriba** en vez de nacer repartidas y cruzar el fondo. La causa estaba a la
+vista en el preset: el emisor de `Shooting_Star_01` es un `boxrandom` con
+`origin: "-250 250 0"` y **sin `distancemax`**, así que la caja medía cero y
+todas nacían en el mismo sitio.
+
+Es el tercer campo de esta sesión con el mismo patrón —después de
+[`rate`](#el-ritmo-implicito-estaba-en-el-extremo-y-se-comia-el-instanceoverride)
+y del [`max` de `colorrandom`](#la-pista-estaba-en-un-campo-escrito-de-mas)—:
+**lo que WE omite no vale cero, vale el defecto del editor.**
+
+### Por qué 512
+
+Dos pruebas independientes, las dos dentro del propio formato:
+
+- **El corpus escribe `distancemax: 0` ciento cincuenta y tres veces.** Nadie
+  escribe un campo 153 veces si es lo que sale por defecto. Igual que los 158
+  `max` iguales al `min` de `colorrandom`.
+- **`exampleturbolence.json`, que trae el propio WE, declara `distancemin: 256`
+  y omite el máximo.** Con cero, el mínimo sería mayor que el máximo. Sea cual
+  sea el defecto, tiene que ser **≥ 256**.
+
+Y 512 es el valor más declarado del corpus —195 usos, por delante del 0— y el
+que llevan `example.json`, `starfield`, `fog1`, `fog2`, `lightning1`,
+`fireflies` y `powerup`, todos de WE. Toca a **6 presets-emisor en 7 escenas**.
+
+### Lo medido, y lo que queda torcido
+
+Aislando las fugaces de la `City` sobre su fondo:
+
+| | píxeles de estela | ocupan |
+|---|---|---|
+| antes (caja de 0) | 1810 | x 404 px de ancho, y **desde el borde 0** |
+| con 512 | 269 | x 573 px, y de 162 a 1086 |
+
+O sea: dejan de pegarse al borde de arriba y nacen repartidas por una banda
+diagonal que cruza el cuadro, que es el comportamiento que pide la captura.
+
+**Lo que no cuadra todavía**, y conviene dejarlo escrito: salen pocas. La caja
+local queda en ±512 x ±2560 —`directions: "1 5 0"` multiplica los semiejes— y
+con la escala 3 del objeto eso es una banda de ±1536 x ±7680, cuando la escena
+mide 3840x2160. Cerca del 75 % de las fugaces nace fuera del lienzo y no llega a
+verse.
+
+Ese `1 5 0` es el **único `directions` mayor que 1 de todo el corpus** en un
+emisor de caja: los otros 52 lo omiten (40), lo ponen a `1 1 1` (4) o lo usan
+para APLANAR (`1 0.1 0`, `1 0 0`). Así que o el defecto de `distancemax` no es
+el mismo para caja y esfera, o `directions` no multiplica los semiejes de una
+caja como creemos. Las dos lecturas encajan con todo lo demás y una sola captura
+no las separa; queda anotado antes que resuelto.
+
+## La cola de una cinta sale de `length`, no de un 8 fijo
+
+Las estrellas fugaces salían con la estela **corta y gorda** donde WE la enseña
+fina y larga. El grosor era [el sprite al doble](#1-los-destellos-no-es-el-tamano-y-el-factor-05-esta-probado-y-descartado);
+lo corto tenía culpable propio, y es el mismo patrón otra vez pero al revés: **un
+defecto pisando un campo declarado.**
+
+`_cinta` tomaba los puntos de la cola de `segments`, con un 8 por defecto, y
+luego los acotaba con `min(32, puntos, length/paso)`. Ese `min` hacía que el 8
+del campo AUSENTE ganara al `length` que el autor sí escribe: `Shooting_Star_01`
+pide `length: 0.4` ---24 pasos a 60 Hz--- y se quedaba en 8, o sea 0,13 s de
+cola en vez de 0,4.
+
+No es un caso raro: **68 de las 74 cintas del corpus no declaran `segments`**, y
+30 de ellas sí declaran `length` (0,2 / 0,4 / 0,5 / 0,6 / 3 / 30). El propio
+`shootingstar.json` de WE es una de ellas: `length: 0.2`, sin `segments`.
+
+Ahora, sin `segments`, la cola sale de `length`. La fugaz pasa de 8 a 24 puntos
+y los píxeles de estela de 269 a 1146. Sobre las 129: **0 regresiones**, y solo
+6 escenas mueven la luz, todas por debajo de 0,36 y hacia arriba.
+
+## `gravity` es una aceleración, y lo demuestran los fuegos artificiales
+
+Con la lluvia ya repartida y la cola larga quedaba una petición: que las fugaces
+**no cayeran en parábola sino recto**. No se hace, y conviene dejar escrito por
+qué, porque la tentación de tocar `movement` va a volver.
+
+`fireworks1.json`, de WE, lanza sus partículas a `(±1000, 2500..3500)` con
+`gravity: "0 -1000 0"`. Eso solo describe un fuego artificial si `gravity` es
+una **aceleración**: como velocidad constante, la carga subiría para siempre a
+2000 y no habría arco. Lo mismo dicen `dripping_water` ---gota que acelera--- y
+los pares `rain_screen` / `rain_screen_4k`, que doblan la gravedad al doblar el
+lienzo.
+
+Y el propio preset lo confirma desde el otro lado: `Shooting_Star_01` declara
+`gravity: "50 -50 0"`, que no es «hacia abajo» en ninguna parte… hasta que se
+gira con los −45° del objeto, y entonces sale **vertical en el lienzo**. Es lo
+que escribe un autor cuando la gravedad se aplica en coordenadas LOCALES y
+quiere que se vea cayendo. O sea que aplicarla en local, como hacemos, es lo que
+el valor del autor da por hecho.
+
+Así que la parábola es lo que declaran el preset y el `shootingstar.json` del
+propio WE. Enderezarla sería contradecir el formato.
+
+**Lo que sí hace que la parábola CANTE** es la densidad. `shootingstar.json` de
+WE declara `rate: 0.2` con `maxcount: 16`: 0,6 partículas vivas de media, o sea
+una fugaz de vez en cuando. Nuestro [ritmo implícito](#el-ritmo-implicito-estaba-en-el-extremo-y-se-comia-el-instanceoverride)
+le da 4,48/s al preset del autor, que son ~19 a la vez: veinte arcos
+simultáneos se leen como una lluvia parabólica; uno se lee como una estrella
+fugaz. La ocupación de la plantilla de WE es `0,2·3/16 = 0,037`, muy por debajo
+del 0,48 que usamos. Es un cabo que este preset señala y que merece medirse
+aparte.
+
+## El personaje calvo: el rig tenía un bloque con nombres que nadie leía
+
+`3462491575` (Arknights, dos personajes) salía con la cabeza de Kal'tsit
+convertida en un manchón de piel: sin pelo, sin cara, sin orejas. No faltaba
+ningún pase —`sin_shader: 0`, `sin_textura: 0`, 73 pases dibujados— y las
+texturas del pelo estaban decodificadas y enlazadas. **El pelo se dibujaba, 826
+px por debajo de la cabeza.**
+
+Lo dice el propio `scene.json`: siete capas de esa escena declaran un campo que
+no aparecía en ninguna parte del proyecto.
+
+```
+id= 1637 nombre='头发'  attachment='头发'  parent=1607 (身体)
+id=  863 nombre='眼睛'  attachment='头发'  parent=1547 (身体)
+id= 7426 nombre='右臂'  attachment='右臂'  parent=1547 (身体)
+```
+
+`attachment` significa que la capa **no cuelga del origen de su padre sino de
+un punto con nombre del rig puppet del padre**, y que su `origin` es relativo a
+ese punto. Sin resolverlo, `transform_absoluto` componía el `origin` a secas y
+la capa caía donde cayera.
+
+### Dónde estaba el nombre
+
+En el esqueleto no. Los huesos del MDLS traen un campo de texto detrás de la
+matriz, pero lo que hay ahí no es un nombre:
+
+```json
+{"a":null,"lamax":null,"lamin":null,"rax":null,"ray":null,"raz":null,
+ "tm":100.0,"tp":"1017.82239 0.00000 0.00000"}
+```
+
+son los límites de la articulación. El nombre está en un bloque que
+`parse_skeleton` ya se saltaba —su cabecera devuelve el desplazamiento del
+siguiente y el recorrido pasa de largo— y que `parse_animations` cruzaba sin
+mirar para llegar al MDLA:
+
+```
+char[]     "MDAT000N" terminado en nul
+u32        desplazamiento ABSOLUTO del bloque siguiente
+u16        numero de anclajes
+por anclaje:
+    u16        indice del hueso del que cuelga
+    char[]     nombre, terminado en nul
+    float[16]  matriz local respecto a ese hueso
+```
+
+El recuento es **u16 y no u32**: con u32 el primer anclaje empieza dos bytes
+tarde y el nombre sale descuadrado. Lo confirman dos medidas que no salen del
+propio bloque: el recorrido termina EXACTO en el desplazamiento que declara la
+cabecera en los cuatro puppets del corpus que lo traen, y los nombres que salen
+son los mismos que citan sus escenas —`头发`, `右臂`, `听诊器`—.
+
+En las 129: **4 puppets de 85** traen MDAT, con 5 puntos de anclaje, y los
+citan **16 capas de 4 escenas**. Ninguna cuelga de otra colgada, así que basta
+un anclaje por objeto.
+
+### Por qué no basta con hornearlo
+
+El punto se calcula como un vértice más: es `attachment.matrix · G_hueso` en
+reposo, y deformarlo es la misma cuenta que hace el skinning (`p · M`). La
+tentación es hornearlo en la matriz del `object` y acabar, y para el fotograma
+offline vale. **No vale en vivo, porque el hueso se mueve:**
+
+| escena | anclaje | recorrido en la animación |
+|---|---|---|
+| 3462491575 | `头发` | 15 × 25 px |
+| 3097749052 | `Attachment` | **158** × 14 px |
+| 3238423642 | `Attachment1` | **151 × 285 px** |
+
+Con 285 px de recorrido, hornear deja la capa despegada en cuanto arranca la
+animación. El giro sí es despreciable —2,5° como mucho en todo el corpus—, así
+que el seguimiento es **solo traslación**.
+
+### El reparto
+
+El plan lleva la posición ya horneada dentro de la matriz del `object` (con eso
+el fotograma sale bien por sí solo) y una directiva que deja lo justo para
+rehacerla:
+
+```
+anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
+```
+
+`(px,py)` es el punto en reposo, `(bx,by)` dónde cayó al hornear, y la 2×2
+lleva el desplazamiento a clip space con la escala y el giro de los ancestros
+ya dentro. El ejecutor skinnea el punto en el instante que toca, resta la base
+y lo suma a la traslación de la colocación. Offline los dos instantes son el
+mismo y **no suma nada**, que es la propiedad que hace el cambio seguro: el
+camino que ya funcionaba no se mueve.
+
+La fase y la interpolación las elige `mesh_clave` / `meshKey`, la misma función
+que usa el skinning de la malla. Si cada uno eligiera su clave, la capa colgada
+se separaría de la malla justo al interpolar.
+
+Medido de punta a punta: con el plan horneado en t=0 y `meshtime 15` —el
+instante de máximo recorrido— el ejecutor mueve el pelo −15/−25 px, contra los
+−15,16/−25,07 que predice el hueso.
+
+## `step(0.5, nodeNum)`: la norma lo admite y NVIDIA no
+
+La misma escena perdía 5 pases más, y esto es un fallo distinto y de otro
+tipo. El shader del taller `auto_sway.vert` escribe, tal cual lo dejó su autor:
+
+```glsl
+void preCalcNode(in int nodeNum, ...)
+    prevMotionRadian *= step(0.5, nodeNum);
+```
+
+En HLSL el `int` promociona solo. En GLSL 330 la conversión también está en la
+norma y **Mesa la acepta**; el compilador de NVIDIA la corta:
+
+```
+0(833) : error C1101: ambiguous overloaded function reference "step(float, int)"
+    (0) : ps gp5 ... lowp float step(lowp float, lowp float)
+    (0) : ps gp5 ... mediump float step(mediump float, mediump float)
+```
+
+Le estorban sus propias sobrecargas con calificador de precisión. Es justo la
+trampa de la regla 5: este equipo es híbrido —el escritorio va por Intel/Mesa y
+el render offline por NVIDIA—, así que el fallo **solo se veía offline** y
+podría haberse leído como un fallo de la escena.
+
+`literales_de_llamada` ya hacía esta promoción, pero solo sobre **literales
+enteros pelados**; aquí el argumento es una variable. Se amplía a cualquier
+argumento cuyo tipo AFIRME el parser que es entero, con dos cautelas:
+
+- la tabla de tipos es aparte de la que usa la truncación (`tipos_por_nombre`),
+  para que ninguna decisión que ya funciona se mueva;
+- e incluye los **parámetros de función** —donde vive `nodeNum`— dejando fuera
+  los nombres que cambian de tipo entre ámbitos: quien lee esto envuelve la
+  expresión en un constructor, y hacerlo con el tipo del otro ámbito no
+  compila.
+
+`_FUNC_RE` no valía para leer los parámetros porque exige la llave en la misma
+línea, y las tres funciones largas de `auto_sway` la traen en la siguiente. Se
+usa un patrón propio en vez de ampliar el suyo: de `_FUNC_RE` cuelgan
+`tabla_de_funciones` y `tabla_de_parametros`, y darle por conocido el tipo de
+retorno de funciones que hoy no lo están movería truncaciones en todo el
+corpus.
+
+Sobre las 129: **582/582 variantes compilan y 291/291 enlazan en los dos
+drivers**, y la inferencia sigue con 0 incorrectas.
+
+## Un puntero donde hacía falta una lista: el hijo `eventspawn` congelado
+
+`we_psys_seguir` colgaba el hijo del padre con `padre->hijo = hijo`. Con dos
+hijos el segundo **pisaba** al primero, y el primero no se quedaba
+simplemente sin padre: se quedaba en el peor sitio posible. Su `padre` seguía
+apuntando al de antes, así que su propio `we_psys_update` salía por
+`construye(s)` sin dar un paso —esa es justo la señal de «no doy pasos por mi
+cuenta»— y ya no lo apuntaba nadie que se los diera. Y `_emit_psys` le había
+puesto el ritmo de emisión a cero, porque quien lo emite es el evento. Capa
+vacía para siempre.
+
+Lo delata `Flare_(Parent).json` de `2937370591`, la única del corpus con dos
+hijos sobre el mismo padre; su plan sale con las dos líneas:
+
+```
+psyspadre 2 1 500
+psyspadre 3 1 500
+```
+
+Ahora `hijo` es la cabeza de una lista y cada hijo apunta al siguiente por
+`hermano`. Se añade por la cola para que estallen en el orden en que el plan
+los declara. Las muertes del padre se vacían **cuando ya las han visto todos**,
+no dentro del bucle: si no, el primero se las llevaría y el segundo no
+estallaría nunca. Y el paso es recursivo, porque un hijo puede tener hijos
+suyos y el `update` de un sistema con padre no da pasos por su cuenta —sería el
+mismo congelamiento por otro camino—; `we_psys_seguir` rechaza los ciclos, así
+que termina.
+
+**Por qué no lo cazó la regresión de luz.** El hijo aporta 3.034 píxeles sobre
+un lienzo de 2 Mpx y la escena es clara: la media pasa de 200,971 a 200,982.
+Once milésimas. La prueba de luz separa «negra» de «viva», y esto no apaga
+nada, solo borra un destello. En el corpus son 10 escenas con hijos
+`eventspawn` y **una sola** con más de uno, así que el camino de un hijo
+—idéntico bit a bit al de antes— cubría a las otras nueve.

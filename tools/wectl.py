@@ -30,11 +30,13 @@ import sys
 import tempfile
 import time
 import unicodedata
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import wepaths
+import werender
 from werender import emit_plan
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -110,30 +112,87 @@ def _plano(s: str) -> str:
                    if unicodedata.category(c) != "Mn")
 
 
-def biblioteca() -> list[tuple[str, str]]:
-    """(id, titulo) de los wallpapers que son escenas, ordenados por titulo."""
+def _ejecutable(d: Path) -> bool:
+    """Si este motor sabe poner ese wallpaper.
+
+    Dos formas: una escena (`scene.pkg`) o un video. Los de tipo `web` siguen
+    fuera. Los de video estuvieron fuera hasta que el motor aprendio a
+    decodificarlos ---lo necesitaba para las tres escenas cuya capa de fondo es
+    un MP4 dentro del `.tex`, y desde ahi los 15 de la biblioteca salen casi
+    gratis: su plan es un quad con la textura encima.
+    """
+    return (d / "scene.pkg").is_file() or werender.video_de(d) is not None
+
+
+def tipo_de(d: Path) -> str | None:
+    """`scene`, `video` o `web`; None si eso no es un wallpaper.
+
+    El tipo lo declara `project.json`, pero **hay que normalizarlo**: 24 de los
+    148 de esta biblioteca lo escriben con mayuscula ---`Scene`, `Video`,
+    `Web`--- y contarlos tal cual parte la biblioteca en seis tipos en vez de
+    tres.
+
+    El unico directorio sin `type` es `2336642563`, y no es que le falte: trae
+    `category: Asset`. Es un paquete de materiales que otros wallpapers
+    importan, no un fondo, y por eso devuelve None y no sale en la lista.
+    """
+    pj = d / "project.json"
+    if not pj.is_file():
+        return None
+    try:
+        proyecto = json.loads(pj.read_text(errors="replace"))
+    except (ValueError, OSError):
+        return None
+    tipo = str(proyecto.get("type", "")).lower()
+    return tipo or None
+
+
+def inventario() -> list[tuple[str, str, str, bool]]:
+    """`(id, titulo, tipo, si este motor lo pone)` de TODA la biblioteca.
+
+    Se separa de `biblioteca()` porque son dos preguntas distintas y las dos
+    hacen falta: `list` ensena el inventario entero ---un `web` que no aparece
+    no se distingue de uno que no esta instalado--- mientras que `set` y
+    `shuffle` solo pueden trabajar con lo que el motor sabe poner.
+    """
     salida = []
     for d in sorted(wepaths.we_workshop().iterdir()):
-        if not (d / "scene.pkg").is_file():
-            continue          # video o web: este motor no los ejecuta
-        try:
-            proyecto = json.loads((d / "project.json").read_text())
-        except Exception:
+        tipo = tipo_de(d)
+        if tipo is None:
             continue
-        salida.append((d.name, str(proyecto.get("title", "?"))))
-    return sorted(salida, key=lambda t: _plano(t[1]))
+        try:
+            proyecto = json.loads((d / "project.json").read_text(errors="replace"))
+        except (ValueError, OSError):
+            continue
+        salida.append((d.name, str(proyecto.get("title", "?")),
+                       tipo, _ejecutable(d)))
+    return sorted(salida, key=lambda e: _plano(e[1]))
+
+
+def biblioteca() -> list[tuple[str, str]]:
+    """(id, titulo) de los wallpapers que este motor puede poner, por titulo."""
+    return [(i, t) for i, t, _, listo in inventario() if listo]
 
 
 def resolver(consulta: str) -> tuple[Path, str]:
     """Un id exacto, o el unico titulo que contenga el texto."""
     raiz = wepaths.we_workshop()
-    if (raiz / consulta / "scene.pkg").is_file():
+    if _ejecutable(raiz / consulta):
         titulos = dict(biblioteca())
         return raiz / consulta, titulos.get(consulta, consulta)
 
     q = _plano(consulta)
     hallados = [(i, t) for i, t in biblioteca() if q in _plano(t)]
     if not hallados:
+        # Desde que `list` ensena tambien los que el motor no pone, "ninguno
+        # coincide" seria una respuesta falsa para justo esos cuatro: el
+        # usuario los acaba de ver en la lista.
+        fuera = [(i, t, tipo) for i, t, tipo, listo in inventario()
+                 if not listo and (q in _plano(t) or i == consulta)]
+        if fuera:
+            i, t, tipo = fuera[0]
+            raise CtlError(f"{t!r} ({i}) es de tipo {tipo}, y este motor no "
+                           f"pone los de ese tipo")
         raise CtlError(f"ningun wallpaper coincide con {consulta!r}; "
                        f"prueba `wectl list`")
     if len(hallados) > 1:
@@ -503,18 +562,33 @@ def _en_palabras(segundos: float) -> str:
 # ── ordenes ─────────────────────────────────────────────────────────────────
 
 def cmd_list(args) -> int:
-    entradas = biblioteca()
+    """Lista el inventario entero, con el tipo que declara cada uno.
+
+    Ensena tambien los que este motor no pone ---los cuatro `web`--- porque un
+    wallpaper que no aparece no se distingue de uno que no esta instalado, y
+    esa es justo la duda que trae aqui a quien no encuentra el suyo. Cual pone
+    y cual no lo dice el pie.
+    """
+    entradas = inventario()
     if args.texto:
         q = _plano(args.texto)
-        entradas = [(i, t) for i, t in entradas if q in _plano(t)]
+        entradas = [e for e in entradas if q in _plano(e[1])]
     if not entradas:
         print("sin coincidencias")
         return 1
     puesto = plan_instalado()
-    for i, t in entradas:
+    for i, t, tipo, _ in entradas:
         marca = "*" if puesto and puesto.endswith(f"({i})") else " "
-        print(f" {marca} {i:12} {t}")
-    print(f"\n{len(entradas)} escenas. El * es la que hay preparada.")
+        print(f" {marca} {i:12} {tipo:6} {t}")
+
+    cuenta = Counter(tipo for _, _, tipo, _ in entradas)
+    desglose = ", ".join(f"{n} {k}" for k, n in sorted(cuenta.items()))
+    plural = "wallpaper" if len(entradas) == 1 else "wallpapers"
+    print(f"\n{len(entradas)} {plural}: {desglose}. "
+          f"El * es el que hay preparado.")
+    sueltos = sorted({tipo for _, _, tipo, listo in entradas if not listo})
+    if sueltos:
+        print(f"Este motor no pone los de tipo {' ni '.join(sueltos)}.")
     return 0
 
 
