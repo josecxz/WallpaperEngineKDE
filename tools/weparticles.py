@@ -346,9 +346,28 @@ def _op_angmov(e):
     return _v3(e.get("force")) + [_f1(e.get("drag"), 0.0)]
 
 
+# Cuanto de la aceleracion que declara `turbulence` se aplica. **Es una
+# desviacion deliberada del valor del autor, pedida, no un arreglo**: el campo
+# no estaba mal leido. `speedmin`/`speedmax` son la aceleracion en px/s^2 y el
+# campo que los multiplica ya viene normalizado ---el rotacional del ruido tiene
+# RMS 0,980 en el plano XY, medido sobre 1,28 M de muestras---, asi que el
+# numero del preset ya era la magnitud que dice ser. Con 1.0 se vuelve al ritmo
+# del autor; ese es el unico numero que hay que tocar para revertirlo.
+#
+# Toca solo al OPERADOR, no a `turbulentvelocityrandom`: ese fija la velocidad
+# inicial de los chorros de humo y su coherencia esta calibrada aparte, ver
+# ESCALA_RUIDO. Alcance: 86 operadores del corpus, en 48 escenas.
+#
+# Vive aqui y no en el `.c` por lo mismo que ESCALA_RUIDO: interpretar el
+# formato es trabajo de Python, y asi el cambio viaja en el plan en vez de
+# esperar a que plasmashell suelte la `.so` que tiene mapeada.
+FACTOR_TURBULENCIA = 0.5
+
+
 def _op_turb(e):
     return [_f1(e.get("scale"), 0.01) * ESCALA_RUIDO, _f1(e.get("timescale"), 1.0),
-            _f1(e.get("speedmin"), 0.0), _f1(e.get("speedmax"), 0.0),
+            _f1(e.get("speedmin"), 0.0) * FACTOR_TURBULENCIA,
+            _f1(e.get("speedmax"), 0.0) * FACTOR_TURBULENCIA,
             _f1(e.get("phasemin"), 0.0), _f1(e.get("phasemax"), 0.0)] \
         + _v3(e.get("mask"), 1.0)
 

@@ -7,7 +7,7 @@ plasmashell. No es un envoltorio: donde una capa **es** un vídeo lo decodifica
 y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
 
 - Qué hace y cómo se instala → `README.md`
-- **Por qué** cada cosa es como es → `NOTAS.md` (3912 líneas, 136 secciones en
+- **Por qué** cada cosa es como es → `NOTAS.md` (5127 líneas, 200 secciones en
   orden cronológico). **No lo leas entero.** `NOTAS-INDICE.md` dice qué sección
   resuelve qué problema y en qué línea empieza; se lee el trozo con
   `sed -n '<línea>,+40p' NOTAS.md`. Tras editar NOTAS.md, `make indice`.
@@ -37,6 +37,10 @@ y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
 7. **Instalar con `mv`, nunca con `cp`.** `cp` reescribe el inodo que
    plasmashell tiene mapeado y lo mata con `SIGBUS`. `make install` ya lo hace
    bien; no lo esquives copiando el `.so` a mano.
+8. **Nada nuevo en `wectl` sin que se pida.** No se añaden órdenes, opciones ni
+   ajustes al CLI por iniciativa propia, ni siquiera como la forma «limpia» de
+   exponer algo que se acaba de arreglar. `wectl` es la superficie de uso
+   diario y crece solo cuando se pide explícitamente. (`NOTAS.md:47`)
 
 ## La cadena
 
