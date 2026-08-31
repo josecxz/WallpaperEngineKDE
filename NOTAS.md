@@ -44,6 +44,36 @@ formato que no leíamos, implementar un modo de mezcla que la tabla de WE
 define, o corregir una regla que se dedujo mal. Eso no es un caso especial: es
 el mecanismo, y se mide sobre el corpus entero como todo lo demás.
 
+## Regla de trabajo: `wectl` no crece por iniciativa propia
+
+**No se añaden órdenes, opciones ni ajustes al CLI si no se han pedido.** Ni
+como remate de un arreglo, ni como «la forma limpia» de exponer algo que se
+acaba de tocar, ni porque el mando exista ya por dentro y falte solo la línea
+que lo enseña.
+
+De dónde sale la regla: pidiendo que los destellos de una escena se movieran
+menos —ver [Los destellos de la
+`City`](#los-destellos-de-la-city-qué-se-mueve-y-por-qué-no-se-toca-nada)—, se
+montó un factor sobre el reloj de las partículas y **de paso** se le colgó un
+`wectl calma` que nadie había pedido. Lo segundo fue una decisión de producto
+tomada por el camino, y acabó llevándose por delante también a lo primero: se
+retiraron los dos.
+
+Por qué importa, y no es cuestión de gusto:
+
+- **El CLI es la superficie de uso diario.** Cada orden nueva es vocabulario
+  que hay que recordar, documentar y mantener, y una que se añade sola no ha
+  pasado por la única pregunta que la justifica: si hace falta.
+- **Un ajuste del CLI no se mide como se mide el motor.** El corpus dice si un
+  campo del formato se lee bien; no dice si un comando sobra. Sin ese oráculo,
+  lo único que queda es no inventarlo.
+- **Lo de dentro y lo de fuera se retiran distinto.** Un mecanismo que vive en
+  el plan se quita sin que nadie lo note; una orden publicada ya está en la
+  memoria de quien la usó.
+
+Qué sí se hace: dejar el mecanismo donde le toca —el plan, `werender.py`, los
+ejecutores— y **decirlo**, para que quien manda decida si merece una orden.
+
 ## Estado
 
 **El motor corre en vivo dentro de plasmashell**, partículas incluidas. Una
@@ -4956,3 +4986,142 @@ Once milésimas. La prueba de luz separa «negra» de «viva», y esto no apaga
 nada, solo borra un destello. En el corpus son 10 escenas con hijos
 `eventspawn` y **una sola** con más de uno, así que el camino de un hijo
 —idéntico bit a bit al de antes— cubría a las otras nueve.
+
+## Los destellos de la `City`: qué se mueve, y por qué no se toca nada
+
+La petición era concreta: que los destellos de la `City` (`2821288001`) se
+movieran «más suave y reducido». Lo primero fue medir **qué** se mueve ahí,
+porque a ojo es un cielo entero temblando y no se distingue una causa de otra.
+Diferencia de dos fotogramas separados 0,5 s: cientos de puntos que parpadean y
+cinco trazos que cruzan. Desglosado por sistema:
+
+| lo que se mueve | cuántos | cómo |
+|---|---|---|
+| `Star_01`, `Star_04`, `Star_05` | ~900 | **no se desplazan**: `oscillatealpha` los lleva de alfa 0,2 a 1,0 con periodo 2,1 s |
+| `Star_02`, `Star_06` | 170 | `turbulence` 100–170 con máscara `0.5 0.5 0`; medido con `psysprobe`, 52–65 px/s de media y picos de 320 |
+| `Shooting_Star_01` | ~20 a la vez | 100–250 px/s; su emisor **no declara `rate`** y el ritmo implícito le da 4,48/s |
+
+### Los dos candidatos a fallo, y por qué ninguno lo era
+
+Esta es la parte que se queda, porque son dos lecturas del formato zanjadas con
+medida y no hay que volver a plantearlas.
+
+**`turbulence` como aceleración.** Es sospechoso que el operador acumule
+velocidad (`vel += c·speed·dt`) mientras el inicializador `turbulentvelocityrandom`
+usa los MISMOS `speedmin`/`speedmax` sobre el MISMO campo de ruido para fijarla
+(`vel += c·speed`): dos unidades para el mismo par de campos. Y en el corpus
+**60 de las 86 turbulencias no llevan rozamiento**, así que la velocidad hace un
+paseo aleatorio en vez de estabilizarse. Pero las dos plantillas de la propia
+WE ---`exampleturbolence.json` y `exampleturbolence3d.json`--- acompañan su
+`turbulence` de un `movement` con `drag: 4`, que es justo lo que hace falta para
+que una aceleración tenga velocidad terminal (1000/4 = 250 px/s). Si fuera una
+velocidad, ese rozamiento sobraría en las dos. **Se queda como está.**
+
+**El ritmo implícito.** Era el candidato bueno ---es el cabo abierto de «`gravity`
+es una aceleración»--- y tampoco: de los **42 emisores del corpus sin `rate`**,
+33 son `dust_motes_0` (18) y `ember_small` (15), plantillas de WE para polvo y
+brasas, que piden el depósito lleno y no vacío. Bajar la ocupación global para
+calmar una escena apagaría esas. El 0,48 de hoy es la mediana de los 486
+emisores que sí lo declaran y sigue siendo la mejor estimación que hay.
+
+O sea: **City es así de movida por diseño**, y por la regla 1 no se toca por su
+id. No hay nada que arreglar aquí.
+
+### Lo que se probó y se retiró: frenar el reloj de la simulación
+
+Queda escrito porque está medido y porque la vía es la única sensata si algún
+día se pide: **un factor sobre el reloj de las partículas**, no sobre sus
+números. Escalar velocidades obliga a decidir qué pasa con las aceleraciones
+---la gravedad va con el cuadrado del tiempo, así que un factor plano deforma
+la parábola---; escalar la emisión cambia la densidad que eligió el autor. El
+reloj no: con `k = 0,5` se llega al mismo estado en el doble de tiempo y, como
+la vida también se escala, hay **las mismas partículas a la vez**. Un `.psys`
+calmado y uno normal serían el mismo fichero, porque lo único que cambia es el
+instante que se le pasa a `we_psys_update`.
+
+Medido antes de retirarlo, con pares de fotogramas separados 1/30 s **en los
+mismos instantes de simulación** y sumando la luz que cambia fuera de los
+píxeles que anima el shader: **x1,00 / x0,55 / x0,26** para `k` 1, 0,5 y 0,25.
+Y `k = 0,5` en `t = 40` daba el mismo fotograma que `k = 1` en `t = 20`, con la
+única diferencia de los píxeles del reloj de la escena, que da la hora de
+verdad. La trampa de método, por si se repite: comparar los mismos instantes de
+PANTALLA en vez de los de SIMULACIÓN sale sin orden ---0,25 se movía más que
+0,5--- porque con el reloj frenado la escena sigue llenando los depósitos, y un
+sistema que nace es mucho más cambio por fotograma que uno en régimen.
+
+**Nada de esto está en el árbol.** Se implementó como una línea `ritmoparticulas
+<k>` en el plan, con los dos ejecutores multiplicando por ella, y se retiró
+entera a petición del usuario junto con el `wectl calma` que la exponía: la
+escena no tiene ningún fallo que arreglar y el mando no se había pedido. De ahí
+salió la [regla 8](#regla-de-trabajo-wectl-no-crece-por-iniciativa-propia).
+
+## La turbulencia, a la mitad: una desviación pedida, no un arreglo
+
+Sobre la escena de arriba se pidió que **los destellos que derivan aceleraran
+menos**. Antes de tocar nada había que descartar que estuviéramos leyendo mal el
+campo, porque el síntoma es idéntico en los dos casos.
+
+**No lo estábamos.** `turbulence` acumula velocidad ---`vel += rotacional(ruido)
+· speed · máscara · dt`---, así que `speedmin`/`speedmax` son una **aceleración
+en px/s²**, y la pregunta es si el campo que los multiplica está normalizado: si
+no lo estuviera, el número del autor no sería la magnitud que dice ser sino esa
+magnitud por un factor que no declara nadie. Medido sobre **1,28 M de muestras**
+del propio `rotacional`, muestreado como lo muestrea la simulación (`scale`
+0,0005 y el tiempo por `timescale`):
+
+| | RMS | máximo |
+|---|---|---|
+| \|rotacional\| en 3D | 1,217 | 2,681 |
+| \|rotacional\| en el plano XY, que es lo que deja la máscara | **0,980** | 2,454 |
+
+O sea que el campo ya viene normalizado en el plano donde actúa, y con la
+máscara `0.5 0.5 0` de esta escena la aceleración RMS es exactamente
+`speed · 0,5` = 50–85 px/s². Y cuadra con lo que se mide en la simulación: la
+rapidez media en régimen era 62,7 px/s, que es el mismo número, porque el campo
+se renueva cada segundo ---celda temporal de 1 s--- y la partícula no llega a
+acumular más de un empujón.
+
+Así que no había nada que corregir: **el cambio es una preferencia**, y se hace
+donde se pueda revertir con un solo número.
+
+### `FACTOR_TURBULENCIA = 0.5`
+
+Multiplica `speedmin`/`speedmax` al escribir el `.psys`. Tres decisiones:
+
+- **Solo el operador**, no `turbulentvelocityrandom`. El inicializador fija la
+  velocidad de salida de los chorros de humo y su coherencia está calibrada
+  aparte —ver [La turbulencia no
+  turbulaba](#la-turbulencia-no-turbulaba)—; meterle mano de paso habría
+  cambiado el penacho de Sniper Girl sin que nadie lo pidiera.
+- **En `weparticles.py` y no en el `.c`**, por lo mismo que `ESCALA_RUIDO`:
+  convertir las unidades del formato es interpretar, que es trabajo de Python, y
+  además así el cambio viaja en el plan en vez de esperar a que plasmashell
+  suelte la `.so` que tiene mapeada.
+- **Un solo número y con el motivo escrito al lado.** Esto es una divergencia
+  deliberada del valor del autor: quien lo lea dentro de un año tiene que poder
+  distinguirla de un fallo, y volver al original es poner 1.0.
+
+Alcance: **86 operadores en 48 escenas** de las 129.
+
+### Lo medido, antes y después
+
+Siguiendo cada partícula por vecino más próximo durante 90 s ---los vértices
+vienen compactados, así que el índice no identifica a la partícula--- y contando
+solo vidas completas en régimen:
+
+| sistema | | rapidez media | camino en su vida | desplazamiento neto |
+|---|---|---|---|---|
+| `Star_02` | antes | 62,7 px/s | 376 px | 311 px |
+| | después | **31,4 px/s** | **188 px** | **154 px** |
+| `Star_06` | antes | 60,7 px/s | 364 px | 296 px |
+| | después | 30,4 px/s | 182 px | 148 px |
+| `Star_03` | antes | 45,5 px/s | 271 px | 226 px |
+| | después | 22,8 px/s | 136 px | 113 px |
+
+Escala limpia con el factor, que es lo que se pedía comprobar: la vida medida no
+se mueve (5,98 s contra los 5,99 de antes, con `lifetimerandom 5 7`), así que lo
+único que cambia es cuánto se desplazan.
+
+Lo que **no** cambia: el número de partículas, su tamaño, su parpadeo, ni el
+carácter del campo ---mismas celdas de 2000 px y de 1 s, o sea que siguen
+derivando en grupo y girando cada segundo---. Solo van más despacio.
