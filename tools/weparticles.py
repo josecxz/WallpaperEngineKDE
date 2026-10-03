@@ -638,6 +638,10 @@ class Sistema:
     # Operadores que tiran de uno de esos puntos. Solo para contarlos: el que
     # decide si actuan o no es el simulador, segun haya puntero o no.
     con_cursor: list[str] = field(default_factory=list)
+    # El `rate` lo puso `_ritmo_implicito`, no el preset. Un hijo de evento lo
+    # necesita saber: su ritmo es el de CADA instancia, y el implicito es una
+    # estimacion para un sistema que emite por su cuenta.
+    ritmo_implicito: bool = False
 
     @property
     def dibujable(self) -> bool:
@@ -809,6 +813,7 @@ def _ritmo_implicito(s: Sistema, factor: float = 1.0) -> None:
     vida = dict(s.inits).get("lifetimerandom")
     media = (vida[0] + vida[1]) / 2.0 if vida else 1.0
     s.emit[0] = OCUPACION_TIPICA * s.maxcount / max(media, 1e-3) * factor
+    s.ritmo_implicito = True
 
 
 def _aplicar_override(s: Sistema, ov: dict) -> None:

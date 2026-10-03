@@ -131,7 +131,7 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
     for (PsysSpec &p : m_psys)
         we_psys_free(p.sys);
     m_psys.clear();
-    // Las parejas `eventspawn` nombran a sus sistemas por el indice del plan,
+    // Las parejas padre-hijo nombran a sus sistemas por el indice del plan,
     // asi que una terna del plan anterior apuntaria a otro sistema distinto en
     // el nuevo --- y colgarle un padre que no es el suyo lo deja sin dar pasos.
     m_psysPadre.clear();
@@ -220,7 +220,21 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             p.path = tok[2];
             m_psys.insert(tok[1].toInt(), p);
         } else if (kw == QLatin1String("psyspadre") && tok.size() >= 4) {
-            m_psysPadre.append({tok[1].toInt(), tok[2].toInt(), tok[3].toInt()});
+            PsysPadre e;
+            e.hijo = tok[1].toInt();
+            e.padre = tok[2].toInt();
+            e.rafaga = tok[3].toInt();
+            // Los seis ultimos son opcionales: un plan escrito antes de que
+            // hubiera mas de un tipo de hijo trae tres, y era siempre el que
+            // estalla en la muerte. `toFloat` de QString no mira la locale.
+            if (tok.size() >= 10) {
+                e.modo = tok[4].toInt();
+                e.instancias = tok[5].toInt();
+                e.probabilidad = tok[6].toFloat();
+                for (int k = 0; k < 3; ++k)
+                    e.escala[k] = tok[7 + k].toFloat();
+            }
+            m_psysPadre.append(e);
         } else if (kw == QLatin1String("psyspuntero") && tok.size() >= 9) {
             // Llega ANTES o DESPUES del `psys` que la usa, segun el orden en
             // que Python escriba la cabecera; se apunta en la entrada del
@@ -805,7 +819,7 @@ bool GlExecutor::initialize(QString *error)
             ++m_psysCursorCount;
     }
 
-    // Atar los hijos `eventspawn` a su padre, con los dos ya cargados. A partir
+    // Atar los hijos de evento a su padre, con los dos ya cargados. A partir
     // de aqui el `update` del padre da el paso de los dos y el del hijo solo
     // rehace vertices; ver `we_psys_seguir` en src/weparticles.h.
     for (const PsysPadre &e : m_psysPadre) {
@@ -813,7 +827,8 @@ bool GlExecutor::initialize(QString *error)
         const auto pa = m_psys.constFind(e.padre);
         if (h != m_psys.constEnd() && pa != m_psys.constEnd()
             && h->sys && pa->sys)
-            we_psys_seguir(h->sys, pa->sys, e.rafaga);
+            we_psys_seguir(h->sys, pa->sys, e.modo, e.rafaga, e.instancias,
+                           e.probabilidad, e.escala);
     }
     glBindVertexArray(m_vao);
 

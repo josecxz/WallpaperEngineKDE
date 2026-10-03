@@ -136,6 +136,151 @@ oper controlpointattract 1 -500 64 0 0 0
 """
 
 
+ARNES_HIJOS_C = r"""
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "weparticles.h"
+/* <padre.psys> <hijo.psys> <modo> <rafaga> <instancias> <escala> <segundos>
+ *
+ * Ata el hijo al padre, avanza los dos a 30 fps y escribe cuantas particulas
+ * tiene cada uno y a que distancia media queda cada particula del hijo de la
+ * del padre mas cercana, medida en el espacio del PADRE: el hijo se dibuja
+ * con su escala encima, asi que sus posiciones se multiplican por ella. */
+int main(int argc, char **argv)
+{
+    WeParticleSystem *pa = we_psys_load(argv[1], NULL);
+    WeParticleSystem *h = we_psys_load(argv[2], NULL);
+    if (!pa || !h) { printf("-1\n"); return 0; }
+    float e = (float)atof(argv[6]);
+    const float esc[3] = {e, e, 1.0f};
+    we_psys_seguir(h, pa, atoi(argv[3]), atoi(argv[4]), atoi(argv[5]), 1.0f, esc);
+    float t = (float)atof(argv[7]);
+    int np = 0, nh = 0;
+    for (int f = 0; f <= (int)(t * 30.0f + 0.5f); f++) {
+        np = we_psys_update(pa, f / 30.0f) / WE_PSYS_VERTICES_POR_PARTICULA;
+        nh = we_psys_update(h, f / 30.0f) / WE_PSYS_VERTICES_POR_PARTICULA;
+    }
+    const float *vp = we_psys_vertices(pa), *vh = we_psys_vertices(h);
+    int fp = we_psys_floats_por_vertice(pa), fh = we_psys_floats_por_vertice(h);
+    double suma = 0;
+    for (int i = 0; i < nh; i++) {
+        const float *q = vh + (size_t)i * WE_PSYS_VERTICES_POR_PARTICULA * fh;
+        double mejor = 1e30;
+        for (int j = 0; j < np; j++) {
+            const float *r = vp + (size_t)j * WE_PSYS_VERTICES_POR_PARTICULA * fp;
+            double d = hypot(q[0] * e - r[0], q[1] * e - r[1]);
+            if (d < mejor) mejor = d;
+        }
+        suma += mejor;
+    }
+    printf("%d %d %.2f\n", np, nh, nh ? suma / nh : -1.0);
+    return 0;
+}
+"""
+
+"""El padre de la prueba de hijos: pocas particulas, de 6 s de vida, que nacen
+repartidas en 400 px y se alejan a 60 px/s. Lo bastante separadas y rapidas
+para que un hijo que no las siga se note."""
+PSYS_PADRE = """\
+maxcount 8
+starttime 0
+seed 3
+anim 0 1
+emit sphererandom 2 0 0 0 400 400 0 1 1 0 0 0 0 0 0 0 0 0 60 60
+init lifetimerandom 6 6 1
+"""
+
+"""El hijo: el `rate` es el de CADA instancia y el emisor es un punto, asi que
+cada particula nace exactamente donde esta la que sigue."""
+PSYS_HIJO = """\
+maxcount 400
+starttime 0
+seed 5
+anim 0 1
+emit sphererandom 20 0 0 0 0 0 0 1 1 0 0 0 0 0 0 0 0 0 0 0
+init lifetimerandom 0.2 0.2 1
+"""
+
+
+def compila_arnes_hijos(tmp: Path) -> Path | None:
+    fuente, binario = tmp / "arnes_hijos.c", tmp / "arnes_hijos"
+    fuente.write_text(ARNES_HIJOS_C)
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{FUENTE_C.parent}",
+                        "-o", str(binario), str(fuente), str(FUENTE_C), "-lm"],
+                       check=True, capture_output=True)
+    except Exception as e:
+        print(f"  (no se pudo compilar el arnes de hijos: {e}, prueba omitida)")
+        return None
+    return binario
+
+
+def prueba_hijos(tmp: Path) -> list[str]:
+    """Los tres hijos de evento, de la linea `psyspadre` al simulador.
+
+    Lo que se exige es lo que distingue a cada uno, y lo que costaria verlo en
+    un PNG:
+
+    - `eventfollow` emite donde ESTA la particula que sigue: su estela tiene
+      que quedarse pegada a particulas que se mueven a 60 px/s, tambien con
+      una escala de entrada distinta de 1.
+    - `eventspawn` nace con el padre: a los 3 s, con padres de 6 s de vida, ya
+      tiene que haber estallado.
+    - `eventdeath` nace con su muerte: a los 3 s todavia no ha muerto ninguno,
+      y a los 9 s si.
+    - Ninguno emite por su cuenta: un `eventspawn` con rafaga 0 no saca nada,
+      aunque su `.psys` traiga `rate 20`.
+    """
+    binario = compila_arnes_hijos(tmp)
+    if binario is None:
+        return []
+    padre, hijo = tmp / "padre.psys", tmp / "hijo.psys"
+    padre.write_text(PSYS_PADRE)
+    hijo.write_text(PSYS_HIJO)
+
+    def mide(modo: int, rafaga: int, escala: float, t: float):
+        r = subprocess.run([str(binario), str(padre), str(hijo), str(modo),
+                            str(rafaga), "4", str(escala), str(t)],
+                           capture_output=True, text=True)
+        campos = r.stdout.split()
+        return (int(campos[0]), int(campos[1]), float(campos[2])) \
+            if len(campos) == 3 else None
+
+    MUERE, NACE, SIGUE = 0, 1, 2
+    fallos = []
+    for escala in (1.0, 2.5):
+        m = mide(SIGUE, 0, escala, 4.0)
+        if m is None:
+            return ["el arnes de hijos no devolvio nada"]
+        print(f"  eventfollow  escala {escala:<4g} padre {m[0]}  hijo {m[1]:<4} "
+              f"a {m[2]:.1f} px de su particula")
+        if m[1] < 10:
+            fallos.append(f"eventfollow con escala {escala:g}: solo {m[1]} "
+                          f"particulas, no esta emitiendo")
+        # 0,2 s de vida a 60 px/s: lo mas lejos que puede quedar una particula
+        # de la que la solto son 12 px. Con la escala sin aplicar, o con la
+        # estela soltada donde nacio el padre, sale a cientos.
+        elif m[2] > 15.0:
+            fallos.append(f"eventfollow con escala {escala:g}: la estela queda "
+                          f"a {m[2]:.0f} px de su particula, no la sigue")
+    nace3, muere3, muere9 = mide(NACE, 3, 1.0, 3.0), mide(MUERE, 3, 1.0, 3.0), \
+        mide(MUERE, 3, 1.0, 9.0)
+    print(f"  eventspawn   a los 3 s: {nace3[1]} particulas")
+    print(f"  eventdeath   a los 3 s: {muere3[1]}, a los 9 s: {muere9[1]}")
+    if not nace3[1]:
+        fallos.append("eventspawn no estalla cuando nace el padre")
+    if muere3[1]:
+        fallos.append("eventdeath estalla antes de que muera ningun padre")
+    if not muere9[1]:
+        fallos.append("eventdeath no estalla cuando muere el padre")
+    sin_rafaga = mide(NACE, 0, 1.0, 3.0)
+    if sin_rafaga[1]:
+        fallos.append(f"un hijo de evento emite por su cuenta: {sin_rafaga[1]} "
+                      f"particulas con rafaga 0")
+    return fallos
+
+
 def locale_con_coma() -> str | None:
     """Primera locale instalada cuyo separador decimal NO sea el punto."""
     try:
@@ -320,6 +465,10 @@ def main() -> int:
     # ── 5. el punto de control que sigue al raton ──
     print("\n── el cursor mueve su punto de control ──")
     fallos += prueba_cursor(tmp)
+
+    # ── 6. los hijos de evento ──
+    print("\n── los hijos de evento ──")
+    fallos += prueba_hijos(tmp)
 
     st = Counter()
     fuera = Counter()

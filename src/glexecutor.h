@@ -23,6 +23,9 @@
 #include <QString>
 #include <QVector>
 
+// Los modos de hijo (`WE_HIJO_*`) que guarda `PsysPadre`.
+#include "weparticles.h"
+
 // El decodificador de video es C y lo comparte el ejecutor offline: la misma
 // regla que `weparticles.h`. Si la decodifica viviera dos veces, el render
 // offline dejaria de predecir lo que se ve en el escritorio.
@@ -355,7 +358,14 @@ private:
     QHash<int, PsysSpec> m_psys;
     // `psyspadre`: (hijo, padre, rafaga). Se aplica cuando los dos sistemas ya
     // estan cargados; a partir de ahi el padre da el paso de los dos.
-    struct PsysPadre { int hijo, padre, rafaga; };
+    // Una linea `psyspadre`: que sistema cuelga de cual, y como. Los campos
+    // son los de `we_psys_seguir`.
+    struct PsysPadre {
+        int hijo, padre, rafaga;
+        int modo = WE_HIJO_MUERE, instancias = 1;
+        float probabilidad = 1.0f;
+        float escala[3] = {1.0f, 1.0f, 1.0f};
+    };
     QVector<PsysPadre> m_psysPadre;
     int m_meshCount = 0, m_meshPassCount = 0, m_meshAnimCount = 0;
     int m_psysCount = 0, m_psysUnknownParts = 0, m_psysCursorCount = 0;

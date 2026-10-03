@@ -4715,6 +4715,12 @@ diámetro sigue abierto; ver «Pendiente».
 necesita que el hijo siga a una partícula VIVA, o sea un vínculo por partícula y
 no por muerte, que es otro estado.
 
+**Esta sección leía `eventspawn` al revés.** Lo que describe —el hijo que
+estalla donde muere el padre— es `eventdeath`, un cuarto tipo que el corpus no
+usa; `eventspawn` estalla donde NACE. Y las 286 entradas sin `type` son
+`static`. Ver [Los hijos de un
+sistema](#los-hijos-de-un-sistema-cuatro-tipos-y-eventspawn-estaba-leído-al-revés).
+
 ## `distancemax` sin declarar no es cero: la lluvia salía toda del mismo punto
 
 Las estrellas fugaces de la `City` entraban **todas por el mismo punto de
@@ -5488,3 +5494,167 @@ razón cae porque la imagen correcta es más oscura, no porque este peor.
 sigue teniendo el mismo brillo medio--- pero la correlación de fase entre dos
 fotogramas a 0,75 s ya no tiene el desplazamiento (−36 px) de antes: sale
 (0, 0), como el preview.
+
+## Los hijos de un sistema: cuatro tipos, y `eventspawn` estaba leído al revés
+
+Hasta aquí solo se dibujaba un tipo de hijo, `eventspawn`, y se leía como «el
+hijo estalla donde muere cada partícula del padre». Los otros dos tipos que
+aparecían en el corpus —`eventfollow` y `static`— se quedaban fuera, y las
+entradas sin `type` se contaban aparte como si fueran otra cosa.
+
+### El oráculo: lo que la propia aplicación dice y trae
+
+Esta vez no hizo falta deducir el formato de los valores. La interfaz de WE
+(`locale/ui_en-us.json`) nombra **cuatro** tipos —`Event follow`, `Event
+spawn`, `Event death` y el estático— y el editor de partículas enlaza su
+documentación (`docs.wallpaperengine.io/en/scene/particles/component/children`),
+que dice de cada uno:
+
+| tipo | documentación de WE |
+|---|---|
+| `static` | «se crea una vez en el origen del sistema» |
+| `eventfollow` | «se crea varias veces y sigue a partículas individuales» |
+| `eventspawn` | «se crea **a la vez que nacen** las partículas de este sistema» |
+| `eventdeath` | «se crea cuando una partícula llega al final de su vida» |
+
+Y de los campos de la entrada: `maxcount` es «el número máximo de sistemas
+hijos», solo relevante en los de evento; `probability` la de que el evento lo
+cree; `origin`, `angles` y `scale` la colocación del hijo.
+
+O sea: **lo que estaba implementado como `eventspawn` era `eventdeath`**. Los
+presets de WE lo confirman sin ambigüedad: `fireworks1` y `fireworks2` cuelgan
+su estallido con `eventdeath` —la carga sube y revienta al apagarse— y
+`spark.json` sus chispas con `eventspawn`. En el corpus no hay ni un
+`eventdeath`; en los presets de WE, 25.
+
+### Sin `type` es `static`
+
+286 entradas del corpus no declaran tipo. Son `static`, y lo dicen dos cosas:
+
+- `ember.json`, de WE, cuelga `emberglow` sin tipo; y los presets que el editor
+  guardó con **todos** los campos escritos (`thunderbolt`, `snowstorm`) dicen
+  `type: "static"` junto con el resto de valores por defecto —`maxcount: 10`,
+  `probability: 1.0`, `angles: "0 0 0"`—. Es el mismo patrón de siempre: el
+  campo que falta vale el defecto del editor.
+- En el corpus pasa lo mismo con el mismo par: `ember` → `emberglow` va sin
+  tipo en unas escenas y con `static` y todos los defectos en `3462491575`.
+
+Así que `static` no eran 34 entradas en 1 escena sino **320 en 51**, y
+`maxcount` sin declarar vale 10.
+
+### Qué es cada uno, en el motor
+
+- **`static`** es un sistema independiente con su propio emisor —los 320
+  declaran `rate`, ninguno `instantaneous`—. No hay nada que atar en el
+  simulador: basta con colocarlo. Se coloca con el mecanismo de los grupos de
+  la escena: el objeto hijo declara `parent` y su `origin` y `scale` son los
+  de la entrada, relativos al padre. Así hereda también lo que mueva al padre.
+- **`eventspawn` / `eventdeath`**: cada nacimiento o muerte del padre crea una
+  instancia del hijo, que suelta su `instantaneous` ahí mismo. Las 8 entradas
+  del corpus que no lo declaran —seis con `rate`, dos sin nada— siguen
+  soltando su `maxcount` entero, que es lo que hacían antes: qué hace en WE una
+  instancia con `rate` clavada en un punto —¿emite para siempre?— no se sabe.
+- **`eventfollow`**: cada partícula del padre que nace se lleva una instancia
+  si queda alguna libre (`maxcount` de la entrada a la vez); la instancia
+  suelta su `instantaneous` al empezar y luego emite a su `rate` **donde esté
+  la partícula**, hasta que muere.
+
+Lo que emite un `eventfollow` **no se queda pegado** a la partícula: nace en
+su sitio y desde ahí va por su cuenta. Es una lectura y no un hecho, y la dan
+los nombres de los presets de WE que lo usan —`firefliestrail`,
+`poweruptrails`—: con las partículas pegadas no habría estela, habría un
+enjambre viajando con la luciérnaga.
+
+En los tres de evento el depósito es el `maxcount` del preset por el número de
+instancias, y el `rate` es el **declarado**: el implícito
+([el ritmo implícito](#el-ritmo-implicito-estaba-en-el-extremo-y-se-comia-el-instanceoverride))
+es una estimación para un sistema que emite solo, y aquí es el de cada
+instancia.
+
+### El reparto
+
+Igual que con el primer hijo: `wescene._hijos` devuelve cada hijo como un
+objeto hermano, `werender` le arma su `.psys` y su pase, y la línea del plan
+crece con lo que el simulador necesita saber:
+
+```
+psyspadre <hijo> <padre> <rafaga> <modo> <instancias> <probabilidad> <ex> <ey> <ez>
+```
+
+`modo` es 0 muerte, 1 nacimiento, 2 seguir. La escala de la entrada va al
+final porque el hijo se dibuja con ella encima de la del padre: la posición
+del evento, que llega en el espacio del padre, se divide por ella para caer en
+su sitio. Una línea de tres campos —un plan anterior— sigue valiendo y es la
+de la muerte, que es lo que significaba.
+
+En `src/weparticles.c`, todas las partículas nacen ahora por un único sitio,
+`nace()`, que es quien anota los nacimientos para los hijos. Por eso un hijo
+de nacimiento ve los de su padre vengan de donde vengan: del emisor, del
+estallido del arranque, o de un evento de SU padre. Esto último hace falta: 165
+entradas `static` del *spawner* de Matrix —una partícula que cae por columna—
+cuelgan cada una una estela `eventfollow`, o sea nietos (y una más, de lluvia).
+
+Un hijo atado no emite nunca por su cuenta: lo decide el simulador
+(`!s->padre`), no el `rate` a cero que antes ponía Python, porque ahora ese
+`rate` hace falta para seguir.
+
+### Lo que se deja fuera, a propósito
+
+- **`angles` de la entrada.** Hay uno distinto de cero en el corpus
+  (`0 0 -50`, en un `eventfollow`) y no se sabe en qué unidad está: el resto
+  del formato guarda radianes, y −50 rad tiene poca pinta de ser lo que el
+  autor tecleó.
+- **`controlpointstartindex`** («el punto de control del hijo que se
+  sobrescribe con las posiciones del padre») y **`flags`** de la entrada. El
+  primero aparece una vez en el corpus (en un `eventfollow`, con 2) y el
+  segundo nunca con un valor distinto de 0; en los presets de WE los dos los
+  usa el rayo `thunderbolt`. Sin un caso en el corpus no hay con qué medirlos.
+- **`inheritvaluefromevent`** e **`inheritinitialvaluefromevent`**, las piezas
+  que copian color, velocidad o tamaño de la partícula del padre: cero usos en
+  el corpus.
+- El `instanceoverride` del padre se copia al hijo, como ya se hacía: el autor
+  ajusta el sistema como un todo, y escalar las brasas sin escalar su halo los
+  descuadraría. También es una lectura.
+
+### Lo medido
+
+En el corpus, con las capas invisibles fuera: **182 hijos `static` en 51
+escenas**, **76 `eventfollow` en 19** —34 de ellos nietos— y los mismos 17
+`eventspawn` en 9 escenas de antes. Unos 275 en 60 escenas.
+
+**La prueba de contrato** (`test_weparticles.py`, «los hijos de evento»): un
+padre de partículas que se alejan a 60 px/s y un hijo de emisor puntual con
+0,2 s de vida.
+
+```
+  eventfollow  escala 1    padre 8  hijo 16   a 5.0 px de su particula
+  eventfollow  escala 2.5  padre 8  hijo 16   a 5.0 px de su particula
+  eventspawn   a los 3 s: 3 particulas
+  eventdeath   a los 3 s: 0, a los 9 s: 3
+```
+
+Y se comprobó que la prueba muerde: con la escala de la entrada sin aplicar en
+el simulador, la estela con escala 2,5 queda a **460 px** de su partícula y la
+prueba falla.
+
+**Sobre una escena real**, las luciérnagas de `2078213130`: 12 vivas y 79
+partículas de estela a 14,7 px de media de la más cercana, ninguna a más de
+100.
+
+**`test_luminancia` sobre las 129**, contra una referencia sacada de `main` con
+el mismo driver: 129/129 renderizan, **0 apagadas, 0 regresiones**, y las
+mismas sospechosas que antes. 16 escenas mueven su media más de 0,25; 14 suben,
+que es lo esperable al aparecer partículas que no se dibujaban, y ninguna pasa
+de +3,2 (`2710814362`). En `1120440003` lo que aparece es el halo cálido de
+`emberglow` dentro de la ciudad, que es lo que enseña su preview. En la `City`
+(`2821288001`), la escena donde se estudió `eventspawn`, la media no se mueve
+(83,09 contra 83,10).
+
+**`test_wescene`**: 582/582 variantes compilan y 291/291 pares enlazan, en Mesa
+y en NVIDIA. Son las mismas cifras de antes: los hijos usan `genericparticle`
+con combinaciones que el corpus ya pedía.
+
+Esto último **no dice** que los destellos de la `City` estén ahora bien: sus
+hijos pasan de estallar al morir la estrella a hacerlo al nacer, y el cabo del
+diámetro de los destellos ([Lo que NO arregla](#lo-que-no-arregla)) sigue
+abierto. Lo que sí dice es que el arreglo no apaga ni ensucia nada.

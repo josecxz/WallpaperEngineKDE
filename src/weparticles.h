@@ -68,15 +68,32 @@ void we_psys_free(WeParticleSystem *s);
  * el tiempo reinicia el sistema, que es lo unico razonable. */
 int we_psys_update(WeParticleSystem *s, float t);
 
-/* Cuelga `hijo` de `padre` como `eventspawn`: cada vez que muere una particula
- * del padre, el hijo suelta `rafaga` particulas ahi mismo.
+/* Los tres hijos que dependen de un EVENTO de una particula del padre. El
+ * cuarto tipo, `static`, no pasa por aqui: es un sistema independiente que
+ * solo hereda la colocacion, y eso lo resuelve el plan.
+ *
+ *   MUERE  `eventdeath`   una instancia donde muere cada particula del padre
+ *   NACE   `eventspawn`   una instancia donde nace cada particula del padre
+ *   SIGUE  `eventfollow`  una instancia pegada a cada particula VIVA, que
+ *                         emite a su ritmo donde este esa particula */
+enum { WE_HIJO_MUERE = 0, WE_HIJO_NACE = 1, WE_HIJO_SIGUE = 2 };
+
+/* Cuelga `hijo` de `padre`. Cada evento crea una instancia del hijo, que
+ * suelta `rafaga` particulas al empezar; las de `SIGUE` emiten ademas al
+ * `rate` de su `.psys` mientras su particula viva. `instancias` es cuantas
+ * pueden seguir a la vez (solo cuenta en `SIGUE`; en los otros dos el tope es
+ * el `maxcount` del hijo), `probabilidad` la de que un evento cree instancia y
+ * `escala` la de la entrada de `children`: el hijo se dibuja con ella, asi que
+ * la posicion del evento se divide por ella para caer en su sitio.
  *
  * Los dos siguen siendo sistemas separados ---cada uno con su material, su
  * pase y su `.psys`--- pero se simulan en tandem: el `we_psys_update` del
  * padre da el paso de los dos y el del hijo solo rehace vertices. Por eso el
  * ejecutor tiene que llamar a esto DESPUES de cargar los dos y ANTES del
- * primer `update`. */
-void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga);
+ * primer `update`. Un hijo con padre no emite por su cuenta: solo por evento. */
+void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int modo,
+                    int rafaga, int instancias, float probabilidad,
+                    const float escala[3]);
 
 /* Donde esta el puntero, en coordenadas de ESTE sistema (las mismas en las
  * que viven las particulas, o sea pixeles del lienzo escalados por el objeto).
@@ -88,7 +105,7 @@ void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga)
  * llamarla ANTES de `we_psys_update` o el paso de este fotograma usara la
  * posicion del anterior.
  *
- * No alcanza a los hijos `eventspawn`: cada uno es un sistema con su propia
+ * No alcanza a los hijos de evento: cada uno es un sistema con su propia
  * colocacion, asi que el puntero en coordenadas del padre no le sirve y hay
  * que llamarlo tambien para ellos.
  *
