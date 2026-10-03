@@ -275,24 +275,37 @@ Limitaciones conocidas:
   a un octavo y suma. Lo encienden 33 escenas de 129. Nueve piden además el
   camino **HDR**, con su pirámide de iteraciones y un buffer en coma flotante,
   y se quedan con la cadena normal.
-- La ondulación del agua de algún wallpaper no cae exactamente donde su
-  preview la pone. La capa se coloca donde la escena dice; la diferencia está
-  en su cadena de efectos y sigue sin aclararse.
+- Una **capa de composición** con el rectángulo más pequeño que el lienzo se
+  quedaba el fotograma entero en vez del trozo que hay debajo de ella, y con un
+  efecto que desplazara encima el fondo resbalaba —en *Lonely Cat*, un 2,2 % de
+  la altura por segundo, con una banda dura arriba—. Arreglado para las 27 de
+  shader `composelayer`, en 18 escenas. Quedan **2 capas** con shader
+  `passthrough`, en 2 escenas, que siguen quedándose el fotograma entero: ese
+  shader no muestrea por la MVP, así que componerlo en su rectángulo le
+  encogería el contenido y hay que mirarlas aparte.
 - Los campos **animados** se congelan, no se animan: el plan es una foto y el
   motor solo le cambia el reloj. Se congelan en reposo, que es como se ve un
   wallpaper una vez arrancado.
 - El **vídeo va por CPU**: no hay VAAPI ni NVDEC. Un 2160p a 60 fps se
   sostiene (57 de cada 60 fotogramas), pero cuesta un núcleo. Y su pista de
   audio no suena.
-- El parallax por mapa de profundidad se dibuja en reposo: el motor todavía no
-  sabe dónde está el puntero, así que la escena se ve centrada.
+- El **puntero llega a la escena**: los efectos que lo leen —el parallax por
+  mapa de profundidad, la ondulación del cursor— y las partículas que lo
+  persiguen se mueven con el ratón mientras está sobre el fondo. Cuando pasa a
+  una ventana el fondo deja de verlo y se queda en la última posición conocida.
+  Lo que **no** se mueve todavía es la **cámara**: `cameraparallax` desplaza
+  cada capa según su profundidad en 29 escenas de 129, y eso está sin hacer.
 - Luces puntuales y de tubo sí; focos y direccionales no, y una escena que
   traiga alguna se dibuja plana entera —iluminar a medias la deja más oscura
   que no iluminarla—.
 - Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
-  incluidas, y con el vocabulario del formato cubierto entero. Los operadores
-  que siguen al cursor quedan inactivos hasta que el motor sepa dónde está el
-  puntero.
+  incluidas, y con el vocabulario del formato cubierto entero. Los sistemas que
+  persiguen al ratón —123, en 46 escenas— lo persiguen de verdad; sin ratón
+  sobre el fondo no atraen hacia ninguna parte, que es lo que hace WE cuando el
+  puntero se va. Queda un cabo medido y sin cerrar: 25 emisores del corpus
+  llevan `flags: 2` y 23 de ellos están en sistemas que ya siguen al cursor
+  —apunta a «emite donde el ratón», pero no está comprobado—, así que hoy
+  emiten desde el origen del sistema.
 - El **texto se ejecuta a medias**: 148 de las 172 capas de texto traen la
   cadena en un script de JavaScript, y de esas **123 dan la hora en vivo**, en
   20 escenas. Las 25 restantes se quedan con la copia que el autor guardó

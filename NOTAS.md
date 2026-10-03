@@ -3590,6 +3590,14 @@ al arreglo: **una sola escena cambia**, `3555933181`, de 114,77 a 81,14. Y baja
 porque antes estaba mal: el `composelayer` desplazado le blanqueaba la mitad
 izquierda. La imagen nueva es la que cuadra con la vista previa que publicó su
 autor.
+
+**Esto era la mitad de la historia**, y la otra mitad tardó en aparecer: el
+`gl_Position` de `composelayer.vert` ignora la MVP, cierto, pero su
+`v_ScreenCoord` **no**, y de ahí sale lo que muestrea. Con la colocación en
+identidad se queda el fotograma entero en vez del trozo que hay bajo su
+rectángulo, y eso es lo que desliza el fondo de *Lonely Cat*. Ver [el fondo de
+*Lonely Cat* se
+desliza](#el-fondo-de-lonely-cat-se-desliza-y-las-dos-mitades-de-un-arreglo).
 ## `254 - 255` no es −1: el flujo se invertía donde la máscara satura
 
 Un mapa de flujo de WE guarda un vector por píxel en RG, centrado en 0.498. Su
@@ -3853,8 +3861,14 @@ Por orden de lo que más se nota:
    escena que traiga alguna se sigue dibujando plana.
 7. **Audio reactivo**: `g_AudioSpectrum16/32/64` en 33 variantes de shader y
    `audioprocessing*` en ~50 usos de partícula.
-8. **El puntero de verdad**: hoy se emite el centro fijo. Desbloquea el
-   parallax y los 111 usos de `controlpointattract`.
+8. ~~El puntero de verdad~~ **hecho**: el ratón llega a la escena por la misma
+   puerta que el reloj ---marcadores en la plantilla del plan--- y mueve los
+   123 sistemas de partículas que lo persiguen en 46 escenas, más
+   `g_PointerPosition`, `g_PointerPositionLast` y `g_ParallaxPosition`; ver
+   [El ratón entra en la
+   escena](#el-ratón-entra-en-la-escena-un-puntero-cuatro-consumidores). Queda
+   la **cámara**: `cameraparallax` mueve cada capa según su profundidad en 29
+   escenas y falta el número que lleva su `amount` a píxeles.
 
 Y un fallo de uso, sin arreglar: **cambiar el fondo con el escritorio tapado no
 recarga el motor**. `recargar()` intercambia el plugin pero el `SceneView` no se
@@ -3865,9 +3879,8 @@ De partículas ya no queda vocabulario: los tres cabos —el corro, `remapvalue`
 `orientation`— están cerrados y contados arriba. Lo que sigue fuera de la
 simulación son tres cosas, ninguna bloqueante:
 
-- `controlpointattract` sobre puntos atados al cursor (**111 de 136 usos**):
-  entra solo en cuanto el motor en vivo sepa dónde está el puntero. No es
-  trabajo aparte.
+- ~~`controlpointattract` sobre puntos atados al cursor (**111 de 136 usos**)~~
+  **hecho**: entró con el puntero, como estaba previsto.
 - Un `rope` con `orientation: upright`, **1 sistema**: la anchura de la cinta la
   monta nuestro constructor de vértices, perpendicular al camino, y ese la
   quiere vertical.
@@ -5125,3 +5138,353 @@ se mueve (5,98 s contra los 5,99 de antes, con `lifetimerandom 5 7`), así que l
 Lo que **no** cambia: el número de partículas, su tamaño, su parpadeo, ni el
 carácter del campo ---mismas celdas de 2000 px y de 1 s, o sea que siguen
 derivando en grupo y girando cada segundo---. Solo van más despacio.
+
+## El ratón entra en la escena: un puntero, cuatro consumidores
+
+Hasta aquí el puntero era una constante. `g_PointerPosition` se emitía en
+`0.5 0.5` con un comentario que decía «hasta que el motor sepa dónde está el
+ratón de verdad», y los operadores de partícula que tiran de un punto de
+control atado al cursor se **descartaban** en Python, porque sin ratón ese
+punto se queda en el origen del sistema y el operador deja de ser una
+interacción para convertirse en un sumidero: con `scale -500` y `drag 2.5` la
+nube de 512 px de radio se apelotona en una bola de 64.
+
+Lo que había que decidir era **por dónde entra** un dato que cambia cada
+fotograma y que el plan —que es una foto— no puede llevar horneado.
+
+### Quién lo mira, contado antes de escribir nada
+
+| consumidor | cuánto | dónde |
+|---|---|---|
+| puntos de control atados al cursor (`flags & 1`) | **123 sistemas en 46 escenas** | `controlpointattract`, 111 de sus 136 usos |
+| `cameraparallax` de la escena | 29 escenas | mueve la **cámara**, no está hecho |
+| efecto `depthparallax` (`g_ParallaxPosition`) | 6 usos en 6 escenas | |
+| efecto `cursorripple` (`g_PointerPosition` + `Last`) | 6 usos en 1 escena | |
+| efecto `xray` (`g_PointerPosition`) | 1 uso | |
+
+Las partículas son el consumidor grande —46 escenas de 129— y por eso son las
+que deciden el diseño. Los tres efectos son 13 pases en 8 escenas.
+
+### El puntero viaja como el tiempo: un marcador en la plantilla
+
+El plan ya tenía exactamente este problema resuelto para el reloj: el cuerpo
+lleva `@TIME@` y lo sustituye quien dibuja —Python offline, el ejecutor en
+vivo—. El puntero usa la misma puerta, con tres pares de marcadores:
+
+```
+u2f g_PointerPosition     @PUNTERO_X@ @PUNTERO_Y@
+u2f g_PointerPositionLast @PUNTERO_ANT_X@ @PUNTERO_ANT_Y@
+u2f g_ParallaxPosition    @PARALLAX_X@ @PARALLAX_Y@
+```
+
+Y dos directivas nuevas en la cabecera:
+
+```
+parallax <retardo>                    segundos que tarda el parallax en llegar
+psyspuntero <id> <7 floats>           afín: pantalla -> espacio de ESE sistema
+```
+
+`psyspuntero` es el reparto de siempre. Las partículas viven en píxeles de su
+sistema y el ratón llega en coordenadas de pantalla; quien sabe dónde cae el
+sistema en el lienzo es Python, así que resuelve la afín —la inversa de
+`particle_world`, aplanada a `x = a·u + b·v + c`— y los dos ejecutores solo
+multiplican. Se emite únicamente para los 123 sistemas que la necesitan.
+
+**Sin ratón no es ratón en el centro.** Son dos estados distintos y confundirlos
+cuesta el efecto: con el puntero clavado en el centro, las luciérnagas de 46
+escenas se apelotonan ahí desde el primer fotograma. Así que `we_psys_puntero`
+acepta `NULL` —«ahora mismo no hay»— y con él los operadores del cursor no
+actúan, que es exactamente lo que se veía antes de este cambio. Offline es el
+estado por defecto y `--puntero <u> <v>` es lo que lo enciende.
+
+### De dónde sale el ratón en el escritorio
+
+Un `MouseArea` con `hoverEnabled` habría recibido el hover **y los clics**, y
+un fondo que se queda los clics del escritorio no es un fondo. `HoverHandler`
+solo mira: no acepta botones, no es `blocking`, y el menú contextual, la
+selección con recuadro y los iconos siguen funcionando igual.
+
+Lo que da y lo que no: mientras el ratón está sobre una ventana, el fondo **no
+recibe nada**. No es una carencia de la implementación sino de la posición: en
+Wayland un cliente solo ve el puntero cuando está encima de él. La respuesta
+es quedarse con la última posición conocida —no inventarse un movimiento que
+no ha ocurrido, que en el efecto de ondulación sería un latigazo por la
+pantalla— y decir que ya no hay ratón para los puntos de control. Wallpaper
+Engine, en Windows, lee el cursor global y sigue el ratón por debajo de las
+ventanas; esto es lo más parecido que se puede saber desde aquí.
+
+### La pantalla no es la escena
+
+El item ocupa la pantalla entera pero la escena casi nunca: 99 de las 129
+escenas son 16:9 y el encaje `Cubrir` recorta lo que sobra. Así que el píxel
+bajo el ratón **no** es el píxel de escena que hay debajo, y convertir uno en
+otro es el mismo cálculo del blit final del revés. Estaba escrito dentro de
+`render()`, mezclado con el blit; se ha sacado a `encajado()` para poder
+hacerlo al principio del fotograma, que es cuando el puntero hace falta. Con
+el cálculo duplicado, un encaje con recorte movía la escena y no el ratón.
+
+### La `y` del uniform, que es donde estaba la trampa
+
+`g_PointerPosition` va en coordenadas de **pantalla con la y hacia abajo**, y
+no hay que voltearla. La duda es legítima porque los shaders de WE hacen la
+suya: `cursorripple` y `xray` escriben `pointer.y = 1.0 - pointer.y` con el
+comentario *«flip pointer screen space Y to match texture space Y»*, y
+`depthparallax` no voltea el puntero sino la coordenada de textura,
+`vec2(v_TexCoord.z, 1.0 - v_TexCoord.w)`. Los dos dicen lo mismo: el espacio
+del puntero es el contrario al de textura.
+
+Y cuál es el nuestro ya estaba decidido y escrito, en el preámbulo que
+`weshader.py` le pone a cada shader: **compilamos la rama `GLSL`**, y es la de
+`HLSL` la que invierte la Y de las texturas. Con la rama GLSL, la `v` crece
+hacia arriba y `1 - v` es la pantalla con la y hacia abajo, que es justo lo que
+Qt entrega. Sin flip.
+
+Lo que **no** se ha podido comprobar contra una imagen: los efectos que lo
+leen no dejan rastro medible offline. `cursorripple` es una simulación de
+fluido que arranca de `length(g_PointerPosition - g_PointerPositionLast)`, o
+sea del **movimiento**, y offline el puntero está quieto por definición; se
+forzó a mano una diferencia de 0,2 en el plan de `3299228616` y sus 264 pases
+dieron 0 píxeles de cambio, así que su cadena necesita algo más que un
+fotograma. El `xray` de `3237641967` tampoco cambia nada visible: su halo se
+multiplica por el alfa de la textura de mezcla. Lo que sí está medido es el
+camino de las partículas, que no pasa por ninguna coordenada de textura.
+
+### Lo que sí se midió
+
+`psysprobe` acepta ahora la posición del ratón, y con ella la nube se va donde
+se le dice. Sobre `1779280331`, la escena con más sistemas atraídos del corpus
+(16), poniendo el puntero en `0.2 0.25` de la pantalla:
+
+| | centro de la nube, en su sistema | de vuelta a pantalla |
+|---|---|---|
+| `s000` | (539, −199) | u=0,223 v=0,278 |
+| `s001` | (−514, 201) | u=0,243 v=0,257 |
+| `s002` | (−434, 133) | u=0,225 v=0,266 |
+
+Cada sistema tiene su propio origen, su escala y su giro —el primero está
+rotado 180°, por eso su `a` es negativa— y los tres acaban en el mismo sitio de
+la pantalla, que es lo que había que comprobar. La ida y vuelta contra
+`particle_world` es exacta en los 16.
+
+Y en la imagen, que es lo que decide. `2078213130` —cuatro sistemas atraídos,
+ni una capa de reloj que ensucie la comparación— renderizada con el puntero en
+`0.2 0.75` y sin puntero: los 7921 píxeles que se **encienden** caen centrados
+en `u=0,238 v=0,735`. La luz media no se mueve (70,19 contra 70,21): las mismas
+partículas, en otro sitio.
+
+En vivo, con el arnés QML moviendo el puntero por su cuenta (no hay ratón que
+mover en una prueba automática), la traza dice lo mismo fotograma a fotograma:
+`vista(0.100,0.150) -> escena(0.100,0.150) -> sistema(24.9,529.8)`.
+
+Y dentro de plasmashell, que es la única pregunta que el arnés no contesta —si
+los eventos de hover llegan al fondo o se los queda alguien por el camino—, el
+aviso de una sola línea que se emite la primera vez que el ratón pisa el
+escritorio:
+
+```
+SceneView: ... particulas 16 sistemas / 0 piezas sin soporte / 16 siguen al raton
+GlExecutor: el raton entra en el fondo por (0.196, 0.961)
+```
+
+Con `Halo Infinite Hologram Explosion` puesto, que son 16 sistemas de 16. El
+`HoverHandler` recibe sin quitarle nada al escritorio.
+
+Y el contrato Python↔C tiene su prueba en `test_weparticles.py`: un sistema con
+la marca puesta, simulado 10 s, con el puntero en (400, −300) y sin él.
+
+```
+  sin puntero  centro (-7, 14)     a 514 px del destino
+  con puntero  centro (412, -309)  a 15 px del destino
+```
+
+Son las dos averías posibles a la vez: que la marca no viaje en la línea `cp`,
+y que el simulador no la mire. Las dos se ven igual en un PNG —una nube más
+pequeña de lo que debería— y ninguna falla sola.
+
+### Lo que la regresión dice: 0 regresiones y una reordenación honesta
+
+Las 129, antes y después, con el puntero apagado —que es el estado por defecto
+offline—: **0 apagadas, 0 regresiones, 0 que no renderizan**, y la única
+sospechosa es la misma de siempre (`3459506773`, al 0,37 de su preview).
+
+Once escenas dan un número distinto, y ninguna se mueve más de 0,25 sobre 255.
+Las once tienen una capa de texto, o sea un reloj, y las dos pasadas se
+tomaron con seis minutos de diferencia; eso explica las cuatro que no tienen
+ni un sistema de partículas atado al cursor. Pero no explica `2078213130`, que
+tiene cuatro sistemas de cursor y ni una capa de texto, así que se midió
+aparte:
+
+| | luz media | píxeles que cambian más de 4/255 |
+|---|---|---|
+| dos renders del código nuevo | idénticos | 0 |
+| nuevo contra anterior | 70,245 contra 70,243 | 10591 de 2 073 600 |
+
+La causa es conocida y no es un fallo: el operador del cursor ahora **ocupa un
+puesto** en la lista de operadores del sistema, y las fases aleatorias por
+partícula se derivan del ÍNDICE del operador —`azar_fijo(semilla, j * 4)`—, así
+que los que van detrás de él vuelven a sortear su fase. Misma nube, mismos
+números, otro reparto de fases. Es el precio de que el operador exista en el
+fichero aunque no actúe, y la alternativa —no escribirlo cuando no hay ratón—
+no vale: si hay ratón o no es cosa del fotograma, no del plan.
+
+### `g_ParallaxPosition` es el puntero con retardo, y nada más
+
+Es un uniform distinto de `g_PointerPosition` y la diferencia es el retardo:
+`cameraparallaxdelay`, que 108 de las 129 escenas dejan en 0,1 s y que **cuatro
+de las seis** que usan el efecto de profundidad suben a 2 s. Un parallax que va
+pegado al ratón no es el que esos autores pidieron, así que el suavizado es
+exponencial —`1 - exp(-dt/retardo)`, para que el tiempo de llegada no dependa
+del refresco— y vive solo en el ejecutor en vivo: offline no hay trayectoria
+que suavizar.
+
+Lo que **no** lleva es `cameraparallaxamount` ni `cameraparallaxmouseinfluence`,
+y el corpus es quien lo dice: dos de las seis escenas con `depthparallax`
+declaran `cameraparallaxamount: 0`. Si el amount escalara este uniform, esas
+dos habrían puesto un efecto marcado como *expensive* sobre una entrada muerta.
+El efecto ya trae sus propios mandos —`g_Scale`, `g_Sensitivity`, `g_Center`—:
+la fuerza es cosa suya, no de la cámara.
+
+### Lo que queda, medido
+
+- **La cámara**. `cameraparallax` está en 29 escenas de 129 y mueve cada capa
+  según su `parallaxDepth` (1459 objetos en 116 escenas lo declaran). No se ha
+  hecho porque falta el número que convierte «amount 0,5» en píxeles, y ese no
+  sale ni del formato ni de los shaders: sale de comparar con WE corriendo.
+  Escribirlo a ojo movería 29 escenas en una dirección que nadie ha medido.
+- **El emisor que nace en el cursor**: 25 emisores del corpus llevan
+  `flags: 2` y 23 de ellos están en sistemas que ya tienen un punto atado al
+  cursor. Apunta a «emite donde el ratón» —el preset `trail_1` de WE es una
+  estela que sale del puntero, con `distancemax: 0` y ese flag—, pero en 14 de
+  los 25 el punto del cursor es el 1 y no el 0, así que «emite en el punto 0»
+  no lo explica. Sin una lectura que cubra los 25 no se toca.
+- **El puntero por debajo de las ventanas**, que en Wayland pide otra fuente
+  distinta de los eventos del propio fondo.
+
+## El fondo de *Lonely Cat* se desliza, y las dos mitades de un arreglo
+
+**Síntoma, tal como se ve:** en `3299228616` (*Lonely Cat*) el fondo entero
+resbala hacia arriba sin parar y hay una banda dura en el 18 % superior con un
+trozo de la parte de abajo. De paso, las olas y el gato dejan de cuadrar: lo
+que se dibuja **antes** de cierta capa se desliza y lo que se dibuja **después**
+—estrellas, luciérnagas— se queda quieto.
+
+No tiene nada que ver con el puntero: el desplazamiento sale de `g_Time` y
+llevaba ahí desde siempre.
+
+### El oráculo: el preview del autor no se mueve
+
+`preview.gif` son 38 fotogramas de 40 ms renderizados por Wallpaper Engine.
+Correlación de fase contra el primero: **(0, 0) en los 38**. El nuestro, medido
+igual sobre seis renders a 0,15 s de distancia:
+
+| t | 8,00 | 8,15 | 8,30 | 8,45 | 8,60 | 8,75 |
+|---|---|---|---|---|---|---|
+| desplazamiento (px de 360) | 0 | −1 | −2 | −3 | −5 | −6 |
+
+Unos 2,2 % de la altura por segundo. En una pantalla de 1200 px son 27 px/s, y
+eso es lo que se ve moverse.
+
+### Quién lo mueve
+
+Volcando el compuesto pase a pase y correlacionando cada volcado entre los dos
+instantes, el desplazamiento aparece **de golpe en un único pase**: el 25, con
+`|dif|` de 11,96 cuando ninguno de los anteriores pasa de 4.
+
+Ese pase es el efecto `scroll` (`speedy 0.15`) de la capa **`Bar 3`**, que es un
+***composelayer***: una capa que no dibuja nada propio, solo coge el fotograma
+ya compuesto (`_rt_FullFrameBuffer`) para que sus efectos lo transformen. Sus
+dos efectos:
+
+| efecto | visible | |
+|---|---|---|
+| `Simple_Audio_Bars` | `barstyle == 3` | **apagado**: el valor por defecto es 1 |
+| `scroll` | siempre | encendido |
+
+Sin el efecto de barras, lo que queda es *coge todo el fondo, despláza­lo y
+píntalo encima*. El `frac()` del shader envuelve el desplazamiento, y ahí está
+la banda.
+
+Quitando del plan el bloque de esa capa, la escena cuadra con el preview:
+desplazamiento (−2, +8) sobre 256 px, que es la propia animación del agua.
+
+### La causa: la identidad que le damos a una capa passthrough
+
+`_colocacion` trata las capas *passthrough* poniéndoles origen en el centro y
+tamaño de lienzo, así que su colocación sale **identidad**. Para
+`fullscreenlayer` y `projectlayer` es correcto —su shader ni mira la MVP— pero
+`composelayer.vert` **sí la mira**, y para lo más importante:
+
+```glsl
+v_ScreenCoord = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix).xyw;
+...
+gl_Position = vec4(a_TexCoord * 2.0 - 1.0, 0.0, 1.0);   // el quad, pantalla entera
+```
+```glsl
+vec2 texCoord = v_ScreenCoord.xy / v_ScreenCoord.z * 0.5 + 0.5;
+gl_FragColor = texSample2D(g_Texture0, texCoord);       // el fondo, por la MVP
+```
+
+O sea: el quad es la pantalla entera, pero **lo que muestrea sale de la MVP**.
+Con la identidad copia el fotograma ENTERO en vez del trozo que hay bajo su
+rectángulo, y encima se compone sobre todo el lienzo en vez de dentro de él.
+
+### Por qué el arreglo son dos mitades y ninguna vale sola
+
+Probado parcheando el plan a mano, sobre esta escena:
+
+| variante | resultado |
+|---|---|
+| como está hoy | el fondo entero desplazado, con la banda |
+| **solo** componer en el rectángulo | el fotograma entero **encogido dentro del rectangulito** |
+| MVP real en el pase base **+** componer en el rectángulo | **cuadra con el preview** |
+
+La segunda fila es exactamente el síntoma que dejó escrito [La capa
+`passthrough` se componía en su rectángulo del
+editor](#la-capa-passthrough-se-componía-en-su-rectángulo-del-editor) y por el
+que se puso la identidad:
+se probó componer en el rectángulo sin arreglar la otra mitad, y con el buffer
+lleno del fotograma entero no podía salir otra cosa. Las dos juntas se explican
+solas: coge el trozo bajo el rectángulo, agrándalo al buffer, aplica los
+efectos, devuélvelo al rectángulo. Sin efectos es la identidad, que es justo
+por lo que una capa así es invisible cuando no la usa nadie.
+
+### Alcance, medido sobre las 129
+
+| capas passthrough visibles | 85 en 41 escenas |
+|---|---|
+| con shader `composelayer` | 45 |
+| con shader `passthrough` | 40 |
+| **con rectángulo distinto del lienzo** | **29** |
+| de ellas, `composelayer` | 27, en 18 escenas |
+| de ellas, `passthrough` | 2, en 2 escenas |
+
+Las otras 56 son del tamaño del lienzo: para ellas el rectángulo **es** la
+identidad y el arreglo no las tocaría. (Aquella sección contaba 32 en 21
+escenas; era la biblioteca anterior, la de 125.) Las dos de shader `passthrough` hay que
+mirarlas aparte, porque ese shader no usa la MVP para muestrear y componerlo en
+su rectángulo le encogería el contenido.
+
+**Arreglado el 2026-08-31.** `_colocacion` ya no fuerza identidad para un
+`composelayer` con rectángulo propio ---sigue forzándola para `passthrough`,
+que no mira la MVP--- y el pase BASE de un `composelayer` deja de emitir
+`g_ModelViewProjectionMatrix` a identidad: lleva la MVP real
+(`object_mvp`), la misma con la que se compone después. Las dos mitades caen
+solas de ahí, porque pasan a ser el mismo cálculo que ya usa cualquier otra
+capa; no hizo falta tocar `layer_size` ---el buffer de trabajo del objeto es
+del tamaño del lienzo en los dos ejecutores, `compo[]`/`m_compo[]`, y eso no
+cambia--- ni el shader.
+
+Medido sobre las 129 con `test_luminancia`: 129/129 renderizan, 0 apagadas, 0
+regresiones (umbral del 25%), la misma sospechosa de siempre
+(`3459506773`). 13 escenas mueven su luminancia media más de 0,05; en las
+otras 12 la razón contra el preview se queda igual o mejora. La única que se
+mueve de verdad es `3521337568`, de 0,795 a 0,668 ---empeora el número, pero
+es la mitad de la historia: antes un `composelayer earth composition` con
+efectos `fisheye`+`blend`+`tint` llenaba el lienzo entero con un planeta
+ovalado del tamaño de la pantalla; con el arreglo es un cuarto creciente
+pequeño arriba a la izquierda, que es lo que enseña el preview del autor. La
+razón cae porque la imagen correcta es más oscura, no porque este peor.
+`3299228616` (Lonely Cat) no mueve su luminancia media en absoluto ---el agua
+sigue teniendo el mismo brillo medio--- pero la correlación de fase entre dos
+fotogramas a 0,75 s ya no tiene el desplazamiento (−36 px) de antes: sale
+(0, 0), como el preview.

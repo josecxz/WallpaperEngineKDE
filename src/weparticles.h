@@ -78,6 +78,31 @@ int we_psys_update(WeParticleSystem *s, float t);
  * primer `update`. */
 void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga);
 
+/* Donde esta el puntero, en coordenadas de ESTE sistema (las mismas en las
+ * que viven las particulas, o sea pixeles del lienzo escalados por el objeto).
+ * La conversion desde la pantalla la hace el plan ---`psyspuntero` lleva la
+ * afin ya resuelta--- porque quien sabe donde cae el sistema en el lienzo es
+ * Python, no esto.
+ *
+ * Solo mueve los puntos de control marcados con el flag del cursor. Hay que
+ * llamarla ANTES de `we_psys_update` o el paso de este fotograma usara la
+ * posicion del anterior.
+ *
+ * No alcanza a los hijos `eventspawn`: cada uno es un sistema con su propia
+ * colocacion, asi que el puntero en coordenadas del padre no le sirve y hay
+ * que llamarlo tambien para ellos.
+ *
+ * `xyz` a NULL dice que AHORA MISMO no hay puntero ---el raton no esta sobre
+ * el fondo, o no se ha movido nunca desde que arranco--- y entonces los
+ * operadores que tiran de un punto atado al cursor se quedan quietos. Es el
+ * estado por defecto: un sistema recien cargado no atrae hacia ninguna parte
+ * hasta que alguien diga donde esta el raton. */
+void we_psys_puntero(WeParticleSystem *s, const float *xyz);
+
+/* 1 si el sistema tiene algun punto de control atado al puntero. Sirve para no
+ * pagar la conversion en los 719 sistemas del corpus que no lo usan. */
+int we_psys_cursor(const WeParticleSystem *s);
+
 const float *we_psys_vertices(const WeParticleSystem *s);
 
 /* 0 = sprites sueltos, 1 = `rope`, 2 = `ropetrail`. Decide el layout del

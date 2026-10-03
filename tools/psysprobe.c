@@ -13,7 +13,12 @@
  *
  * Uso:
  *     make psysprobe
- *     obj/psysprobe <fichero.psys> <segundos>
+ *     obj/psysprobe <fichero.psys> <segundos> [<x> <y> <z> del puntero]
+ *
+ * Los tres ultimos ponen el raton en coordenadas del SISTEMA ---las mismas en
+ * las que salen las posiciones que imprime--- para ver que hacen los puntos de
+ * control atados al cursor. Sin ellos no hay raton, que es un estado distinto
+ * de tenerlo en el (0,0,0): sin raton, esos operadores no actuan.
  *
  * El `.psys` lo escribe `tools/weparticles.py`; el renderizador offline deja los
  * suyos en su directorio temporal.
@@ -38,6 +43,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (argc >= 6) {
+        const float p[3] = {strtof(argv[3], NULL), strtof(argv[4], NULL),
+                            strtof(argv[5], NULL)};
+        we_psys_puntero(s, p);
+        printf("puntero en (%.1f, %.1f, %.1f)%s\n", p[0], p[1], p[2],
+               we_psys_cursor(s) ? "" : "  --- este sistema no lo usa");
+    }
+
     int nv = we_psys_update(s, strtof(argv[2], NULL));
     const float *v = we_psys_vertices(s);
     int paso = we_psys_floats_por_vertice(s);
@@ -55,6 +68,7 @@ int main(int argc, char **argv)
      * vertice y ahi no hay velocidad que resumir. */
     if (!we_psys_cinta(s) && nv > 0) {
         double sx = 0, sy = 0, rap = 0, rmin = 1e30, rmax = -1e30;
+        double cx = 0, cy = 0;
         double x0 = 1e30, x1 = -1e30, y0 = 1e30, y1 = -1e30;
         int n = 0;
         for (int i = 0; i < nv; i += por_particula) {
@@ -62,6 +76,7 @@ int main(int argc, char **argv)
             double vx = w[13], vy = w[14], vz = w[15];
             double r = sqrt(vx * vx + vy * vy + vz * vz);
             sx += vx; sy += vy; rap += r;
+            cx += w[0]; cy += w[1];
             if (r < rmin) rmin = r;
             if (r > rmax) rmax = r;
             if (w[0] < x0) x0 = w[0];
@@ -73,6 +88,7 @@ int main(int argc, char **argv)
         printf("velocidad media (%.1f, %.1f)   rapidez media %.1f  min %.1f  max %.1f\n",
                sx / n, sy / n, rap / n, rmin, rmax);
         printf("ocupan x [%.0f, %.0f]  y [%.0f, %.0f]\n", x0, x1, y0, y1);
+        printf("centro de la nube (%.1f, %.1f)\n", cx / n, cy / n);
     }
 
     we_psys_free(s);

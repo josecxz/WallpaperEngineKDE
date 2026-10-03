@@ -98,6 +98,26 @@ void SceneView::setColorBarras(const QColor &c)
     update();
 }
 
+// El raton no pide fotograma: pedirlo dejaria el motor dibujando a la
+// velocidad del raton con el escritorio tapado y el reloj en pausa, que es
+// justo lo que la pausa evita. Con el reloj andando ya hay un fotograma por
+// refresco y el puntero viaja en el de al lado.
+void SceneView::setPuntero(const QPointF &p)
+{
+    if (p == m_puntero)
+        return;
+    m_puntero = p;
+    Q_EMIT punteroChanged();
+}
+
+void SceneView::setPunteroPresente(bool v)
+{
+    if (v == m_punteroPresente)
+        return;
+    m_punteroPresente = v;
+    Q_EMIT punteroChanged();
+}
+
 void SceneView::setStatusFromRenderer(const QString &s)
 {
     // `dibujado` solo puede ir a mas: una vez que la escena ha salido a
@@ -155,6 +175,9 @@ void SceneRenderer::synchronize(QQuickRhiItem *item)
     m_bar[0] = float(view->m_colorBarras.redF());
     m_bar[1] = float(view->m_colorBarras.greenF());
     m_bar[2] = float(view->m_colorBarras.blueF());
+    m_puntero[0] = float(view->m_puntero.x());
+    m_puntero[1] = float(view->m_puntero.y());
+    m_punteroPresente = view->m_punteroPresente;
 
     // El estado solo cambia en las transiciones cargando -> listo -> error.
     // Construir la cadena y cruzar hilos en cada fotograma seria trabajo
@@ -255,12 +278,13 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
         qInfo("SceneView: backend %s, plan con %d pases, lienzo %dx%d, "
               "init %d ms, uniforms %d activos / %d descartados, "
               "mallas %d subidas / %d pases las piden / %d animadas, "
-              "particulas %d sistemas / %d piezas sin soporte",
+              "particulas %d sistemas / %d piezas sin soporte / %d siguen al raton",
               r->backendName(), m_exec.passCount(),
               m_exec.canvasWidth(), m_exec.canvasHeight(), m_exec.initMillis(),
               m_exec.liveUniformCount(), m_exec.droppedUniformCount(),
               m_exec.meshCount(), m_exec.meshPassCount(), m_exec.meshAnimCount(),
-              m_exec.psysCount(), m_exec.psysUnknownParts());
+              m_exec.psysCount(), m_exec.psysUnknownParts(),
+              m_exec.psysCursorCount());
         if (!m_exec.log().isEmpty())
             qWarning("SceneView: %s", qPrintable(m_exec.log()));
     }
@@ -269,6 +293,7 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &qtFbo);
     m_exec.setFit(m_encaje, m_zoom, m_despX, m_despY);
     m_exec.setBarColor(m_bar[0], m_bar[1], m_bar[2]);
+    m_exec.setPuntero(m_puntero[0], m_puntero[1], m_punteroPresente);
     m_exec.render(GLuint(qtFbo), size.width(), size.height(), m_time);
 
     // Segundo parte, ya en marcha: el primero sale en el fotograma 1, cuando el

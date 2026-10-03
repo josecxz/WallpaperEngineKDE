@@ -123,6 +123,21 @@ struct WeParticleSystem {
     Pieza init[MAX_PIEZAS], oper[MAX_PIEZAS];
 
     float cp[MAX_CP][3];
+    /* Puntos de control atados al PUNTERO (`flags & 1` en el JSON). Su valor
+     * no es fijo: lo reescribe `we_psys_puntero` cada fotograma con donde esta
+     * el raton, ya convertido a coordenadas de este sistema. `cp_off` guarda
+     * el desplazamiento que el punto declara, porque `cp` deja de poder
+     * guardarlo en cuanto se sobreescribe. */
+    unsigned int cp_cursor;
+    float cp_off[MAX_CP][3];
+    /* Si hay puntero AHORA. Sin el, los operadores que tiran de un punto de
+     * control atado al cursor no actuan: dejarlos actuar sobre el punto en
+     * reposo los convierte en un sumidero hacia el origen del sistema ---con
+     * `scale -500` y `drag 2.5` la nube de 512 px se apelotona en una bola de
+     * 64--- y eso no es lo que hace Wallpaper Engine, donde el puntero SIEMPRE
+     * esta en algun sitio. Aqui puede no estarlo: el fondo solo sabe del raton
+     * mientras pasa por encima. */
+    int cursor_vivo;
 
     /* Como recorre la hoja de sprites: 0 = una pasada por vida, 1 = un
      * fotograma fijo elegido al azar. `anim_mult` repite la secuencia. */
@@ -318,7 +333,7 @@ static int busca(const Entrada *tabla, int n, const char *nombre, int *nfloats)
  *   anim      <0 secuencia | 1 fotograma fijo> <repeticiones por vida>
  *   emit  <sphererandom|boxrandom> <rate> <dmin[3]> <dmax[3]> <dir[3]>
  *         <origen[3]> <signo[3]> <instantaneas> <duracion> <velmin> <velmax>
- *   cp    <indice> <x> <y> <z>
+ *   cp    <indice> <x> <y> <z> [1 = lo mueve el puntero]
  *   init  <nombre> <floats...>
  *   oper  <nombre> <floats...>
  *
@@ -397,11 +412,17 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
             s->velmin = v[18];
             s->velmax = v[19];
         } else if (strcmp(kw, "cp") == 0) {
-            float v[4] = {0};
-            if (lee_floats(resto, v, 4) == 4) {
+            /* El quinto numero es opcional: los planes escritos antes de que
+             * el puntero existiera traen cuatro y siguen valiendo. */
+            float v[5] = {0};
+            if (lee_floats(resto, v, 5) >= 4) {
                 int i = (int)v[0];
                 if (i >= 0 && i < MAX_CP) {
-                    s->cp[i][0] = v[1]; s->cp[i][1] = v[2]; s->cp[i][2] = v[3];
+                    s->cp[i][0] = s->cp_off[i][0] = v[1];
+                    s->cp[i][1] = s->cp_off[i][1] = v[2];
+                    s->cp[i][2] = s->cp_off[i][2] = v[3];
+                    if ((int)v[4] & 1)
+                        s->cp_cursor |= 1u << i;
                 }
             }
         } else if (strcmp(kw, "init") == 0 || strcmp(kw, "oper") == 0) {
@@ -753,6 +774,11 @@ static void paso(WeParticleSystem *s, float dt)
             }
             case OP_ATRAE: {
                 int idx = (int)v[0];
+                /* Un punto atado al cursor sin cursor no atrae; ver
+                 * `cursor_vivo`. */
+                if (!s->cursor_vivo && idx >= 0 && idx < MAX_CP
+                        && (s->cp_cursor & (1u << idx)))
+                    break;
                 const float *cp = (idx >= 0 && idx < MAX_CP) ? s->cp[idx] : s->cp[0];
                 float d[3], n2 = 0.0f;
                 for (int k = 0; k < 3; k++) {
@@ -1162,6 +1188,34 @@ void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga)
     while (*p)
         p = &(*p)->hermano;
     *p = hijo;
+}
+
+int we_psys_cursor(const WeParticleSystem *s)
+{
+    return s && s->cp_cursor ? 1 : 0;
+}
+
+void we_psys_puntero(WeParticleSystem *s, const float *xyz)
+{
+    if (!s)
+        return;
+    s->cursor_vivo = xyz != NULL;
+    /* El punto no se planta EN el puntero: se planta donde el punto dice
+     * respecto a el. En el corpus los 124 puntos atados al cursor declaran
+     * offset (0,0,0), asi que la suma es identidad hoy; se hace igual porque
+     * el campo existe y quien escriba uno distinto esperaria esto. */
+    if (xyz) {
+        for (int i = 0; i < MAX_CP; i++)
+            if (s->cp_cursor & (1u << i)) {
+                s->cp[i][0] = xyz[0] + s->cp_off[i][0];
+                s->cp[i][1] = xyz[1] + s->cp_off[i][1];
+                s->cp[i][2] = xyz[2] + s->cp_off[i][2];
+            }
+    }
+    /* Sin recursion a los hijos, a proposito: un hijo `eventspawn` es un
+     * sistema aparte, con su objeto, su escala y su giro, asi que el puntero
+     * en coordenadas del PADRE no vale para el. Quien lo llama tiene su afin
+     * igual que la del padre y lo llama por separado. */
 }
 
 int we_psys_update(WeParticleSystem *s, float t)

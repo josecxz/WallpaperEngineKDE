@@ -11,6 +11,7 @@
 #pragma once
 
 #include <QColor>
+#include <QPointF>
 #include <QQuickRhiItem>
 #include <QString>
 #include <QUrl>
@@ -43,6 +44,8 @@ private:
     int m_encaje = 0;
     float m_zoom = 1.0f, m_despX = 0.0f, m_despY = 0.0f;
     float m_bar[3] = {0.0f, 0.0f, 0.0f};
+    float m_puntero[2] = {0.5f, 0.5f};
+    bool m_punteroPresente = false;
     double m_gpuPublicado = -1;   // ultimo valor mandado al item
 };
 
@@ -77,6 +80,15 @@ class SceneView : public QQuickRhiItem
     // Color de las barras cuando la escena no llena la pantalla.
     Q_PROPERTY(QColor colorBarras READ colorBarras WRITE setColorBarras
                NOTIFY encajeChanged)
+    // Donde esta el raton DENTRO del item, en 0..1 con la y hacia abajo, y si
+    // esta encima siquiera. Lo alimenta un HoverHandler del QML: hace falta uno
+    // que solo mire, porque un MouseArea con hover se quedaria los clics del
+    // escritorio. Fuera del fondo el motor conserva la ultima posicion ---no
+    // inventa un movimiento--- pero deja de haber raton para los sistemas de
+    // particulas que lo persiguen.
+    Q_PROPERTY(QPointF puntero READ puntero WRITE setPuntero NOTIFY punteroChanged)
+    Q_PROPERTY(bool punteroPresente READ punteroPresente WRITE setPunteroPresente
+               NOTIFY punteroChanged)
 
 public:
     explicit SceneView(QQuickItem *parent = nullptr);
@@ -102,6 +114,10 @@ public:
     void setDesplazamientoX(qreal v);
     void setDesplazamientoY(qreal v);
     void setColorBarras(const QColor &c);
+    QPointF puntero() const { return m_puntero; }
+    bool punteroPresente() const { return m_punteroPresente; }
+    void setPuntero(const QPointF &p);
+    void setPunteroPresente(bool v);
 
 Q_SIGNALS:
     void planSourceChanged();
@@ -112,6 +128,7 @@ Q_SIGNALS:
     // Una sola senal para los cinco: van juntos a la misma cuenta y quien los
     // mira ---el HUD--- los enseña en la misma linea.
     void encajeChanged();
+    void punteroChanged();
 
 protected:
     QQuickRhiItemRenderer *createRenderer() override;
@@ -139,4 +156,6 @@ private:
     qreal m_zoom = 1.0;
     qreal m_despX = 0.0, m_despY = 0.0;
     QColor m_colorBarras = QColor(0, 0, 0);
+    QPointF m_puntero = QPointF(0.5, 0.5);
+    bool m_punteroPresente = false;
 };

@@ -18,6 +18,8 @@
  *   mesh <id> <ruta.bin> <nvert> <nidx> [<nhuesos> <nclaves> <duracion>]
  *   psys <id> <ruta.psys>              sistema de particulas a simular
  *   psyspadre <hijo> <padre> <rafaga>  el hijo estalla donde muere el padre
+ *   psyspuntero <id> <7 floats>        afin: puntero de pantalla -> ese sistema
+ *   puntero <u> <v>                    donde esta el raton, (0,0) arriba izq.
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
@@ -376,7 +378,40 @@ static struct {
     WeParticleSystem *sys;
     GLuint vao, vbo;
     int capacidad;              /* vertices que caben en el VBO */
+    /* Afin que lleva el puntero de la pantalla al espacio de este sistema, tal
+     * como la resuelve `puntero_a_sistema` en werender.py. Sin ella el sistema
+     * no tiene ningun punto de control atado al cursor y no hay nada que
+     * mover. */
+    float afin[7];
+    int tiene_afin;
 } psys[MAX_PSYS];
+
+/* Donde esta el raton, en coordenadas de pantalla. `hay_puntero` a 0 ---lo
+ * normal offline--- no quiere decir "en el centro": quiere decir que no hay
+ * raton encima del fondo, y entonces los puntos de control atados al cursor no
+ * tiran de nada. Ver `we_psys_puntero`. */
+static float puntero_u, puntero_v;
+static int hay_puntero;
+
+/* Reparte el puntero por todos los sistemas que sepan donde ponerlo. Va una
+ * vez por fotograma, antes de que nadie de un paso: el simulador lo lee al
+ * avanzar, asi que llegar tarde deja la atraccion un fotograma por detras. */
+static void reparte_puntero(void)
+{
+    for (int i = 0; i < MAX_PSYS; i++) {
+        if (!psys[i].sys || !psys[i].tiene_afin)
+            continue;
+        if (!hay_puntero) {
+            we_psys_puntero(psys[i].sys, NULL);
+            continue;
+        }
+        const float *a = psys[i].afin;
+        const float p[3] = {a[0] * puntero_u + a[1] * puntero_v + a[2],
+                            a[3] * puntero_u + a[4] * puntero_v + a[5],
+                            a[6]};
+        we_psys_puntero(psys[i].sys, p);
+    }
+}
 
 static void load_psys(int id, const char *path)
 {
@@ -1045,6 +1080,23 @@ int main(int argc, char **argv)
                 glBlitFramebuffer(0, 0, s->w, s->h, 0, 0, d->w, d->h,
                                   GL_COLOR_BUFFER_BIT, GL_LINEAR);
                 glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            }
+        } else if (strcmp(kw, "psyspuntero") == 0 && !in_pass) {
+            int id;
+            float a[7];
+            if (sscanf(line, "%*s %d %f %f %f %f %f %f %f", &id, &a[0], &a[1],
+                       &a[2], &a[3], &a[4], &a[5], &a[6]) == 8
+                && id >= 0 && id < MAX_PSYS) {
+                memcpy(psys[id].afin, a, sizeof a);
+                psys[id].tiene_afin = 1;
+            }
+        } else if (strcmp(kw, "puntero") == 0 && !in_pass) {
+            float u, v;
+            if (sscanf(line, "%*s %f %f", &u, &v) == 2) {
+                puntero_u = u;
+                puntero_v = v;
+                hay_puntero = 1;
+                reparte_puntero();
             }
         } else if (strcmp(kw, "psyspadre") == 0 && !in_pass) {
             /* Cuelga un sistema de otro. Tiene que llegar con los dos ya
