@@ -28,10 +28,11 @@
  * se distingue de sesenta en un sistema en regimen, y no bloquea nada. */
 #define MAX_SEG_PRIMERA 60.0f
 #define MAX_SEG_POR_LLAMADA 1.0f
-/* Muertes de un padre que caben en un paso. El corpus mas denso emite 700 por
- * segundo, que a paso de 1/60 son 12 por paso: 64 sobra y no crece la
- * estructura de forma apreciable. */
-#define WE_MAX_MUERTES 64
+/* Nacimientos o muertes de un padre que caben en un paso. El corpus mas denso
+ * emite 700 por segundo, que a paso de 1/60 son 12 por paso; lo que manda es
+ * el estallido `instantaneous` del arranque, que suelta el deposito entero de
+ * una vez (100 en las chispas de WE). 256 lo cubre y son 4 KB por sistema. */
+#define WE_MAX_EVENTOS 256
 
 /* ── vocabulario ───────────────────────────────────────────────────────────
  *
@@ -110,6 +111,16 @@ typedef struct {
  * estaban al pasar por ahi. */
 #define WE_HIST_FLOATS 8
 
+/* Algo que le ha pasado a una particula del padre en el paso en curso: donde,
+ * y a cual. El indice solo lo usa `eventfollow`, para saber a quien seguir. */
+typedef struct { float pos[3]; int idx; } Evento;
+
+/* Una instancia `eventfollow`: la particula del padre que sigue y lo que lleva
+ * acumulado de emision. La particula se reconoce por su hueco Y su semilla,
+ * porque el hueco se reutiliza en cuanto muere: sin la semilla, la instancia
+ * pasaria a seguir a la siguiente que naciera ahi. */
+typedef struct { int idx; unsigned int semilla; float credito; } Seguidora;
+
 struct WeParticleSystem {
     int maxcount;
     float starttime;
@@ -164,14 +175,15 @@ struct WeParticleSystem {
     unsigned int rng;
     int arrancado;
 
-    /* ── hijos `eventspawn` ────────────────────────────────────────────────
-     * Un sistema puede colgar otro que estalla DONDE muere cada particula
-     * suya: el destello que deja una estrella al apagarse. Los dos son
-     * sistemas completos y separados ---cada uno con su material y su pase---
-     * pero no se pueden simular por separado, porque el hijo necesita saber
-     * en que PASO ha muerto cada padre. Asi que el padre lo lleva de la mano:
-     * `we_psys_update` del padre da el paso de los dos, y el `update` del hijo
-     * se limita a rehacer sus vertices. Ver `we_psys_seguir`.
+    /* ── hijos de evento ───────────────────────────────────────────────────
+     * Un sistema puede colgar otro que nace DONDE nace, muere o esta cada
+     * particula suya: el destello de una chispa, el estallido de un fuego
+     * artificial, la estela de una luciernaga. Los dos son sistemas completos
+     * y separados ---cada uno con su material y su pase--- pero no se pueden
+     * simular por separado, porque el hijo necesita saber en que PASO ha
+     * pasado cada cosa. Asi que el padre lo lleva de la mano: `we_psys_update`
+     * del padre da el paso de los dos, y el `update` del hijo se limita a
+     * rehacer sus vertices. Ver `we_psys_seguir`.
      *
      * Un padre puede tener VARIOS hijos ---`Flare_(Parent)` de 2937370591
      * declara dos---, asi que `hijo` es la cabeza de una lista y cada hijo
@@ -182,12 +194,19 @@ struct WeParticleSystem {
     WeParticleSystem *hijo;         /* cabeza de la lista de hijos */
     WeParticleSystem *hermano;      /* siguiente hijo del MISMO padre */
     WeParticleSystem *padre;        /* != NULL: no doy pasos por mi cuenta */
-    int rafaga;                     /* particulas por evento */
-    /* Donde han muerto los padres en el paso en curso. Se llena en `paso` y lo
-     * vacia el hijo en el mismo paso, asi que no necesita crecer: con mas
-     * muertes que huecos, las de mas no tendrian donde estallar igualmente. */
-    float muertes[WE_MAX_MUERTES][3];
-    int n_muertes;
+    int modo;                       /* WE_HIJO_*: que evento me crea */
+    int rafaga;                     /* particulas al crearse una instancia */
+    float probabilidad;             /* de que un evento cree instancia */
+    float escala_inv[3];            /* evento del padre -> mi espacio */
+    Seguidora *sigue;               /* `eventfollow`: una por instancia */
+    int n_sigue;
+    /* Donde han nacido y muerto particulas en el paso en curso. Se llenan en
+     * `paso` (y en `nace`) y los vacia `paso_con_hijos` en el mismo paso, asi
+     * que no necesitan crecer: los de mas se pierden, y un estallido perdido
+     * en un paso con 256 eventos no se distingue. Solo se anotan si hay hijos
+     * que los escuchen. */
+    Evento nacen[WE_MAX_EVENTOS], mueren[WE_MAX_EVENTOS];
+    int n_nacen, n_mueren;
 };
 
 /* ── aleatoriedad ──────────────────────────────────────────────────────────
@@ -500,6 +519,7 @@ void we_psys_free(WeParticleSystem *s)
     free(s->p);
     free(s->verts);
     free(s->hist);
+    free(s->sigue);
     free(s);
 }
 
@@ -690,32 +710,68 @@ static void emite(WeParticleSystem *s, Particula *q)
     if (q->vida < 1e-3f) q->vida = 1e-3f;
 }
 
+/* Hace nacer la particula del hueco `i`, desplazada por `donde` si no es
+ * NULL, y lo anota para los hijos. Es el UNICO sitio por el que nace una
+ * particula: el emisor libre, el estallido del arranque y los eventos de un
+ * padre pasan todos por aqui, y por eso un `eventspawn` ve los nacimientos de
+ * su padre vengan de donde vengan ---tambien cuando el padre es a su vez un
+ * hijo, que es como estan hechos los 166 `static` del corpus con estela---.
+ *
+ * Se anota DESPUES de desplazar: lo que le interesa al hijo es donde ha nacido
+ * de verdad, no donde la puso el emisor antes de llevarla al evento. */
+static void nace(WeParticleSystem *s, int i, const float *donde)
+{
+    Particula *q = &s->p[i];
+    emite(s, q);
+    if (donde)
+        for (int k = 0; k < 3; k++)
+            q->pos[k] += donde[k];
+    if (s->hijo && s->n_nacen < WE_MAX_EVENTOS) {
+        Evento *e = &s->nacen[s->n_nacen++];
+        memcpy(e->pos, q->pos, sizeof e->pos);
+        e->idx = i;
+    }
+}
+
 /* ── un paso de simulacion ─────────────────────────────────────────────── */
 
 /* Vive mas abajo, con los vertices, porque necesita la modulacion. */
 static void guarda_punto(WeParticleSystem *s, int i, const Particula *q);
 
+/* El siguiente hueco libre del deposito, o -1 si esta lleno.
+ *
+ * Se busca desde donde acabo la ultima vez, no desde el principio: con
+ * `maxcount` de 8192 y un ritmo de 700 por segundo, empezar siempre en cero
+ * convierte la emision en cuadratica. */
+static int hueco_libre(WeParticleSystem *s)
+{
+    for (int n = 0; n < s->maxcount; n++) {
+        int i = s->cursor + n;
+        if (i >= s->maxcount) i -= s->maxcount;
+        if (!s->p[i].viva) {
+            s->cursor = i + 1 >= s->maxcount ? 0 : i + 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
 static void paso(WeParticleSystem *s, float dt)
 {
     /* Emision. El credito acumulado evita que un `rate` menor que un fotograma
-     * por segundo --- los hay de 0.2 --- no emita nunca por truncamiento. */
+     * por segundo --- los hay de 0.2 --- no emita nunca por truncamiento.
+     *
+     * Un hijo de evento no emite por su cuenta: su `rate` es el de CADA
+     * instancia, y quien lo aplica es `paso_con_hijos`, donde esta la
+     * particula que sigue. */
     int emitiendo = s->duracion <= 0.0f || s->vivido < s->duracion;
-    if (s->emisor >= 0 && emitiendo) {
+    if (s->emisor >= 0 && emitiendo && !s->padre) {
         s->credito += s->rate * dt;
         while (s->credito >= 1.0f) {
             s->credito -= 1.0f;
-            /* El hueco se busca desde donde acabo la ultima vez, no desde el
-             * principio: con `maxcount` de 8192 y un ritmo de 700 por segundo,
-             * empezar siempre en cero convierte la emision en cuadratica. */
-            int hueco = -1;
-            for (int n = 0; n < s->maxcount; n++) {
-                int i = s->cursor + n;
-                if (i >= s->maxcount) i -= s->maxcount;
-                if (!s->p[i].viva) { hueco = i; break; }
-            }
+            int hueco = hueco_libre(s);
             if (hueco < 0) break;
-            s->cursor = hueco + 1 >= s->maxcount ? 0 : hueco + 1;
-            emite(s, &s->p[hueco]);
+            nace(s, hueco, NULL);
         }
     }
     s->vivido += dt;
@@ -729,9 +785,10 @@ static void paso(WeParticleSystem *s, float dt)
             q->viva = 0;
             /* Solo se anota si hay quien escuche: sin hijo esto es un `if` por
              * particula muerta y nada mas. */
-            if (s->hijo && s->n_muertes < WE_MAX_MUERTES) {
-                float *m = s->muertes[s->n_muertes++];
-                m[0] = q->pos[0]; m[1] = q->pos[1]; m[2] = q->pos[2];
+            if (s->hijo && s->n_mueren < WE_MAX_EVENTOS) {
+                Evento *e = &s->mueren[s->n_mueren++];
+                memcpy(e->pos, q->pos, sizeof e->pos);
+                e->idx = i;
             }
             continue;
         }
@@ -1116,39 +1173,95 @@ static int construye(WeParticleSystem *s)
     return n;
 }
 
-/* Un estallido del hijo en la posicion donde murio un padre.
+/* `n` particulas del hijo en la posicion de un evento del padre.
  *
  * El hijo se coloca con su PROPIO emisor ---`shootingstarglow` usa una esfera
  * de radio 0, o sea el punto exacto; `Flare` una caja de 100x100, o sea un
  * corro alrededor--- y luego se desplaza al sitio del evento. Asi el preset
- * sigue decidiendo la forma del estallido y el evento solo dice donde. */
-static void estalla(WeParticleSystem *s, const float *donde)
+ * sigue decidiendo la forma del estallido y el evento solo dice donde.
+ *
+ * `donde` llega en el espacio del PADRE. El hijo se dibuja con la escala de su
+ * entrada de `children` encima de la del padre, asi que el mismo punto en su
+ * espacio es ese dividido por esa escala. */
+static void suelta(WeParticleSystem *s, int n, const float *donde)
 {
-    for (int n = 0; n < s->rafaga; n++) {
-        int hueco = -1;
-        for (int k = 0; k < s->maxcount; k++) {
-            int i = s->cursor + k;
-            if (i >= s->maxcount) i -= s->maxcount;
-            if (!s->p[i].viva) { hueco = i; break; }
-        }
+    float d[3];
+    for (int k = 0; k < 3; k++)
+        d[k] = donde[k] * s->escala_inv[k];
+    for (int i = 0; i < n; i++) {
+        int hueco = hueco_libre(s);
         if (hueco < 0)
-            return;                 /* deposito lleno: el estallido se pierde */
-        s->cursor = hueco + 1 >= s->maxcount ? 0 : hueco + 1;
-        emite(s, &s->p[hueco]);
-        for (int k = 0; k < 3; k++)
-            s->p[hueco].pos[k] += donde[k];
+            return;                 /* deposito lleno: lo demas se pierde */
+        nace(s, hueco, d);
     }
 }
 
-/* Un paso del sistema y, dentro de el, el de todos sus hijos `eventspawn`.
+/* El sorteo de `probability`. Con 1 ---lo que declara el corpus entero--- no
+ * gasta numero aleatorio, asi que no mueve la secuencia de nadie. */
+static int toca(WeParticleSystem *s)
+{
+    return s->probabilidad >= 1.0f || azar(&s->rng) < s->probabilidad;
+}
+
+/* Lo que hace un hijo `eventfollow` en este paso, ANTES de dar el suyo.
+ *
+ * Cada instancia sigue a una particula del padre y emite donde esta ella, al
+ * `rate` de su `.psys`. Lo emitido no se queda pegado a la particula: nace en
+ * su sitio y desde ahi va por su cuenta, y por eso deja estela. Es la lectura
+ * que dan los propios presets de WE ---`firefliestrail`, `poweruptrails`, la
+ * estela de la columna de Matrix---: con las particulas pegadas no habria
+ * estela, habria un enjambre viajando con la luciernaga.
+ *
+ * Las instancias se reparten al NACER la particula, y se liberan cuando muere
+ * o su hueco pasa a otra. Una particula que nacio con todas ocupadas se queda
+ * sin seguidora: el tope (`maxcount` de la entrada) es de instancias a la vez,
+ * y no se reasignan a particulas ya crecidas. */
+static void sigue(WeParticleSystem *c, const WeParticleSystem *pa, float h)
+{
+    for (int j = 0; j < c->n_sigue; j++) {
+        Seguidora *f = &c->sigue[j];
+        if (f->idx < 0)
+            continue;
+        const Particula *q = &pa->p[f->idx];
+        if (!q->viva || q->semilla != f->semilla)
+            f->idx = -1;
+    }
+    for (int i = 0; i < pa->n_nacen; i++) {
+        if (!toca(c))
+            continue;
+        int libre = -1;
+        for (int j = 0; j < c->n_sigue; j++)
+            if (c->sigue[j].idx < 0) { libre = j; break; }
+        if (libre < 0)
+            break;
+        const Evento *e = &pa->nacen[i];
+        c->sigue[libre].idx = e->idx;
+        c->sigue[libre].semilla = pa->p[e->idx].semilla;
+        c->sigue[libre].credito = 0.0f;
+        suelta(c, c->rafaga, e->pos);
+    }
+    if (c->rate <= 0.0f)
+        return;
+    for (int j = 0; j < c->n_sigue; j++) {
+        Seguidora *f = &c->sigue[j];
+        if (f->idx < 0)
+            continue;
+        f->credito += c->rate * h;
+        int n = (int)f->credito;
+        f->credito -= (float)n;
+        suelta(c, n, pa->p[f->idx].pos);
+    }
+}
+
+/* Un paso del sistema y, dentro de el, el de todos sus hijos de evento.
  *
  * El hijo va DENTRO del paso del padre, no despues: si se dejara para su
- * propio `update`, las muertes de una recuperacion de 60 s le llegarian todas
- * juntas y estallaria el sistema entero de golpe en vez de repartido por el
+ * propio `update`, los eventos de una recuperacion de 60 s le llegarian todos
+ * juntos y estallaria el sistema entero de golpe en vez de repartido por el
  * tiempo.
  *
- * Las muertes se vacian cuando ya las han visto TODOS los hijos, no dentro del
- * bucle: si no, el primero se las llevaria y el segundo no estallaria nunca.
+ * Los eventos se vacian cuando ya los han visto TODOS los hijos, no dentro del
+ * bucle: si no, el primero se los llevaria y el segundo no estallaria nunca.
  *
  * Recursivo porque un hijo puede tener hijos suyos, y el `update` de un
  * sistema con padre no da pasos por su cuenta ---seria el mismo congelamiento
@@ -1159,17 +1272,29 @@ static void paso_con_hijos(WeParticleSystem *s, float h)
     paso(s, h);
     if (!s->hijo)
         return;
-    for (WeParticleSystem *c = s->hijo; c; c = c->hermano)
-        for (int i = 0; i < s->n_muertes; i++)
-            estalla(c, s->muertes[i]);
-    s->n_muertes = 0;
+    for (WeParticleSystem *c = s->hijo; c; c = c->hermano) {
+        if (c->modo == WE_HIJO_SIGUE) {
+            sigue(c, s, h);
+            continue;
+        }
+        const Evento *ev = c->modo == WE_HIJO_NACE ? s->nacen : s->mueren;
+        int n = c->modo == WE_HIJO_NACE ? s->n_nacen : s->n_mueren;
+        for (int i = 0; i < n; i++)
+            if (toca(c))
+                suelta(c, c->rafaga, ev[i].pos);
+    }
+    s->n_nacen = s->n_mueren = 0;
     for (WeParticleSystem *c = s->hijo; c; c = c->hermano)
         paso_con_hijos(c, h);
 }
 
-void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga)
+void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int modo,
+                    int rafaga, int instancias, float probabilidad,
+                    const float escala[3])
 {
     if (!hijo || !padre || hijo == padre)
+        return;
+    if (modo != WE_HIJO_MUERE && modo != WE_HIJO_NACE && modo != WE_HIJO_SIGUE)
         return;
     /* Un hijo cuelga de UN padre. Colgarlo dos veces lo enlazaria en dos
      * listas con un solo `hermano` y una de las dos se romperia. */
@@ -1180,8 +1305,26 @@ void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int rafaga)
     for (WeParticleSystem *a = padre; a; a = a->padre)
         if (a == hijo)
             return;
+    if (modo == WE_HIJO_SIGUE) {
+        if (instancias < 1)
+            instancias = 1;
+        hijo->sigue = malloc((size_t)instancias * sizeof *hijo->sigue);
+        if (!hijo->sigue)
+            return;
+        for (int j = 0; j < instancias; j++)
+            hijo->sigue[j].idx = -1;
+        hijo->n_sigue = instancias;
+    }
     hijo->padre = padre;
-    hijo->rafaga = rafaga > 0 ? rafaga : 1;
+    hijo->modo = modo;
+    hijo->rafaga = rafaga > 0 ? rafaga : 0;
+    hijo->probabilidad = probabilidad;
+    /* Una escala nula no tiene inversa, y un hijo a escala cero no dibuja
+     * nada: se deja en 1 para no llenar el deposito de infinitos. */
+    for (int k = 0; k < 3; k++) {
+        float e = escala ? escala[k] : 1.0f;
+        hijo->escala_inv[k] = fabsf(e) > 1e-6f ? 1.0f / e : 1.0f;
+    }
     /* Al final de la lista y no a la cabeza, para que estallen en el orden en
      * que el plan los declara. */
     WeParticleSystem **p = &padre->hijo;
@@ -1212,7 +1355,7 @@ void we_psys_puntero(WeParticleSystem *s, const float *xyz)
                 s->cp[i][2] = xyz[2] + s->cp_off[i][2];
             }
     }
-    /* Sin recursion a los hijos, a proposito: un hijo `eventspawn` es un
+    /* Sin recursion a los hijos, a proposito: un hijo de evento es un
      * sistema aparte, con su objeto, su escala y su giro, asi que el puntero
      * en coordenadas del PADRE no vale para el. Quien lo llama tiene su afin
      * igual que la del padre y lo llama por separado. */
@@ -1223,7 +1366,7 @@ int we_psys_update(WeParticleSystem *s, float t)
     if (!s)
         return 0;
 
-    /* Un hijo `eventspawn` ya ha dado su paso dentro del de su padre: aqui
+    /* Un hijo de evento ya ha dado su paso dentro del de su padre: aqui
      * solo rehace los vertices. Dejarle avanzar tambien por su cuenta lo
      * simularia dos veces por fotograma. */
     if (s->padre)
@@ -1256,7 +1399,7 @@ int we_psys_update(WeParticleSystem *s, float t)
         int n = (int)s->instantaneo;
         if (n > s->maxcount) n = s->maxcount;
         for (int i = 0; i < n; i++)
-            emite(s, &s->p[i]);
+            nace(s, i, NULL);
     }
 
     /* Paso fijo: el resultado no puede depender de a cuantos fotogramas por

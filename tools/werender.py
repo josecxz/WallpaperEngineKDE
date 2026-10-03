@@ -1202,9 +1202,10 @@ class Renderer:
         self.atlas: dict[int, tuple[int, int, int]] = {}
         # Sistema de particulas por objeto, con la misma clave que las mallas.
         self.psys: dict[int, int] = {}
-        # `(psys del hijo, id del objeto padre, rafaga)` de los `eventspawn`.
+        # `(psys del hijo, id del padre, rafaga, modo, instancias, probabilidad,
+        # escala)` de cada hijo de evento; ver `we_psys_seguir`.
         # Se resuelve al final de `_build`, cuando ya estan todos los psys.
-        self.hijos: list[tuple[int, str, int]] = []
+        self.hijos: list[tuple[int, str, int, int, int, float, list[float]]] = []
         # id de objeto de la escena -> indice de su `.psys`, para atar los hijos
         # a su padre cuando ya estan todos declarados.
         self.psys_por_id: dict[str, int] = {}
@@ -1444,19 +1445,39 @@ class Renderer:
         org, _, _ = transform_absoluto(obj, self.por_id)
         weparticles.desplazar_ruido(sis, org)
 
-        # Un hijo `eventspawn` no emite por su cuenta: solo estalla donde muere
-        # un padre. Su `maxcount` es el deposito para todos los estallidos a la
-        # vez ---lo dice la entrada de `children`, no el preset--- y la RAFAGA,
-        # o sea cuantas suelta por evento, es el `maxcount` que el preset
-        # declara, que es lo que describe UN estallido. Ver `_hijos_eventspawn`.
-        rafaga = 0
-        if obj.raw.get("_padre") is not None:
-            rafaga = max(1, sis.maxcount)
-            deposito = obj.raw.get("_deposito")
-            if isinstance(deposito, int) and deposito > 0:
-                sis.maxcount = deposito
-            if sis.emit:
+        # Un hijo de evento no emite por su cuenta: cada evento del padre crea
+        # una INSTANCIA suya, y lo que el preset describe es una instancia.
+        #
+        # - La rafaga es lo que suelta al crearse: su `instantaneous`. Un hijo
+        #   de nacimiento o de muerte que no lo declara ---8 del corpus, seis
+        #   con `rate`--- suelta su `maxcount` entero, que es como se dibujaba
+        #   antes; uno que sigue a una particula emite a su `rate` y no suelta
+        #   nada de golpe.
+        # - El `rate` es el de CADA instancia de `eventfollow`, asi que se
+        #   queda el declarado: el implicito es una estimacion para un sistema
+        #   que emite solo, y aqui no vale.
+        # - El deposito es el de todas las instancias a la vez: el `maxcount`
+        #   del preset por el de la entrada de `children`, que la documentacion
+        #   de WE define como el numero maximo de sistemas hijos.
+        #
+        # Ver `_hijos` en wescene.py.
+        enlace = None
+        modo = obj.raw.get("_hijo_modo")
+        if obj.raw.get("_padre") is not None and modo is not None:
+            preset = max(1, sis.maxcount)
+            inst = int(sis.emit[16]) if len(sis.emit) > 16 else 0
+            if inst > 0:
+                rafaga = min(inst, preset)
+            else:
+                rafaga = 0 if modo == wescene.MODO_HIJO["eventfollow"] else preset
+            instancias = int(obj.raw.get("_instancias") or 1)
+            # El tope duro (8192, 1024 en una cinta) lo pone el simulador.
+            sis.maxcount = preset * instancias
+            if sis.ritmo_implicito and sis.emit:
                 sis.emit[0] = 0.0
+            _, esc_hijo, _ = transform_absoluto(obj, None)
+            enlace = (str(obj.raw.get("_padre")), rafaga, modo, instancias,
+                      float(obj.raw.get("_probabilidad", 1.0)), esc_hijo)
 
         weparticles.escribir(sis, destino, semilla)
         self.lines.append(f"psys {i} {destino}")
@@ -1468,8 +1489,8 @@ class Renderer:
             if afin:
                 self.lines.append(f"psyspuntero {i} "
                                   + " ".join(f"{x:.6g}" for x in afin))
-        if rafaga:
-            self.hijos.append((i, str(obj.raw.get("_padre")), rafaga))
+        if enlace:
+            self.hijos.append((i, *enlace))
         self.psys[id(obj)] = i
         self.psys_por_id[str(obj.raw.get("id"))] = i
         self.stats["psys"] += 1
@@ -2888,15 +2909,17 @@ class Renderer:
         # objeto. Los dos modos de depuracion piden lo contrario --- `--only-base`
         # solo el pase base de cada capa, `--passes N` una escena a medias --- y
         # un post-proceso sobre media escena no dice nada.
-        # Atar cada hijo `eventspawn` a su padre. Va en la CABECERA, detras de
+        # Atar cada hijo de evento a su padre. Va en la CABECERA, detras de
         # todos los `psys`: los dos sistemas tienen que estar cargados antes del
         # primer `update`, porque a partir de ahi el padre da el paso de los
         # dos. Ver `we_psys_seguir`.
-        for i_hijo, padre, rafaga in self.hijos:
+        for i_hijo, padre, rafaga, modo, inst, prob, esc in self.hijos:
             i_padre = self.psys_por_id.get(padre)
             if i_padre is None:
                 continue
-            self.lines.append(f"psyspadre {i_hijo} {i_padre} {rafaga}")
+            self.lines.append(f"psyspadre {i_hijo} {i_padre} {rafaga} {modo} "
+                              f"{inst} {prob:.6g} "
+                              + " ".join(f"{e:.6g}" for e in esc))
             self.stats["psys_hijo"] += 1
         if not only_base and max_passes is None:
             self._emit_bloom(general, sresolver)

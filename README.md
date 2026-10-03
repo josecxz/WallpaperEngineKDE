@@ -306,6 +306,12 @@ Limitaciones conocidas:
   llevan `flags: 2` y 23 de ellos están en sistemas que ya siguen al cursor
   —apunta a «emite donde el ratón», pero no está comprobado—, así que hoy
   emiten desde el origen del sistema.
+- Los **sistemas hijos** se dibujan de los cuatro tipos: `static` (el halo de
+  las brasas, las columnas de Matrix), `eventfollow` (la estela que deja cada
+  luciérnaga), `eventspawn` y `eventdeath`. En el corpus son unos 275 hijos en
+  60 escenas. De la entrada de `children` se usan `origin`, `scale`,
+  `maxcount` y `probability`; `angles`, `controlpointstartindex` y `flags` no,
+  porque el corpus no trae casos con los que comprobarlos.
 - El **texto se ejecuta a medias**: 148 de las 172 capas de texto traen la
   cadena en un script de JavaScript, y de esas **123 dan la hora en vivo**, en
   20 escenas. Las 25 restantes se quedan con la copia que el autor guardó

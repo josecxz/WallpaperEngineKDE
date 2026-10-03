@@ -426,46 +426,98 @@ def _ids_de_composicion(data: dict) -> set[str]:
     return fuera
 
 
-def _hijos_eventspawn(res: AssetResolver, o: dict, pdef: dict) -> list[SceneObject]:
-    """Los sistemas que cuelgan de este y estallan donde muere cada particula.
+# Los cuatro tipos de hijo, con el modo que entiende `we_psys_seguir`. `static`
+# no esta: no depende de ningun evento y no se ata en el simulador.
+#
+# Lo que es cada uno lo dice la documentacion de WE, que la propia aplicacion
+# enlaza desde el editor de particulas:
+#
+#   static       «se crea una vez en el origen del sistema»
+#   eventfollow  «se crea varias veces y sigue a particulas individuales»
+#   eventspawn   «se crea a la vez que nacen las particulas de este sistema»
+#   eventdeath   «se crea cuando una particula llega al final de su vida»
+#
+# Durante un tiempo `eventspawn` se leyo como el de la muerte; ver NOTAS.
+MODO_HIJO = {"eventdeath": 0, "eventspawn": 1, "eventfollow": 2}
 
-    Un preset puede declarar `children`. El hijo es un sistema COMPLETO ---su
-    material, su textura, su mezcla--- y por eso no cabe dentro del pase del
-    padre: se devuelve como un objeto hermano, colocado igual y dibujado justo
-    detras. De ahi en adelante el resto del motor no tiene que saber que es un
-    hijo; lo unico que los ata es la linea `psyspadre` del plan.
+# Cuantas instancias admite un hijo de evento cuando su entrada no lo dice.
+# Es el valor que escribe el editor cuando guarda TODOS los campos: los 34
+# `static` del corpus y los ocho hijos de los presets de WE que llevan la
+# entrada completa declaran `maxcount: 10`, y ninguno otro valor.
+INSTANCIAS_POR_DEFECTO = 10
 
-    Solo `eventspawn`. Los otros dos modos ---`eventfollow`, que pega el hijo a
-    la particula VIVA, y `static`, que lo clava al emisor--- piden estado que
-    este camino no lleva, y se dejan fuera a proposito en vez de aproximarlos.
+# Hijos de hijos. El corpus llega a dos niveles ---el `static` de cada columna
+# de Matrix cuelga una estela `eventfollow`---; el tope solo esta para que un
+# preset que se nombre a si mismo no lleve a una recursion sin fin.
+PROFUNDIDAD_HIJOS = 4
 
-    El `maxcount` del hijo sale de la entrada de `children`, no del preset: el
-    preset describe UN estallido ---`shootingstarglow` son 4 particulas con
-    `instantaneous`--- y la entrada dice cuantas caben entre todos los
-    estallidos a la vez (500 en la `City`).
+
+def _hijos(res: AssetResolver, o: dict, pdef: dict,
+           nivel: int = 1) -> list[SceneObject]:
+    """Los sistemas que cuelgan de este por su lista `children`.
+
+    El hijo es un sistema COMPLETO ---su material, su textura, su mezcla--- y
+    por eso no cabe dentro del pase del padre: se devuelve como un objeto
+    hermano, dibujado justo detras. De ahi en adelante el resto del motor no
+    tiene que saber que es un hijo.
+
+    Se coloca con el mecanismo de los grupos de la escena: el objeto declara
+    `parent` y su `origin` y su `scale` son los de la entrada de `children`,
+    relativos al padre. Asi un hijo hereda tambien lo que mueva al padre ---un
+    grupo, un anclaje a un puppet--- sin que nadie tenga que acordarse.
+
+    Un `static` ---o una entrada sin `type`, que es lo mismo--- no necesita
+    nada mas: es un sistema independiente con su propio emisor. Que la entrada
+    sin tipo es `static` lo dicen los propios presets de WE: `ember.json`
+    cuelga `emberglow` sin tipo, y los que el editor guardo con todos los
+    campos escritos dicen `static` junto con el resto de valores por defecto.
+    En el corpus pasa lo mismo con el mismo par: 286 sin tipo y 34 `static`.
+
+    Los de evento llevan ademas `_padre`, que `werender` convierte en la linea
+    `psyspadre`: el simulador los mueve en tandem con el padre.
+
+    `angles` de la entrada NO se aplica. Solo hay uno distinto de cero en el
+    corpus (`0 0 -50`, en un `eventfollow`), y no se sabe en que unidad esta:
+    el resto del formato guarda radianes, y -50 rad tiene poca pinta de ser lo
+    que el autor tecleo.
+
+    El `instanceoverride` del padre se copia al hijo: el autor ajusta el
+    sistema desde el editor como un todo, y escalar el tamano de las brasas sin
+    escalar su halo los descuadraria. Es una lectura, no un hecho comprobado.
     """
     hijos: list[SceneObject] = []
+    if nivel > PROFUNDIDAD_HIJOS:
+        return hijos
     for n, c in enumerate(pdef.get("children") or []):
-        if not isinstance(c, dict) or c.get("type") != "eventspawn":
+        if not isinstance(c, dict):
+            continue
+        tipo = c.get("type", "static")
+        if tipo != "static" and tipo not in MODO_HIJO:
             continue
         ruta = c.get("name")
         if not isinstance(ruta, str) or not ruta:
             continue
-        raw = {k: o.get(k) for k in ("origin", "angles", "scale",
-                                     "parallaxDepth", "instanceoverride")}
-        raw["particle"] = ruta
+        origen = c.get("origin") if isinstance(c.get("origin"), str) else "0 0 0"
+        escala = c.get("scale") if isinstance(c.get("scale"), str) else "1 1 1"
+        raw = {k: o.get(k) for k in ("parallaxDepth", "instanceoverride")}
+        raw.update(origin=origen, scale=escala, angles="0 0 0", particle=ruta,
+                   parent=o.get("id"), visible=True)
         # Id propio y estable: cuelga del padre y del puesto en `children`, asi
         # que dos hijos del mismo padre no comparten la semilla del `.psys`.
         raw["id"] = f"{o.get('id')}h{n}"
-        raw["visible"] = True
-        raw["_padre"] = o.get("id")
-        if isinstance(c.get("maxcount"), (int, float)):
-            raw["_deposito"] = int(c["maxcount"])
+        if tipo in MODO_HIJO:
+            raw["_padre"] = o.get("id")
+            raw["_hijo_modo"] = MODO_HIJO[tipo]
+            inst = c.get("maxcount")
+            raw["_instancias"] = (int(inst) if isinstance(inst, (int, float))
+                                  and inst >= 1 else INSTANCIAS_POR_DEFECTO)
+            prob = c.get("probability")
+            raw["_probabilidad"] = (float(prob) if isinstance(prob, (int, float))
+                                    else 1.0)
         hijo = SceneObject(
             id=raw["id"], name=f"{o.get('name', '')} > hijo",
-            kind="particle", visible=True, origin=o.get("origin", ""),
-            angles=o.get("angles", ""), scale=o.get("scale", ""),
-            parallax_depth=o.get("parallaxDepth", ""), raw=raw)
+            kind="particle", visible=True, origin=origen, angles="0 0 0",
+            scale=escala, parallax_depth=o.get("parallaxDepth", ""), raw=raw)
         # El bucle de `load_scene` recorre `data["objects"]` y este objeto no
         # esta ahi, asi que sus pases se arman aqui o no los arma nadie.
         hdef = res.read_json(ruta)
@@ -476,6 +528,7 @@ def _hijos_eventspawn(res: AssetResolver, o: dict, pdef: dict) -> list[SceneObje
                                           None, None, []))
         if hijo.passes:
             hijos.append(hijo)
+            hijos.extend(_hijos(res, raw, hdef, nivel + 1))
     return hijos
 
 
@@ -576,7 +629,7 @@ def load_scene(res: AssetResolver, strict: bool = False,
                 for mp in _load_material(res, pdef["material"]):
                     obj.passes.append(_make_pass(res, obj.name, "base", mp,
                                                  None, None, []))
-                for hijo in _hijos_eventspawn(res, o, pdef):
+                for hijo in _hijos(res, o, pdef):
                     scene.objects.append(hijo)
             except SceneError as e:
                 note(f"[{obj.name}] particulas: {e}")

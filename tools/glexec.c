@@ -17,7 +17,8 @@
  *   videotime <t>                      instante del que sacar los fotogramas
  *   mesh <id> <ruta.bin> <nvert> <nidx> [<nhuesos> <nclaves> <duracion>]
  *   psys <id> <ruta.psys>              sistema de particulas a simular
- *   psyspadre <hijo> <padre> <rafaga>  el hijo estalla donde muere el padre
+ *   psyspadre <hijo> <padre> <rafaga> [<modo> <instancias> <prob> <ex> <ey> <ez>]
+ *                                      el hijo nace en un evento del padre
  *   psyspuntero <id> <7 floats>        afin: puntero de pantalla -> ese sistema
  *   puntero <u> <v>                    donde esta el raton, (0,0) arriba izq.
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
@@ -1103,10 +1104,16 @@ int main(int argc, char **argv)
              * cargados ---la cabecera declara todos los `psys` antes del
              * primer pase--- porque a partir de aqui el padre da el paso de
              * los dos; ver `we_psys_seguir`. */
-            int h, pa, raf;
-            if (sscanf(line, "%*s %d %d %d", &h, &pa, &raf) == 3 &&
+            /* Los seis ultimos son opcionales: un plan escrito antes de que
+             * hubiera mas de un tipo de hijo trae tres y era siempre el que
+             * estalla en la muerte. */
+            int h, pa, raf, modo = WE_HIJO_MUERE, inst = 1;
+            float prob = 1.0f, esc[3] = {1.0f, 1.0f, 1.0f};
+            if (sscanf(line, "%*s %d %d %d %d %d %f %f %f %f", &h, &pa, &raf,
+                       &modo, &inst, &prob, &esc[0], &esc[1], &esc[2]) >= 3 &&
                 h >= 0 && h < MAX_PSYS && pa >= 0 && pa < MAX_PSYS)
-                we_psys_seguir(psys[h].sys, psys[pa].sys, raf);
+                we_psys_seguir(psys[h].sys, psys[pa].sys, modo, raf, inst,
+                               prob, esc);
         } else if (strcmp(kw, "output") == 0) {
             /* Va fuera de cualquier pase: hay que atenderla antes de la
              * guarda de !in_pass o se pierde silenciosamente. */
