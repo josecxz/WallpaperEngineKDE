@@ -591,16 +591,15 @@ def _cursor(op: dict, cursor: set[int]) -> bool:
     punto: el preset de luciernagas y sus derivados, que en Wallpaper Engine
     persiguen al raton.
 
-    Sin puntero, ese punto se queda en el origen del sistema y el operador deja
-    de ser una interaccion para convertirse en un sumidero: con `scale -500` y
-    `drag 2.5` la velocidad terminal hacia el centro son 200 px/s, diez veces la
-    turbulencia que deberia dispersarlas. La nube de 512 px de radio se
-    apelotona en una bola de 64 --- que es el `threshold` --- y el wallpaper
-    pierde justo el efecto por el que se puso.
-
-    Estando el puntero fuera del fondo, lo fiel es que no atraiga nada. Cuando
-    el motor en vivo sepa donde esta el puntero, este es el sitio por donde
-    entra.
+    Ya no se descarta nada por esto ---el `.psys` marca cual es el punto del
+    cursor y `we_psys_puntero` lo mueve---, pero saberlo sigue haciendo falta
+    para contarlo. Quien decide si el operador actua es el simulador, y su
+    regla es la de siempre: sin puntero encima del fondo, un punto atado al
+    cursor no atrae. Dejarlo atraer desde el origen del sistema convierte la
+    interaccion en un sumidero: con `scale -500` y `drag 2.5` la velocidad
+    terminal hacia el centro son 200 px/s, diez veces la turbulencia que
+    deberia dispersarlas, y la nube de 512 px de radio se apelotona en una bola
+    de 64 --- que es el `threshold`.
     """
     if op.get("name") != "controlpointattract":
         return False
@@ -632,9 +631,13 @@ class Sistema:
     # renderizador pueda decirlo, en vez de dibujar un sistema incompleto en
     # silencio.
     sin_soporte: list[str] = field(default_factory=list)
-    # Operadores que dependen del cursor y por eso quedan inactivos; ver
-    # `_cursor`.
-    sin_cursor: list[str] = field(default_factory=list)
+    # Puntos de control que MUEVE EL PUNTERO (`flags & 1`). Viajan al `.psys`
+    # como una marca en la linea `cp`, y el ejecutor les pone cada fotograma
+    # donde esta el raton; ver `_cursor`.
+    cps_cursor: set[int] = field(default_factory=set)
+    # Operadores que tiran de uno de esos puntos. Solo para contarlos: el que
+    # decide si actuan o no es el simulador, segun haya puntero o no.
+    con_cursor: list[str] = field(default_factory=list)
 
     @property
     def dibujable(self) -> bool:
@@ -674,6 +677,7 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
             s.cps[i] = _v3(cp.get("offset"))
             if int(_f1(cp.get("flags"), 0.0)) & 1:
                 cursor.add(i)
+                s.cps_cursor.add(i)
 
     # WE permite varios emisores; el corpus no usa ninguno con mas de uno, y
     # tomar el primero es preferible a sumarlos mal.
@@ -749,9 +753,9 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         vals = fn(e) if fn else None
         if vals is None:
             s.sin_soporte.append(f"operator:{e.get('name')}")
-        elif _cursor(e, cursor):
-            s.sin_cursor.append(e["name"])
         else:
+            if _cursor(e, cursor):
+                s.con_cursor.append(e["name"])
             s.opers.append((e["name"], vals))
 
     for e in pj.get("renderer") or []:
@@ -914,7 +918,10 @@ def escribir(s: Sistema, destino: Path, semilla: int) -> None:
     if s.emisor:
         lineas.append(f"emit {s.emisor} " + " ".join(num(v) for v in s.emit))
     for i, off in sorted(s.cps.items()):
-        lineas.append(f"cp {i} " + " ".join(num(v) for v in off))
+        # El quinto numero dice que a ese punto lo mueve el puntero. Se escribe
+        # siempre, tambien cuando es 0, para que la linea tenga una sola forma.
+        lineas.append(f"cp {i} " + " ".join(num(v) for v in off)
+                      + (" 1" if i in s.cps_cursor else " 0"))
     for nombre, vals in s.inits:
         lineas.append(f"init {nombre} " + " ".join(num(v) for v in vals))
     for nombre, vals in s.opers:

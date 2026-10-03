@@ -142,7 +142,10 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
         we_reloj_free(m.reloj);
         m.reloj = nullptr;
     }
-    m_psysCount = m_psysUnknownParts = 0;
+    m_psysCount = m_psysUnknownParts = m_psysCursorCount = 0;
+    // Los sistemas son otros: hay que volver a decirles donde esta el raton.
+    m_punteroRepartido = false;
+    m_punteroVisto = false;
     m_passCount = 0;
 
     QTextStream in(&f);
@@ -218,6 +221,16 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             m_psys.insert(tok[1].toInt(), p);
         } else if (kw == QLatin1String("psyspadre") && tok.size() >= 4) {
             m_psysPadre.append({tok[1].toInt(), tok[2].toInt(), tok[3].toInt()});
+        } else if (kw == QLatin1String("psyspuntero") && tok.size() >= 9) {
+            // Llega ANTES o DESPUES del `psys` que la usa, segun el orden en
+            // que Python escriba la cabecera; se apunta en la entrada del
+            // hash, que `operator[]` crea vacia si hace falta.
+            PsysSpec &p = m_psys[tok[1].toInt()];
+            for (int i = 0; i < 7; ++i)
+                p.afin[i] = tok[2 + i].toFloat();
+            p.tieneAfin = true;
+        } else if (kw == QLatin1String("parallax") && tok.size() >= 2) {
+            m_parallaxRetardo = qMax(0.0f, tok[1].toFloat());
         } else if (kw == QLatin1String("object")) {
             Op op;
             op.kind = Op::BeginObject;
@@ -310,10 +323,28 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
                 Uniform u;
                 u.count = n;
                 for (int i = 0; i < n; i++) {
-                    if (tok[2 + i] == QLatin1String("@TIME@"))
+                    const QString &v = tok[2 + i];
+                    if (v == QLatin1String("@TIME@")) {
                         u.timeMarker = true;
-                    else
-                        u.v[i] = tok[2 + i].toFloat();
+                        continue;
+                    }
+                    // Las del raton van por pares en un vec2; mas alla de la
+                    // cuarta componente no hay ninguna, y `marca` es de 4.
+                    const Marca m =
+                        i >= 4                                    ? Marca::Ninguna
+                        : v == QLatin1String("@PUNTERO_X@")       ? Marca::PunteroX
+                        : v == QLatin1String("@PUNTERO_Y@")       ? Marca::PunteroY
+                        : v == QLatin1String("@PUNTERO_ANT_X@")   ? Marca::AnteriorX
+                        : v == QLatin1String("@PUNTERO_ANT_Y@")   ? Marca::AnteriorY
+                        : v == QLatin1String("@PARALLAX_X@")      ? Marca::ParallaxX
+                        : v == QLatin1String("@PARALLAX_Y@")      ? Marca::ParallaxY
+                                                                  : Marca::Ninguna;
+                    if (m != Marca::Ninguna) {
+                        u.marca[i] = m;
+                        u.marcado = true;
+                    } else {
+                        u.v[i] = v.toFloat();
+                    }
                 }
                 cur.uniformNames.append(tok[1].toUtf8());
                 cur.uniforms.append(u);
@@ -770,6 +801,8 @@ bool GlExecutor::initialize(QString *error)
             glEnableVertexAttribArray(attr[i].loc);
         }
         ++m_psysCount;
+        if (we_psys_cursor(p.sys))
+            ++m_psysCursorCount;
     }
 
     // Atar los hijos `eventspawn` a su padre, con los dos ya cargados. A partir
@@ -1009,6 +1042,134 @@ void GlExecutor::setBarColor(float r, float g, float b)
     m_bar[2] = qBound(0.0f, b, 1.0f);
 }
 
+void GlExecutor::setPuntero(float x, float y, bool presente)
+{
+    // Fuera del fondo no se inventa una posicion: se queda la ultima, que no
+    // fabrica un movimiento ---y por tanto una ondulacion, o un chorro de
+    // fluido--- que no ha ocurrido. Lo que si cambia es que deja de haber
+    // raton para los puntos de control; ver `avanzaPuntero`.
+    if (presente) {
+        m_punteroVista[0] = qBound(0.0f, x, 1.0f);
+        m_punteroVista[1] = qBound(0.0f, y, 1.0f);
+    }
+    if (presente != m_hayPuntero) {
+        m_hayPuntero = presente;
+        m_punteroRepartido = false;
+        // Una vez por plan, la primera vez que el raton pisa el fondo. Es la
+        // unica pregunta que no se puede contestar fuera de plasmashell: si
+        // los eventos de hover llegan hasta aqui o se los queda alguien por el
+        // camino. Sin esto, "la escena no reacciona al raton" y "esta escena
+        // no usa el raton" son el mismo silencio.
+        if (presente && !m_punteroVisto) {
+            m_punteroVisto = true;
+            qInfo("GlExecutor: el raton entra en el fondo por (%.3f, %.3f)",
+                  double(m_punteroVista[0]), double(m_punteroVista[1]));
+        }
+    }
+}
+
+GlExecutor::Encajado GlExecutor::encajado(int viewW, int viewH) const
+{
+    const Target &src = m_scene;
+    double sX, sY;                       // pixeles de pantalla por pixel de escena
+    switch (m_fit) {
+    case Encajar:
+        sX = sY = qMin(double(viewW) / src.w, double(viewH) / src.h);
+        break;
+    case Estirar:
+        sX = double(viewW) / src.w;
+        sY = double(viewH) / src.h;
+        break;
+    default:
+        sX = sY = qMax(double(viewW) / src.w, double(viewH) / src.h);
+        break;
+    }
+    sX *= m_zoom;
+    sY *= m_zoom;
+
+    // Cuanto lienzo cabe en la pantalla. Si sobra escena hay recorte y el
+    // desplazamiento elige por donde; si falta, la diferencia son barras. Con
+    // `Cubrir` y zoom 1 no hay barras y esto es lo que se hacia antes.
+    Encajado e;
+    e.cropW = qBound(1, int(qRound(viewW / sX)), src.w);
+    e.cropH = qBound(1, int(qRound(viewH / sY)), src.h);
+    // El eje Y del lienzo crece hacia arriba (lo fija la MVP que hornea
+    // `object_mvp`), asi que un desplazamiento positivo sube.
+    e.x0 = qRound((src.w - e.cropW) * 0.5 * (1.0 + m_despX));
+    e.y0 = qRound((src.h - e.cropH) * 0.5 * (1.0 + m_despY));
+    e.dstW = qMin(viewW, int(qRound(e.cropW * sX)));
+    e.dstH = qMin(viewH, int(qRound(e.cropH * sY)));
+    e.dx = (viewW - e.dstW) / 2;
+    e.dy = (viewH - e.dstH) / 2;
+    return e;
+}
+
+float GlExecutor::valorDeMarca(Marca m) const
+{
+    switch (m) {
+    case Marca::PunteroX:  return m_puntero[0];
+    case Marca::PunteroY:  return m_puntero[1];
+    case Marca::AnteriorX: return m_punteroAnt[0];
+    case Marca::AnteriorY: return m_punteroAnt[1];
+    case Marca::ParallaxX: return m_parallax[0];
+    case Marca::ParallaxY: return m_parallax[1];
+    default:               return 0.0f;
+    }
+}
+
+void GlExecutor::avanzaPuntero(float dt, int viewW, int viewH)
+{
+    // De la pantalla a la escena. El item ocupa toda la pantalla pero la
+    // escena no: con `Cubrir` sobra lienzo por dos lados y con `Encajar` faltan
+    // barras, asi que el pixel bajo el raton no es el mismo pixel de escena.
+    // Es el mismo calculo del blit final, al reves.
+    const Encajado e = encajado(viewW, viewH);
+    const double px = double(m_punteroVista[0]) * viewW;
+    const double py = double(m_punteroVista[1]) * viewH;
+    // La y de Qt baja y la de GL sube: el borde de ARRIBA del rectangulo de
+    // destino esta en `viewH - dy - dstH`.
+    const double fx = (px - e.dx) / qMax(1, e.dstW);
+    const double fy = (py - (viewH - e.dy - e.dstH)) / qMax(1, e.dstH);
+    const double sx = e.x0 + fx * e.cropW;
+    const double sy = e.y0 + (1.0 - fy) * e.cropH;     // pixel de escena, y arriba
+    m_puntero[0] = float(qBound(0.0, sx / qMax(1, m_scene.w), 1.0));
+    m_puntero[1] = float(qBound(0.0, 1.0 - sy / qMax(1, m_scene.h), 1.0));
+
+    // El parallax persigue al raton con retardo ---`cameraparallaxdelay` de la
+    // escena, que cuatro de las seis que usan el efecto de profundidad ponen
+    // en 2 s---. Exponencial y no lineal: asi el tiempo de llegada no depende
+    // del fotograma en que se empiece, y con dt grandes ---el escritorio vuelve
+    // de estar tapado--- se queda en el destino en vez de pasarse.
+    const float k = m_parallaxRetardo > 1e-3f && dt > 0.0f
+                  ? 1.0f - std::exp(-dt / m_parallaxRetardo) : 1.0f;
+    for (int i = 0; i < 2; ++i)
+        m_parallax[i] += (m_puntero[i] - m_parallax[i]) * k;
+
+    // A los sistemas de particulas solo hay que hablarles cuando el raton se
+    // mueve de verdad: son 123 sistemas en las escenas que lo usan y ninguno
+    // en las demas.
+    const bool movido = m_puntero[0] != m_punteroAnt[0]
+                     || m_puntero[1] != m_punteroAnt[1];
+    if (movido || !m_punteroRepartido) {
+        m_punteroRepartido = true;
+        for (PsysSpec &p : m_psys) {
+            if (!p.sys || !p.tieneAfin)
+                continue;
+            if (!m_hayPuntero) {
+                we_psys_puntero(p.sys, nullptr);
+                continue;
+            }
+            const float *a = p.afin;
+            const float q[3] = {a[0] * m_puntero[0] + a[1] * m_puntero[1] + a[2],
+                                a[3] * m_puntero[0] + a[4] * m_puntero[1] + a[5],
+                                a[6]};
+            we_psys_puntero(p.sys, q);
+        }
+    }
+    m_punteroAnt[0] = m_puntero[0];
+    m_punteroAnt[1] = m_puntero[1];
+}
+
 // ── cronometro de GPU ───────────────────────────────────────────────────────
 //
 // Lo que se quiere saber es si la GPU llega, y eso no lo dice ni el reloj de
@@ -1111,6 +1272,12 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         return;
 
     gpuTimerBegin();
+    // Antes que nada: el simulador de particulas lee el punto de control al
+    // dar su paso, asi que llegar despues lo dejaria un fotograma por detras
+    // del raton.
+    avanzaPuntero(m_tiempoPrevio >= 0.0f && time > m_tiempoPrevio
+                  ? time - m_tiempoPrevio : 0.0f, viewW, viewH);
+    m_tiempoPrevio = time;
     skinMeshes(time);
     updateClocks();
     updateVideos(time);
@@ -1213,10 +1380,17 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 
         for (const Uniform &u : op.uniforms) {
             // Sin copia: se pasa el puntero a los valores ya parseados. Solo
-            // g_Time necesita un valor distinto por fotograma.
+            // g_Time y las componentes del raton cambian por fotograma.
             const float *v = u.v;
-            if (u.timeMarker)
+            float marcado[4];
+            if (u.timeMarker) {
                 v = &time;
+            } else if (u.marcado) {
+                for (int i = 0; i < u.count && i < 4; ++i)
+                    marcado[i] = u.marca[i] == Marca::Ninguna
+                               ? u.v[i] : valorDeMarca(u.marca[i]);
+                v = marcado;
+            }
             switch (u.count) {
             case 1:  glUniform1fv(u.location, 1, v); break;
             case 2:  glUniform2fv(u.location, 1, v); break;
@@ -1268,35 +1442,9 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     // proporcion de la pantalla, asi que aqui se decide que se ve: los tres
     // encajes salen de la misma cuenta cambiando solo como se elige la escala.
     const Target &src = m_scene;
-    double sX, sY;                       // pixeles de pantalla por pixel de escena
-    switch (m_fit) {
-    case Encajar:
-        sX = sY = qMin(double(viewW) / src.w, double(viewH) / src.h);
-        break;
-    case Estirar:
-        sX = double(viewW) / src.w;
-        sY = double(viewH) / src.h;
-        break;
-    default:
-        sX = sY = qMax(double(viewW) / src.w, double(viewH) / src.h);
-        break;
-    }
-    sX *= m_zoom;
-    sY *= m_zoom;
-
-    // Cuanto lienzo cabe en la pantalla. Si sobra escena hay recorte y el
-    // desplazamiento elige por donde; si falta, la diferencia son barras. Con
-    // `Cubrir` y zoom 1 no hay barras y esto es lo que se hacia antes.
-    const int cropW = qBound(1, int(qRound(viewW / sX)), src.w);
-    const int cropH = qBound(1, int(qRound(viewH / sY)), src.h);
-    // El eje Y del lienzo crece hacia arriba (lo fija la MVP que hornea
-    // `object_mvp`), asi que un desplazamiento positivo sube.
-    const int x0 = qRound((src.w - cropW) * 0.5 * (1.0 + m_despX));
-    const int y0 = qRound((src.h - cropH) * 0.5 * (1.0 + m_despY));
-    const int dstW = qMin(viewW, int(qRound(cropW * sX)));
-    const int dstH = qMin(viewH, int(qRound(cropH * sY)));
-    const int dx = (viewW - dstW) / 2;
-    const int dy = (viewH - dstH) / 2;
+    const Encajado e = encajado(viewW, viewH);
+    const int cropW = e.cropW, cropH = e.cropH, x0 = e.x0, y0 = e.y0;
+    const int dstW = e.dstW, dstH = e.dstH, dx = e.dx, dy = e.dy;
 
     // El encaje se cambia desde la configuracion y no deja rastro en ningun
     // sitio: sin esto, "no se ve entera" y "se ve entera pero mal recortada"

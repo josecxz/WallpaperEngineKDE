@@ -17,6 +17,7 @@ Uso:
     make glexec        # deja el ejecutor en obj/glexec
     python3 tools/werender.py <dir_wallpaper> <salida.png> [--time 0.0]
                               [--only-base] [--exec obj/glexec]
+                              [--puntero <u> <v>]
 """
 
 from __future__ import annotations
@@ -150,6 +151,19 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
              0.0,     0.0,    0.0, 1.0]
 
 
+def _es_composelayer(obj) -> bool:
+    """Si el pase BASE de esta capa usa el shader `composelayer`.
+
+    A diferencia de `passthrough.vert` --- que ignora la MVP tanto para
+    `gl_Position` como para `v_TexCoord` --- `composelayer.vert` SI la mira
+    para `v_ScreenCoord`, que es de donde sale lo que muestrea. Las dos capas
+    comparten la marca `_passthrough` pero no el mismo trato: ver [el fondo
+    de *Lonely Cat* se
+    desliza](#el-fondo-de-lonely-cat-se-desliza-y-las-dos-mitades-de-un-arreglo).
+    """
+    return any(p.shader == "composelayer" for p in obj.passes if p.stage == "base")
+
+
 def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
                 por_id: dict | None = None
                 ) -> tuple[float, float, float, float, float, float, float]:
@@ -161,23 +175,30 @@ def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
     caeria en un sitio distinto de donde se ve la capa.
     """
     w, h = canvas
-    # Una capa `passthrough` (composelayer, fullscreenlayer, projectlayer)
-    # trabaja sobre el fotograma completo: su origin y su size describen el
-    # rectangulo que el autor ve en el editor, no donde se dibuja.
+    # Una capa `passthrough` (fullscreenlayer, projectlayer, y la mitad de los
+    # `composelayer`) trabaja sobre el fotograma completo: su origin y su size
+    # describen el rectangulo que el autor ve en el editor, no donde se
+    # dibuja.
     #
-    # Lo dicen sus dos shaders, no una suposicion: `passthrough.vert` sin el
-    # combo TRANSFORM hace `gl_Position = vec4(a_Position, 1.0)` --- ni toca la
-    # MVP --- y `composelayer.vert` construye el vertice desde a_TexCoord,
-    # `position.xy * 2.0 - 1.0`, que es la pantalla entera pase lo que pase.
-    # El rectangulo declarado solo sirve para que el autor la agarre en el
-    # editor.
+    # Lo dice su shader, no una suposicion: `passthrough.vert` sin el combo
+    # TRANSFORM hace `gl_Position = vec4(a_Position, 1.0)` --- ni toca la MVP
+    # ni para eso ni para `v_TexCoord = a_TexCoord` --- asi que colocarla es
+    # inutil: siempre lee y escribe el fotograma entero. El rectangulo
+    # declarado solo sirve para que el autor la agarre en el editor.
     #
     # Componerla en ese rectangulo metia el fotograma entero encogido dentro:
     # la esquina inferior izquierda de 1173201544 (`Fullscreen` de 1624x696
     # en un lienzo de 2500x1200) y las dos bandas horizontales de 2537500835
     # (dos `composelayer` de 1920x540).
+    #
+    # `composelayer.vert` es distinto: su `gl_Position` tambien ignora la MVP,
+    # pero `v_ScreenCoord` --- de donde sale lo que muestrea --- SI la usa. Con
+    # la identidad de aqui abajo copiaba el fotograma ENTERO en vez del trozo
+    # bajo su rectangulo, y ese trozo desplazado es lo que un efecto como
+    # `scroll` (`speedy`) hacia visible: el fondo de Lonely Cat resbalando.
+    # Para estas capas hay que colocarlas de verdad, como a cualquier otra.
     origin, scale, angles = transform_absoluto(obj, por_id)
-    paso = bool(obj.raw.get("_passthrough"))
+    paso = bool(obj.raw.get("_passthrough")) and not _es_composelayer(obj)
     if paso:
         origin, scale, angles = [w / 2, h / 2, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
     elif not _floats(obj.raw.get("origin")):
@@ -303,6 +324,40 @@ def particle_world(obj, canvas: tuple[int, int],
             scale[0] * s,  scale[1] * c, 0.0,      origin[1],
             0.0,           0.0,          scale[2], origin[2],
             0.0,           0.0,          0.0,      1.0]
+
+
+def puntero_a_sistema(obj, canvas: tuple[int, int],
+                      por_id: dict | None = None) -> list[float] | None:
+    """Afin que lleva el PUNTERO al espacio de un sistema de particulas.
+
+    El puntero llega en coordenadas de pantalla ---(0,0) arriba a la izquierda,
+    (1,1) abajo a la derecha, que es como lo dan WE y Qt--- y las particulas
+    viven en pixeles del sistema, que es lo que `particle_world` coloca en el
+    lienzo. Esta es esa cadena al reves, aplanada a siete numeros:
+
+        x = a*u + b*v + c      y = d*u + e*v + f      z = g
+
+    Se resuelve aqui y no en el ejecutor por la regla de siempre: quien sabe
+    donde cae el sistema en el lienzo es Python. Los dos ejecutores reciben la
+    afin hecha y solo multiplican.
+
+    `None` si el objeto esta a escala cero: no hay inversa, y un sistema con
+    escala cero no dibuja nada de todas formas.
+    """
+    w, h = canvas
+    origin, scale, angles = transform_absoluto(obj, por_id)
+    if not _floats(obj.raw.get("origin")):
+        origin = [w / 2, h / 2, 0.0]
+    sx, sy, sz = scale[0], scale[1], scale[2]
+    if abs(sx) < 1e-6 or abs(sy) < 1e-6:
+        return None
+    c, s = math.cos(angles[2]), math.sin(angles[2])
+    # El lienzo tiene la y hacia ARRIBA y la pantalla hacia abajo: v=0 es el
+    # borde de arriba, o sea y = h.
+    ox, oy = origin[0], origin[1]
+    return [c * w / sx, -s * h / sx, (-c * ox + s * (h - oy)) / sx,
+            -s * w / sy, -c * h / sy, (s * ox + c * (h - oy)) / sy,
+            -origin[2] / sz if abs(sz) > 1e-6 else 0.0]
 
 
 # La camara de estas escenas es ortografica ---`orthogonalprojection`---, asi
@@ -651,7 +706,15 @@ def por_tipo(luces: list[Luz]) -> dict[str, list[Luz]]:
 
 
 def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
-    """Tamano del rectangulo de la capa en pixeles, sin escala ni colocacion."""
+    """Tamano del rectangulo de la capa en pixeles, sin escala ni colocacion.
+
+    El buffer de trabajo del objeto (`compo[]` en los dos ejecutores) es
+    SIEMPRE del tamano del lienzo, sea cual sea el rectangulo declarado ---no
+    hay un buffer por objeto del tamano de su capa, es un par fijo que se
+    limpia y se reutiliza en cada `object`---, y eso vale igual para un
+    `composelayer`: lo que cambia con la MVP real del pase base es solo que
+    UV lee de `_rt_FullFrameBuffer`, no el tamano de lo que escribe.
+    """
     if obj.raw.get("_passthrough"):
         return float(canvas[0]), float(canvas[1])
     size = (_floats(obj.raw.get("size")) + [float(canvas[0]), float(canvas[1])])[:2]
@@ -1073,10 +1136,18 @@ class MeshAnim(NamedTuple):
 
 class Renderer:
     def __init__(self, wallpaper: Path, exec_path: Path, time: float = 0.0,
-                 resolucion: tuple[int, int] | None = None):
+                 resolucion: tuple[int, int] | None = None,
+                 puntero: tuple[float, float] | None = None):
         self.res = AssetResolver.for_wallpaper(wallpaper, wepaths.we_assets())
         self.exec_path = exec_path
         self.time = time
+        # Donde esta el raton, en coordenadas de pantalla: (0,0) arriba a la
+        # izquierda. `None` es lo normal offline y NO quiere decir "en el
+        # centro": quiere decir que no hay raton sobre el fondo, que es un
+        # estado distinto ---los puntos de control atados al cursor no tiran de
+        # nada--- y es el que reproduce lo que se veia antes de que el puntero
+        # existiera. En vivo lo pone el escritorio, no el plan.
+        self.puntero = puntero
         # A que instante se congelan los campos animados. Por defecto el mismo
         # que se renderiza; `emit_plan` lo lleva al reposo, ver TIEMPO_EN_REPOSO.
         self.tiempo_animacion = time
@@ -1389,6 +1460,14 @@ class Renderer:
 
         weparticles.escribir(sis, destino, semilla)
         self.lines.append(f"psys {i} {destino}")
+        # Como llevar el puntero al espacio de ESTE sistema. Solo se emite si
+        # el sistema tiene algun punto de control atado al cursor ---123 de los
+        # 842 del corpus---; el resto no tiene donde ponerlo.
+        if sis.cps_cursor:
+            afin = puntero_a_sistema(obj, self.canvas, self.por_id)
+            if afin:
+                self.lines.append(f"psyspuntero {i} "
+                                  + " ".join(f"{x:.6g}" for x in afin))
         if rafaga:
             self.hijos.append((i, str(obj.raw.get("_padre")), rafaga))
         self.psys[id(obj)] = i
@@ -2232,6 +2311,14 @@ class Renderer:
             mg = self.margins.get(id(obj), 1.0)
             mvp = [2.0 / (sw * mg), 0, 0, 0,  0, 2.0 / (sh * mg), 0, 0,
                    0, 0, 1, 0,  0, 0, 0, 1]
+        elif obj is not None and p.stage == "base" and _es_composelayer(obj):
+            # Excepcion a la regla de arriba: `composelayer.vert` ignora la
+            # MVP para `gl_Position` --- su quad llena el buffer entero, como
+            # cualquier otro pase base --- pero SI la usa para `v_ScreenCoord`,
+            # que decide que trozo del fotograma acumulado (`_rt_FullFrameBuffer`,
+            # ligado en `g_Texture0`) cae en ese buffer. Con la identidad
+            # muestreaba el fotograma ENTERO en vez del suyo. Ver `_colocacion`.
+            mvp = object_mvp(obj, canvas, por_id=self.por_id)
         else:
             mvp = IDENTITY
         self.body.append("umat4 g_ModelViewProjectionMatrix " +
@@ -2397,20 +2484,27 @@ class Renderer:
         # pasa de luminancia media 18 a 91.
         #
         # La escena es plana y mira al lienzo de frente, asi que la identidad es
-        # el valor neutro, igual que con `g_Orientation*`. La posicion del
-        # parallax va al centro, que es el reposo mientras el motor no sepa
-        # donde esta el puntero; cuando lo sepa, se engancha aqui.
+        # el valor neutro, igual que con `g_Orientation*`.
         ident = "1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"
         self.body.append(f"umat4 g_EffectTextureProjectionMatrix {ident}")
         self.body.append(f"umat4 g_EffectTextureProjectionMatrixInverse {ident}")
-        self.body.append("u2f g_ParallaxPosition 0.5 0.5")
-        # El puntero, en UV y en reposo. NO se puede dejar sin emitir: cero no
-        # es "sin cursor", es el cursor clavado en la esquina superior
-        # izquierda, y 14 variantes del corpus lo leen. El centro es lo mismo
-        # que ya asume `g_ParallaxPosition`, y lo que se vera hasta que el
-        # motor sepa donde esta el raton de verdad.
-        self.body.append("u2f g_PointerPosition 0.5 0.5")
-        self.body.append("u2f g_PointerPositionLast 0.5 0.5")
+        # El puntero, en coordenadas de PANTALLA con la y hacia abajo. Los tres
+        # marcadores los rellena quien tenga el raton: offline `_fotograma`,
+        # en vivo el ejecutor. En reposo valen 0.5 0.5, el centro, que NO se
+        # puede cambiar por cero: cero no es "sin cursor", es el cursor clavado
+        # en la esquina superior izquierda, y 14 variantes del corpus lo leen.
+        #
+        # `g_ParallaxPosition` va aparte porque no es el puntero sino el
+        # puntero CON RETARDO ---`cameraparallaxdelay`, hasta 2 s en cuatro de
+        # las seis escenas que lo usan---, y ese retardo solo lo puede llevar
+        # quien dibuja fotogramas seguidos. No lleva ni `cameraparallaxamount`
+        # ni `cameraparallaxmouseinfluence`: dos de las seis escenas con el
+        # efecto de profundidad declaran amount 0, y si el amount lo escalara
+        # habrian puesto un efecto caro sobre una entrada muerta.
+        self.body.append("u2f g_ParallaxPosition @PARALLAX_X@ @PARALLAX_Y@")
+        self.body.append("u2f g_PointerPosition @PUNTERO_X@ @PUNTERO_Y@")
+        self.body.append("u2f g_PointerPositionLast "
+                         "@PUNTERO_ANT_X@ @PUNTERO_ANT_Y@")
         # La inversa de la MVP lleva el puntero de clip space al espacio local
         # de la capa. Sin emitirla GL la da a cero y ahi dentro hay una
         # division: es la misma familia de fallo que dejo tres escenas negras
@@ -2501,6 +2595,30 @@ class Renderer:
             self.body.append(f"dump {self.dump_dir}/after{n:03d}.rgba")
         self.stats["pases"] += 1
 
+    # ── el fotograma concreto ─────────────────────────────────────────────
+    # El cuerpo del plan es una PLANTILLA: lleva marcadores donde van los
+    # numeros que cambian de un fotograma a otro. Offline los pone Python;
+    # en vivo los pone el ejecutor, que es quien tiene el reloj y el raton.
+    def _fotograma(self, t: float) -> list[str]:
+        """El cuerpo del plan con los marcadores de este instante puestos."""
+        u, v = self.puntero if self.puntero else (0.5, 0.5)
+        marcas = {"@TIME@": f"{t:.5f}",
+                  "@PUNTERO_X@": f"{u:.6g}", "@PUNTERO_Y@": f"{v:.6g}",
+                  # Sin movimiento entre fotogramas: offline se renderiza un
+                  # instante, no una trayectoria. Lo que lee la diferencia
+                  # ---la ondulacion del cursor--- ve cero, que es lo que hay.
+                  "@PUNTERO_ANT_X@": f"{u:.6g}", "@PUNTERO_ANT_Y@": f"{v:.6g}",
+                  # El parallax es el puntero con retardo, y un retardo sobre
+                  # un puntero quieto acaba en el propio puntero.
+                  "@PARALLAX_X@": f"{u:.6g}", "@PARALLAX_Y@": f"{v:.6g}"}
+        salida = []
+        for linea in self.body:
+            if "@" in linea:
+                for marca, valor in marcas.items():
+                    linea = linea.replace(marca, valor)
+            salida.append(linea)
+        return salida
+
     # ── escena completa ───────────────────────────────────────────────────
     def render_sequence(self, out_dir: Path, count: int, fps: float,
                         warmup: int = 6) -> dict:
@@ -2516,11 +2634,10 @@ class Renderer:
 
         plan = list(self.lines)
         for i in range(warmup):
-            plan.extend(l.replace("@TIME@", f"{self.time + i / fps:.5f}")
-                        for l in self.body)
+            plan.extend(self._fotograma(self.time + i / fps))
         for i in range(count):
             t = self.time + (warmup + i) / fps
-            plan.extend(l.replace("@TIME@", f"{t:.5f}") for l in self.body)
+            plan.extend(self._fotograma(t))
             plan.append(f"dump {out_dir}/f{i:04d}.rgba")
 
         plan_path = self.tmp / "plan_seq.txt"
@@ -2657,6 +2774,20 @@ class Renderer:
         # efectos temporales, asi que las N tienen que dar la misma imagen.
         # En vivo esta linea sobra: el ejecutor usa su propio reloj.
         self.lines.append(f"videotime {self.time:.6f}")
+        # Cuanto tarda el parallax en llegar a donde esta el raton. Es de la
+        # escena ---`cameraparallaxdelay`, que 108 de las 129 dejan en 0,1 y
+        # cuatro de las seis que usan el efecto de profundidad suben a 2--- y
+        # solo lo puede aplicar quien dibuja fotogramas seguidos, o sea el
+        # motor en vivo. Offline no hay trayectoria que suavizar.
+        retardo = _floats(general.get("cameraparallaxdelay"))
+        self.lines.append(f"parallax {retardo[0] if retardo else 0.1:.4f}")
+        # Donde esta el raton, para el ejecutor OFFLINE. En vivo esta linea no
+        # aparece ---`emit_plan` no pasa puntero--- y el ejecutor usa el del
+        # escritorio; ver `self.puntero`. Va la primera del cuerpo porque los
+        # sistemas de particulas la leen antes de dar su paso.
+        if self.puntero:
+            self.body.append(f"puntero {self.puntero[0]:.6g} "
+                             f"{self.puntero[1]:.6g}")
         we = wepaths.we_assets()
         sresolver = weshader.Resolver(
             overlay=self.res.entries, roots=[we, we / "shaders"])
@@ -2803,8 +2934,7 @@ class Renderer:
         plan_lines = list(self.lines)
         for i in range(max(1, frames)):
             plan_lines.append("frame")
-            plan_lines.extend(l.replace("@TIME@", f"{self.time:.5f}")
-                              for l in self.body)
+            plan_lines.extend(self._fotograma(self.time))
         plan_lines.append(f"output {raw}")
         self.stats["fotogramas"] = max(1, frames)
 
@@ -3073,6 +3203,13 @@ def main() -> int:
     if "--pantalla" in sys.argv:
         w, _, h = sys.argv[sys.argv.index("--pantalla") + 1].partition("x")
         pantalla = (int(w), int(h))
+    # `--puntero 0.25 0.75` pone el raton ahi, en coordenadas de pantalla con
+    # la y hacia abajo. Sin la opcion no hay raton sobre el fondo, que no es lo
+    # mismo que tenerlo en el centro.
+    puntero = None
+    if "--puntero" in sys.argv:
+        i = sys.argv.index("--puntero")
+        puntero = (float(sys.argv[i + 1]), float(sys.argv[i + 2]))
 
     mp4 = video_de(wallpaper)
     if mp4 is not None:
@@ -3080,7 +3217,7 @@ def main() -> int:
             print(f"  {k}: {v}")
         return 0
 
-    r = Renderer(wallpaper, exec_path, t, resolucion=pantalla)
+    r = Renderer(wallpaper, exec_path, t, resolucion=pantalla, puntero=puntero)
     mp = None
     if "--passes" in sys.argv:
         mp = int(sys.argv[sys.argv.index("--passes") + 1])

@@ -81,6 +81,15 @@ public:
     // sin mezcla alfa: lo que no pintemos sale negro, no transparente.
     void setBarColor(float r, float g, float b);
 
+    // Donde esta el raton, en coordenadas de PANTALLA: (0,0) arriba a la
+    // izquierda, (1,1) abajo a la derecha, que es como lo dan Qt y los shaders
+    // de WE. `presente` a false dice que no hay raton sobre el fondo ---nunca
+    // lo ha habido desde que arranco, o se ha ido a una ventana--- y entonces
+    // los puntos de control atados al cursor no tiran de nada: ver
+    // `we_psys_puntero`. Los uniforms se quedan en la ultima posicion conocida,
+    // que no inventa un movimiento que no ha ocurrido.
+    void setPuntero(float x, float y, bool presente);
+
     void releaseResources();
 
     // Numeros de solo lectura, para diagnostico.
@@ -94,6 +103,10 @@ public:
     // Sistemas de particulas cargados y piezas de ellos que no se reconocieron.
     int psysCount() const { return m_psysCount; }
     int psysUnknownParts() const { return m_psysUnknownParts; }
+    // Cuantos de esos sistemas tienen un punto de control atado al raton. Con
+    // 0, la escena no reacciona al puntero por mucho que se mueva; saberlo
+    // separa "el puntero no llega" de "esta escena no lo usa".
+    int psysCursorCount() const { return m_psysCursorCount; }
     int canvasWidth() const { return m_canvasW; }
     int canvasHeight() const { return m_canvasH; }
     int liveUniformCount() const { return m_liveUniforms; }
@@ -151,10 +164,25 @@ private:
         bool mipmapped = false;
     };
 
+    // Componentes que el motor rellena por fotograma en vez de leerlos del
+    // plan. `@TIME@` tiene su propio camino ---es el unico que existia y va en
+    // un uniform de un solo float---; estas son las del raton, que llegan por
+    // pares. Ver `valorDeMarca`.
+    enum class Marca : unsigned char {
+        Ninguna = 0, PunteroX, PunteroY, AnteriorX, AnteriorY,
+        ParallaxX, ParallaxY,
+    };
+
     struct Uniform {
         GlLocation location = -1;
         int count = 0;          // 1..4 o 16
         bool timeMarker = false;
+        // Cierto si alguna componente lleva marca. Se guarda aparte para que
+        // el caso normal ---ningun uniform del pase la lleva--- no pague ni
+        // una comparacion por componente.
+        bool marcado = false;
+        Marca marca[4] = {Marca::Ninguna, Marca::Ninguna,
+                          Marca::Ninguna, Marca::Ninguna};
         float v[16] = {};
     };
 
@@ -260,12 +288,38 @@ private:
         struct WeParticleSystem *sys = nullptr;
         GlName vao = 0, vbo = 0;
         int capacidad = 0;      // vertices que caben hoy en el VBO
+        // Afin que lleva el puntero de la pantalla al espacio de ESTE sistema,
+        // resuelta por `puntero_a_sistema` en werender.py. Vacia en los
+        // sistemas sin ningun punto de control atado al cursor, que son la
+        // mayoria: 719 de los 842 del corpus.
+        bool tieneAfin = false;
+        float afin[7] = {};
     };
 
     // Malla lista para dibujar, o nullptr si el id no existe o no se subio.
     const MeshSpec *meshFor(int id) const;
     // Simula hasta `time`, sube los vertices y dibuja. false si no hay nada.
     bool drawPsys(int id, float time);
+
+    // Como cae el lienzo en la pantalla: el mismo calculo que decide el blit
+    // final, sacado aparte porque el puntero necesita hacerlo AL REVES ---de
+    // pixel de pantalla a pixel de escena--- y al principio del fotograma, no
+    // al final. Teniendolo en dos sitios, un encaje con recorte movia la
+    // escena y no el raton.
+    struct Encajado {
+        int cropW, cropH;     // cuanta escena se ve, en pixeles de escena
+        int x0, y0;           // esquina de ese recorte (y hacia ARRIBA)
+        int dstW, dstH;       // a que rectangulo de pantalla va
+        int dx, dy;           // y donde empieza (y hacia arriba, como GL)
+    };
+    Encajado encajado(int viewW, int viewH) const;
+
+    // El valor de una componente marcada, ya resuelto para este fotograma.
+    float valorDeMarca(Marca m) const;
+    // Lleva el puntero a cada sistema de particulas que sepa donde ponerlo, y
+    // adelanta el parallax hacia el. Una vez por fotograma y antes de que
+    // nadie de un paso.
+    void avanzaPuntero(float dt, int viewW, int viewH);
 
     // Deforma las mallas animadas y reescribe sus VBO. Una vez por fotograma,
     // no una por pase: varias pasadas comparten la misma malla.
@@ -304,7 +358,7 @@ private:
     struct PsysPadre { int hijo, padre, rafaga; };
     QVector<PsysPadre> m_psysPadre;
     int m_meshCount = 0, m_meshPassCount = 0, m_meshAnimCount = 0;
-    int m_psysCount = 0, m_psysUnknownParts = 0;
+    int m_psysCount = 0, m_psysUnknownParts = 0, m_psysCursorCount = 0;
     QVector<Target> m_targets;              // indexable y estable
     QHash<QString, qsizetype> m_targetByName;
     Target m_compo[2];      // buffer del objeto en curso (ping-pong)
@@ -328,6 +382,24 @@ private:
     int m_fit = Cubrir;
     float m_zoom = 1.0f, m_despX = 0.0f, m_despY = 0.0f;
     float m_bar[3] = {0.0f, 0.0f, 0.0f};
+    // El raton: donde esta, donde estaba en el fotograma anterior, y el
+    // parallax, que es lo mismo con retardo. En reposo, el centro: cero seria
+    // el cursor clavado en la esquina, que es un valor y ademas el peor.
+    // En coordenadas de la VISTA (lo que Qt entrega) y en coordenadas de la
+    // ESCENA (lo que quieren los shaders). No son lo mismo en cuanto el encaje
+    // recorta o deja barras, que es lo normal: 99 de las 129 escenas son 16:9
+    // y casi ninguna pantalla lo es.
+    float m_punteroVista[2] = {0.5f, 0.5f};
+    float m_puntero[2] = {0.5f, 0.5f};
+    float m_punteroAnt[2] = {0.5f, 0.5f};
+    float m_parallax[2] = {0.5f, 0.5f};
+    bool m_hayPuntero = false;
+    bool m_punteroVisto = false;       // ya se aviso de que el raton llega
+    bool m_punteroRepartido = false;   // ya se le dijo a los sistemas
+    // Segundos que tarda el parallax en alcanzar al raton (`cameraparallaxdelay`
+    // de la escena). 0 = va pegado a el.
+    float m_parallaxRetardo = 0.1f;
+    float m_tiempoPrevio = -1.0f;      // para sacar el dt del fotograma
     quint64 m_diagFitSig = 0;   // ultimo encaje trazado, para no repetirlo
     int m_passCount = 0;
     int m_liveUniforms = 0;

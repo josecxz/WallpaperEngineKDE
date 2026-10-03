@@ -7,7 +7,7 @@ plasmashell. No es un envoltorio: donde una capa **es** un vídeo lo decodifica
 y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
 
 - Qué hace y cómo se instala → `README.md`
-- **Por qué** cada cosa es como es → `NOTAS.md` (5127 líneas, 200 secciones en
+- **Por qué** cada cosa es como es → `NOTAS.md` (5490 líneas, 216 secciones en
   orden cronológico). **No lo leas entero.** `NOTAS-INDICE.md` dice qué sección
   resuelve qué problema y en qué línea empieza; se lee el trozo con
   `sed -n '<línea>,+40p' NOTAS.md`. Tras editar NOTAS.md, `make indice`.
@@ -55,7 +55,7 @@ scene.pkg ──pkg_inspect──┬─ .tex  ──wetex────┐  (IS_VI
                                               ▼
                                      werender.py  (el hub: decide y resuelve)
                                               │
-                                    plan.txt (con @TIME@)
+                             plan.txt (con @TIME@ y @PUNTERO_*@)
                                     ┌─────────┴─────────┐
                             glexec.c (offline)   glexecutor.cpp (en vivo)
                                     ├──── src/weparticles.c ────┤  (compartidos)
@@ -68,7 +68,7 @@ MP4 y su plan lo escribe `plan_de_video()` directo —`canvas`, `video`, un
 `object` y un pase con un quad—. `emit_plan` despacha solo, así que `wectl` no
 tiene que saber de qué tipo es lo que pone.
 
-`werender.py` (2589 líneas) es donde vive **lo que hay que decidir**: binding de
+`werender.py` (3247 líneas) es donde vive **lo que hay que decidir**: binding de
 propiedades, uniforms del motor, resolución de bindings. Los ejecutores solo
 ejecutan un plan ya resuelto. La implementación de referencia está en Python a
 propósito; `src/` es el port a C++ de lo mismo.
@@ -154,3 +154,9 @@ cadena porque no hay buffers en coma flotante. El vídeo se reproduce, pero
 JavaScript, 123 dan la hora en vivo (`tools/wescript.py` interpreta el script
 y deduce la plantilla) y 25 se quedan con el texto literal: las que usan
 `engine`, `import` o expresiones regulares, y las que no son un reloj.
+
+El **puntero sí llega** —los uniforms del ratón y los 123 sistemas de
+partículas que lo persiguen, en 46 escenas—, pero la **cámara no se mueve**:
+`cameraparallax` desplaza cada capa según su `parallaxDepth` en 29 escenas y
+falta el número que lleva su `amount` a píxeles. Y el fondo solo ve el ratón
+mientras está encima: sobre una ventana se queda en la última posición.

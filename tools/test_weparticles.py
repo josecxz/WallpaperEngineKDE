@@ -13,13 +13,16 @@ que el .py emite, para cada sistema del corpus. Es la misma leccion que la
 inferencia de anchos --- validar contra un oraculo antes de conectar --- con el
 oraculo siendo esta vez la otra mitad de la implementacion.
 
-Se comprueban cuatro cosas:
+Se comprueban cinco cosas:
 
   1. Los dos lados conocen exactamente los mismos nombres.
   2. Cada pieza emitida trae los floats que el lector espera.
   3. Los `.psys` del corpus entero se escriben sin excepciones, y las piezas
      que quedan fuera son solo las declaradas como no soportadas.
   4. El lector en C entiende los decimales con la locale del escritorio puesta.
+  5. La marca del cursor viaja: un punto de control con la marca puesta lo
+     mueve `we_psys_puntero`, y sin puntero el operador que tira de el no
+     actua.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -74,17 +77,62 @@ PIEZAS_DECIMALES = 4          # 2 init + 2 oper; ninguna puede quedar fuera
 ARNES_C = r"""
 #include <locale.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "weparticles.h"
 /* Qt adopta la locale del entorno al arrancar; sin esto la prueba no prueba
- * nada, porque un binario en C se queda en la locale "C" por defecto. */
+ * nada, porque un binario en C se queda en la locale "C" por defecto.
+ *
+ * Con `<psys> <segundos>` simula y escribe el centro de la nube; con tres
+ * numeros mas, lo mismo pero con el puntero ahi. Es lo que hace
+ * `tools/psysprobe.c`, repetido aqui para que la prueba no dependa de otro
+ * target del Makefile. */
 int main(int argc, char **argv)
 {
     setlocale(LC_ALL, "");
     int desconocidas = -1;
     WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
-    printf("%d\n", s ? desconocidas : -1);
+    if (!s) { printf("-1\n"); return 0; }
+    if (argc < 3) { printf("%d\n", desconocidas); return 0; }
+
+    if (argc >= 6) {
+        const float p[3] = {(float)atof(argv[3]), (float)atof(argv[4]),
+                            (float)atof(argv[5])};
+        we_psys_puntero(s, p);
+    }
+    int nv = we_psys_update(s, (float)atof(argv[2]));
+    const float *v = we_psys_vertices(s);
+    int paso = we_psys_floats_por_vertice(s);
+    double cx = 0, cy = 0;
+    int n = 0;
+    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+        cx += v[(size_t)i * paso];
+        cy += v[(size_t)i * paso + 1];
+        n++;
+    }
+    /* Se ha simulado con la locale del escritorio ---que es de lo que va la
+     * prueba de al lado--- pero los numeros hay que ESCRIBIRLOS con punto o
+     * no los lee quien llama. */
+    setlocale(LC_NUMERIC, "C");
+    printf("%d %d %.1f %.1f\n", desconocidas, we_psys_cursor(s),
+           n ? cx / n : 0.0, n ? cy / n : 0.0);
     return 0;
 }
+"""
+
+"""Un sistema con un punto de control atado al cursor y un operador que tira
+de el. Los numeros son los del preset `fireflies` de WE, que es el origen de
+111 de los 136 `controlpointattract` del corpus."""
+PSYS_CURSOR = """\
+maxcount 64
+starttime 0
+seed 7
+anim 0 1
+emit sphererandom 20 0 0 0 512 512 0 1 1 1 0 0 0 0 0 0 0 0 0 0
+cp 0 0 0 0 0
+cp 1 0 0 0 1
+init lifetimerandom 30 30 1
+oper movement 0 0 0 2.5
+oper controlpointattract 1 -500 64 0 0 0
 """
 
 
@@ -101,6 +149,79 @@ def locale_con_coma() -> str | None:
         if cand in disponibles:
             return next(n for n in salida if n.lower() == cand)
     return None
+
+
+def compila_arnes(tmp: Path) -> Path | None:
+    """Compila `ARNES_C` contra el simulador de verdad. `None` si no se puede."""
+    fuente, binario = tmp / "arnes.c", tmp / "arnes"
+    if binario.is_file():
+        return binario
+    fuente.write_text(ARNES_C)
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{FUENTE_C.parent}",
+                        "-o", str(binario), str(fuente), str(FUENTE_C), "-lm"],
+                       check=True, capture_output=True)
+    except Exception as e:
+        print(f"  (no se pudo compilar el arnes: {e}, prueba omitida)")
+        return None
+    return binario
+
+
+def prueba_cursor(tmp: Path) -> list[str]:
+    """La marca del cursor, de `weparticles.py` a `we_psys_puntero`.
+
+    Es un contrato de dos piezas y ninguna falla sola. Si la marca no viaja en
+    la linea `cp`, el punto se queda en el origen del sistema y el operador
+    ---que en el corpus es siempre `controlpointattract` con `scale` negativa---
+    se convierte en un sumidero que apelotona la nube en el centro. Si viaja
+    pero el simulador no la mira, pasa lo mismo. Las dos averias se ven igual
+    en un PNG: una nube mas pequena de lo que deberia.
+
+    Asi que se mide donde acaba la nube: sin puntero tiene que quedarse
+    alrededor del origen ---la emite una esfera de 512 px--- y con puntero
+    tiene que irse a el.
+    """
+    binario = compila_arnes(tmp)
+    if binario is None:
+        return []
+
+    psys = tmp / "cursor.psys"
+    psys.write_text(PSYS_CURSOR)
+    destino = (400.0, -300.0)
+
+    def centro(*extra: str) -> tuple[int, float, float] | None:
+        r = subprocess.run([str(binario), str(psys), "10", *extra],
+                           capture_output=True, text=True)
+        campos = r.stdout.split()
+        if len(campos) != 4:
+            return None
+        return int(campos[1]), float(campos[2]), float(campos[3])
+
+    fallos = []
+    sin = centro()
+    con = centro(f"{destino[0]}", f"{destino[1]}", "0")
+    if sin is None or con is None:
+        return ["el arnes no devolvio el centro de la nube"]
+
+    if not sin[0]:
+        fallos.append("la marca del cursor no llega al C: `we_psys_cursor` "
+                      "dice que no hay ningun punto atado al puntero")
+    dist_sin = math.dist(sin[1:], destino)
+    dist_con = math.dist(con[1:], destino)
+    print(f"  sin puntero  centro ({sin[1]:.0f}, {sin[2]:.0f})   "
+          f"a {dist_sin:.0f} px del destino")
+    print(f"  con puntero  centro ({con[1]:.0f}, {con[2]:.0f})   "
+          f"a {dist_con:.0f} px del destino")
+    # La nube no colapsa en un punto ---el `threshold` de 64 px la suelta antes
+    # de llegar, y la emision sigue soltando particulas nuevas en la esfera de
+    # 512--- asi que lo que se exige es que se haya ido A el, no que este clavada.
+    if dist_con > 150.0:
+        fallos.append(f"con el puntero en {destino} la nube se queda a "
+                      f"{dist_con:.0f} px: el punto de control no lo sigue")
+    if math.dist(sin[1:], (0.0, 0.0)) > 150.0:
+        fallos.append("sin puntero la nube no se queda alrededor del origen: "
+                      "el operador del cursor esta actuando cuando no debe")
+    return fallos
 
 
 def prueba_locale(tmp: Path) -> list[str]:
@@ -120,15 +241,8 @@ def prueba_locale(tmp: Path) -> list[str]:
 
     psys = tmp / "decimales.psys"
     psys.write_text(PSYS_DECIMALES)
-    fuente, binario = tmp / "arnes.c", tmp / "arnes"
-    fuente.write_text(ARNES_C)
-    raiz = FUENTE_C.parent
-    try:
-        subprocess.run(["cc", "-O0", "-std=c11", f"-I{raiz}", "-o", str(binario),
-                        str(fuente), str(FUENTE_C), "-lm"], check=True,
-                       capture_output=True)
-    except Exception as e:
-        print(f"  (no se pudo compilar el arnes: {e}, prueba omitida)")
+    binario = compila_arnes(tmp)
+    if binario is None:
         return []
 
     fallos = []
@@ -203,6 +317,10 @@ def main() -> int:
     print("\n── locale del lector en C ──")
     fallos += prueba_locale(tmp)
 
+    # ── 5. el punto de control que sigue al raton ──
+    print("\n── el cursor mueve su punto de control ──")
+    fallos += prueba_cursor(tmp)
+
     st = Counter()
     fuera = Counter()
     largos: list[tuple[float, str]] = []
@@ -252,15 +370,19 @@ def main() -> int:
 
             for x in s.sin_soporte:
                 fuera[x] += 1
-            for x in s.sin_cursor:
-                fuera[f"sin cursor: {x}"] += 1
+            # No son piezas fuera de la simulacion: son las que solo hacen
+            # algo cuando el raton esta sobre el fondo.
+            if s.cps_cursor:
+                st["cp_cursor"] += 1
+            if s.con_cursor:
+                st["tiran_del_cursor"] += 1
             if s.dibujable:
                 st["dibujables"] += 1
                 weparticles.escribir(s, tmp / "x.psys", 1)
 
     print("\n── corpus ──")
     for k in ("sistemas", "dibujables", "piezas", "estelas", "cintas",
-              "error", "escena_err"):
+              "cp_cursor", "tiran_del_cursor", "error", "escena_err"):
         print(f"  {k:<12} {st[k]}")
 
     if largos:

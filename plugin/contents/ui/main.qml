@@ -97,6 +97,27 @@ WallpaperItem {
         desplazamientoX: root.configuration.OffsetX
         desplazamientoY: root.configuration.OffsetY
         colorBarras: root.configuration.Color || "#0b0b0d"
+
+        // Donde esta el raton, para las capas que lo persiguen: las
+        // luciernagas de 46 escenas del corpus, el parallax por profundidad y
+        // la ondulacion del cursor.
+        //
+        // `HoverHandler` y no un `MouseArea`: el handler solo MIRA. No acepta
+        // botones, no es `blocking`, y por tanto los clics, el menu contextual
+        // y la seleccion con recuadro del escritorio siguen llegando a quien
+        // les toca. Un `MouseArea` con `hoverEnabled` se los habria quedado, y
+        // eso es exactamente lo que un fondo no puede hacer.
+        //
+        // Mientras el raton esta sobre una ventana el fondo no recibe nada:
+        // `hovered` se va a false y el motor se queda con la ultima posicion en
+        // vez de inventarse uno nuevo. Es lo mas parecido a la verdad que se
+        // puede saber desde aqui.
+        HoverHandler {
+            id: raton
+        }
+        puntero: Qt.point(raton.point.position.x / Math.max(1, escena.width),
+                          raton.point.position.y / Math.max(1, escena.height))
+        punteroPresente: raton.hovered
     }
 
     Rectangle {
@@ -142,6 +163,10 @@ WallpaperItem {
                                        + "/s como mucho)"
                                      : "sin medida"),
                 "g_Time       : " + root.num(clock.elapsedTime, 1) + " s",
+                "puntero      : " + (escena.punteroPresente
+                                     ? root.num(escena.puntero.x, 3) + ", "
+                                       + root.num(escena.puntero.y, 3)
+                                     : "fuera del fondo"),
                 "estado       : " + (ventanas.tapado ? "en pausa (tapado)" : "dibujando")
                                   + " · tapada " + Math.round(ventanas.cobertura * 100) + "%",
                 "reloj        : " + (clock.paused ? "en pausa" : "corriendo")
