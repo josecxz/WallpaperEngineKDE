@@ -35,7 +35,9 @@ Uso:
 from __future__ import annotations
 
 import math
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -490,6 +492,112 @@ def prueba_color_del_shader_plano(fallos: list[str]) -> None:
         fallos.append("g_Color tiene que ser un vec3, no llevar el alfa")
 
 
+def prueba_temblor_de_camara(fallos: list[str]) -> None:
+    """El temblor de camara de WE (`camerashake`), con la formula del motor.
+
+    Tres cosas, porque las tres fallan callando:
+
+    * La amplitud en el lienzo: `0,1 * amplitud * 0,1 * alto` de la
+      `orthogonalprojection`, partida por el ancho y por el alto para la
+      linea `temblor`. Y nada si `camerashake` esta apagado, tambien cuando
+      lo apaga una propiedad del usuario cuya copia en la escena dice `true`.
+    * La curva que evaluan los dos ejecutores, `src/wetemblor.c`, contra
+      valores calculados a mano con la forma leida en 0x140199580.
+    * El plan de una escena del corpus que lo enciende (`1692307745`) lleva la
+      linea `temblor` y una `tiembla` por capa, y el de una que lo tiene en
+      `false` tras una propiedad con `script` (`2968771936`) no lleva ninguna.
+    """
+    orto = {"width": 1920, "height": 1080}
+    g = {"camerashake": True, "camerashakeamplitude": 0.5,
+         "camerashakespeed": 1.2, "camerashakeroughness": 0.5,
+         "orthogonalprojection": orto}
+    t = werender.temblor_de_camara(g, {}, (1920, 1080))
+    # 0,1 * 0,5 * 0,1 * 1080 = 5,4 px
+    if t is None or any(abs(a - b) > 1e-9 for a, b in
+                        zip(t, (5.4 / 1920, 5.4 / 1080, 1.2, 0.5))):
+        fallos.append(f"temblor: (ax, ay, velocidad, rugosidad) = {t}, se "
+                      f"esperaba (5.4/1920, 5.4/1080, 1.2, 0.5)")
+    if werender.temblor_de_camara(dict(g, camerashake=False), {}, (1920, 1080)):
+        fallos.append("temblor: con `camerashake: false` no deberia temblar")
+    usuario = dict(g, camerashake={"user": "cs", "value": True})
+    if werender.temblor_de_camara(usuario, {"cs": {"value": False}},
+                                  (1920, 1080)):
+        fallos.append("temblor: manda la propiedad del usuario, no la copia")
+    if not werender.temblor_de_camara(usuario, {"cs": {"value": True}},
+                                      (1920, 1080)):
+        fallos.append("temblor: la propiedad del usuario lo enciende")
+    sin_orto = {k: v for k, v in g.items() if k != "orthogonalprojection"}
+    if werender.temblor_de_camara(sin_orto, {}, (1920, 1080)):
+        fallos.append("temblor: sin `orthogonalprojection` no hay lienzo "
+                      "con el que escalarlo")
+
+    # La curva, en C. (velocidad, rugosidad, t) -> (x, y) con amplitud 1.
+    casos = [((1.0, 0.5, 1.0), (0.492393, 0.885683)),     # rugosidad^3 = 0,125
+             ((1.27, 0.92, 0.5), (0.675029, 0.857936)),
+             ((0.88, 0.0, 2.0), (0.021995, 0.880560)),    # sin rugosidad
+             ((0.88, 1.0, 2.0), (0.021995, 0.880560))]    # r^3 = 1: tampoco
+    raiz = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as tmp:
+        fuente, binario = Path(tmp) / "arnes.c", Path(tmp) / "arnes"
+        fuente.write_text(
+            '#include <stdio.h>\n#include <stdlib.h>\n#include "wetemblor.h"\n'
+            "int main(int c, char **v) {\n"
+            "    float x, y;\n"
+            "    we_temblor(1.0f, 1.0f, strtof(v[1], 0), strtof(v[2], 0),\n"
+            "               strtof(v[3], 0), &x, &y);\n"
+            '    printf("%.6f %.6f\\n", x, y);\n'
+            "    return 0;\n}\n")
+        try:
+            subprocess.run(["cc", "-O2", "-std=c11", f"-I{raiz / 'src'}",
+                            "-o", str(binario), str(fuente),
+                            str(raiz / "src" / "wetemblor.c"), "-lm"],
+                           check=True, capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            fallos.append(f"temblor: no compila src/wetemblor.c: {e}")
+            return
+        for (v, r, s), esperado in casos:
+            sale = subprocess.run([str(binario), str(v), str(r), str(s)],
+                                  capture_output=True, text=True,
+                                  env={"LC_ALL": "C"}).stdout.split()
+            got = [float(x) for x in sale]
+            if len(got) != 2 or any(abs(a - b) > 1e-4
+                                    for a, b in zip(got, esperado)):
+                fallos.append(f"temblor: la curva en (v={v}, r={r}, t={s}) "
+                              f"da {got}, se esperaba {esperado}")
+
+    # El plan de verdad, en las dos direcciones.
+    import wepaths
+    taller = wepaths.we_workshop()
+    for escena, tiembla in (("1692307745", True), ("2968771936", False)):
+        d = taller / escena
+        if not d.is_dir():
+            fallos.append(f"temblor: falta la escena {escena} del corpus")
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            werender.emit_plan(d, Path(tmp))
+            plan = (Path(tmp) / "plan.txt").read_text().splitlines()
+        lineas = [l for l in plan if l.startswith("temblor ")]
+        capas = sum(1 for l in plan if l == "tiembla")
+        if not tiembla:
+            if lineas or capas:
+                fallos.append(f"temblor: {escena} lo tiene apagado y su plan "
+                              f"lleva {len(lineas)} `temblor` y {capas} "
+                              f"`tiembla`")
+            continue
+        # 0,1 * 0,18 * 0,1 * 1080 = 1,944 px; velocidad 1,4, rugosidad 1
+        esperado = (1.944 / 1920, 1.944 / 1080, 1.4, 1.0)
+        valores = [float(x) for x in lineas[0].split()[1:]] if lineas else []
+        if len(valores) != 4 or any(abs(a - b) > 1e-6
+                                    for a, b in zip(valores, esperado)):
+            fallos.append(f"temblor: {escena} deberia llevar `temblor "
+                          f"{' '.join(f'{x:.6g}' for x in esperado)}`: "
+                          f"{lineas}")
+        objetos = sum(1 for l in plan if l.startswith("object "))
+        if capas == 0 or capas > objetos:
+            fallos.append(f"temblor: {escena} lleva {capas} `tiembla` para "
+                          f"{objetos} objetos")
+
+
 def main() -> int:
     fallos: list[str] = []
     for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
@@ -497,7 +605,7 @@ def main() -> int:
                    prueba_sampler_por_defecto, prueba_niveles_mipmap,
                    prueba_valor_de_usuario, prueba_curva_de_animacion,
                    prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
-                   prueba_parallax_de_camara,
+                   prueba_parallax_de_camara, prueba_temblor_de_camara,
                    prueba_visibilidad_heredada,
                    prueba_opacidad_del_objeto,
                    prueba_color_del_shader_plano):

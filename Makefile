@@ -48,7 +48,7 @@ BUILD   := obj
 OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o \
            $(BUILD)/escritorio.o $(BUILD)/moc_escritorio.o \
            $(BUILD)/weparticles.o $(BUILD)/wevideo.o $(BUILD)/wereloj.o \
-           $(BUILD)/moc_sceneview.o
+           $(BUILD)/wetemblor.o $(BUILD)/moc_sceneview.o
 
 .PHONY: all build glexec psysprobe install install-qml install-package \
         install-env uninstall reload status clean plan indice
@@ -95,17 +95,18 @@ $(BUILD)/$(LIB): $(OBJS)
 	@echo "construido: $@"
 
 # ── ejecutor offline ────────────────────────────────────────────────────────
-# Enlaza los MISMOS src/weparticles.c, src/wevideo.c y src/wereloj.c que el
-# modulo QML: si
+# Enlaza los MISMOS src/weparticles.c, src/wevideo.c, src/wereloj.c y
+# src/wetemblor.c que el modulo QML: si
 # hubiera que construirlos a mano cada vez, tarde o temprano se compilaria uno
 # sin el otro y el render offline dejaria de predecir lo que hace el
 # escritorio.
 glexec: $(BUILD)/glexec
 
 $(BUILD)/glexec: tools/glexec.c src/weparticles.c src/weparticles.h \
-                src/wevideo.c src/wevideo.h src/wereloj.c src/wereloj.h | $(BUILD)
+                src/wevideo.c src/wevideo.h src/wereloj.c src/wereloj.h \
+                src/wetemblor.c src/wetemblor.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ tools/glexec.c src/weparticles.c src/wevideo.c \
-	      src/wereloj.c -lEGL -lGL -lm $(AV_LIBS) -lpthread
+	      src/wereloj.c src/wetemblor.c -lEGL -lGL -lm $(AV_LIBS) -lpthread
 	@echo "construido: $@"
 
 # ── sonda de simulacion ─────────────────────────────────────────────────────
