@@ -1453,9 +1453,8 @@ class Renderer:
         #   con `rate`--- suelta su `maxcount` entero, que es como se dibujaba
         #   antes; uno que sigue a una particula emite a su `rate` y no suelta
         #   nada de golpe.
-        # - El `rate` es el de CADA instancia de `eventfollow`, asi que se
-        #   queda el declarado: el implicito es una estimacion para un sistema
-        #   que emite solo, y aqui no vale.
+        # - El `rate` es el de CADA instancia de `eventfollow`; si el preset no
+        #   lo declara, el de WE por defecto (`RITMO_POR_DEFECTO`).
         # - El deposito es el de todas las instancias a la vez: el `maxcount`
         #   del preset por el de la entrada de `children`, que la documentacion
         #   de WE define como el numero maximo de sistemas hijos.
@@ -1473,8 +1472,6 @@ class Renderer:
             instancias = int(obj.raw.get("_instancias") or 1)
             # El tope duro (8192, 1024 en una cinta) lo pone el simulador.
             sis.maxcount = preset * instancias
-            if sis.ritmo_implicito and sis.emit:
-                sis.emit[0] = 0.0
             _, esc_hijo, _ = transform_absoluto(obj, None)
             enlace = (str(obj.raw.get("_padre")), rafaga, modo, instancias,
                       float(obj.raw.get("_probabilidad", 1.0)), esc_hijo)

@@ -2082,6 +2082,8 @@ números sin nombres:
 
 ### Lo que NO se pudo confirmar
 
+**Confirmado después:** la documentación de WE dice que de `2` en adelante sesga hacia **Min**, que es `pow(t, e)`; ver [Los valores por defecto estaban en el binario](#los-valores-por-defecto-estaban-en-el-binario-el-giro-la-caja-el-ritmo-y-el-sesgo).
+
 **La dirección del sesgo.** `pow(t, e)` apiña los valores cerca del MÍNIMO;
 `1 - pow(1-t, e)` los apiña cerca del máximo. Se intentó decidir con tres
 oráculos y ninguno sirve:
@@ -4296,6 +4298,8 @@ hoja de 64. Comparar el 129 con el 92 supone que los ejes se corresponden, y no
 se corresponden. El rayo no decide nada; hay un cabo suelto en la orientación de
 la hoja de sprites y otro en el tamaño. Ver «Pendiente».
 
+**Cerrado:** no era la hoja sino el giro. `rotationrandom` vacío gira una vuelta entera; ver [Los valores por defecto estaban en el binario](#los-valores-por-defecto-estaban-en-el-binario-el-giro-la-caja-el-ritmo-y-el-sesgo).
+
 Lo que sí explicaba una buena parte era el **brillo**. En la misma ventana de 1400x1060:
 
 | | luz añadida | píxeles > +30 | > +100 | > +200 |
@@ -4326,6 +4330,8 @@ Con eso, los píxeles saturados pasan de 448 a **63** (WE: 30) y los de más de
 +100 de 5 354 a **1 868** (WE: 883). Toca a **160 objetos de 22 escenas**.
 
 ### El ritmo implícito estaba en el extremo, y se comía el `instanceoverride`
+
+**Sustituido:** el motor de WE da `rate` 10 cuando falta; ver [Los valores por defecto estaban en el binario](#los-valores-por-defecto-estaban-en-el-binario-el-giro-la-caja-el-ritmo-y-el-sesgo).
 
 La lluvia de fugaces es otra cosa. `Shooting_Star_01` no declara `rate`, y
 [el ritmo implícito](#el-reparto) lo estimaba como `maxcount / vida`: el ritmo
@@ -4766,6 +4772,8 @@ local queda en ±512 x ±2560 —`directions: "1 5 0"` multiplica los semiejes�
 con la escala 3 del objeto eso es una banda de ±1536 x ±7680, cuando la escena
 mide 3840x2160. Cerca del 75 % de las fugaces nace fuera del lienzo y no llega a
 verse.
+
+**Resuelto:** el defecto de `distancemax` es `256 256 0` y no 512, y el resto de fugaces fuera es lo que pide el preset; ver [Los valores por defecto estaban en el binario](#los-valores-por-defecto-estaban-en-el-binario-el-giro-la-caja-el-ritmo-y-el-sesgo).
 
 Ese `1 5 0` es el **único `directions` mayor que 1 de todo el corpus** en un
 emisor de caja: los otros 52 lo omiten (40), lo ponen a `1 1 1` (4) o lo usan
@@ -5658,3 +5666,154 @@ Esto último **no dice** que los destellos de la `City` estén ahora bien: sus
 hijos pasan de estallar al morir la estrella a hacerlo al nacer, y el cabo del
 diámetro de los destellos ([Lo que NO arregla](#lo-que-no-arregla)) sigue
 abierto. Lo que sí dice es que el arreglo no apaga ni ensucia nada.
+
+## Los valores por defecto estaban en el binario: el giro, la caja, el ritmo y el sesgo
+
+Cuatro cabos abiertos de las partículas —el sentido del sesgo de `exponent`,
+la hoja de sprites del rayo «girada 90°», el 75 % de las estrellas fugaces que
+nacía fuera del lienzo y la densidad de esas mismas fugaces— se revisaron
+juntos. Uno lo cerró la documentación de WE; los otros tres, **el código del
+propio motor**.
+
+### El sesgo de `exponent`: confirmado, no se toca nada
+
+La documentación de los inicializadores
+(`docs.wallpaperengine.io/en/scene/particles/component/initializer`) lo dice
+igual en los seis: «un valor de `1` es el equilibrio entre **Max** y **Min**;
+hacia `0` sesga hacia **Max**, y de `2` en adelante hacia **Min**». Es
+exactamente `mezcla(min, max, pow(t, e))`, que es lo que se eligió por
+inferencia en [Lo que NO se pudo confirmar](#lo-que-no-se-pudo-confirmar). Y
+ningún `exponent` del corpus baja de 1, así que no hay caso dudoso.
+
+### Dónde guarda WE sus valores por defecto, y cómo se leen
+
+Los binarios —el motor, `wallpaper64.exe`, y el editor,
+`bin/wallpaperui.exe`— tienen los defectos de los campos de partícula
+**escritos como texto** (`256 256 0`, `0 0 6.28318530717`…) en la misma zona de
+la tabla de cadenas que los nombres de campo. La proximidad sola solo da
+candidatos, porque el orden no casa uno a uno. Lo que da certeza es mirar
+**qué código usa cada cadena**:
+
+```sh
+objdump -h wallpaper64.exe                      # .rdata, para pasar de cadena a dirección
+objdump -d --no-show-raw-insn -M intel wallpaper64.exe > we.asm
+```
+
+Cada cadena de valor por defecto se usa **una sola vez** en todo el motor, y
+siempre con el mismo patrón: el lector de una pieza carga el nombre del campo,
+pregunta al JSON si está y, si no, inserta el valor. Por ejemplo, en el lector
+del emisor:
+
+```
+lea  rax, "256 256 0"
+lea  rdx, "distancemax"
+call ...                 ; lee el campo, con ese valor si falta
+```
+
+Y a qué pieza pertenece cada lector lo dice la fábrica: compara el `name` del
+JSON con cada nombre de pieza y llama a su lector justo después. Así quedan
+atadas, sin deducir nada:
+
+| pieza | campo | defecto de WE | aquí antes |
+|---|---|---|---|
+| `sphererandom`, `boxrandom` | `rate` | **10** (los bits `0x4024000000000000`) | ritmo implícito |
+| ídem | `distancemax` | **`256 256 0`** | 512 |
+| ídem | `directions` | **`1 1 0`** | `1 1 1` |
+| ídem | `distancemin` | `0 0 0` | igual |
+| `rotationrandom` | `max` | **`0 0 6.28318530717`** | `0 0 0` |
+| `angularvelocityrandom` | `min` / `max` | **`0 0 -5` / `0 0 5`** | `0 0 0` |
+| `velocityrandom` | `min` / `max` | `-32 -32 0` / `32 32 0` | `0 0 0`, pero el corpus siempre los declara |
+
+Lo cuadran además las escenas de muestra que WE trae para cada pieza
+(`assets/scenes/particleelementpreviews/`): las de `rotationrandom` y
+`angularvelocityrandom` llevan la pieza **vacía**, que solo enseña algo si su
+defecto no es cero.
+
+### La «hoja girada» del rayo era un giro, y afecta a 66 escenas
+
+`lightning1` lleva un `rotationrandom` sin `min` ni `max`. Leído como cero,
+todos los rayos salían horizontales; el 451x129 nuestro contra el 92x251 de WE
+que dejó apuntado [El tamaño del
+sprite](#el-tamaño-del-sprite-el-brillo-explicaba-una-parte-no-toda) no era una
+hoja leída al revés sino un rayo que en WE estaba girado y aquí no. Son **112
+`rotationrandom` vacíos en 66 escenas**; los 39 que solo declaran `max` siguen
+igual. Y 18 `angularvelocityrandom` vacíos en 15 escenas, que ahora giran.
+
+### La caja es `256 256 0`, y el 40 % que sigue fuera es del preset
+
+[`distancemax` sin declarar no es
+cero](#distancemax-sin-declarar-no-es-cero-la-lluvia-salía-toda-del-mismo-punto)
+fijó 512 por ser el valor más declarado del corpus. El motor dice `256 256 0`,
+que cumple con lo justo la cota que aquella sección dejó (≥ 256, por
+`exampleturbolence`).
+
+Con la colocación real de las fugaces de la `City` —origen, giro de −45°,
+escala 3 y su `directions: "1 5 0"`— y su movimiento, simulado:
+
+| caja | nacen dentro del lienzo | llegan a cruzarlo |
+|---|---|---|
+| 512 | 12,6 % | **27,7 %** |
+| 256 | 28,9 % | **59,5 %** |
+
+El 40 % que sigue sin cruzarlo no es una lectura equivocada. `directions`
+multiplica los semiejes —lo dice la documentación del emisor— y `distancemax`
+**es** el semieje: la muestra de `rain_splashes` escala su objeto solo en x, a
+0,275 sobre un lienzo de 256, que con 512 de semieje da ±141 px —el ancho del
+lienzo con un 10 % de margen—; con 512 de tamaño total cubriría la mitad
+central, y nadie elegiría esa escala. Así que es lo que pide el preset: una
+banda de unos 7.700 px en una escena de 3.840.
+
+### El ritmo: 10 por segundo, no el 48 % del depósito
+
+Ni la documentación, ni los presets, ni las 49 escenas de muestra omiten `rate`
+una sola vez; el motor sí lo dice: 10. Eso sustituye al [ritmo
+implícito](#el-ritmo-implicito-estaba-en-el-extremo-y-se-comia-el-instanceoverride),
+que deducía el ritmo de `maxcount` y la vida para sostener el 48 % del
+depósito. Son 68 sistemas en 35 escenas, y con 10 por segundo las partículas
+vivas a la vez suben en 42 y bajan en 13:
+
+| preset | vivas antes | vivas con 10/s |
+|---|---|---|
+| `Shooting_Star_01` (`City`) | ~20 | 35, el depósito lleno |
+| `ember_small` (28 sistemas) | ~19 | 40 |
+| `dust_motes_0` (29 sistemas) | ~123 | ~130 |
+| `new_particle_systemmn_nm` | ~544 | ~115 |
+
+En la `City` esto da **más** fugaces, no menos, al revés de lo que perseguía el
+ritmo implícito («una captura de WE enseña menos de diez»). Esa captura no se
+guardó y se midió con la caja a cero; contra el código del motor, manda el
+código. De paso deja de recibir ritmo el único sistema que declaraba `rate: 0`
+con un estallido `instantaneous`: el implícito no distinguía «sin declarar» de
+«cero».
+
+### `directions` es `1 1 0`
+
+Sin declarar, el motor crea `1 1 0`. Solo cambia la z de las partículas, que el
+dibujo aplana, pero la z entra en el campo de ruido de la turbulencia.
+
+### Lo medido
+
+Las cinco, una a una sobre las 129 con `test_luminancia`, cada pasada contra la
+anterior y la primera contra `main`:
+
+| pasada | regresiones | escenas que mueven su media > 0,25 |
+|---|---|---|
+| giro por defecto | 0 | 4 (3 se acercan a su preview) |
+| caja de 256 | 0 | 0 |
+| velocidad angular ±5 | 0 | 1 |
+| ritmo 10 | 0 | 1 (se acerca) |
+| `directions` `1 1 0` | 0 | 1 |
+| **las cinco contra `main`** | **0** | 3 (2 se acercan; ninguna más de 0,6) |
+
+La que se mueve sola en tres pasadas, `3097749052`, sube o baja 1,2–1,8 con
+cambios que no tienen que ver entre sí: es un sistema grande que cambia de
+sorteo, no un efecto; contra `main` queda en +0,57 y más cerca de su preview.
+
+La luminancia media apenas ve nada de esto, y es lo esperable: los cinco
+redistribuyen partículas. Lo que se ve es la imagen de la `City` en cuatro
+instantes: en `main` los rayos salen siempre horizontales y casi ninguna fugaz
+cruza el recorte; con los cambios los rayos salen girados —uno casi vertical,
+como el de la captura de WE— y las fugaces cruzan la escena en diagonal. El
+cambio de ritmo, en cambio, no se distingue a ojo en las escenas de brasas,
+polvo y fugaces a tamaño de pantalla: lo respalda el código del motor, no la
+imagen.
