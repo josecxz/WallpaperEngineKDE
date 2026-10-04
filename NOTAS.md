@@ -5365,6 +5365,8 @@ la fuerza es cosa suya, no de la cámara.
   hecho porque falta el número que convierte «amount 0,5» en píxeles, y ese no
   sale ni del formato ni de los shaders: sale de comparar con WE corriendo.
   Escribirlo a ojo movería 29 escenas en una dirección que nadie ha medido.
+  **Hecho después**, leyendo la fórmula en el motor; ver [El parallax de
+  cámara](#el-parallax-de-cámara-la-fórmula-estaba-en-el-motor-y-mueve-las-capas-también-en-reposo).
 - **El emisor que nace en el cursor**: 25 emisores del corpus llevan
   `flags: 2` y 23 de ellos están en sistemas que ya tienen un punto atado al
   cursor. Apunta a «emite donde el ratón» —el preset `trail_1` de WE es una
@@ -5817,3 +5819,121 @@ como el de la captura de WE— y las fugaces cruzan la escena en diagonal. El
 cambio de ritmo, en cambio, no se distingue a ojo en las escenas de brasas,
 polvo y fugaces a tamaño de pantalla: lo respalda el código del motor, no la
 imagen.
+
+## El parallax de cámara: la fórmula estaba en el motor, y mueve las capas también en reposo
+
+`cameraparallax` estaba apuntado como lo que faltaba del ratón, con un bloqueo
+escrito en [Lo que queda, medido](#lo-que-queda-medido): «falta el número que
+convierte `amount 0,5` en píxeles, y ese no sale ni del formato ni de los
+shaders: sale de comparar con WE corriendo». Salió de una tercera parte: del
+código del motor, leído igual que [los valores por defecto de las
+partículas](#los-valores-por-defecto-estaban-en-el-binario-el-giro-la-caja-el-ritmo-y-el-sesgo).
+
+### Cómo se encontró
+
+El lector de `general` registra cada campo en una tabla de propiedades con su
+desplazamiento dentro de la estructura de ajustes de la escena:
+`cameraparallaxamount` en `+0x334`, `cameraparallaxdelay` en `+0x338`,
+`cameraparallaxmouseinfluence` en `+0x33c`. El constructor pone `+0x334` y
+`+0x33c` a 0,5, que son los defectos del corpus. Con los desplazamientos, las
+lecturas: dos funciones de la escena (`0x140189…`, `0x14018b…`). Y los campos
+de la capa salen de su propia tabla: `origin` en `+0x128`, `scale` en `+0x134`,
+`angles` en `+0x140`, `parallaxDepth` en `+0x170`.
+
+### Lo que hace WE
+
+Cada fotograma calcula un punto P del lienzo, en píxeles y con la y hacia
+arriba:
+
+```
+objetivo.x = ancho × (0,5·(1 − m) + ratón.x·m)
+objetivo.y = alto  × (0,5·(1 − m) + (1 − ratón.y)·m)        m = mouseinfluence
+P ← P + (objetivo − P) × min(1, (1 − delay/3) × 10 × dt)
+```
+
+y, antes de dibujar cada objeto, le aplica a su matriz una traslación previa
+en el lienzo —sin filtro por tipo: imágenes, texto y partículas—:
+
+```
+amount × parallaxDepth_raíz × (origin_raíz − P)
+```
+
+con el `origin` y la profundidad del antepasado **raíz** (el código sube por
+`parent` hasta él), así que un grupo se mueve entero.
+
+Hay otra lectura de los mismos campos con un filtro de tipos y una tabla hash;
+tiene toda la pinta de ser la detección del objeto bajo el cursor, no el
+dibujo, y no se ha usado.
+
+### La sorpresa: con el ratón en el centro, las capas ya están desplazadas
+
+Con el ratón en el centro P es el centro del lienzo, pero `origin − P` no es
+cero para una capa fuera del centro: se aleja de él en proporción a su
+distancia y a su profundidad. El parallax de WE no solo mueve la escena con el
+ratón; también **abre la composición en reposo**, y es lo que el autor ve en el
+editor (`camerapreview`, encendido en 126 de 128 escenas).
+
+Comprobado contra el preview de `2262142032` antes de escribir una línea, en un
+recorte situado a mano:
+
+| capa | predicción | en el preview de WE |
+|---|---|---|
+| el reloj | −98, +17 px | ≈ −106, +30 px |
+| el letrero «RU» | fuera del cuadro | no está |
+
+### Cómo está hecho aquí
+
+El desplazamiento se parte en dos términos:
+
+- `a·d·(origin − C)`, con C el centro: el de reposo. Es fijo, así que lo hornea
+  `parallax_de_camara` en `werender.py` como `_paralaje` de cada raíz, y lo
+  suma `transform_absoluto` al `origin` de la raíz. De ahí cuelga todo —las
+  matrices, las partículas, el puntero de cada sistema, los anclajes— sin
+  tocar nada más, y sale igual offline que en vivo.
+- `a·d·(C − P)`: el del ratón. No depende del `origin`, solo de `a·d`, que el
+  plan lleva en una línea nueva tras cada `object`:
+
+```
+parallax <retardo> <influencia>      cabecera; la influencia es nueva
+paralaje <a·dx> <a·dy>               tras el `object` de cada capa con profundidad
+```
+
+  Los dos ejecutores la suman a la colocación del objeto, como ya hacía el
+  `anclaje`: en clip son `2·k·(0,5 − P/lienzo)`. Offline P sale del `--puntero`,
+  sin suavizar; sin puntero es el centro y no suma nada. En vivo lleva el
+  suavizado de WE, que con el retardo de 2 s de cuatro escenas llega siete
+  veces antes que la exponencial que había.
+
+En las imágenes la colocación lleva la capa entera y no hay recorte. En
+partículas y texto la colocación es la identidad y lo que se traslada es su
+buffer, del tamaño del lienzo: en el borde se pierde lo que haya fuera, como
+mucho unos 240 px a 1920 con el ratón en una esquina.
+
+### Lo medido
+
+- **`test_luminancia` sobre las 129**, contra la de `main`: 0 apagadas, 0
+  regresiones. Siete escenas mueven su media más de 0,25; la mayor,
+  `2250845956`, baja 2,25.
+- **Correlación con el preview** en las 29 escenas con el parallax encendido,
+  buscando el recorte del preview a varias escalas: 4 se acercan más de 0,01
+  —`2250845956` +0,067, la misma que bajaba de luz; `3462491575` +0,042,
+  `3097749052` +0,034, `3082427731` +0,011—, 2 se alejan —`2810252468` −0,025,
+  que es su texto de créditos, apagado en el preview, cayendo sobre la
+  nebulosa; `2317494988` −0,021, sin decidir a ojo— y 23 no cambian: capas
+  centradas o sin profundidad. Es una medida ruidosa —un texto con otra hora
+  ya la baja— y sirve de apoyo, no de juez.
+- **`test_werender`**: `prueba_parallax_de_camara`, que falla si el
+  desplazamiento en reposo no se aplica.
+- **Offline con `--puntero`**, en `2262142032`: con el ratón a la izquierda la
+  escena va a la derecha y al revés.
+
+### Lo que queda
+
+- **`g_ParallaxPosition`**. Lo más probable es que WE suba el P normalizado de
+  arriba —con la influencia y la y hacia arriba—, y aquí se sube el ratón con
+  retardo y la y hacia abajo. El nombre del uniform es el `0x6b` de su tabla,
+  pero el `switch` que lo sube va por tabla de saltos y no se ha encontrado. No
+  se toca sin eso: lo usan 6 escenas con `depthparallax`.
+- **`escena[+0xf0/+0xf4]`**, un término que WE suma al objetivo y que aquí se
+  toma como cero; y una marca de la escena que invierte la x.
+- **`camerashake`**, 6 escenas.

@@ -21,6 +21,8 @@
  *                                      el hijo nace en un evento del padre
  *   psyspuntero <id> <7 floats>        afin: puntero de pantalla -> ese sistema
  *   puntero <u> <v>                    donde esta el raton, (0,0) arriba izq.
+ *   parallax <retardo> <influencia>    el punto que mueve la camara
+ *   paralaje <kx> <ky>                 amount*depth de la capa en curso
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
@@ -393,6 +395,9 @@ static struct {
  * tiran de nada. Ver `we_psys_puntero`. */
 static float puntero_u, puntero_v;
 static int hay_puntero;
+/* `cameraparallaxmouseinfluence` de la escena (linea `parallax`): cuanto de
+ * raton y cuanto de centro hay en el punto que mueve la camara. */
+static float camara_influencia = 0.5f;
 
 /* Reparte el puntero por todos los sistemas que sepan donde ponerlo. Va una
  * vez por fotograma, antes de que nadie de un paso: el simulador lo lee al
@@ -994,6 +999,28 @@ int main(int argc, char **argv)
                     obj_mvp[3] += e00 * dx + e01 * dy;
                     obj_mvp[7] += e10 * dx + e11 * dy;
                 }
+            }
+        } else if (strcmp(kw, "parallax") == 0 && !in_pass) {
+            /* `parallax <retardo> <influencia>`. El retardo no pinta nada
+             * offline: no hay trayectoria que suavizar. */
+            float r, m;
+            if (sscanf(line, "%*s %f %f", &r, &m) == 2)
+                camara_influencia = m;
+        } else if (strcmp(kw, "paralaje") == 0 && !in_pass) {
+            /* Lo que el raton mueve a esta capa por el parallax de camara: el
+             * plan trae la colocacion en reposo, con el raton en el centro, y
+             * `amount * depth` de su raiz. WE desplaza la capa
+             * `amount * depth * (C - P)` pixeles de lienzo, con P entre el
+             * centro C y el raton segun la influencia; en clip son
+             * `2 * k * (0.5 - P/lienzo)`. Sin raton P es el centro y no suma
+             * nada, que es como sale por defecto un render offline. */
+            float kx, ky;
+            if (sscanf(line, "%*s %f %f", &kx, &ky) == 2 && hay_puntero) {
+                const float m = camara_influencia;
+                const float px = 0.5f * (1.0f - m) + puntero_u * m;
+                const float py = 0.5f * (1.0f - m) + (1.0f - puntero_v) * m;
+                obj_mvp[3] += 2.0f * kx * (0.5f - px);
+                obj_mvp[7] += 2.0f * ky * (0.5f - py);
             }
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
