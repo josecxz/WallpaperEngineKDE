@@ -56,6 +56,7 @@ Uso:
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -146,8 +147,11 @@ def _expo(e):
 # explico como "una particula al 40% de su crecimiento"; era la mitad.
 ESCALA_SPRITE = 0.5
 
-# Semieje del emisor cuando el preset no declara `distancemax`; ver `cargar`.
-DISTANCIA_POR_DEFECTO = 512.0
+# `directions` del emisor cuando el preset no lo declara; ver `cargar`.
+DIRECCIONES_POR_DEFECTO = [1.0, 1.0, 0.0]
+
+# Semiejes del emisor cuando el preset no declara `distancemax`; ver `cargar`.
+DISTANCIA_POR_DEFECTO = [256.0, 256.0, 0.0]
 
 
 def _init_tam(e):
@@ -174,6 +178,46 @@ def _init_color(e):
 
 def _init_vec(e):
     return _v3(e.get("min")) + _v3(e.get("max")) + _expo(e)
+
+
+def _vec_con_defecto(e, mn: list[float], mx: list[float]) -> list[float]:
+    """`min` y `max` de un inicializador vectorial, con el defecto de WE.
+
+    `_v3` rellena con un escalar; aqui el defecto es un VECTOR, y el de `min`
+    no es el de `max`.
+    """
+    a = _v3(e.get("min")) if e.get("min") is not None else list(mn)
+    b = _v3(e.get("max")) if e.get("max") is not None else list(mx)
+    return a + b + _expo(e)
+
+
+# Lo que sortean `rotationrandom` y `angularvelocityrandom` cuando el preset no
+# dice nada. NO es cero, y lo dicen dos cosas de la propia aplicacion:
+#
+# - Las escenas de muestra que WE trae para cada pieza
+#   (`assets/scenes/particleelementpreviews/`) usan las dos VACIAS. Una muestra
+#   de `rotationrandom` que no girase no ensenaria nada.
+# - Los binarios (`wallpaper64.exe` y el editor, `bin/wallpaperui.exe`)
+#   guardan los defectos de los inicializadores como texto, junto a los
+#   nombres de campo: `0 0 6.28318530717` ---una vuelta entera alrededor de z,
+#   que es el giro del sprite--- y `0 0 -5` / `0 0 5`.
+#
+# El primero es la pista firme: no hay otro campo al que pueda pertenecer una
+# vuelta entera. El segundo es la mejor que hay ---un par simetrico solo en z,
+# que es lo que pide una velocidad angular de sprite--- pero la cadena podria
+# ser de otro campo. Son 112 `rotationrandom` vacios en 66 escenas (todos los
+# rayos, que por eso salian siempre horizontales donde WE los ensena girados)
+# y 18 `angularvelocityrandom` en 15. Ver NOTAS.
+GIRO_POR_DEFECTO = ([0.0, 0.0, 0.0], [0.0, 0.0, 2.0 * math.pi])
+GIRO_VEL_POR_DEFECTO = ([0.0, 0.0, -5.0], [0.0, 0.0, 5.0])
+
+
+def _init_giro(e):
+    return _vec_con_defecto(e, *GIRO_POR_DEFECTO)
+
+
+def _init_giro_vel(e):
+    return _vec_con_defecto(e, *GIRO_VEL_POR_DEFECTO)
 
 
 # La `scale` de la turbulencia de WE no esta en las unidades de la celda de
@@ -265,8 +309,8 @@ INICIALIZADORES = {
     "alpharandom": _init_alfa,
     "colorrandom": _init_color,
     "velocityrandom": _init_vec,
-    "rotationrandom": _init_vec,
-    "angularvelocityrandom": _init_vec,
+    "rotationrandom": _init_giro,
+    "angularvelocityrandom": _init_giro_vel,
     "turbulentvelocityrandom": _init_turbvel,
     "mapsequencebetweencontrolpoints": _init_secuencia,
     "mapsequencearoundcontrolpoint": _init_secuencia_cp,
@@ -638,11 +682,6 @@ class Sistema:
     # Operadores que tiran de uno de esos puntos. Solo para contarlos: el que
     # decide si actuan o no es el simulador, segun haya puntero o no.
     con_cursor: list[str] = field(default_factory=list)
-    # El `rate` lo puso `_ritmo_implicito`, no el preset. Un hijo de evento lo
-    # necesita saber: su ritmo es el de CADA instancia, y el implicito es una
-    # estimacion para un sistema que emite por su cuenta.
-    ritmo_implicito: bool = False
-
     @property
     def dibujable(self) -> bool:
         return bool(self.material and self.emisor)
@@ -700,22 +739,35 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         # caja (los tres semiejes). `_v3` reparte el escalar a los tres, que es
         # justo lo que hace falta en los dos casos.
         #
-        # Sin declarar NO es cero, es 512. Lo prueba el propio formato por dos
-        # caminos: el corpus escribe `distancemax: 0` **153 veces** ---nadie
-        # escribe un campo 153 veces si es el defecto--- y `exampleturbolence`,
-        # que trae el propio WE, declara `distancemin: 256` y omite el maximo:
-        # con cero, el minimo seria mayor que el maximo. 512 es ademas el valor
-        # mas declarado del corpus (195 usos) y el que llevan `example.json`,
-        # `starfield`, `fog1`, `fog2`, `lightning1`, `fireflies` y `powerup`.
+        # Sin declarar NO es cero. Lo prueba el propio formato por dos caminos:
+        # el corpus escribe `distancemax: 0` **153 veces** ---nadie escribe un
+        # campo 153 veces si es el defecto--- y `exampleturbolence`, que trae
+        # el propio WE, declara `distancemin: 256` y omite el maximo: con cero,
+        # el minimo seria mayor que el maximo, asi que el defecto es >= 256.
+        #
+        # Y es `256 256 0`. Durante un tiempo fue 512, el valor mas declarado
+        # del corpus, pero los binarios de WE (`wallpaper64.exe` y el editor)
+        # guardan los defectos del emisor como texto junto a sus nombres de
+        # campo, y ahi esta `256 256 0` y no 512. Cuadra con la cota de arriba
+        # y con las estrellas fugaces de la `City`: con 512 y su
+        # `directions: "1 5 0"`, solo el 28 % llegaba a cruzar el lienzo; con
+        # 256, el 60 %. Ver NOTAS.
         #
         # Sin esto, un emisor que omite el campo pone TODAS sus particulas en el
         # mismo punto. Es lo que hacia que la lluvia de estrellas de la `City`
         # saliera entera por el mismo sitio en vez de cruzar el fondo. Son 6
         # presets-emisor del corpus, en 7 escenas.
-        s.emit = ([_f1(e.get("rate"), 0.0)]
+        s.emit = ([_f1(e.get("rate"), RITMO_POR_DEFECTO)]
                   + _v3(e.get("distancemin"), 0.0)
-                  + _v3(e.get("distancemax"), DISTANCIA_POR_DEFECTO)
-                  + _v3(e.get("directions"), 1.0)
+                  + (_v3(e.get("distancemax"))
+                     if e.get("distancemax") is not None
+                     else list(DISTANCIA_POR_DEFECTO))
+                  # Sin declarar es `1 1 0`: el lector del emisor de WE crea
+                  # ese valor cuando falta. Solo cambia la z, que el dibujo
+                  # aplana pero que si muestrea el ruido de la turbulencia.
+                  + (_v3(e.get("directions"), 1.0)
+                     if e.get("directions") is not None
+                     else list(DIRECCIONES_POR_DEFECTO))
                   + _v3(e.get("origin"), 0.0)
                   + _v3(e.get("sign"), 0.0)
                   + [_f1(e.get("instantaneous"), 0.0),
@@ -777,43 +829,20 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
             s.sin_soporte.append(f"renderer:{e.get('name')}")
 
     _aplicar_override(s, ov)
-    _ritmo_implicito(s, _f1((ov or {}).get("rate"), 1.0))
     return s
 
 
-# Ocupacion del cupo que sostiene un emisor tipico del corpus: para los 463
-# que SI declaran ritmo, la mediana de `rate * vida / maxcount` es 0,48 y solo
-# uno de cada cuatro llega a saturar. `maxcount` es un tope de seguridad, no la
-# densidad buscada --- las propias plantillas de WE lo dicen: `example.json`
-# sostiene 80 de 500 y `examplecursoravoid` 800 de 1000.
-OCUPACION_TIPICA = 0.48
-
-
-def _ritmo_implicito(s: Sistema, factor: float = 1.0) -> None:
-    """Sin `rate` declarado, el emisor sostiene la ocupacion tipica del corpus.
-
-    72 emisores de 36 escenas no declaran ritmo de emision --- dos de ellos son
-    plantillas del propio WE, `ember_small` y `dust_motes_0`, asi que el campo
-    falta porque WE no lo escribe, no porque el autor lo olvidara. Tomarlo como
-    cero ---que es lo que dice el JSON--- deja el sistema sin emitir NUNCA: la
-    escena carga, el pase dibuja y no sale nada, sin un solo error por medio.
-
-    Se estima con `maxcount` y la vida, que es lo unico que hay, pero NO al
-    ritmo que deja el deposito lleno: eso es el extremo, el percentil 76 del
-    corpus, y se nota. En la `City` (2821288001) dejaba 31 estrellas fugaces a
-    la vez donde una captura de WE ensena menos de diez: la «rafaga de puntos»
-    que se veia cruzar el escritorio.
-
-    El `factor` es el `rate` del `instanceoverride`, que hasta ahora se perdia:
-    se aplicaba sobre el cero del preset ---0 x 1,2 sigue siendo 0--- y luego
-    esta funcion lo sobrescribia. Son 12 de los 72 emisores.
-    """
-    if not s.emisor or s.emit[0] > 0:
-        return
-    vida = dict(s.inits).get("lifetimerandom")
-    media = (vida[0] + vida[1]) / 2.0 if vida else 1.0
-    s.emit[0] = OCUPACION_TIPICA * s.maxcount / max(media, 1e-3) * factor
-    s.ritmo_implicito = True
+# Ritmo de un emisor que no declara `rate`, en particulas por segundo.
+#
+# Lo fija el motor de WE: el lector de los dos emisores (`sphererandom` y
+# `boxrandom`, en `wallpaper64.exe`) busca `rate` y, si no esta, inserta un
+# 10,0 ---los bits `0x4024000000000000`--- antes de seguir. Son 68 sistemas
+# del corpus en 35 escenas; dos de los presets que lo omiten son plantillas
+# del propio WE, `ember_small` y `dust_motes_0`.
+#
+# Sustituye a una estimacion anterior, el «ritmo implicito», que deducia el
+# ritmo de `maxcount` y la vida para sostener el 48 % del deposito. Ver NOTAS.
+RITMO_POR_DEFECTO = 10.0
 
 
 def _aplicar_override(s: Sistema, ov: dict) -> None:

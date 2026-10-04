@@ -7,7 +7,7 @@ plasmashell. No es un envoltorio: donde una capa **es** un vídeo lo decodifica
 y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
 
 - Qué hace y cómo se instala → `README.md`
-- **Por qué** cada cosa es como es → `NOTAS.md` (5660 líneas, 223 secciones en
+- **Por qué** cada cosa es como es → `NOTAS.md` (5819 líneas, 231 secciones en
   orden cronológico). **No lo leas entero.** `NOTAS-INDICE.md` dice qué sección
   resuelve qué problema y en qué línea empieza; se lee el trozo con
   `sed -n '<línea>,+40p' NOTAS.md`. Tras editar NOTAS.md, `make indice`.
