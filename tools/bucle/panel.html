@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bucle autónomo</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --texto: #1c1f24; --suave: #5f6670;
+  --borde: #e2e5ea; --acento: #2f6fde; --ok: #1f8f4e; --fallo: #c8382e;
+  --aviso: #b7791f; --pendiente: #a9afb8; --codigo: #f0f2f5;
+  --sombra: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1115; --panel: #171a20; --texto: #e6e8eb; --suave: #9aa1ab;
+    --borde: #2a2f37; --acento: #6ea0ff; --ok: #3ccf7c; --fallo: #ff6b5e;
+    --aviso: #f0b44c; --pendiente: #4b525c; --codigo: #1f232a;
+    --sombra: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1115; --panel: #171a20; --texto: #e6e8eb; --suave: #9aa1ab;
+  --borde: #2a2f37; --acento: #6ea0ff; --ok: #3ccf7c; --fallo: #ff6b5e;
+  --aviso: #f0b44c; --pendiente: #4b525c; --codigo: #1f232a; --sombra: none;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--texto);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+code, .mono { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-size: 12.5px; }
+header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  padding: 14px 20px; border-bottom: 1px solid var(--borde); background: var(--panel); }
+header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px;
+  border-radius: 999px; font-size: 12.5px; font-weight: 600; border: 1px solid var(--borde); }
+.pill .punto { width: 8px; height: 8px; border-radius: 50%; background: var(--pendiente); }
+.pill.vivo { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.pill.vivo .punto { background: var(--ok); animation: latido 1.4s infinite; }
+@keyframes latido { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+header .der { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+select, button { font: inherit; color: var(--texto); background: var(--panel);
+  border: 1px solid var(--borde); border-radius: 6px; padding: 4px 8px; }
+main { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 16px; padding: 16px 20px; max-width: 1500px; margin: 0 auto; }
+@media (max-width: 980px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+.tarjeta { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px;
+  box-shadow: var(--sombra); padding: 16px; min-width: 0; }
+.tarjeta + .tarjeta { margin-top: 16px; }
+.tarjeta h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--suave); margin: 0 0 10px; font-weight: 650; }
+.titulo-tarea { font-size: 16px; font-weight: 620; margin: 0 0 6px; overflow-wrap: anywhere; }
+.meta { color: var(--suave); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.meta b { color: var(--texto); font-weight: 560; }
+/* el stepper de etapas */
+.etapas { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 4px 0 2px; }
+.etapa { position: relative; text-align: center; padding-top: 34px; font-size: 12.5px; color: var(--suave); }
+.etapa::before { content: ""; position: absolute; top: 13px; left: -50%; width: 100%;
+  height: 3px; background: var(--borde); z-index: 0; }
+.etapa:first-child::before { display: none; }
+.etapa.hecha::before, .etapa.activa::before, .etapa.fallo::before { background: var(--ok); }
+.etapa .bola { position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 28px; height: 28px; border-radius: 50%; background: var(--panel);
+  border: 3px solid var(--pendiente); z-index: 1; display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; color: var(--pendiente); }
+.etapa.hecha .bola { border-color: var(--ok); background: var(--ok); color: var(--panel); }
+.etapa.activa .bola { border-color: var(--acento); color: var(--acento); }
+.etapa.activa .bola::after { content: ""; position: absolute; inset: -7px; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: var(--acento); animation: gira 1s linear infinite; }
+.etapa.fallo .bola { border-color: var(--fallo); background: var(--fallo); color: var(--panel); }
+.etapa.activa { color: var(--texto); font-weight: 600; }
+.etapa .t { display: block; font-size: 11.5px; font-weight: 400; color: var(--suave); }
+@keyframes gira { to { transform: rotate(360deg); } }
+/* intentos */
+.intento { border: 1px solid var(--borde); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+.intento.actual { border-color: color-mix(in srgb, var(--acento) 55%, var(--borde)); }
+.intento-cab { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-weight: 600; }
+.fila { display: flex; align-items: baseline; gap: 8px; padding: 3px 0; font-size: 13.5px; }
+.fila .nombre { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.fila .dur { color: var(--suave); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.icono { width: 18px; text-align: center; flex: none; }
+.ok { color: var(--ok); } .fallo { color: var(--fallo); } .aviso { color: var(--aviso); }
+.pend { color: var(--pendiente); } .act { color: var(--acento); }
+.giro { display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid var(--acento); border-right-color: transparent; animation: gira .8s linear infinite; }
+.pasos { margin: 2px 0 4px 26px; border-left: 2px solid var(--borde); padding-left: 10px; }
+.pasos .fila { font-size: 12.5px; padding: 1px 0; }
+.motivos { margin: 6px 0 0 26px; padding: 8px 10px; border-radius: 6px; font-size: 12.5px;
+  background: color-mix(in srgb, var(--fallo) 8%, transparent); white-space: pre-wrap; overflow-wrap: anywhere; }
+.motivos li { margin: 0 0 6px; }
+.etiqueta { font-size: 11.5px; font-weight: 650; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.etiqueta.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); }
+.etiqueta.fallo { background: color-mix(in srgb, var(--fallo) 15%, transparent); }
+.etiqueta.act { background: color-mix(in srgb, var(--acento) 15%, transparent); }
+.etiqueta.pend { background: color-mix(in srgb, var(--pendiente) 22%, transparent); color: var(--suave); }
+/* en vivo */
+.feed { max-height: 62vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.acc { display: flex; gap: 8px; font-size: 12.5px; align-items: flex-start; }
+.acc .h { flex: none; font-size: 11px; font-weight: 650; padding: 1px 6px; border-radius: 4px;
+  background: var(--codigo); color: var(--acento); min-width: 54px; text-align: center; }
+.acc.texto .h { color: var(--suave); }
+.acc .c { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.acc.texto .c { color: var(--suave); }
+.vacio { color: var(--suave); font-size: 13px; padding: 8px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th, td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--borde); vertical-align: top; }
+th { color: var(--suave); font-weight: 600; }
+td.titulo { overflow-wrap: anywhere; }
+details summary { cursor: pointer; color: var(--suave); font-size: 13px; margin-top: 8px; }
+pre.log { background: var(--codigo); padding: 10px; border-radius: 6px; max-height: 320px;
+  overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ficha dt { color: var(--suave); font-size: 12px; margin-top: 8px; }
+.ficha dd { margin: 2px 0 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.error-banner { background: color-mix(in srgb, var(--fallo) 12%, transparent); color: var(--fallo);
+  padding: 8px 12px; border-radius: 8px; margin-top: 10px; font-size: 13px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bucle autónomo</h1>
+  <span id="pill" class="pill"><span class="punto"></span><span id="pill-txt">…</span></span>
+  <div class="der">
+    <span id="coste" class="meta"></span>
+    <select id="run" title="Ejecución"></select>
+    <button id="tema" title="Cambiar tema">◐</button>
+  </div>
+</header>
+<main>
+  <div>
+    <section class="tarjeta">
+      <h2>Tarea</h2>
+      <div id="tarea"></div>
+    </section>
+    <section class="tarjeta">
+      <h2>Etapas</h2>
+      <div id="etapas" class="etapas"></div>
+      <div id="intentos"></div>
+      <div id="error"></div>
+    </section>
+    <section class="tarjeta">
+      <h2>Historial de tareas</h2>
+      <div id="historial"></div>
+    </section>
+  </div>
+  <div>
+    <section class="tarjeta">
+      <h2 id="vivo-tit">En vivo</h2>
+      <div id="feed" class="feed"></div>
+    </section>
+    <section class="tarjeta">
+      <h2>Registro del orquestador</h2>
+      <pre id="log" class="log mono"></pre>
+    </section>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const NOMBRES = { triaje: "Triaje", implementacion: "Implementación",
+  compuertas: "Compuertas", revision: "Revisión", mezcla: "Mezcla" };
+let elegido = new URLSearchParams(location.search).get("run"), ultimo = null, siguiendoFeed = true;
+
+try { const t = localStorage.getItem("tema"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$("tema").onclick = () => {
+  const r = document.documentElement;
+  const oscuro = r.dataset.theme ? r.dataset.theme === "dark"
+    : matchMedia("(prefers-color-scheme: dark)").matches;
+  r.dataset.theme = oscuro ? "light" : "dark";
+  try { localStorage.setItem("tema", r.dataset.theme); } catch (e) {}
+};
+$("run").onchange = e => {
+  elegido = e.target.value || null;
+  // la primera de la lista es «la de ahora»: sin parámetro, sigue a la nueva
+  const u = new URL(location); if (elegido && elegido !== e.target.options[0].value) u.searchParams.set("run", elegido);
+  else { u.searchParams.delete("run"); elegido = null; }
+  history.replaceState(null, "", u); firma = ""; refresca();
+};
+$("feed").addEventListener("scroll", e => {
+  const f = e.target; siguiendoFeed = f.scrollTop + f.clientHeight >= f.scrollHeight - 30;
+});
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const md = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+function dur(seg) {
+  if (seg == null || isNaN(seg)) return "";
+  seg = Math.max(0, Math.round(seg));
+  const h = Math.floor(seg / 3600), m = Math.floor(seg % 3600 / 60), s = seg % 60;
+  return h ? `${h} h ${m} min` : m ? `${m} min ${String(s).padStart(2, "0")} s` : `${s} s`;
+}
+const hora = t => t ? new Date(t * 1000).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+// Un tramo abierto se pinta como reloj: el temporizador solo cambia su texto.
+const tramo = (ini, fin, ahora) => !ini ? "" : fin || !ultimo?.en_vivo ? dur((fin || ahora) - ini)
+  : `<span class="reloj" data-ini="${ini}">${dur(ahora - ini)}</span>`;
+let desfase = 0, firma = "";
+
+function estadoEtapas(ej) {
+  const st = {}; for (const k of Object.keys(NOMBRES)) st[k] = "pend";
+  if (!ej) return st;
+  const fin = !!ej.fin || ej.resultado === "interrumpida";
+  const malo = ["bloqueada", "no resuelta", "error", "interrumpida", "sin tarea"].includes(ej.resultado);
+  if (ej.triaje) st.triaje = ej.triaje.fin ? "hecha" : "activa";
+  if (ej.resultado === "sin tarea") st.triaje = "fallo";
+  const i = ej.intentos.at(-1);
+  if (i) {
+    st.implementacion = i.implementacion?.fin ? "hecha" : "activa";
+    if (i.compuertas) st.compuertas = i.compuertas.estado === "OK" ? "hecha"
+      : i.compuertas.estado === "FALLO" ? "fallo" : "activa";
+    if (i.revision) st.revision = i.veredicto === "APRUEBA" ? "hecha"
+      : i.veredicto === "RECHAZA" ? "fallo" : "activa";
+  }
+  if (ej.mezcla) st.mezcla = ej.mezcla.estado === "OK" ? "hecha" : "fallo";
+  else if (fin && malo) {
+    // marcar en rojo la etapa donde se quedó
+    const orden = ["revision", "compuertas", "implementacion", "triaje"];
+    const k = orden.find(k => st[k] !== "pend");
+    if (k && st[k] === "activa") st[k] = "fallo";
+    if (ej.resultado === "no resuelta") st.implementacion = "fallo";
+  }
+  if (!fin && ej.etapa && st[ej.etapa] === "pend") st[ej.etapa] = "activa";
+  if (fin) for (const k in st) if (st[k] === "activa") st[k] = "fallo";
+  return st;
+}
+
+function pintaEtapas(ej, ahora) {
+  const st = estadoEtapas(ej);
+  const i = ej?.intentos.at(-1);
+  const tiempos = {
+    triaje: ej?.triaje && tramo(ej.triaje.inicio, ej.triaje.fin, ahora),
+    implementacion: i?.implementacion && tramo(i.implementacion.inicio, i.implementacion.fin, ahora),
+    compuertas: i?.compuertas && tramo(i.compuertas.inicio, i.compuertas.fin, ahora),
+    revision: i?.revision && tramo(i.revision.inicio, i.revision.fin, ahora),
+    mezcla: ej?.mezcla ? hora(ej.mezcla.t) : "",
+  };
+  const simbolo = { hecha: "✓", fallo: "✕", activa: "", pend: "" };
+  $("etapas").innerHTML = Object.entries(NOMBRES).map(([k, n], idx) => `
+    <div class="etapa ${st[k]}">
+      <span class="bola">${simbolo[st[k]] || idx + 1}</span>${n}
+      <span class="t">${st[k] === "activa" ? "en curso · " : ""}${tiempos[k] || "&nbsp;"}</span>
+    </div>`).join("");
+}
+
+function filaSesion(nombre, ses, ahora, extra = "") {
+  if (!ses) return `<div class="fila"><span class="icono pend">○</span><span class="nombre pend">${nombre}</span></div>`;
+  const s = ses.stats || {};
+  const rechazo = extra.includes("RECHAZA");
+  const icono = !ses.fin ? '<span class="icono"><span class="giro"></span></span>'
+    : rechazo ? '<span class="icono fallo">✕</span>' : '<span class="icono ok">✓</span>';
+  const det = ses.fin ? [s.turnos && `${s.turnos} turnos`, s.coste != null && `$${s.coste.toFixed(2)}`,
+    s.bloqueos ? `<span class="aviso">${s.bloqueos} bloqueos</span>` : ""].filter(Boolean).join(" · ") : "";
+  return `<div class="fila">${icono}<span class="nombre">${nombre} ${extra}</span>
+    <span class="dur">${det ? det + " · " : ""}${tramo(ses.inicio, ses.fin, ahora)}</span></div>`;
+}
+
+function pintaIntentos(ej, ahora, vivo) {
+  if (!ej || !ej.intentos.length) { $("intentos").innerHTML = ""; return; }
+  $("intentos").innerHTML = ej.intentos.map((i, idx) => {
+    const actual = idx === ej.intentos.length - 1 && vivo;
+    const c = i.compuertas;
+    let comp;
+    if (!c) comp = filaSesion("Compuertas", null, ahora);
+    else {
+      const icono = c.estado === "OK" ? '<span class="icono ok">✓</span>'
+        : c.estado === "FALLO" ? '<span class="icono fallo">✕</span>'
+        : '<span class="icono"><span class="giro"></span></span>';
+      const pasos = c.pasos.map(p => {
+        const ic = p.fin ? '<span class="icono ok">✓</span>'
+          : (c.estado === "FALLO" ? '<span class="icono fallo">✕</span>' : '<span class="icono"><span class="giro"></span></span>');
+        return `<div class="fila">${ic}<span class="nombre mono">${esc(p.nombre)}</span><span class="dur">${tramo(p.inicio, p.fin, ahora)}</span></div>`;
+      }).join("");
+      comp = `<div class="fila">${icono}<span class="nombre">Compuertas <span class="pend">· ${esc(c.detalle)}</span></span>
+        <span class="dur">${tramo(c.inicio, c.fin, ahora)}</span></div><div class="pasos">${pasos ||
+        '<div class="fila"><span class="icono"><span class="giro"></span></span><span class="nombre">compilando…</span></div>'}</div>`;
+    }
+    const ver = i.veredicto ? `<span class="etiqueta ${i.veredicto === "APRUEBA" ? "ok" : "fallo"}">${esc(i.veredicto)}</span>` : "";
+    const motivos = i.motivos?.length ? `<details ${actual ? "" : "open"}><summary>${i.veredicto === "RECHAZA" ? "Motivos del revisor" : "Por qué falló"} (${i.motivos.length})</summary>
+      <ul class="motivos">${i.motivos.map(m => `<li>${md(m)}</li>`).join("")}</ul></details>` : "";
+    const estado = actual ? '<span class="etiqueta act">en curso</span>'
+      : i.veredicto === "APRUEBA" ? '<span class="etiqueta ok">aprobado</span>'
+      : '<span class="etiqueta fallo">no aceptado</span>';
+    return `<div class="intento ${actual ? "actual" : ""}">
+      <div class="intento-cab"><span>Intento ${i.n} de ${i.de}</span>${estado}</div>
+      ${filaSesion("Implementación", i.implementacion, ahora)}
+      ${comp}
+      ${filaSesion("Revisión", i.revision, ahora, ver)}
+      ${motivos}</div>`;
+  }).join("");
+}
+
+function pintaTarea(ej, d) {
+  if (!ej) { $("tarea").innerHTML = '<div class="vacio">No hay ninguna ejecución registrada.</div>'; return; }
+  const f = ej.ficha || {};
+  const res = ej.resultado ? `<span class="etiqueta ${ej.resultado === "hecha" ? "ok" :
+    ej.resultado === "aprobada sin mezclar" ? "act" : "fallo"}">${esc(ej.resultado)}</span>` :
+    d.en_vivo ? '<span class="etiqueta act">en curso</span>' : "";
+  const ficha = f.hay_tarea ? `<details><summary>Ficha del triador</summary><dl class="ficha">
+      ${f.seccion_notas ? `<dt>Sección de NOTAS</dt><dd>${md(f.seccion_notas)}</dd>` : ""}
+      ${f.escenas?.length ? `<dt>Escenas</dt><dd class="mono">${esc(f.escenas.join(", "))}</dd>` : ""}
+      ${f.descripcion ? `<dt>Descripción</dt><dd>${md(f.descripcion)}</dd>` : ""}
+      ${f.criterio_aceptacion ? `<dt>Criterio de aceptación</dt><dd>${md(f.criterio_aceptacion)}</dd>` : ""}
+      ${f.riesgos ? `<dt>Riesgos</dt><dd>${md(f.riesgos)}</dd>` : ""}
+    </dl></details>` : (f.motivo_descarte ? `<p class="meta">${md(f.motivo_descarte)}</p>` : "");
+  $("tarea").innerHTML = `
+    <p class="titulo-tarea">${ej.tarea ? md(ej.tarea) : (d.en_vivo ? "El triador está eligiendo tarea…" : "—")} ${res}</p>
+    <div class="meta">
+      ${ej.rama ? `<span>rama <b class="mono">${esc(ej.rama)}</b></span>` : ""}
+      ${ej.base ? `<span>base <b class="mono">${esc(ej.base)}</b></span>` : ""}
+      <span>inicio <b>${hora(ej.inicio)}</b></span>
+      <span>duración <b>${tramo(ej.inicio, ej.fin, d.en_vivo ? d.ahora : (ej.registro.at(-1)?.t))}</b></span>
+    </div>${ficha}`;
+}
+
+function pintaFeed(d) {
+  const ej = d.ejecucion;
+  if (!d.en_vivo) {
+    $("vivo-tit").textContent = "En vivo";
+    $("feed").innerHTML = `<div class="vacio">${d.orquestador_en_marcha ?
+      "Esta ejecución ya terminó; la que está en marcha es la primera de la lista." :
+      "No hay ningún orquestador en marcha."}</div>`;
+    return;
+  }
+  const activo = ej.activo;
+  $("vivo-tit").textContent = activo ? `En vivo · ${activo}` : "En vivo · el orquestador (compuertas)";
+  if (!activo) {
+    const i = ej.intentos.at(-1), p = i?.compuertas?.pasos.at(-1);
+    $("feed").innerHTML = `<div class="vacio">Ninguna sesión de Claude activa: el orquestador ejecuta
+      ${p ? `<code>${esc(p.nombre)}</code> desde hace ${tramo(p.inicio, null, d.ahora)}` : "sus comprobaciones"}.</div>`;
+    return;
+  }
+  const acc = d.sesion?.acciones || [];
+  $("feed").innerHTML = acc.length ? acc.map(a => a.tipo === "texto"
+    ? `<div class="acc texto"><span class="h">piensa</span><span class="c">${md(a.texto)}</span></div>`
+    : `<div class="acc"><span class="h">${esc(a.nombre)}</span><span class="c mono">${esc(a.texto)}</span></div>`).join("")
+    : '<div class="vacio">Arrancando la sesión…</div>';
+  if (siguiendoFeed) $("feed").scrollTop = $("feed").scrollHeight;
+}
+
+function pintaHistorial(h) {
+  if (!h.length) { $("historial").innerHTML = '<div class="vacio">Aún no hay tareas terminadas.</div>'; return; }
+  const cls = r => r === "hecha" ? "ok" : r === "aprobada_sin_mezclar" ? "act" : "fallo";
+  $("historial").innerHTML = `<table><tr><th>Fecha</th><th>Resultado</th><th>Tarea</th><th>Rama</th></tr>
+    ${h.map(t => `<tr><td class="mono">${esc((t.fecha || "").replace("T", " ").slice(5, 16))}</td>
+      <td><span class="etiqueta ${cls(t.resultado)}">${esc(t.resultado)}</span></td>
+      <td class="titulo" title="${esc(t.motivo || "")}">${md(t.titulo)}</td>
+      <td class="mono">${esc(t.rama_sin_mezclar || t.rama || "")}</td></tr>`).join("")}</table>`;
+}
+
+function pinta(d) {
+  const ej = d.ejecucion;
+  $("pill").className = "pill" + (d.orquestador_en_marcha ? " vivo" : "");
+  $("pill-txt").textContent = d.orquestador_en_marcha
+    ? (d.en_vivo && ej?.etapa ? `en marcha · ${NOMBRES[ej.etapa]}` : "en marcha") : "parado";
+  document.title = (d.en_vivo && ej?.etapa ? `● ${NOMBRES[ej.etapa]} · ` : "") + "Bucle autónomo";
+  $("coste").innerHTML = ej ? `coste <b>$${(ej.coste || 0).toFixed(2)}</b>` : "";
+  const sel = $("run"), ids = d.ejecuciones.map(e => e.id);
+  if (sel.options.length !== ids.length || [...sel.options].some((o, k) => o.value !== ids[k])) {
+    sel.innerHTML = ids.map(id => `<option value="${id}">${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)} ${id.slice(9, 11)}:${id.slice(11, 13)}</option>`).join("");
+  }
+  if (ej) sel.value = ej.id;
+  pintaTarea(ej, d);
+  pintaEtapas(ej, d.en_vivo ? d.ahora : ej?.fin);
+  pintaIntentos(ej, d.en_vivo ? d.ahora : (ej?.fin || ej?.registro.at(-1)?.t), d.en_vivo);
+  $("error").innerHTML = ej?.error ? `<div class="error-banner">${esc(ej.error)}</div>` : "";
+  pintaFeed(d);
+  pintaHistorial(d.historial || []);
+  const log = $("log"), abajo = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = (ej?.registro || []).map(r => `[${hora(r.t)}] ${r.texto}`).join("\n");
+  if (abajo) log.scrollTop = log.scrollHeight;
+}
+
+async function refresca() {
+  try {
+    const r = await fetch("/api/estado" + (elegido ? `?run=${encodeURIComponent(elegido)}` : ""), { cache: "no-store" });
+    const d = await r.json();
+    if (d.fallo) throw new Error(d.fallo);
+    ultimo = d;
+    desfase = d.ahora - Date.now() / 1000;
+    // Solo se repinta si algo ha cambiado: repintar cierra los <details>.
+    const f = JSON.stringify({ ...d, ahora: 0 });
+    if (f !== firma) { firma = f; pinta(d); }
+  } catch (e) {
+    $("pill").className = "pill"; $("pill-txt").textContent = "sin conexión con panel.py";
+  }
+}
+refresca();
+setInterval(refresca, 2000);
+// el cronómetro corre entre consultas
+setInterval(() => {
+  const ahora = Date.now() / 1000 + desfase;
+  for (const r of document.querySelectorAll(".reloj")) r.textContent = dur(ahora - +r.dataset.ini);
+}, 1000);
+</script>
+</body>
+</html>
