@@ -7,6 +7,7 @@
 #include "glexecutor.h"
 #include "weparticles.h"
 #include "wereloj.h"
+#include "wetemblor.h"
 
 #include <QElapsedTimer>
 #include <QVarLengthArray>
@@ -147,6 +148,10 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
     m_punteroRepartido = false;
     m_punteroVisto = false;
     m_passCount = 0;
+    // La linea `temblor` solo la traen las escenas que tiemblan: sin esto, la
+    // siguiente heredaria el temblor de la anterior.
+    m_hayTemblor = false;
+    m_temblorDelta[0] = m_temblorDelta[1] = 0.0f;
 
     QTextStream in(&f);
     Op cur;
@@ -247,6 +252,12 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             m_parallaxRetardo = qMax(0.0f, tok[1].toFloat());
             if (tok.size() >= 3)
                 m_camaraInfluencia = tok[2].toFloat();
+        } else if (kw == QLatin1String("temblor") && tok.size() >= 5) {
+            // `temblor <ax> <ay> <velocidad> <rugosidad>`: la escena tiene
+            // `camerashake`. `toFloat` de QString no mira la locale.
+            m_hayTemblor = true;
+            for (int i = 0; i < 4; ++i)
+                m_temblor[i] = tok[1 + i].toFloat();
         } else if (kw == QLatin1String("object")) {
             Op op;
             op.kind = Op::BeginObject;
@@ -289,6 +300,9 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             op.tieneParalaje = true;
             op.paralaje[0] = tok[1].toFloat();
             op.paralaje[1] = tok[2].toFloat();
+        } else if (kw == QLatin1String("tiembla") && !m_ops.isEmpty()
+                   && m_ops.last().kind == Op::BeginObject) {
+            m_ops.last().tiembla = true;
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
             op.kind = Op::Copy;
@@ -1178,8 +1192,11 @@ void GlExecutor::avanzaPuntero(float dt, int viewW, int viewH)
     // haga divergir.
     {
         const float m = m_camaraInfluencia;
-        const float objetivo[2] = {0.5f * (1.0f - m) + m_puntero[0] * m,
-                                   0.5f * (1.0f - m) + (1.0f - m_puntero[1]) * m};
+        // WE le suma la posicion del ojo de la camara, que solo se mueve aqui
+        // con el temblor; ver `render`.
+        const float objetivo[2] = {
+            0.5f * (1.0f - m) + m_puntero[0] * m + m_temblorDelta[0],
+            0.5f * (1.0f - m) + (1.0f - m_puntero[1]) * m + m_temblorDelta[1]};
         float kc = 1.0f;
         if (m_parallaxRetardo > 0.0f)
             kc = qBound(0.0f, (1.0f - m_parallaxRetardo / 3.0f) * 10.0f * qMax(0.0f, dt),
@@ -1315,6 +1332,11 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         return;
 
     gpuTimerBegin();
+    // El temblor de camara va antes que el puntero: WE suma la posicion del
+    // ojo al punto que persigue el parallax, y el temblor mueve el ojo.
+    if (m_hayTemblor)
+        we_temblor(m_temblor[0], m_temblor[1], m_temblor[2], m_temblor[3],
+                   time, &m_temblorDelta[0], &m_temblorDelta[1]);
     // Antes que nada: el simulador de particulas lee el punto de control al
     // dar su paso, asi que llegar despues lo dejaria un fotograma por detras
     // del raton.
@@ -1373,6 +1395,13 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             if (op.tieneParalaje) {
                 m_placement[3] += 2.0f * op.paralaje[0] * (0.5f - m_camara[0]);
                 m_placement[7] += 2.0f * op.paralaje[1] * (0.5f - m_camara[1]);
+            }
+            // `camerashake`: la camara se ha movido `m_temblorDelta` y la capa
+            // va al reves. La curva es la de `src/wetemblor.c`, la misma que
+            // offline.
+            if (op.tiembla) {
+                m_placement[3] -= 2.0f * m_temblorDelta[0];
+                m_placement[7] -= 2.0f * m_temblorDelta[1];
             }
             m_compose = op.compose;
             m_soloBuffer = op.soloBuffer;

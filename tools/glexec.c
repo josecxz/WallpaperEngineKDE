@@ -23,6 +23,8 @@
  *   puntero <u> <v>                    donde esta el raton, (0,0) arriba izq.
  *   parallax <retardo> <influencia>    el punto que mueve la camara
  *   paralaje <kx> <ky>                 amount*depth de la capa en curso
+ *   temblor <ax> <ay> <vel> <rug>      `camerashake`: la camara tiembla
+ *   tiembla                            la capa en curso la mueve la camara
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
@@ -56,6 +58,7 @@
 
 #include "weparticles.h"
 #include "wereloj.h"
+#include "wetemblor.h"
 #include "wevideo.h"
 
 #define MAX_TEX 64
@@ -398,6 +401,10 @@ static int hay_puntero;
 /* `cameraparallaxmouseinfluence` de la escena (linea `parallax`): cuanto de
  * raton y cuanto de centro hay en el punto que mueve la camara. */
 static float camara_influencia = 0.5f;
+/* Lo que se ha movido la camara por `camerashake` (linea `temblor`), en
+ * fracciones del lienzo con la y hacia arriba. Cero sin la linea. Se calcula
+ * una vez: el plan es de UN instante, el de `meshtime`. */
+static float temblor_dx, temblor_dy;
 
 /* Reparte el puntero por todos los sistemas que sepan donde ponerlo. Va una
  * vez por fotograma, antes de que nadie de un paso: el simulador lo lee al
@@ -1022,6 +1029,25 @@ int main(int argc, char **argv)
                 obj_mvp[3] += 2.0f * kx * (0.5f - px);
                 obj_mvp[7] += 2.0f * ky * (0.5f - py);
             }
+            /* WE suma al punto P la posicion del ojo de la camara, y el
+             * temblor mueve el ojo: P se corre lo mismo que la camara, haya
+             * raton o no. */
+            obj_mvp[3] -= 2.0f * kx * temblor_dx;
+            obj_mvp[7] -= 2.0f * ky * temblor_dy;
+        } else if (strcmp(kw, "temblor") == 0 && !in_pass) {
+            /* `temblor <ax> <ay> <velocidad> <rugosidad>`: la escena tiene
+             * `camerashake`, con la amplitud ya en fracciones del lienzo. La
+             * curva es la de `src/wetemblor.c`, la misma que en vivo; offline
+             * se evalua en el instante del plan. */
+            float ax, ay, v, r;
+            if (sscanf(line, "%*s %f %f %f %f", &ax, &ay, &v, &r) == 4)
+                we_temblor(ax, ay, v, r, mesh_time > 0.0f ? mesh_time : 0.0f,
+                           &temblor_dx, &temblor_dy);
+        } else if (strcmp(kw, "tiembla") == 0 && !in_pass) {
+            /* Esta capa la coloca la camara, asi que el temblor la lleva al
+             * reves: la camara va a un lado y la escena al otro. */
+            obj_mvp[3] -= 2.0f * temblor_dx;
+            obj_mvp[7] -= 2.0f * temblor_dy;
         } else if (strcmp(kw, "tex") == 0) {
             int id, w, h;
             char path[512];

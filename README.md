@@ -295,8 +295,9 @@ Limitaciones conocidas:
   una ventana el fondo deja de verlo y se queda en la última posición conocida.
   La **cámara** también: `cameraparallax` desplaza cada capa según la
   profundidad de su grupo, en 29 escenas de 129, como lo hace Wallpaper Engine
-  —incluido el desplazamiento que ya tiene con el ratón en el centro—. El
-  temblor de cámara (`camerashake`, 6 escenas) no está hecho.
+  —incluido el desplazamiento que ya tiene con el ratón en el centro—. Y el
+  temblor de cámara (`camerashake`, 6 escenas), con la curva que usa el motor
+  de Wallpaper Engine.
 - Luces puntuales y de tubo sí; focos y direccionales no, y una escena que
   traiga alguna se dibuja plana entera —iluminar a medias la deja más oscura
   que no iluminarla—.

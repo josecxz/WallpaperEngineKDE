@@ -5945,7 +5945,10 @@ mucho unos 240 px a 1920 con el ratón en una esquina.
   se toca sin eso: lo usan 6 escenas con `depthparallax`.
 - **`escena[+0xf0/+0xf4]`**, un término que WE suma al objetivo y que aquí se
   toma como cero; y una marca de la escena que invierte la x.
-- **`camerashake`**, 6 escenas.
+- ~~**`camerashake`**, 6 escenas~~ **hecho**: [El temblor de
+  cámara](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido). Y
+  `escena[+0xf0/+0xf4]` resultó ser el ojo de la cámara: ahora lleva el
+  temblor, pero no el `eye` que algunas escenas declaran fuera del origen.
 
 ## `upright` en una cinta: WE la orienta como a un sprite, y da la base de siempre
 
@@ -6087,3 +6090,173 @@ extraída aparte con `git archive HEAD tools | tar -x -C /tmp/cu/base_src`.
   corpus falla si un renderer vuelve a dar aviso de orientación. Con el
   `_orientacion` de la base fallan 9 casos y el aviso de *Vapor 1*: 10
   discrepancias, código 1.
+
+## El temblor de cámara: también estaba en el motor, y no es ruido
+
+Quedaba al final de [El parallax de
+cámara](#el-parallax-de-cámara-la-fórmula-estaba-en-el-motor-y-mueve-las-capas-también-en-reposo):
+`general.camerashake`, con `camerashakeamplitude`, `camerashakespeed` y
+`camerashakeroughness`, no se leía. Nueve escenas lo declaran y seis lo
+encienden una vez resuelta la propiedad de usuario —`1692307745`,
+`2930166418` y `3146507587` con `true` literal; `2970694180`, `3053927686` y
+`3238423642` con `{user, value: true}`—; esas seis se dibujaban con la cámara
+quieta. Las otras tres —`1518454472`, `2311315748` y `2968771936`, esta con un
+`script` en el campo— lo tienen en `false` por su propiedad.
+
+### Cómo se encontró
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen), sobre
+`wallpaper64.exe`:
+
+- **Los campos.** Las cadenas están en `.rdata` (`camerashake` en
+  `0x14048e918`, `camerashakespeed` en `0x14048e900`, `…amplitude` en
+  `0x14048e998`, `…roughness` en `0x14048e980`). El lector de `general` las
+  registra en `0x14019ae14..0x14019b05d`, justo antes de `cameraparallax*`:
+  `camerashakespeed` en **`+0x328`**, `camerashakeamplitude` en **`+0x32c`** y
+  `camerashakeroughness` en **`+0x330`**, los tres float. `camerashake` es de
+  los de accesor propio (`0x14019c620`, `0x14019c830`): el **bit 7 de
+  `+0xe0`**.
+- **Los defectos**, en el constructor de la escena (`0x140186c90`):
+  `0x140186f84..0x140186f9a` ponen velocidad **3**, amplitud **0,5** y
+  rugosidad **1**. El corpus los declara siempre.
+- **Quién los lee.** Una sola función lee los tres: **`0x140199580`**. La
+  llaman los tres caminos de la actualización de la cámara, `0x1401891a0`
+  (`0x140189420`, `0x14018949f`, `0x140189a6f`), los tres detrás de un `jns`
+  sobre el byte bajo de `+0xe0`, que es el bit 7. Recibe el **ojo** (`+0xf0`)
+  y el **centro** (`+0xfc`) de la cámara y les suma el mismo vector: mueve la
+  cámara entera, no cada capa, y no mira `parallaxDepth`.
+- **El reloj** es `[[escena+0xd8]+0x130]`. Al construir la escena se le pasa
+  `renderizador+0x10` (`0x140181b82`), así que es `renderizador+0x140`: el
+  float del doble `+0x148`, que suma el dt de cada fotograma (`0x14017fcca`),
+  se pone a 0 al cargar la escena (`0x140181b2a`) y vuelve a 0 a los 432000 s.
+  Los segundos de la escena.
+- **La proyección.** El bit 3 de `+0xe0` es `orthogonalprojection`
+  (`0x1401875df`), y `+0x354`/`+0x358` son su ancho y su alto
+  (`0x14018759e`, `0x1401875c0`).
+- **Las funciones de la CRT**: `0x14041a2e0` es `cosf` (cerca de 0 devuelve
+  la constante 1), `0x14041a9c0` es `sinf` (devuelve x) y `0x14041e350`,
+  `powf`. Las constantes: 3,0 en `0x140492830`, 0,1 en `0x140492654`, 1,333 en
+  `0x140492728`, 0,001 en `0x140492608` y 1,0 en `0x140492704`.
+
+### Lo que hace WE
+
+```
+s = velocidad² · t                         t: segundos de escena
+v = (cos s, sin 1,333·s, sin s)
+ortográfica: v.z = 0 y k = 0,1·amplitud · 0,1·alto     (alto: +0x358)
+si no:                 k = 0,1·amplitud                (unidades de mundo)
+r = rugosidad³;  si r > 0,001 y r ≠ 1:  v = v/|v| · |v|^r
+ojo += k·v;  centro += k·v
+```
+
+Tres cosas que no se habrían adivinado midiendo:
+
+- **No es ruido.** Es una curva de Lissajous determinista, sin semilla: lo que
+  da WE en el segundo t es lo que da aquí en el segundo t. El riesgo de no poder
+  igualar el generador no existe.
+- **La «rugosidad» no añade aspereza.** Solo deforma la norma: con r³ entre
+  0,001 y 1 la acerca a 1, y con 0 o con 1 no toca nada. Cinco de las seis
+  escenas usan 0 o 1; solo `3238423642` la nota, con 0,92.
+- **En t = 0 la cámara ya está movida** `k` hacia la derecha (cos 0 = 1). Con
+  la amplitud mayor del corpus, 0,5 sobre un lienzo de 2160, son 10,8 px; |v|
+  llega a √2, unos 15 px.
+
+Y una cuarta que cierra un cabo de la sección anterior: la `escena[+0xf0]` que
+WE suma al objetivo del parallax (`0x140189c18`) **es el ojo de la cámara**.
+Con el temblor el ojo se mueve, así que el punto P del parallax se corre lo
+mismo que la cámara.
+
+### Cómo está hecho aquí
+
+- `temblor_de_camara` (`werender.py`) resuelve `camerashake` como `visible`
+  —manda la propiedad del usuario, no la copia— y escala la amplitud con el
+  alto del lienzo, que es el de `orthogonalprojection`. Sin
+  `orthogonalprojection` no se emite: no hay cámara en perspectiva en este
+  motor y en el corpus no hay ninguna escena así que tiemble.
+- El plan lleva dos líneas nuevas, solo en las escenas que tiemblan:
+
+```
+temblor <ax> <ay> <velocidad> <rugosidad>   cabecera; k/ancho y k/alto
+tiembla                                     tras el `object` de cada capa
+```
+
+- La curva vive una vez, en **`src/wetemblor.c`**, y la enlazan los dos
+  ejecutores. `glexec.c` la evalúa en el instante del plan (`meshtime`);
+  `glexecutor.cpp`, con su reloj, cada fotograma, antes que el puntero. Los dos
+  restan el resultado de la colocación de cada capa con `tiembla`, y lo suman
+  al punto P de las que llevan `paralaje`: offline también sin ratón, y en
+  vivo dentro del objetivo, antes del suavizado, que es donde lo suma WE.
+- **Las `passthrough` no tiemblan.** Las que no son `composelayer` no miran la
+  MVP: leen y escriben el fotograma entero, que ya viene movido. Las
+  `composelayer` leen lo que tienen debajo con la MVP horneada en el plan, que
+  no tiembla. Con `tiembla` también en ellas, el contenido se iba **el doble**:
+  21,7 px donde la cámara mueve 10,8 en `2970694180`, `3053927686` y
+  `3146507587`, las tres con una `composelayer` a pantalla completa. Si se
+  quedan quietas, lo que leen ya está movido y queda en su sitio; lo único que
+  se retrasa es el marco del efecto, como mucho la amplitud.
+
+Se descartó mover la imagen final entera: habría arrastrado también el grano,
+la viñeta y demás capas de postproceso, que en WE no se mueven. Y dejaba el
+parallax sin su parte del temblor.
+
+### Lo medido
+
+- **Planes de las 144 carpetas** (129 escenas y 15 vídeos), emitidos con
+  `werender.emit_plan(dir, tmp, ruta_final=Path('/RUTA'))` en la base y en la
+  rama y comparados con `cmp`: **138 idénticos byte a byte**, incluidas las tres
+  apagadas. Cambian solo las seis encendidas, y solo porque se añaden líneas: una
+  `temblor` y 8, 14, 39, 26, 15 y 40 `tiembla` (de 9, 14, 41, 31, 18 y 42
+  `object`), en el orden de la lista de arriba.
+- **El desplazamiento**, con `werender.py <dir> out.png --time t` en Mesa, a
+  t = 0; 0,5 y 1. Se mide por correlación de fase, con un paso bajo para que el
+  grano de película —idéntico en las dos imágenes— no tire del pico a cero, y
+  con el pico buscado a ±25 px. Entre la base y la rama **en el mismo instante**
+  la única diferencia es el temblor, y da (px de PNG, x a la derecha, y hacia
+  abajo; predicción / medida):
+
+| escena | t = 0 | t = 0,5 | t = 1 |
+|---|---|---|---|
+| `1692307745` | −1,94, 0 / −1,96, 0 | −1,08, +1,88 / −1,07, +1,88 | +0,74, +0,98 / +0,75, +0,98 |
+| `2930166418` | −3,46, 0 / −3,45, 0 | −2,51, +2,92 / −2,51, +2,93 | −0,20, +3,12 / −0,19, +3,11 |
+| `2970694180` | −10,80, 0 / −10,79, 0 | −10,00, +5,33 / −9,98, +5,33 | −7,72, +9,27 / −7,73, +9,26 |
+| `3053927686` | −10,80, 0 / −11,61, 0 | −9,53, +6,56 / −10,23, +7,00 | −6,01, +10,42 / −6,45, +11,09 |
+| `3146507587` | −10,80, 0 / −10,81, 0 | −9,48, +6,68 / −9,48, +6,68 | −5,84, +10,50 / −5,84, +10,50 |
+| `3238423642` | −7,99, 0 / −8,00, 0 | −5,39, +6,86 / −5,40, +6,87 | +0,35, +6,96 / +0,34, +6,96 |
+
+  Entre t = 0 y t = 0,5 de una misma rama se mezcla la animación propia de cada
+  escena —la base ya se mueve hasta 8 px en `2970694180`—. Lo que aporta el
+  temblor, (rama − base), es lo predicho: por ejemplo +1,34, +6,65 frente a
+  +1,32, +6,68 en `3146507587`, y +2,60, +6,85 frente a +2,60, +6,86 en
+  `3238423642`. En las **tres apagadas** los PNG de la rama son idénticos a
+  los de la base a los tres instantes, y su desplazamiento entre 0 y 0,5 es el
+  mismo que tenían.
+- **`test_luminancia.py obj/glexec --referencia`** contra la de la base, las
+  dos bajo el cerrojo y en Mesa: 129/129, **0 apagadas, 0 regresiones**. Las
+  seis escenas mueven su media 0,39 como mucho (`2930166418`); las de plan
+  idéntico, 0,13 como mucho, que es el ruido de relojes y vídeos entre dos
+  pasadas.
+- **`test_werender`**: `prueba_temblor_de_camara` fija la escala de la
+  amplitud, el apagado —también cuando lo apaga una propiedad cuya copia dice
+  `true`—, la curva de `src/wetemblor.c` compilada contra valores calculados a
+  mano con la forma de arriba, y el plan de `1692307745` (con la línea
+  `temblor 0.0010125 0.0018 1.4 1` y sus `tiembla`) y de `2968771936` (sin
+  ninguna). Falla quitando la línea del plan, quitando la comprobación de
+  `camerashake`, y con 1,3 en vez de 1,333 en la curva.
+
+### Lo que queda
+
+- **`3053927686` sale un 7 % largo** (11,6 px donde la fórmula da 10,8). El
+  paralaje acoplado de sus capas, con `amount × depth` de 0,02 como mucho,
+  explica un 2 %. Tiene una `composelayer` a pantalla completa con
+  `depthparallax`, que deforma lo que lee según un mapa de profundidad que no
+  tiembla; no se ha aislado.
+- **El marco de las `composelayer` que no cubren la pantalla** se queda quieto
+  cuando en WE se mueve con la cámara. Solo es visible en su borde, y como
+  mucho en la amplitud. La de `3238423642` es de 2000×2000.
+- **Una escena en perspectiva que tiemble** no se emite. No hay ninguna en el
+  corpus.
+- **El `eye` declarado fuera del origen** —`2311315748` lo tiene en
+  (57,1, −80,6)— también entra en el objetivo del parallax y aquí no se suma.
+  El temblor sí, porque el ejecutor lo conoce; el `eye` de la escena no se ha
+  tocado.
