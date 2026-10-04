@@ -286,7 +286,11 @@ def sesion_en_vivo(clon: str | None, n: int = 40) -> dict | None:
 
 
 def api_estado(run: str | None) -> dict:
+    # Por la última escritura del registro, no por el nombre: el nombre es la
+    # hora local de arranque y, si la zona horaria cambia, deja de ordenar
+    # (pasó: una ejecución nueva «12:18» quedaba detrás de las «18:28»).
     dirs = sorted((d for d in EJECUCIONES.glob("*") if (d / "bucle.log").exists()),
+                  key=lambda d: (d / "bucle.log").stat().st_mtime,
                   reverse=True) if EJECUCIONES.exists() else []
     vivo = en_marcha()
     elegido = next((d for d in dirs if d.name == run), dirs[0] if dirs else None)
