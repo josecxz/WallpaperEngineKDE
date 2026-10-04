@@ -1,0 +1,18 @@
+# El bucle autónomo de WallpaperEngine: una tarea por vuelta, sobre `main`.
+# No toca el escritorio: mezcla en main y se para (instalar es de una persona).
+#
+#   systemctl --user link    ~/Projects/WallpaperEngine/tools/bucle/we-bucle.service
+#   systemctl --user link    ~/Projects/WallpaperEngine/tools/bucle/we-bucle.timer
+#   systemctl --user enable --now we-bucle.timer
+#
+# Registros: journalctl --user -u we-bucle   y   ~/.local/state/wallpaperengine-bucle/
+[Unit]
+Description=WallpaperEngine: bucle autónomo (triar, resolver, revisar, mezclar)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/Projects/WallpaperEngine
+ExecStart=/usr/bin/python3 %h/Projects/WallpaperEngine/tools/bucle/orquestador.py --base main --tareas 2
+Nice=10
+TimeoutStartSec=12h

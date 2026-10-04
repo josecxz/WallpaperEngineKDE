@@ -1,0 +1,9 @@
+[Unit]
+Description=WallpaperEngine: bucle autónomo cada noche
+
+[Timer]
+OnCalendar=*-*-* 02:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target
