@@ -1287,6 +1287,12 @@ nuestro constructor de vértices, que la pone perpendicular al camino. El `rope`
 de *Vapor 1* con `upright` sigue anotado, y es lo único del corpus que queda
 fuera junto con un emisor extra en dos sistemas.
 
+**Corregido después:** lo de la cinta era falso. Su anchura la calcula
+`genericropeparticle.vert` con `g_OrientationForward`, y WE pone ese uniform con
+la misma rutina para los cuatro renderers; con `upright`, en el corpus, sale la
+base de siempre. Ver [`upright` en una
+cinta](#upright-en-una-cinta-we-la-orienta-como-a-un-sprite-y-da-la-base-de-siempre).
+
 **Verificación.** De los 823 sistemas, **819 dan un `.psys` idéntico byte a byte**
 y los 4 que cambian son exactamente estos. Comparar el `.psys` antes que el PNG
 es lo que hace la comprobación barata: es el contrato entero del sistema, y
@@ -3883,9 +3889,12 @@ simulación son tres cosas, ninguna bloqueante:
 
 - ~~`controlpointattract` sobre puntos atados al cursor (**111 de 136 usos**)~~
   **hecho**: entró con el puntero, como estaba previsto.
-- Un `rope` con `orientation: upright`, **1 sistema**: la anchura de la cinta la
-  monta nuestro constructor de vértices, perpendicular al camino, y ese la
-  quiere vertical.
+- ~~Un `rope` con `orientation: upright`, **1 sistema**: la anchura de la cinta
+  la monta nuestro constructor de vértices, perpendicular al camino, y ese la
+  quiere vertical.~~ **cerrado sin cambio de render**: la anchura la pone
+  `g_OrientationForward`, y con `upright` WE da la misma base que ya se emite.
+  Ver [`upright` en una
+  cinta](#upright-en-una-cinta-we-la-orienta-como-a-un-sprite-y-da-la-base-de-siempre).
 - Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
   ese; tomar el primero es preferible a sumarlos mal.
 
@@ -5937,3 +5946,144 @@ mucho unos 240 px a 1920 con el ratón en una esquina.
 - **`escena[+0xf0/+0xf4]`**, un término que WE suma al objetivo y que aquí se
   toma como cero; y una marca de la escena que invierte la x.
 - **`camerashake`**, 6 escenas.
+
+## `upright` en una cinta: WE la orienta como a un sprite, y da la base de siempre
+
+Quedaba en [Lo siguiente](#lo-siguiente) un `rope` con `orientation: upright`
+—*Vapor 1*, el objeto 445 de `2870014907`, con `subdivision: 2`— apuntado como
+lo único de `orientation` que no se dibujaba bien, con este argumento: «la
+anchura de la cinta la monta nuestro constructor de vértices, perpendicular al
+camino». **Era falso.** `construye_cinta` (`src/weparticles.c`) solo pasa
+extremos y puntos de control; la anchura la calcula el vértice de WE,
+`genericropeparticle.vert`, en la ruta sin geometry shader que usamos:
+
+```glsl
+vec3 eyeDirection = mul(g_OrientationForward, CAST3X3(g_ModelMatrixInverse));
+vec3 trailRightStart = cross(eyeDirection, trailDelta + CPStart);
+```
+
+Así que la pregunta era la de cualquier sprite: qué `g_Orientation*` pone el
+motor con `upright`. Se leyó en `wallpaper64.exe` con el método de [los valores
+por defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen).
+
+### El lector: tres modos y una base
+
+`orientation` (`.rdata 0x14048fb70`) solo lo usa una función, `0x1401c22e0`, y
+la llaman las cuatro fábricas de renderer —`sprite` en `0x1401cc5f5`,
+`spritetrail` en `0x1401cfe61`, `rope` en `0x1401cff73`, `ropetrail` en
+`0x1401d00ff`—, cada una justo después de reservar su bloque (tipo 1 a 4 en el
+primer byte; la carga útil empieza en `+4`). Lo que guarda en la carga útil:
+
+| campo | dónde | qué |
+|---|---|---|
+| modo | `+0x08` | `upright` → 1 (`0x1401c262b`), `fixed` → 2 (`0x1401c2682`), cualquier otro → 0; el defecto es la cadena `screen` (`0x14048fb64`), y `camera` no se compara: cae en 0 |
+| `axis` | `+0x0c` | normalizado; si es nulo o falta, **(0, 1, 0)** (`0x1401c277f`) |
+| derecha, arriba | `+0x18`, `+0x24` | una base ortonormal a partir de `axis` |
+| `flags` | `+0x30` | un byte |
+
+El modo además pasa al material de la cinta como combo `ORIENTATION`
+(`0x1401d2b55`), pero solo lo lee `genericropeparticle.geom`, el geometry
+shader, que no usamos.
+
+### La rutina que pone los tres uniforms, igual para los cuatro renderers
+
+El bucle de dibujo del sistema (`0x1402368ef`) recorre los bloques y, sea cual
+sea el tipo, llama a `0x1402298b0(contexto, carga útil)` antes de dibujar. Esa
+función escribe tres vectores en el contexto: `+0x184` (`forward`), `+0x190`
+(`right`) y `+0x19c` (`up`) —el orden de los ids `0x1d`, `0x1e`, `0x1f` que la
+tabla de uniforms da a `g_OrientationForward`, `Right` y `Up`, y el `fixed`
+copia `axis` a `+0x184`—. Con `c` la dirección de la vista (`contexto+0x160`;
+`+0x16c` y `+0x178` son la derecha y el arriba de la vista, que
+`0x140256899` invierte y restaura) y `M` la matriz del objeto:
+
+- **modo 0** (`0x140229c35`): `forward = −c`; `up` = eje Y del objeto (`M` por
+  (0, 1, 0)) si `flags & 1` es 0, o el arriba de la vista si es 1; y `up` se
+  ortogonaliza contra `forward`.
+- **modo 1, `upright`** (`0x140229ab8`): `up` = `axis` llevado por `M` si
+  `flags & 1` es 0, o (0, 1, 0) del mundo si es 1 (`0x140229b39`); luego
+  `right = c × up` y `forward = right × up`.
+- **modo 2, `fixed`** (`0x140229a87`): `forward` y `up` salen de la carga útil.
+
+Y al final (`0x140229d55`), para los tres: los dos vectores se llevan al espacio
+del objeto, `right = up × forward`, y **los tres se normalizan**.
+
+### Por qué en el corpus no cambia nada
+
+`(c × u) × u = u·(c·u) − c·|u|²`. Si `u` es perpendicular a la vista, eso es
+`−c` escalado: el `forward` de `upright` es el de `screen`, y tras normalizar la
+base es la misma, la canónica que el plan ya emite (`forward` 0 0 1, `right` 1 0
+0, `up` en Y). Solo se tuerce si el `up` efectivo tiene componente a lo largo de
+la vista.
+
+*Vapor 1* no tiene `flags` ni `axis`: su `up` es el eje Y del objeto, y el
+objeto solo gira en Z (`angles 0 0 1.47345`). La cámara de la escena mira de
+`eye 0 0 0` a `center 0 0 −1` con `up 0 1 0`. Perpendicular: **sin efecto**.
+Los otros tres `upright` del corpus, los sprites de `Rain_Splash` en
+`2464842912`, llevan `flags: 1`, y su `up` es el del mundo: también.
+
+Tampoco hay diferencia entre `rope` y `ropetrail` aquí: los dos pasan por la
+misma `0x1402298b0`.
+
+### Lo hecho
+
+`_orientacion` (`tools/weparticles.py`) deja de tratar la cinta como excepción
+y aplica la regla leída a los cuatro renderers: `upright` solo avisa si el `up`
+efectivo tiene z —sin `flags & 1` y con un `axis` con z—, y `fixed` si el eje no
+es Z. El `cinta` solo cambia el nombre del aviso. No se toca ni el plan ni los
+ejecutores.
+
+Una salvedad que el corpus no ejercita: la regla mira `axis` y `flags`, no el
+giro del objeto. Un objeto girado en x o en y llevaría el `up` fuera del plano
+aunque `axis` no tuviera z; en el corpus los cuatro `upright` cuelgan de objetos
+que solo giran en z (`angles 0 0 0` los de `Rain_Splash`, `0 −0 1.47345` el de
+*Vapor 1*).
+
+### Lo medido
+
+Todo desde la raíz del repositorio, con la rama base (`Bucle_Autonomo`)
+extraída aparte con `git archive HEAD tools | tar -x -C /tmp/cu/base_src`.
+
+- **El censo de `orientation` y los avisos**, sobre cada renderer de los
+  sistemas de las 129 escenas (`/tmp/cu/censo.py <raíz>`):
+
+  ```python
+  import sys; sys.path.insert(0, sys.argv[1] + '/tools')
+  from collections import Counter; import wepaths, weparticles as w; from wescene import AssetResolver
+  n, av = Counter(), Counter()
+  for d in sorted(d for d in wepaths.we_workshop().iterdir() if (d / 'scene.pkg').is_file()):
+      r = AssetResolver.for_wallpaper(d, wepaths.we_assets())
+      for o in r.read_json('scene.json').get('objects', []):
+          for e in (r.read_json(o['particle']).get('renderer') or []) if o.get('particle') else []:
+              n[e.get('orientation')] += 1; a = w._orientacion(e, e.get('name') in ('rope', 'ropetrail')); av[a] += bool(a)
+  print(dict(n), {k: v for k, v in av.items() if k})
+  ```
+
+  Da **771 renderers sin campo, 38 `screen`, 4 `upright` y 1 `fixed`** en las
+  dos ramas —las cifras del docstring de `_orientacion`, que antes decía 722 sin
+  campo, la cuenta de la biblioteca anterior—. Avisos: en la base, 1
+  (`estela upright`, `2870014907`); ahora, **0**. Los tres `upright` de
+  `Rain_Splash_copy2.json` en `2464842912` (`flags: 1`, `axis 0 0 1`) eran el
+  control: no avisaban antes y no avisan ahora.
+- **Planes y `.psys` de las 129, byte a byte.** Cada escena se emite con
+  `werender.py <escena> --emit-plan /tmp/cu/out/<id>` —la MISMA ruta en las dos
+  ramas, porque el plan nombra sus assets por ruta absoluta—, se hace
+  `sha256sum` de `plan.txt` y de cada `.psys`, y se borra el directorio. Ocho
+  escenas en paralelo con `xargs -P 8` y `timeout 900` por escena: unos 50 s
+  la pasada. Resultado: **129 de 129 escenas emitidas en las dos ramas, ninguna
+  falla ni se agota; 1131 de 1131 ficheros idénticos** (129 `plan.txt` y 1002
+  `.psys`). El sistema de *Vapor 1* tampoco cambia: la marca de soporte parcial
+  vive solo en `sin_soporte`, en Python, y no llega ni al `.psys` ni al plan.
+  Una segunda pasada de la base da los mismos 1131 sha256, así que la
+  comparación no tiene ruido.
+- **`2870014907` renderizada** con `--time 2 --frames 120` y Mesa
+  (`__EGL_VENDOR_LIBRARY_FILENAMES=…/50_mesa.json`): el PNG es idéntico con
+  `cmp` entre base y rama. Lo único que cambia en la salida es la cuenta
+  `psys_parcial`, de 1 a 0.
+- **`test_luminancia.py obj/glexec --referencia`** contra la referencia del
+  bucle (`luz-a7f291acc0fe.json`): 129/129 renderizadas, **0 regresiones**, 0
+  apagadas.
+- **`test_weparticles`**: la prueba nueva, `prueba_orientacion`, son 14 casos
+  de la regla, cada uno como sprite y como cinta, y además el recorrido del
+  corpus falla si un renderer vuelve a dar aviso de orientación. Con el
+  `_orientacion` de la base fallan 9 casos y el aviso de *Vapor 1*: 10
+  discrepancias, código 1.

@@ -13,7 +13,7 @@ que el .py emite, para cada sistema del corpus. Es la misma leccion que la
 inferencia de anchos --- validar contra un oraculo antes de conectar --- con el
 oraculo siendo esta vez la otra mitad de la implementacion.
 
-Se comprueban cinco cosas:
+Se comprueban siete cosas:
 
   1. Los dos lados conocen exactamente los mismos nombres.
   2. Cada pieza emitida trae los floats que el lector espera.
@@ -23,6 +23,10 @@ Se comprueban cinco cosas:
   5. La marca del cursor viaja: un punto de control con la marca puesta lo
      mueve `we_psys_puntero`, y sin puntero el operador que tira de el no
      actua.
+  6. Los tres hijos de evento nacen cuando les toca; ver `prueba_hijos`.
+  7. `orientation` sigue la regla que `wallpaper64.exe` aplica a los cuatro
+     renderers, y ningun renderer del corpus pide una base que no sea la
+     canonica.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -403,6 +407,50 @@ def prueba_locale(tmp: Path) -> list[str]:
     return fallos
 
 
+# Lo que `wallpaper64.exe` hace con `orientation` (`0x1401c22e0` lo lee,
+# `0x1402298b0` pone los tres `g_Orientation*`), reducido a la pregunta de
+# `_orientacion`: si la base que sale es la canonica que ya emite el plan. Las
+# cintas van por la MISMA rutina que los sprites, asi que la respuesta no
+# depende de `cinta`.
+CASOS_ORIENTACION = [
+    # (renderer, ¿base canonica?)
+    ({"name": "sprite"}, True),
+    ({"name": "sprite", "orientation": "camera"}, True),
+    ({"name": "sprite", "orientation": "screen"}, True),
+    # `up` del objeto, con el eje (0, 1, 0) por defecto: sin z, da la de screen.
+    ({"name": "rope", "orientation": "upright", "subdivision": 2}, True),
+    ({"name": "rope", "orientation": "upright", "axis": "0 0 0"}, True),
+    ({"name": "sprite", "orientation": "upright", "axis": "1 1 0"}, True),
+    # `flags & 1`: `up` del mundo, y el eje no se mira.
+    ({"name": "sprite", "orientation": "upright", "axis": "0 0 1", "flags": 1}, True),
+    # Un `up` con z tuerce `forward` fuera de la vista.
+    ({"name": "rope", "orientation": "upright", "axis": "0 0 1"}, False),
+    ({"name": "sprite", "orientation": "upright", "axis": "0 1 1"}, False),
+    ({"name": "spritetrail", "orientation": "fixed", "axis": "0 0 1"}, True),
+    ({"name": "ropetrail", "orientation": "fixed", "axis": "0 0 1"}, True),
+    ({"name": "spritetrail", "orientation": "fixed", "axis": "0 1 0"}, False),
+    ({"name": "rope", "orientation": "fixed"}, False),
+    ({"name": "sprite", "orientation": "otra"}, False),
+]
+
+
+def prueba_orientacion() -> list[str]:
+    fallos = []
+    for e, canonica in CASOS_ORIENTACION:
+        for cinta in (False, True):
+            aviso = weparticles._orientacion(e, cinta)
+            if (aviso is None) != canonica:
+                fallos.append(f"orientation {e} (cinta={cinta}): "
+                              f"{'avisa' if aviso else 'no avisa'} y WE "
+                              f"{'da la base canonica' if canonica else 'da otra base'}")
+    print(f"  {len(CASOS_ORIENTACION)} casos, {len(fallos)} fallos")
+    return fallos
+
+
+def aviso_de_orientacion(x: str) -> bool:
+    return x.startswith(("orientacion ", "estela "))
+
+
 # Largo maximo tolerable de una estela, en ANCHOS DE SPRITE --- que es la unidad
 # en la que trabaja `ComputeParticleTrailTangents`. El `maxlength` mas grande que
 # declara el corpus es 100, asi que nada deberia pasar de ahi por su cuenta.
@@ -470,6 +518,10 @@ def main() -> int:
     print("\n── los hijos de evento ──")
     fallos += prueba_hijos(tmp)
 
+    # ── 7. `orientation`, con la regla de WE ──
+    print("\n── orientation ──")
+    fallos += prueba_orientacion()
+
     st = Counter()
     fuera = Counter()
     largos: list[tuple[float, str]] = []
@@ -519,6 +571,10 @@ def main() -> int:
 
             for x in s.sin_soporte:
                 fuera[x] += 1
+                # Ninguna orientacion del corpus pide otra base; si una
+                # aparece, es un caso nuevo que mirar en el motor.
+                if aviso_de_orientacion(x):
+                    fallos.append(f"{d.name} {o.get('name')!r}: {x}")
             # No son piezas fuera de la simulacion: son las que solo hacen
             # algo cuando el raton esta sobre el fondo.
             if s.cps_cursor:
