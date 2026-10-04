@@ -206,7 +206,8 @@ def instala_guardia() -> Path:
     CACHE.mkdir(parents=True, exist_ok=True)
     shutil.copy2(REPO / "tools/bucle/guardia.py", destino)
     for orden, debe in (("make reload", 2), ("echo systemctl", 2),
-                        ("git commit -m x", 2), ("make glexec", 0)):
+                        ("claude -p hola", 2), ("python3 tools/bucle/orquestador.py", 2),
+                        ("git commit -m x", 0), ("make glexec", 0)):
         ev = json.dumps({"tool_name": "Bash", "tool_input": {"command": orden}})
         r = subprocess.run([sys.executable, str(destino)], input=ev, text=True,
                            capture_output=True)
@@ -259,8 +260,12 @@ class Claude:
                "--max-budget-usd", str(self.args.presupuesto)]
         if self.args.modelo:
             cmd += ["--model", self.args.modelo]
-        if solo_lectura:
-            cmd += ["--disallowedTools", "Edit", "Write", "NotebookEdit"]
+        # En `-p` la sesión acaba con el turno: quien lanza algo en segundo
+        # plano y programa un despertador no vuelve nunca (el implementador
+        # se quedó sin su medida así). Todo en primer plano.
+        cmd += ["--disallowedTools", "ScheduleWakeup", "Monitor", "CronCreate",
+                "CronDelete", "CronList", "RemoteTrigger", "PushNotification",
+                *(("Edit", "Write", "NotebookEdit") if solo_lectura else ())]
         if agente:
             cmd += ["--agent", agente]
         if sistema:
@@ -271,7 +276,10 @@ class Claude:
         t0 = time.time()
         try:
             r = sh(cmd, cwd=cwd, timeout=int(horas * 3600),
-                   env={"WE_BUCLE_RAIZ": str(cwd)})
+                   env={"WE_BUCLE_RAIZ": str(cwd),
+                        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                        "BASH_DEFAULT_TIMEOUT_MS": str(30 * 60_000),
+                        "BASH_MAX_TIMEOUT_MS": str(60 * 60_000)})
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"{nombre}: sin terminar en {horas} h")
         self.reg.guarda(f"{nombre}.stderr", r.stderr)
@@ -306,21 +314,43 @@ class Claude:
         return res
 
 
-# ── worktrees ──────────────────────────────────────────────────────────────
+# ── copias de trabajo ──────────────────────────────────────────────────────
+#
+# Un CLON compartido y no un `git worktree`. El worktree enlazado guarda su git
+# en REPO/.git, fuera del directorio de la sesión, y Claude Code pide
+# aprobación para cualquier orden de git ahí dentro aunque Bash esté permitido:
+# en `-p` nadie la da y al revisor se le denegó hasta un `git diff`. El clon
+# tiene su propio .git (los objetos los comparte con --shared) y, de paso,
+# ninguna sesión puede tocar las ramas del repositorio de verdad: lo que sale
+# de un clon lo trae el orquestador con `trae_rama`.
 
 def nuevo_worktree(nombre: str, commit: str) -> Path:
     ruta = CACHE / "wt" / nombre
     if ruta.exists():
         borra_worktree(ruta)
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    git("worktree", "add", "--detach", str(ruta), commit)
+    git("clone", "-q", "--shared", "--no-checkout", str(REPO), str(ruta))
+    git("checkout", "-q", "--detach", commit, cwd=ruta)
+    # git es libre en el clon, pero un `git push` llegaría a REPO y metería
+    # algo en una rama sin compuertas ni revisor: el clon no tiene adónde
+    # empujar. Traer (fetch) sí puede.
+    git("remote", "set-url", "--push", "origin", "SIN_PUSH_EN_EL_BUCLE", cwd=ruta)
+    # La identidad puede estar solo en la configuración local de REPO, que un
+    # clon no hereda: sin esto el primer commit falla.
+    for clave in ("user.name", "user.email"):
+        valor = git("config", clave, check=False)
+        if valor:
+            git("config", clave, valor, cwd=ruta)
     return ruta
 
 
 def borra_worktree(ruta: Path) -> None:
-    git("worktree", "remove", "--force", str(ruta), check=False)
     shutil.rmtree(ruta, ignore_errors=True)
-    git("worktree", "prune", check=False)
+
+
+def trae_rama(wt: Path, rama: str) -> None:
+    """Copia la rama del clon al repositorio, antes de que el clon se borre."""
+    git("fetch", "-q", str(wt), f"+refs/heads/{rama}:refs/heads/{rama}")
 
 
 def construye(wt: Path, reg: Registro) -> str | None:
@@ -489,7 +519,7 @@ def compuertas(wt: Path, base: str, impl: dict, guardia: Path, reg: Registro,
 # ── mezclar ────────────────────────────────────────────────────────────────
 
 def donde_esta(rama: str) -> Path | None:
-    """El worktree que tiene la rama sacada, si lo hay."""
+    """El worktree del REPOSITORIO que tiene la rama sacada, si lo hay."""
     actual = None
     for linea in git("worktree", "list", "--porcelain").splitlines():
         if linea.startswith("worktree "):
@@ -530,7 +560,9 @@ def confirma(wt: Path, impl: dict) -> None:
     msg += ("\n\nHecho por el bucle autónomo (tools/bucle/).\n\n"
             "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>")
     sh(["git", "add", "-A"], cwd=wt, check=True)
-    sh(["git", "commit", "-q", "-m", msg], cwd=wt, check=True)
+    # La sesión puede haber confirmado ella misma: solo queda lo que no.
+    if git("status", "--porcelain", cwd=wt):
+        sh(["git", "commit", "-q", "-m", msg], cwd=wt, check=True)
 
 
 # ── una tarea ──────────────────────────────────────────────────────────────
@@ -560,7 +592,7 @@ El intento {n} no se ha aceptado. Motivos, todos a atender:
 
 {motivos}
 
-Corrige en este mismo worktree y devuelve el JSON otra vez. Tus cambios siguen
+Corrige en este mismo clon y devuelve el JSON otra vez. Tus cambios siguen
 aquí: los que pasaron las compuertas están confirmados (`git log`), el resto
 sin confirmar (`git status`).
 """
@@ -584,6 +616,7 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
     """Devuelve True si conviene seguir con otra tarea."""
     base_commit = git("rev-parse", args.base)
     wt = nuevo_worktree(f"tarea-{datetime.now():%Y%m%d-%H%M%S}", base_commit)
+    rama = None
     try:
         historial = "\n".join(
             f"- [{t['resultado']}] {t['titulo']} ({t.get('seccion')})"
@@ -671,7 +704,8 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                 # La base se ha movido mientras tanto: lo medido ya no vale.
                 motivos = None
                 reg("la base se ha movido: se trae y se repiten las compuertas")
-                r = sh(["git", "merge", "--no-edit", args.base], cwd=wt)
+                sh(["git", "fetch", "-q", "origin", args.base], cwd=wt, check=True)
+                r = sh(["git", "merge", "--no-edit", "FETCH_HEAD"], cwd=wt)
                 if r.returncode:
                     sh(["git", "merge", "--abort"], cwd=wt)
                     apunta(estado, tarea, "bloqueada", rama_sin_mezclar=rama,
@@ -682,6 +716,7 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                 if not ok:
                     motivos = informe
                     continue
+            trae_rama(wt, rama)
             err = mezcla(rama, args.base,
                          f"Merge branch '{rama}': {tarea['titulo']}", reg)
             if err:
@@ -698,6 +733,11 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
         reg(f"bloqueada tras {args.intentos} intentos; rama {rama} sin mezclar")
         return True
     finally:
+        # Lo que no se ha mezclado se conserva como rama del repositorio, para
+        # que una persona pueda mirarlo; el clon se borra igual.
+        if rama and git("rev-parse", "--verify", "-q", f"refs/heads/{rama}",
+                        cwd=wt, check=False):
+            trae_rama(wt, rama)
         borra_worktree(wt)
 
 

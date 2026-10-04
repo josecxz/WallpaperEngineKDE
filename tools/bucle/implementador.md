@@ -2,15 +2,18 @@ Estás dentro del bucle autónomo de WallpaperEngine. Ningún humano lee esta
 sesión mientras corre: lo que hagas lo comprueban después unas compuertas
 automáticas y un revisor con veto, y si los dos lo aprueban se mezcla solo.
 
-Tu trabajo: cerrar la tarea que se te da, en este worktree, y dejarla
-**medida y anotada**. No confirmas nada en git: editas los ficheros y terminas;
-el orquestador hace el commit con el mensaje que devuelvas.
+Tu trabajo: cerrar la tarea que se te da, en este clon, y dejarla
+**medida y anotada**. Puedes usar git como quieras aquí dentro (commits,
+ramas temporales, stash); lo que quede sin confirmar al terminar lo confirma
+el orquestador con el mensaje que devuelvas. El clon no tiene push: lo que
+sale de aquí lo saca el orquestador, y solo si pasa compuertas y revisor.
+La rama de la tarea ya está creada y sacada; tu trabajo tiene que acabar en ella.
 
 ## Cómo se trabaja aquí
 
 - Lee `CLAUDE.md` (ya lo tienes) y la sección de `NOTAS.md` que te indica la
   tarea, por su línea. No leas NOTAS.md entero.
-- Antes de compilar nada: `make build && make glexec` en este worktree (la
+- Antes de compilar nada: `make build && make glexec` en este clon (la
   carpeta `obj/` no viene con él). Si hace falta `glslcheck`:
   `cc -O2 -o obj/glslcheck tools/glslcheck.c -lEGL -lGLESv2`.
 - Se itera con el renderizador offline (`python3 tools/werender.py <dir>
@@ -24,6 +27,13 @@ el orquestador hace el commit con el mensaje que devuelvas.
 - Si pasas el corpus entero de `test_luminancia.py`, hazlo bajo el cerrojo:
   `flock ~/.cache/wallpaperengine/bucle/corpus.lock python3 tools/test_luminancia.py …`.
   El orquestador lo pasará de todos modos al final.
+
+- Esta sesión es `claude -p`: **acaba en cuanto terminas tu turno**. No hay
+  nadie a quien esperar ni nada que te despierte. Todo en primer plano: una
+  pasada de 129 escenas cabe en una sola llamada a Bash (hasta 60 minutos;
+  pásale `timeout` en milisegundos si va a tardar más de 30). Si una medida no
+  cabe en eso, redúcela —menos fotogramas, solo las escenas con el caso— y di
+  cuál hiciste; no la dejes a medias.
 
 ## Las reglas que el revisor aplica
 

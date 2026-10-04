@@ -12,7 +12,9 @@ cumplen por disciplina:
   * regla 8: `tools/wectl.py` no se toca
   * el propio bucle no se toca: `.claude/` y `tools/bucle/` son quien le
     revisa, y un implementador que pudiera editarlos se aprobaría solo
-  * git es del orquestador: el implementador edita, no confirma ni mezcla
+  * nada de sesiones anidadas: una sesión lanzada desde aquí no la llevaría
+  * git es libre dentro del clon; el clon no tiene dirección de push, así que
+    nada sale de él sin pasar por el orquestador
   * fuera de su worktree no escribe (salvo temporales)
 
 Protocolo de Claude Code: JSON por stdin; salir con 2 bloquea la llamada y lo
@@ -36,12 +38,10 @@ BASH_PROHIBIDO = [
      "plasmashell y su bus no se tocan desde el bucle (regla 3)"),
     (r"\bcp\b[^|;&]*\.so\b",
      "cp sobre un .so mata a plasmashell con SIGBUS (regla 7)"),
-    # Las consultas (`stash list`, `branch` a secas, `worktree list`) pasan:
-    # bloquearlas solo obliga a dar un rodeo.
-    (r"\bgit\s+((commit|push|merge|rebase|reset|checkout|switch|tag|"
-     r"cherry-pick|revert|clean|update-ref|am)\b|"
-     r"stash(?!\s+(list|show)\b)|worktree(?!\s+list\b)|branch\s+(-[dDmMcCf]|[^-\s]))",
-     "git lo maneja el orquestador: edita los ficheros y termina"),
+    # Una sesión que lanza otra (o el orquestador) la deja sin esta guardia:
+    # una prueba con haiku lo hizo por su cuenta, con `cd` al repositorio.
+    (r"(^|[;&|(`]|\$\(|\s)(\S*/)?claude\s+-", "no se lanzan sesiones de Claude anidadas"),
+    (r"orquestador", "el orquestador no se ejecuta desde una sesión del bucle"),
     (r"(^|[\s/])wectl(\.py)?\s+(set|shuffle|start|stop)\b",
      "wectl set/shuffle/start/stop cambian el escritorio (regla 3)"),
     (r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+(/|~|\$HOME)(\s|$)",
