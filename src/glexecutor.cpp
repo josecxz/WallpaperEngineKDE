@@ -245,6 +245,8 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             p.tieneAfin = true;
         } else if (kw == QLatin1String("parallax") && tok.size() >= 2) {
             m_parallaxRetardo = qMax(0.0f, tok[1].toFloat());
+            if (tok.size() >= 3)
+                m_camaraInfluencia = tok[2].toFloat();
         } else if (kw == QLatin1String("object")) {
             Op op;
             op.kind = Op::BeginObject;
@@ -280,6 +282,13 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             op.anclajeBase[1] = tok[6].toFloat();
             for (int i = 0; i < 4; ++i)
                 op.anclajeEje[i] = tok[7 + i].toFloat();
+        } else if (kw == QLatin1String("paralaje") && tok.size() >= 3
+                   && !m_ops.isEmpty()
+                   && m_ops.last().kind == Op::BeginObject) {
+            Op &op = m_ops.last();
+            op.tieneParalaje = true;
+            op.paralaje[0] = tok[1].toFloat();
+            op.paralaje[1] = tok[2].toFloat();
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
             op.kind = Op::Copy;
@@ -1160,6 +1169,25 @@ void GlExecutor::avanzaPuntero(float dt, int viewW, int viewH)
     for (int i = 0; i < 2; ++i)
         m_parallax[i] += (m_puntero[i] - m_parallax[i]) * k;
 
+    // El punto de la camara, tal como lo calcula WE (leido en
+    // `wallpaper64.exe`): entre el centro y el raton segun la influencia, con
+    // la y del raton volteada, y suavizado con
+    // `min(1, (1 - retardo/3) * 10 * dt)` en vez de una exponencial. Con el
+    // retardo de 2 s de cuatro escenas eso llega siete veces antes que la
+    // exponencial. Se acota a [0, 1] para que un retardo de mas de 3 s no lo
+    // haga divergir.
+    {
+        const float m = m_camaraInfluencia;
+        const float objetivo[2] = {0.5f * (1.0f - m) + m_puntero[0] * m,
+                                   0.5f * (1.0f - m) + (1.0f - m_puntero[1]) * m};
+        float kc = 1.0f;
+        if (m_parallaxRetardo > 0.0f)
+            kc = qBound(0.0f, (1.0f - m_parallaxRetardo / 3.0f) * 10.0f * qMax(0.0f, dt),
+                        1.0f);
+        for (int i = 0; i < 2; ++i)
+            m_camara[i] += (objetivo[i] - m_camara[i]) * kc;
+    }
+
     // A los sistemas de particulas solo hay que hablarles cuando el raton se
     // mueve de verdad: son 123 sistemas en las escenas que lo usan y ninguno
     // en las demas.
@@ -1337,6 +1365,14 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
                     m_placement[3] += op.anclajeEje[0] * dx + op.anclajeEje[1] * dy;
                     m_placement[7] += op.anclajeEje[2] * dx + op.anclajeEje[3] * dy;
                 }
+            }
+            // El parallax de camara: WE desplaza la capa
+            // `amount * depth * (C - P)` pixeles de lienzo, que en clip son
+            // `2 * k * (0.5 - P/lienzo)`. Con el raton en el centro no suma
+            // nada; ver `parallax_de_camara` en werender.py.
+            if (op.tieneParalaje) {
+                m_placement[3] += 2.0f * op.paralaje[0] * (0.5f - m_camara[0]);
+                m_placement[7] += 2.0f * op.paralaje[1] * (0.5f - m_camara[1]);
             }
             m_compose = op.compose;
             m_soloBuffer = op.soloBuffer;

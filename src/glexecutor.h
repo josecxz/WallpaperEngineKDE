@@ -212,6 +212,11 @@ private:
         float anclajePunto[2] = {0.0f, 0.0f};   // el punto, en pose de reposo
         float anclajeBase[2] = {0.0f, 0.0f};    // donde cayo al hornear
         float anclajeEje[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // 2x2 a clip space
+        // `amount * parallaxDepth` de la raiz de esta capa (linea `paralaje`):
+        // cuanto la mueve el raton por el parallax de camara. La colocacion
+        // del plan ya trae la parte en reposo.
+        bool tieneParalaje = false;
+        float paralaje[2] = {0.0f, 0.0f};
         // Pass
         QString vert, frag;             // solo hasta initialize()
         QString targetName;             // idem
@@ -409,6 +414,12 @@ private:
     // Segundos que tarda el parallax en alcanzar al raton (`cameraparallaxdelay`
     // de la escena). 0 = va pegado a el.
     float m_parallaxRetardo = 0.1f;
+    // El punto que mueve la camara, normalizado al lienzo y con la y hacia
+    // ARRIBA, como lo calcula WE: entre el centro y el raton segun
+    // `cameraparallaxmouseinfluence`, y persiguiendolo con su suavizado. No es
+    // `m_parallax`, que es lo que se sube como `g_ParallaxPosition`.
+    float m_camara[2] = {0.5f, 0.5f};
+    float m_camaraInfluencia = 0.5f;
     float m_tiempoPrevio = -1.0f;      // para sacar el dt del fotograma
     quint64 m_diagFitSig = 0;   // ultimo encaje trazado, para no repetirlo
     int m_passCount = 0;

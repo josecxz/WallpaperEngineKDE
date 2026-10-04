@@ -329,6 +329,51 @@ def prueba_herencia_de_grupo(fallos: list[str]) -> None:
         fallos.append(f"un objeto sin padre no deberia moverse: {org}")
 
 
+def prueba_parallax_de_camara(fallos: list[str]) -> None:
+    """El parallax de camara en reposo, tal como lo hace WE.
+
+    `amount * depth * (origin - centro)`, con el `origin` y la profundidad de
+    la RAIZ: el hijo se mueve con su grupo aunque declare otra profundidad.
+    Una escena con el parallax apagado no mueve nada. Ver `parallax_de_camara`.
+    """
+    def escena(encendido):
+        raiz = wescene.SceneObject(id=1, name="grupo", kind="image",
+                                   raw={"id": 1, "origin": "700 150 0",
+                                        "parallaxDepth": "2 1"})
+        hijo = wescene.SceneObject(id=2, name="hijo", kind="image",
+                                   raw={"id": 2, "parent": 1,
+                                        "origin": "10 0 0",
+                                        "parallaxDepth": "5 5"})
+        quieto = wescene.SceneObject(id=3, name="fondo", kind="image",
+                                     raw={"id": 3, "origin": "100 100 0"})
+        general = {"cameraparallax": encendido, "cameraparallaxamount": 0.5}
+        return wescene.Scene(general=general, camera={},
+                             objects=[raiz, hijo, quieto]), raiz, hijo, quieto
+
+    sc, raiz, hijo, quieto = escena(True)
+    n = werender.parallax_de_camara(sc, (1000, 500))
+    por_id = {"1": raiz, "2": hijo, "3": quieto}
+    if n != 1:
+        fallos.append(f"parallax: se movieron {n} raices, se esperaba 1")
+    # 0.5 * 2 * (700 - 500) = 200 ; 0.5 * 1 * (150 - 250) = -50
+    org, _, _ = werender.transform_absoluto(raiz, por_id)
+    if [round(x, 3) for x in org[:2]] != [900.0, 100.0]:
+        fallos.append(f"parallax: la raiz deberia quedar en (900, 100): {org}")
+    org, _, _ = werender.transform_absoluto(hijo, por_id)
+    if [round(x, 3) for x in org[:2]] != [910.0, 100.0]:
+        fallos.append(f"parallax: el hijo no se mueve con su grupo: {org}")
+    if raiz.raw.get("_paralaje_k") != [1.0, 0.5]:
+        fallos.append(f"parallax: amount*depth deberia ser (1, 0.5): "
+                      f"{raiz.raw.get('_paralaje_k')}")
+    org, _, _ = werender.transform_absoluto(quieto, por_id)
+    if [round(x, 3) for x in org[:2]] != [100.0, 100.0]:
+        fallos.append(f"parallax: una capa sin profundidad se ha movido: {org}")
+
+    sc, raiz, _hijo, _quieto = escena(False)
+    if werender.parallax_de_camara(sc, (1000, 500)) or raiz.raw.get("_paralaje"):
+        fallos.append("parallax: con `cameraparallax` apagado no deberia mover nada")
+
+
 def prueba_visibilidad_heredada(fallos: list[str]) -> None:
     """Apagar un grupo apaga lo que cuelga de el.
 
@@ -452,6 +497,7 @@ def main() -> int:
                    prueba_sampler_por_defecto, prueba_niveles_mipmap,
                    prueba_valor_de_usuario, prueba_curva_de_animacion,
                    prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
+                   prueba_parallax_de_camara,
                    prueba_visibilidad_heredada,
                    prueba_opacidad_del_objeto,
                    prueba_color_del_shader_plano):

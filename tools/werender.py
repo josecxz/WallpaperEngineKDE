@@ -92,6 +92,13 @@ def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[floa
     # origin del siguiente, que viene expresado en el marco del padre.
     for nodo in reversed(cadena):
         o = (_floats(nodo.raw.get("origin")) + [0.0, 0.0, 0.0])[:3]
+        # El parallax de camara en reposo, que solo lleva la raiz: WE lo
+        # calcula con el `origin` y la profundidad del antepasado raiz y lo
+        # aplica como una traslacion en el lienzo antes de todo lo demas, asi
+        # que mueve el grupo entero. Ver `parallax_de_camara`.
+        desp = nodo.raw.get("_paralaje")
+        if desp and nodo is cadena[-1]:
+            o = [o[0] + desp[0], o[1] + desp[1], o[2]]
         # Una capa con `attachment` no cuelga del ORIGEN de su padre sino de un
         # punto del rig puppet del padre, y su `origin` es relativo a ese
         # punto. `_anclaje` es donde cae ese punto en el marco del padre; lo
@@ -110,6 +117,60 @@ def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[floa
         esc = [esc[0] * s[0], esc[1] * s[1], esc[2] * s[2]]
         ang = [ang[0] + a[0], ang[1] + a[1], ang[2] + a[2]]
     return org, esc, ang
+
+
+def parallax_de_camara(scene, canvas: tuple[int, int]) -> int:
+    """El parallax de camara de WE: cuanto se mueve cada objeto raiz, y con que.
+
+    Leido en el motor (`wallpaper64.exe`), no deducido. Cada fotograma WE
+    calcula un punto P del lienzo, entre el centro y el raton:
+
+        P = lienzo * (0.5 * (1 - m) + raton * m)      m = mouseinfluence
+
+    (con la y del raton volteada, porque el lienzo la tiene hacia arriba) y,
+    antes de dibujar cada objeto, le suma a su matriz una traslacion en el
+    lienzo:
+
+        amount * parallaxDepth_raiz * (origin_raiz - P)
+
+    con el `origin` y la profundidad del antepasado RAIZ, asi que un grupo se
+    mueve entero. Partido en dos:
+
+    - `a * d * (origin - C)`, con C el centro: lo que hay con el raton en el
+      centro. NO es cero ---una capa lejos del centro se aleja de el en
+      reposo--- y es fijo, asi que se hornea aqui, en `_paralaje`, y lo suma
+      `transform_absoluto` al `origin` de la raiz. Comprobado contra el
+      preview de `2262142032`: el reloj sale donde lo pone WE a unos 10 px, y
+      el letrero que deja fuera del cuadro no aparece en su preview.
+    - `a * d * (C - P)`: lo que mueve el raton. No depende del `origin`, solo
+      de `a * d`, que va en `_paralaje_k` y el plan lleva en la linea
+      `paralaje` de cada objeto; lo aplica el ejecutor cada fotograma.
+
+    Solo si la escena lo enciende (`cameraparallax`, que en 5 escenas cuelga
+    de una propiedad del usuario). Devuelve cuantos objetos raiz se mueven.
+    """
+    general = scene.general
+    if not wescene.is_visible(general.get("cameraparallax", False) or False,
+                              scene.properties):
+        return 0
+    amount = (_floats(general.get("cameraparallaxamount")) + [0.5])[0]
+    if amount == 0.0:
+        return 0
+    w, h = canvas
+    n = 0
+    for obj in scene.objects:
+        if obj.raw.get("parent"):
+            continue
+        d = _floats(obj.raw.get("parallaxDepth"))
+        if len(d) < 2 or (d[0] == 0.0 and d[1] == 0.0):
+            continue
+        o = _floats(obj.raw.get("origin"))
+        ox, oy = (o[0], o[1]) if len(o) >= 2 else (w / 2.0, h / 2.0)
+        k = (amount * d[0], amount * d[1])
+        obj.raw["_paralaje"] = [k[0] * (ox - w / 2.0), k[1] * (oy - h / 2.0)]
+        obj.raw["_paralaje_k"] = list(k)
+        n += 1
+    return n
 
 
 def _escapa(s: str) -> str:
@@ -2773,6 +2834,9 @@ class Renderer:
         # El indice por id se arma aqui y no mas abajo porque las luces
         # tambien pueden colgar de un grupo.
         self.por_id = {str(o.raw.get("id")): o for o in scene.objects}
+        # Antes que nada que coloque objetos: el parallax en reposo cambia el
+        # `origin` efectivo de las raices, y de ahi cuelga todo lo demas.
+        self.stats["paralaje"] = parallax_de_camara(scene, canvas)
         self.luces = luces_de_escena(scene, self.por_id)
         self.por_clase = por_tipo(self.luces)
         # `ambientcolor` es la luz que llega a todo por igual y `skylightcolor`
@@ -2797,8 +2861,15 @@ class Renderer:
         # cuatro de las seis que usan el efecto de profundidad suben a 2--- y
         # solo lo puede aplicar quien dibuja fotogramas seguidos, o sea el
         # motor en vivo. Offline no hay trayectoria que suavizar.
+        #
+        # El segundo numero es `cameraparallaxmouseinfluence`: cuanto de raton
+        # y cuanto de centro hay en el punto que mueve la camara; ver
+        # `parallax_de_camara`. Un ejecutor anterior lee el primero y se salta
+        # este.
         retardo = _floats(general.get("cameraparallaxdelay"))
-        self.lines.append(f"parallax {retardo[0] if retardo else 0.1:.4f}")
+        influencia = _floats(general.get("cameraparallaxmouseinfluence"))
+        self.lines.append(f"parallax {retardo[0] if retardo else 0.1:.4f} "
+                          f"{influencia[0] if influencia else 0.5:.4f}")
         # Donde esta el raton, para el ejecutor OFFLINE. En vivo esta linea no
         # aparece ---`emit_plan` no pasa puntero--- y el ejecutor usa el del
         # escritorio; ver `self.puntero`. Va la primera del cuerpo porque los
@@ -2882,6 +2953,20 @@ class Renderer:
             anc = self._linea_de_anclaje(obj, canvas)
             if anc:
                 self.body.append(anc)
+            # Lo que el RATON mueve al objeto por el parallax de camara. La
+            # parte en reposo ya esta en `place`; esta la suma el ejecutor cada
+            # fotograma. Va con el `amount * depth` de la raiz, porque WE mueve
+            # el grupo entero; ver `parallax_de_camara`.
+            raiz, visto = obj, set()
+            while raiz.raw.get("parent") and id(raiz) not in visto:
+                visto.add(id(raiz))
+                sig = self.por_id.get(str(raiz.raw.get("parent")))
+                if sig is None:
+                    break
+                raiz = sig
+            k = raiz.raw.get("_paralaje_k")
+            if k:
+                self.body.append(f"paralaje {k[0]:.6g} {k[1]:.6g}")
             buffers = self.buffers_de.get(str(obj.raw.get("id")), ())
             for p in obj.passes:
                 if p.command == "copy":

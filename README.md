@@ -293,8 +293,10 @@ Limitaciones conocidas:
   mapa de profundidad, la ondulación del cursor— y las partículas que lo
   persiguen se mueven con el ratón mientras está sobre el fondo. Cuando pasa a
   una ventana el fondo deja de verlo y se queda en la última posición conocida.
-  Lo que **no** se mueve todavía es la **cámara**: `cameraparallax` desplaza
-  cada capa según su profundidad en 29 escenas de 129, y eso está sin hacer.
+  La **cámara** también: `cameraparallax` desplaza cada capa según la
+  profundidad de su grupo, en 29 escenas de 129, como lo hace Wallpaper Engine
+  —incluido el desplazamiento que ya tiene con el ratón en el centro—. El
+  temblor de cámara (`camerashake`, 6 escenas) no está hecho.
 - Luces puntuales y de tubo sí; focos y direccionales no, y una escena que
   traiga alguna se dibuja plana entera —iluminar a medias la deja más oscura
   que no iluminarla—.
