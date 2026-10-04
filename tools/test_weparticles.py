@@ -13,7 +13,7 @@ que el .py emite, para cada sistema del corpus. Es la misma leccion que la
 inferencia de anchos --- validar contra un oraculo antes de conectar --- con el
 oraculo siendo esta vez la otra mitad de la implementacion.
 
-Se comprueban siete cosas:
+Se comprueban ocho cosas:
 
   1. Los dos lados conocen exactamente los mismos nombres.
   2. Cada pieza emitida trae los floats que el lector espera.
@@ -27,6 +27,8 @@ Se comprueban siete cosas:
   7. `orientation` sigue la regla que `wallpaper64.exe` aplica a los cuatro
      renderers, y ningun renderer del corpus pide una base que no sea la
      canonica.
+  8. Un sistema con varios emisores emite por todos, cada uno en su forma y a
+     su ritmo, al mismo deposito; ver `prueba_emisores`.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -37,6 +39,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -285,6 +288,146 @@ def prueba_hijos(tmp: Path) -> list[str]:
     return fallos
 
 
+ARNES_EMISORES_C = r"""
+#include <locale.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "weparticles.h"
+/* <psys> <segundos>: simula con la locale del entorno y escribe las piezas sin
+ * reconocer, los emisores, cuantas particulas hay en la caja lejana (x > 1000),
+ * cuantas en la esfera del origen (a menos de 300), cuantas fuera de las dos, y
+ * las vivas de cada emisor segun el simulador. */
+int main(int argc, char **argv)
+{
+    setlocale(LC_ALL, "");
+    int desconocidas = -1;
+    WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
+    if (!s) { printf("-1\n"); return 0; }
+    int nv = we_psys_update(s, (float)atof(argv[2]));
+    const float *v = we_psys_vertices(s);
+    int paso = we_psys_floats_por_vertice(s);
+    int caja = 0, esfera = 0, fuera = 0;
+    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+        const float *w = v + (size_t)i * paso;
+        if (w[0] > 1000.0f) caja++;
+        else if (hypotf(w[0], w[1]) < 300.0f) esfera++;
+        else fuera++;
+    }
+    printf("%d %d %d %d %d %d %d\n", desconocidas, we_psys_emisores(s), caja,
+           esfera, fuera, we_psys_vivas(s, 0), we_psys_vivas(s, 1));
+    return 0;
+}
+"""
+
+
+class _Resolver:
+    """Lo minimo de `AssetResolver` para que `cargar` lea un preset en memoria."""
+    def __init__(self, pj: dict):
+        self.pj = pj
+
+    def read_json(self, ruta: str) -> dict:
+        return self.pj
+
+
+"""Dos emisores de formas DISJUNTAS: una caja de 100 px de semieje lejos del
+origen, a 15/s tras el `rate 0.5` del objeto, y una esfera que no declara nada
+---como el segundo emisor de los dos sistemas del corpus---, o sea 256 px y
+10/s, que el objeto deja en 5/s. Sin velocidad y con 100 s de vida, cada
+particula se queda donde nacio y se puede contar de quien es por donde esta."""
+PRESET_EMISORES = {
+    "maxcount": 1000,
+    "emitter": [{"name": "boxrandom", "rate": 30, "distancemax": "100 100 0",
+                 "origin": "2000 0 0"},
+                {"name": "sphererandom"}],
+    "initializer": [{"name": "lifetimerandom", "min": 100, "max": 100}],
+    "renderer": [{"name": "sprite"}],
+    "material": "x.json",
+}
+
+
+def prueba_emisores(tmp: Path) -> list[str]:
+    """Varios emisores, de `cargar` al simulador.
+
+    Lo que se exige:
+
+    - Python guarda los dos emisores, sin anotar ninguno como extra, con los
+      defectos de siempre en el que no declara nada y el `rate` del objeto
+      aplicado a CADA uno; y el `.psys` lleva una linea `emit` por emisor.
+    - El C los lee los dos con la locale del escritorio, y cada uno suelta en
+      su region y a su ritmo: a los 10 s, 150 en la caja y 50 en la esfera.
+    - El deposito es UNO: con `maxcount 40` hay 40 particulas en total, no 40
+      por emisor, y las dos regiones tienen alguna.
+    """
+    fallos = []
+    s = weparticles.cargar(_Resolver(PRESET_EMISORES), "p.json", {"rate": 0.5})
+    extra = [x for x in s.sin_soporte if x.startswith("emitter")]
+    formas = [n for n, _ in s.emisores]
+    print(f"  emisores {formas}  ritmos {[e[0] for _, e in s.emisores]}")
+    if formas != ["boxrandom", "sphererandom"] or extra:
+        return [f"dos emisores: Python guarda {formas} y anota {extra}"]
+    caja, esfera = s.emisores[0][1], s.emisores[1][1]
+    if [caja[0], esfera[0]] != [15.0, 5.0]:
+        fallos.append(f"el `rate` del objeto no multiplica a cada emisor: "
+                      f"{caja[0]:g} y {esfera[0]:g}, se esperaba 15 y 5")
+    if esfera[4:7] != list(weparticles.DISTANCIA_POR_DEFECTO) \
+            or esfera[7:10] != list(weparticles.DIRECCIONES_POR_DEFECTO):
+        fallos.append(f"el segundo emisor no recibe los defectos: {esfera}")
+
+    fuente, binario = tmp / "arnes_emisores.c", tmp / "arnes_emisores"
+    fuente.write_text(ARNES_EMISORES_C)
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{FUENTE_C.parent}",
+                        "-o", str(binario), str(fuente), str(FUENTE_C), "-lm"],
+                       check=True, capture_output=True)
+    except Exception as e:
+        # Sin compilador se omite, como las demas; con el, no compilar es que
+        # el simulador ha perdido `we_psys_emisores`/`we_psys_vivas`.
+        if shutil.which("cc") is None:
+            print(f"  (sin compilador de C: {e}, prueba omitida)")
+            return fallos
+        return fallos + [f"el arnes de emisores no compila: {e}"]
+
+    loc = locale_con_coma()
+    locales = [("C", "C")] + ([(loc, loc)] if loc else [])
+    for maxcount in (1000, 40):
+        s.maxcount = maxcount
+        psys = tmp / f"emisores{maxcount}.psys"
+        weparticles.escribir(s, psys, 11)
+        n_emit = sum(l.startswith("emit ") for l in psys.read_text().splitlines())
+        if n_emit != 2:
+            fallos.append(f"el .psys lleva {n_emit} lineas `emit`, no 2")
+        for etq, entorno in locales:
+            r = subprocess.run([str(binario), str(psys), "10"],
+                               capture_output=True, text=True,
+                               env=dict(os.environ, LC_ALL=entorno))
+            c = [int(x) for x in r.stdout.split()]
+            if len(c) != 7:
+                fallos.append(f"el arnes de emisores no devolvio nada ({etq})")
+                continue
+            desc, n_em, en_caja, en_esfera, fuera, vivas0, vivas1 = c
+            print(f"  maxcount {maxcount:<5} LC_ALL={etq:<12} caja {en_caja:<4} "
+                  f"esfera {en_esfera:<4} fuera {fuera}  "
+                  f"(vivas por emisor {vivas0} + {vivas1})")
+            donde = f"maxcount {maxcount}, LC_ALL={etq}"
+            if desc or n_em != 2:
+                fallos.append(f"{donde}: el C lee {n_em} emisores y descarta "
+                              f"{desc} piezas")
+            if fuera or (en_caja, en_esfera) != (vivas0, vivas1):
+                fallos.append(f"{donde}: las particulas no nacen en la forma de "
+                              f"su emisor ({fuera} fuera de las dos)")
+            if maxcount == 1000 and not (145 <= en_caja <= 155
+                                         and 45 <= en_esfera <= 55):
+                fallos.append(f"{donde}: {en_caja} en la caja y {en_esfera} en "
+                              f"la esfera; a 15/s y 5/s deberian ser 150 y 50")
+            if maxcount == 40 and (en_caja + en_esfera != 40
+                                   or not en_caja or not en_esfera):
+                fallos.append(f"{donde}: {en_caja} + {en_esfera} particulas; "
+                              f"el deposito comun de 40 tiene que llenarse "
+                              f"con las dos")
+    return fallos
+
+
 def locale_con_coma() -> str | None:
     """Primera locale instalada cuyo separador decimal NO sea el punto."""
     try:
@@ -522,6 +665,10 @@ def main() -> int:
     print("\n── orientation ──")
     fallos += prueba_orientacion()
 
+    # ── 8. varios emisores al mismo deposito ──
+    print("\n── varios emisores ──")
+    fallos += prueba_emisores(tmp)
+
     st = Counter()
     fuera = Counter()
     largos: list[tuple[float, str]] = []
@@ -554,10 +701,13 @@ def main() -> int:
                 if len(vals) != oper_c.get(nombre, -1):
                     fallos.append(f"{d.name}: oper {nombre} emite {len(vals)} "
                                   f"floats, el C espera {oper_c.get(nombre)}")
-            # El emisor son 20 floats fijos; ver `we_psys_load`.
-            if s.emisor and len(s.emit) != 20:
-                fallos.append(f"{d.name}: emit emite {len(s.emit)} floats, "
-                              f"el C espera 20")
+            # Cada emisor son 20 floats fijos; ver `we_psys_load`.
+            for _, emit in s.emisores:
+                if len(emit) != 20:
+                    fallos.append(f"{d.name}: emit emite {len(emit)} floats, "
+                                  f"el C espera 20")
+            if len(s.emisores) > 1:
+                st["varios_emisores"] += 1
 
             if s.cinta:
                 st["cintas"] += 1
@@ -571,6 +721,10 @@ def main() -> int:
 
             for x in s.sin_soporte:
                 fuera[x] += 1
+                # Emiten todos, hasta `MAX_EMISORES`; uno que sobre es un
+                # sistema que el simulador dibujaria a medias.
+                if x.startswith("emitter extra"):
+                    fallos.append(f"{d.name} {o.get('name')!r}: {x}")
                 # Ninguna orientacion del corpus pide otra base; si una
                 # aparece, es un caso nuevo que mirar en el motor.
                 if aviso_de_orientacion(x):
@@ -587,7 +741,7 @@ def main() -> int:
 
     print("\n── corpus ──")
     for k in ("sistemas", "dibujables", "piezas", "estelas", "cintas",
-              "cp_cursor", "tiran_del_cursor", "error", "escena_err"):
+              "varios_emisores", "cp_cursor", "tiran_del_cursor", "error", "escena_err"):
         print(f"  {k:<12} {st[k]}")
 
     if largos:

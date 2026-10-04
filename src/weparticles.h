@@ -120,6 +120,12 @@ void we_psys_puntero(WeParticleSystem *s, const float *xyz);
  * pagar la conversion en los 719 sistemas del corpus que no lo usan. */
 int we_psys_cursor(const WeParticleSystem *s);
 
+/* Cuantas lineas `emit` tiene el sistema, y cuantas particulas vivas ha
+ * soltado ahora el emisor `emisor` (de 0 en adelante, en el orden del `.psys`).
+ * Los ejecutores no las necesitan: son para `psysprobe` y las pruebas. */
+int we_psys_emisores(const WeParticleSystem *s);
+int we_psys_vivas(const WeParticleSystem *s, int emisor);
+
 const float *we_psys_vertices(const WeParticleSystem *s);
 
 /* 0 = sprites sueltos, 1 = `rope`, 2 = `ropetrail`. Decide el layout del
