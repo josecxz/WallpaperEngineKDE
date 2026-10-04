@@ -241,7 +241,7 @@ class Claude:
 
     def __call__(self, nombre: str, prompt: str, cwd: Path, esquema: dict, *,
                  agente: str | None = None, sistema: str | None = None,
-                 herramientas: str = "Bash Read Edit Write Glob Grep",
+                 solo_lectura: bool = False,
                  reanudar: str | None = None, horas: float = 1.0,
                  esfuerzo: str = "high") -> dict:
         cmd = ["claude", "-p", prompt,
@@ -250,12 +250,17 @@ class Claude:
                "--settings", self.settings,
                "--permission-mode", "acceptEdits",
                "--permission-prompts", "none",
-               "--allowedTools", herramientas,
-               "WebSearch", "WebFetch(domain:docs.wallpaperengine.io)",
+               # Cada herramienta, un argumento: como una sola cadena con
+               # espacios no se lee como lista y no se permite ninguna.
+               "--allowedTools", "Bash", "Read", "Glob", "Grep", "WebSearch",
+               "WebFetch(domain:docs.wallpaperengine.io)",
+               *(() if solo_lectura else ("Edit", "Write")),
                "--effort", esfuerzo,
                "--max-budget-usd", str(self.args.presupuesto)]
         if self.args.modelo:
             cmd += ["--model", self.args.modelo]
+        if solo_lectura:
+            cmd += ["--disallowedTools", "Edit", "Write", "NotebookEdit"]
         if agente:
             cmd += ["--agent", agente]
         if sistema:
@@ -281,9 +286,21 @@ class Claude:
                  f"{out.get('num_turns')} turnos, "
                  f"{len(out.get('permission_denials') or [])} bloqueos, "
                  f"${out.get('total_cost_usd') or 0:.2f}")
-        if out.get("is_error") or not isinstance(out.get("structured_output"), dict):
+        if out.get("is_error"):
             raise RuntimeError(f"{nombre}: {out.get('subtype')} "
                                f"{str(out.get('result'))[:500]}")
+        if not isinstance(out.get("structured_output"), dict):
+            # Ha hecho el trabajo pero lo ha contado en texto: una sola
+            # oportunidad de entregarlo por la vía del esquema, sin repetirlo.
+            if nombre.endswith("-json") or not out.get("session_id"):
+                raise RuntimeError(f"{nombre}: sin salida estructurada: "
+                                   f"{str(out.get('result'))[:500]}")
+            return self(f"{nombre}-json",
+                        "Devuelve ya el resultado con la herramienta de salida "
+                        "estructurada, ajustado exactamente al esquema. No "
+                        "repitas el trabajo.", cwd, esquema, agente=agente,
+                        sistema=sistema, solo_lectura=solo_lectura,
+                        reanudar=out["session_id"], horas=0.25, esfuerzo="low")
         res = out["structured_output"]
         res["_session_id"] = out.get("session_id")
         return res
@@ -576,7 +593,7 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                  if args.pista else "")
         tarea = claude("triador", PROMPT_TRIAJE.format(
             base=args.base, commit=base_commit[:12], historial=historial,
-            pista=pista), wt, ESQ_TRIAJE, agente="triador", horas=0.75,
+            pista=pista), wt, ESQ_TRIAJE, agente="triador", solo_lectura=True, horas=0.75,
             esfuerzo="medium")
         if not tarea.get("hay_tarea"):
             reg(f"el triador no encuentra tarea: {tarea.get('motivo_descarte')}")
@@ -630,7 +647,8 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                 impl=json.dumps({k: v for k, v in impl.items()
                                  if not k.startswith("_")},
                                 indent=1, ensure_ascii=False),
-                compuertas=informe), wt, ESQ_REV, agente="revisor", horas=1)
+                compuertas=informe), wt, ESQ_REV, agente="revisor",
+                solo_lectura=True, horas=1)
             tocado = (git("rev-parse", "HEAD", cwd=wt) != cabeza
                       or git("status", "--porcelain", cwd=wt))
             if tocado:
