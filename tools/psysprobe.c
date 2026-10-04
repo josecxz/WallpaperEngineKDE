@@ -62,6 +62,10 @@ int main(int argc, char **argv)
     printf("piezas sin reconocer: %d\n", desconocidas);
     printf("%s: %d vertices, %d %s\n", argv[1], nv, nv / por_particula,
            we_psys_cinta(s) ? "segmentos de cinta" : "particulas");
+    /* Solo con mas de un emisor: con uno, la cuenta es la de arriba. */
+    if (we_psys_emisores(s) > 1)
+        for (int e = 0; e < we_psys_emisores(s); e++)
+            printf("  emisor %d: %d vivas\n", e, we_psys_vivas(s, e));
 
     /* La velocidad viaja en `a_TexCoordVec4C1` (xyz) y la posicion en
      * `a_Position`; ver el layout en `weparticles.h`. Las cintas usan otro

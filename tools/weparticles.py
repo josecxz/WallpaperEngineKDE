@@ -27,9 +27,9 @@ Censo del corpus (823 sistemas en 106 escenas) que decide que hay que cubrir:
     renderers      sprite 586, spritetrail 145, rope 34, ropetrail 32
     shader         genericparticle, uno solo, en los 823
 
-El vocabulario esta cubierto entero. Lo unico que queda sin dibujar del corpus
-es un emisor extra en dos sistemas ---WE permite varios y sumarlos mal es peor
-que tomar el primero---. `orientation` no deja nada fuera; ver `_orientacion`.
+El vocabulario esta cubierto entero, tambien los sistemas con dos emisores: 2
+en el corpus, que emiten por los dos al mismo deposito. `orientation` no deja
+nada fuera; ver `_orientacion`.
 
 Los dos repartos por puestos se colocan: `mapsequencebetweencontrolpoints` (11)
 por un camino y `mapsequencearoundcontrolpoint` (3) en corro. Ver
@@ -662,8 +662,9 @@ def _cursor(op: dict, cursor: set[int]) -> bool:
 class Sistema:
     maxcount: int = 32
     starttime: float = 0.0
-    emisor: str = ""
-    emit: list[float] = field(default_factory=list)
+    # Uno por emisor del JSON, en su orden: la forma y sus 20 floats. Casi
+    # todos los sistemas tienen uno; ver `cargar`.
+    emisores: list[tuple[str, list[float]]] = field(default_factory=list)
     cps: dict[int, list[float]] = field(default_factory=dict)
     inits: list[tuple[str, list[float]]] = field(default_factory=list)
     opers: list[tuple[str, list[float]]] = field(default_factory=list)
@@ -692,7 +693,7 @@ class Sistema:
     con_cursor: list[str] = field(default_factory=list)
     @property
     def dibujable(self) -> bool:
-        return bool(self.material and self.emisor)
+        return bool(self.material and self.emisores)
 
 
 def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Sistema:
@@ -730,8 +731,10 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
                 cursor.add(i)
                 s.cps_cursor.add(i)
 
-    # WE permite varios emisores; el corpus no usa ninguno con mas de uno, y
-    # tomar el primero es preferible a sumarlos mal.
+    # WE permite varios emisores, y emiten TODOS: cada uno con su forma y su
+    # ritmo, al mismo deposito. En el corpus son 2 sistemas en 2 escenas, y en
+    # los dos el segundo emisor es una `sphererandom` sin un solo campo, asi que
+    # sale entero de los defectos de abajo. Ver NOTAS.
     for e in pj.get("emitter") or []:
         if not isinstance(e, dict):
             continue
@@ -739,10 +742,9 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         if nombre not in ("sphererandom", "boxrandom"):
             s.sin_soporte.append(f"emitter:{nombre}")
             continue
-        if s.emisor:
+        if len(s.emisores) >= MAX_EMISORES:
             s.sin_soporte.append(f"emitter extra:{nombre}")
             continue
-        s.emisor = nombre
         # `distancemax` es un escalar en la esfera (el radio) y un vector en la
         # caja (los tres semiejes). `_v3` reparte el escalar a los tres, que es
         # justo lo que hace falta en los dos casos.
@@ -765,7 +767,8 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         # mismo punto. Es lo que hacia que la lluvia de estrellas de la `City`
         # saliera entera por el mismo sitio en vez de cruzar el fondo. Son 6
         # presets-emisor del corpus, en 7 escenas.
-        s.emit = ([_f1(e.get("rate"), RITMO_POR_DEFECTO)]
+        s.emisores.append((nombre,
+                  [_f1(e.get("rate"), RITMO_POR_DEFECTO)]
                   + _v3(e.get("distancemin"), 0.0)
                   + (_v3(e.get("distancemax"))
                      if e.get("distancemax") is not None
@@ -795,7 +798,7 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
                   # descolocarse. Importa porque plasmashell conserva mapeada
                   # la `.so` con la que arranco y puede leer un plan nuevo.
                   + [_f1(e.get("speedmin"), 0.0),
-                     _f1(e.get("speedmax"), 0.0)])
+                     _f1(e.get("speedmax"), 0.0)]))
 
     # Una pieza que esta en la tabla pero devuelve None es una VARIANTE que no
     # sabemos traducir --- otro canal de `remapvalue`, otra funcion de ruido ---
@@ -852,6 +855,10 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
 # ritmo de `maxcount` y la vida para sostener el 48 % del deposito. Ver NOTAS.
 RITMO_POR_DEFECTO = 10.0
 
+# Emisores por sistema que lee el simulador (`WE_MAX_EMISORES` en
+# `src/weparticles.c`). El corpus no pasa de 2; los que sobren se anotan.
+MAX_EMISORES = 4
+
 
 def _aplicar_override(s: Sistema, ov: dict) -> None:
     """Escala el preset con los factores que declara el objeto.
@@ -866,9 +873,13 @@ def _aplicar_override(s: Sistema, ov: dict) -> None:
     k = _f1(ov.get("count"), 1.0)
     if k != 1.0:
         s.maxcount = max(1, int(round(s.maxcount * k)))
+    # El `rate` multiplica a CADA emisor. Es un supuesto: en el binario no se ha
+    # leido, pero con un solo factor por objeto no hay otra lectura que deje la
+    # proporcion entre emisores como la puso el autor del preset.
     k = _f1(ov.get("rate"), 1.0)
-    if k != 1.0 and s.emit:
-        s.emit[0] *= k
+    if k != 1.0:
+        for _, emit in s.emisores:
+            emit[0] *= k
 
     esc = {"lifetimerandom": _f1(ov.get("lifetime"), 1.0),
            "sizerandom": _f1(ov.get("size"), 1.0),
@@ -957,8 +968,8 @@ def escribir(s: Sistema, destino: Path, semilla: int) -> None:
               f"anim {s.anim_modo} {num(s.anim_mult)}"]
     if s.cinta:
         lineas.append(f"cinta {s.cinta[0]} {s.cinta[1]} {num(s.cinta[2])}")
-    if s.emisor:
-        lineas.append(f"emit {s.emisor} " + " ".join(num(v) for v in s.emit))
+    for nombre, emit in s.emisores:
+        lineas.append(f"emit {nombre} " + " ".join(num(v) for v in emit))
     for i, off in sorted(s.cps.items()):
         # El quinto numero dice que a ese punto lo mueve el puntero. Se escribe
         # siempre, tambien cuando es 0, para que la linea tenga una sola forma.
@@ -987,7 +998,8 @@ def main() -> int:
         except SceneError as e:
             print(f"  {o.get('name')!r}: {e}")
             continue
-        print(f"  {o.get('name')!r:32} {s.emisor or '(sin emisor)':<14} "
+        emisores = "+".join(n for n, _ in s.emisores) or "(sin emisor)"
+        print(f"  {o.get('name')!r:32} {emisores:<14} "
               f"max={s.maxcount:<5} t0={s.starttime:<5g} {s.renderer}")
         print(f"      init: {', '.join(k for k, _ in s.inits) or '-'}")
         print(f"      oper: {', '.join(k for k, _ in s.opers) or '-'}")

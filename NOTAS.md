@@ -3895,8 +3895,11 @@ simulación son tres cosas, ninguna bloqueante:
   `g_OrientationForward`, y con `upright` WE da la misma base que ya se emite.
   Ver [`upright` en una
   cinta](#upright-en-una-cinta-we-la-orienta-como-a-un-sprite-y-da-la-base-de-siempre).
-- Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
-  ese; tomar el primero es preferible a sumarlos mal.
+- ~~Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
+  ese; tomar el primero es preferible a sumarlos mal.~~ **hecho**: con la
+  biblioteca de 129 son **2 sistemas en 2 escenas**, y ahora emiten por los dos
+  al mismo depósito. Ver [Varios
+  emisores](#varios-emisores-emiten-todos-al-mismo-deposito).
 
 ### Los 19 wallpapers que trae la aplicación: 7 servirían
 
@@ -6260,3 +6263,99 @@ parallax sin su parte del temblor.
   (57,1, −80,6)— también entra en el objetivo del parallax y aquí no se suma.
   El temblor sí, porque el ejecutor lo conoce; el `eye` de la escena no se ha
   tocado.
+
+## Varios emisores: emiten todos, al mismo depósito
+
+Un sistema de WE puede declarar más de un emisor en `emitter`, y aquí solo
+emitía el primero: `weparticles.py` anotaba el resto como `emitter extra` y el
+`.psys` llevaba una sola línea `emit`. «Lo siguiente» contaba 1 sistema, con la
+biblioteca de 125; con la de 129 son **2 sistemas en 2 escenas**, y en los dos
+el segundo emisor es una `sphererandom` **sin un solo campo**:
+
+| escena | objeto | preset | emisores | override |
+|---|---|---|---|---|
+| `2367577039` | Fog 2 | `particles/presets/fog2.json` | `sphererandom` rate 1, `distancemax` 512 + `sphererandom` vacío | `rate` 0,5 |
+| `3238423642` | reactive Stars | `particles/workshop/2365221023/Stars_copy1.json` | `boxrandom` rate 40, `distancemax` `1000 500 0` + `sphererandom` vacío | `rate` 0,5 (propiedad), `count` 0,19 |
+
+### Lo leído y lo supuesto
+
+**Leído:** que cada emisor tiene sus propios campos y que el que no declara
+nada sale de los defectos del lector del emisor —`distancemax` `256 256 0`,
+`directions` `1 1 0` y 10 por segundo, los de [los valores por
+defecto](#los-valores-por-defecto-estaban-en-el-binario-el-giro-la-caja-el-ritmo-y-el-sesgo)—,
+porque son los mismos dos lectores (`sphererandom` y `boxrandom`) los que se
+desensamblaron. Así que el segundo emisor de los dos casos es una esfera de 256
+en el origen del objeto, a 10/s.
+
+**Supuesto, no leído en el binario:**
+
+- **El `rate` del `instanceoverride` multiplica a CADA emisor.** Es un solo
+  factor por objeto y es la única lectura que deja la proporción entre emisores
+  como la puso el autor del preset. Con 0,5, los dos segundos emisores emiten
+  a 5/s.
+- **El depósito es uno**: `maxcount` está en la raíz del sistema, no en el
+  emisor, y todos sueltan al mismo. Cuando está lleno, los emisores se atienden
+  **en orden** en cada paso, así que el primero ocupa antes los huecos que se
+  liberan. El orden también es un supuesto.
+- `instantaneous` y `duration` van por emisor: el estallido de cada uno ocupa
+  los huecos que siguen a los del anterior, y cada uno deja de emitir a su
+  `duration`.
+- Un **hijo de evento** se sigue colocando con su primer emisor y emitiendo a
+  su `rate` (el `eventfollow`). Ningún hijo del corpus tiene dos.
+
+El `audioprocessingmode` de los dos emisores de `Stars_copy1` se ignora, igual
+que antes con el primero: no hay audio.
+
+### Lo hecho
+
+- `weparticles.py`: `Sistema.emisores` es una lista de `(forma, 20 floats)` y
+  `escribir` saca una línea `emit` por emisor, en el orden del JSON. Un sistema
+  de un solo emisor sale byte a byte igual. Hasta `MAX_EMISORES` (4); el que
+  sobre se sigue anotando como `emitter extra`, y `test_weparticles` lo cuenta
+  como fallo.
+- `src/weparticles.c`, que enlazan los dos ejecutores: un array `Emisor em[4]`
+  con forma, campos y **crédito propio**, que reemplaza a los campos sueltos del
+  sistema. `emite`/`nace` reciben el emisor; cada partícula guarda cuál la soltó
+  solo para contarlas (`we_psys_emisores`, `we_psys_vivas`, que usan
+  `psysprobe` y la prueba). Un `.psys` de un solo `emit` se lee igual que antes.
+  Al revés no: un `.so` anterior que lea uno de los dos `.psys` nuevos se queda
+  con la **última** línea `emit`, o sea solo con la esfera vacía, hasta el
+  `make reload`. Afecta a esos dos sistemas y a nada más.
+- `werender.py` toma la ráfaga del hijo del primer emisor, como hacía.
+
+### Lo medido
+
+- **Censo**: `test_weparticles.py` sobre las 129 — 842 sistemas,
+  `varios_emisores 2`, y la lista de piezas fuera de la simulación queda
+  **vacía** (antes, `emitter extra:sphererandom` 2).
+- **Los `.psys` de las 129**, con `cargar` + `escribir` para cada objeto con
+  partículas y sus hijos (1414 ficheros, semilla fija), en la base y en la
+  rama, con `diff -rq`: **1412 idénticos**; los dos que cambian son `fog2` y
+  `Stars_copy1`, y solo por una línea añadida, la misma en los dos:
+  `emit sphererandom 5 0 0 0 256 256 0 1 1 0 0 0 0 0 0 0 0 0 0 0`.
+- **El simulador con un emisor no cambia**: `psysprobe` de la base y de la rama
+  sobre los 1414 `.psys` de la base, a t = 3 y t = 20 —16 068 líneas de
+  posiciones, velocidades y cuentas—: idénticas.
+- **`psysprobe` sobre `Stars_copy1`** (depósito 95): a t = 3, 10 y 30, emisor 0
+  44, 42 y 44 vivas; emisor 1, 14, 11 y 12. No se llena, así que no hay robo.
+  **Sobre `fog2`** (depósito 20) sí lo hay: a t = 10, 2 del primero y **17 del
+  segundo**. A 0,5/s con 3–5 s de vida el primero sostenía unas 2; el segundo,
+  a 5/s, llena el resto. La niebla pasa de dos sprites sueltos por un óvalo de
+  512 a un velo concentrado en el centro del objeto. Es lo que sale de los
+  supuestos de arriba; no hay captura de Windows con que confirmarlo.
+- **Contrato Python↔C** (`prueba_emisores` en `test_weparticles.py`): un preset
+  con una caja de 100 px de semieje en x = 2000 a 30/s y una esfera vacía, con
+  `rate` 0,5. Python da ritmos 15 y 5 y los defectos en la esfera; el C, a los
+  10 s, **149 en la caja y 49 en la esfera, 0 fuera**, y con `maxcount 40`,
+  30 + 10. Igual con `LC_ALL=C` y `es_ES.utf8`. Falla con el C de la base
+  (no tiene `we_psys_emisores`) y con el Python de la base (`emisores` no
+  existe).
+- **`test_luminancia.py obj/glexec --referencia`** contra la base, las dos en
+  Mesa y bajo el cerrojo: 129/129, **0 apagadas, 0 regresiones**.
+  `3238423642` se queda en 32,32 (cambian 142 000 píxeles: las estrellas del
+  segundo emisor, rojas y con alfa 0,4, y el reloj). `2367577039` baja de 67,49
+  a 64,96, p99 de 242,3 a 228,7: el velo de niebla acerca todo a su color —los
+  píxeles por debajo de 40 suben de 32,5 a 32,9 y los de más de 140 bajan de
+  197,9 a 182,6—. Por eso «más partículas» no da más luz aquí. Las otras siete
+  que se mueven tienen `.psys` y plan idénticos; la mayor es `3097749052`,
+  36,52 → 35,08, que ya cambia entre dos renders del mismo binario.

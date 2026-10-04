@@ -1574,7 +1574,8 @@ class Renderer:
         modo = obj.raw.get("_hijo_modo")
         if obj.raw.get("_padre") is not None and modo is not None:
             preset = max(1, sis.maxcount)
-            inst = int(sis.emit[16]) if len(sis.emit) > 16 else 0
+            emit = sis.emisores[0][1] if sis.emisores else []
+            inst = int(emit[16]) if len(emit) > 16 else 0
             if inst > 0:
                 rafaga = min(inst, preset)
             else:
