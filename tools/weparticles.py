@@ -28,9 +28,8 @@ Censo del corpus (823 sistemas en 106 escenas) que decide que hay que cubrir:
     shader         genericparticle, uno solo, en los 823
 
 El vocabulario esta cubierto entero. Lo unico que queda sin dibujar del corpus
-son un emisor extra en dos sistemas ---WE permite varios y sumarlos mal es peor
-que tomar el primero--- y la anchura de la cinta de un `rope` con
-`orientation: upright`; ver `_orientacion`.
+es un emisor extra en dos sistemas ---WE permite varios y sumarlos mal es peor
+que tomar el primero---. `orientation` no deja nada fuera; ver `_orientacion`.
 
 Los dos repartos por puestos se colocan: `mapsequencebetweencontrolpoints` (11)
 por un camino y `mapsequencearoundcontrolpoint` (3) en corro. Ver
@@ -592,39 +591,48 @@ def _estela(e: dict) -> tuple[float, float, float]:
 def _orientacion(e: dict, cinta: bool) -> str | None:
     """Que valor de `orientation` no sabemos dibujar; `None` si vale el nuestro.
 
-    Reparto del corpus: 722 renderers sin campo, 38 `screen`, 4 `upright` y 1
-    `fixed`. Los tres nombres piden lo mismo en una escena PLANA:
+    Reparto del corpus: 771 renderers sin campo, 38 `screen`, 4 `upright` y 1
+    `fixed`. Lo unico que el campo cambia son los tres `g_Orientation*` del
+    pase, y WE los calcula con UNA misma rutina para los cuatro renderers
+    ---sprite, estela, `rope` y `ropetrail`---, leida en `wallpaper64.exe`
+    (NOTAS, «`upright` en una cinta»). La escena es plana y su camara mira por
+    el eje Z sin girar; con eso:
 
-    * `camera` (el defecto) orienta el sprite hacia la camara.
-    * `screen` lo orienta al plano de pantalla, que sin rotacion de camara es el
-      mismo plano.
-    * `upright` le clava el eje vertical al del mundo, que ya lo es.
+    * `screen` ---el defecto del lector de WE--- y `camera`, que ese lector no
+      distingue de `screen`, ponen `forward` contra la vista y `up` en el eje Y
+      del objeto: los canonicos.
+    * `upright` toma `up` del mundo si `flags & 1`, y si no `axis` llevado por
+      el objeto, con `axis` (0, 1, 0) por defecto; `forward` sale de dos
+      productos vectoriales con la vista. Mientras ese `up` no tenga z da
+      exactamente la base de `screen`. Con z se tuerce, y se anota.
+    * `fixed` pone `forward` en `axis`. El `spritetrail` de `Magic_Vortex` lo
+      tiene en (0, 0, 1), que es nuestro `forward`; otro eje si pediria otra
+      base, y se anota.
 
-    `fixed` sustituye la direccion de la vista por un eje propio. Es el
-    `spritetrail` de `Magic_Vortex`, y su eje es (0, 0, 1):
-    `ComputeParticleTrailTangents` calcula `right = cross(vista, velocidad)` con
-    la vista en -Z, asi que el eje fijo da el MISMO quad con la u espejada ---y
-    su sprite es un halo con simetria de giro. Con un eje que no fuera paralelo
-    a Z si habria trabajo; en el corpus no hay ninguno.
-
-    Las cintas son otra cosa y por eso reciben `cinta=True`: su anchura no la
-    calcula el shader de WE sino nuestro constructor de vertices, que la pone
-    perpendicular al camino. Ahi `upright` ---el `rope` de *Vapor 1*--- si pide
-    otra geometria, y se sigue anotando.
+    Las cintas no son una excepcion: su anchura tambien la decide
+    `g_OrientationForward`, en `genericropeparticle.vert`, y el constructor de
+    vertices solo pasa extremos y puntos de control. `cinta` solo cambia como
+    se nombra el aviso.
     """
     o = e.get("orientation")
-    if o in (None, "camera"):
+    if o in (None, "camera", "screen"):
         return None
-    if cinta:
-        return f"estela {o}"
-    if o in ("screen", "upright"):
-        return None
+    pieza = "estela" if cinta else "orientacion"
+    if o == "upright":
+        if int(_f1(e.get("flags"), 0.0)) & 1:
+            return None
+        # Un eje nulo ---o ausente--- el lector de WE lo cambia por (0, 1, 0),
+        # que tampoco tiene z.
+        x, y, z = _v3(e.get("axis"))
+        if abs(z) < 1e-6:
+            return None
+        return f"{pieza} upright eje {x:g} {y:g} {z:g}"
     if o == "fixed":
         x, y, z = _v3(e.get("axis"))
         if abs(z) > 1e-6 and abs(x) < 1e-6 and abs(y) < 1e-6:
             return None
-        return f"orientacion fixed eje {x:g} {y:g} {z:g}"
-    return f"orientacion {o}"
+        return f"{pieza} fixed eje {x:g} {y:g} {z:g}"
+    return f"{pieza} {o}"
 
 
 def _cursor(op: dict, cursor: set[int]) -> bool:
