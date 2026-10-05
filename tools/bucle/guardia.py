@@ -62,6 +62,11 @@ def bloquear(motivo: str) -> None:
 
 def ruta_permitida(p: Path, raiz: Path) -> bool:
     tmp = ("/tmp/", str(Path.home() / ".cache") + "/")
+    # La carpeta de medidas de la tarea: se conserva con su registro, fuera
+    # del clon, para que el revisor y una persona puedan repetirlas.
+    medidas = os.environ.get("WE_BUCLE_MEDIDAS")
+    if medidas:
+        tmp += (str(Path(medidas).resolve()) + "/",)
     s = str(p)
     return s.startswith(str(raiz) + "/") or s.startswith(tmp)
 

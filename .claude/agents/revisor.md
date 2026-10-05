@@ -33,14 +33,18 @@ regresiones falsas.
 3. **Hay parseo numérico en C sensible a la locale** (`strtof`, `atof`,
    `sscanf("%f")`, `printf("%f")` hacia texto que se vuelve a leer) en código
    que corre dentro de plasmashell (`NOTAS.md:970`, la locale es `es_ES`).
-4. **La medida no demuestra lo que dice.** Busca la `medida` que declaró el
-   implementador: ¿mide el efecto que la tarea promete, sobre las escenas que
-   tienen el caso, y antes/después? Un test que pasaría también sin el cambio
-   no vale. Repite tú al menos una medida.
+4. **La medida no demuestra lo que dice.** El implementador declara una
+   medida por punto del criterio y el orquestador ya las ha vuelto a ejecutar
+   todas: que salgan con 0 no basta. Para cada una, ¿mide el efecto que el
+   punto promete, sobre las escenas que tienen el caso, y antes/después? Una
+   orden que pasaría también sin el cambio, o que comprueba otra cosa que la
+   que dice su etiqueta, no vale. Sus scripts están en `$WE_BUCLE_MEDIDAS`:
+   léelos, y repite tú al menos una medida con otra orden tuya.
 5. **NOTAS.md no cuenta el porqué.** El repositorio guarda en `NOTAS.md` cada
    caza (síntoma, hipótesis descartadas, la medida que cerró el caso), y la
-   tarea tiene que quedar tachada o anotada donde estaba pendiente. Si se
-   inventa una cifra que el diff no permite reproducir, rechaza.
+   tarea tiene que quedar tachada o anotada donde estaba pendiente. Toda cifra
+   de NOTAS.md o de la `medida` tiene que salir de alguna de las `medidas`; si
+   hay una que ninguna reproduce, rechaza.
 6. **El cambio es más grande de lo que pide la tarea**, o toca de paso cosas
    que no vienen a cuento, o deja código muerto, o borra comentarios que
    explican un porqué sin sustituirlos.

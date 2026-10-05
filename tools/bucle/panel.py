@@ -13,7 +13,8 @@ este ya deja escrito, así que vale para una ejecución que ya estaba en marcha.
 
 Las etapas salen de las líneas de `bucle.log`: si se cambia el texto de un
 `reg(...)` en orquestador.py que empiece por «→», «←», «intento», «tarea:»,
-«compuertas:», «revisor:», «luz del corpus», «MEZCLADA», «ERROR» o «fin;»,
+«compuertas:», «revisor:», «medida», «luz del corpus», «luz reutilizada»,
+«MEZCLADA», «ERROR» o «fin;»,
 hay que mirar `etapas()` aquí.
 
 Uso:
@@ -179,16 +180,19 @@ def etapas(dir_: Path, fecha: str) -> dict:
                     actual["compuertas"]["estado"] = "OK" if "OK" in txt else "FALLO"
         elif (actual is not None and actual.get("compuertas")
               and actual["compuertas"]["fin"] is None
-              and (re.match(r"test_\w+ …", txt) or txt.startswith(("medida declarada",
+              and (re.match(r"test_\w+ …", txt) or txt.startswith(("medida",
                                                                     "luz del corpus",
+                                                                    "luz reutilizada",
                                                                     "no hay referencia")))):
             cierra_paso(t)
             if txt.startswith("luz del corpus en _base"):
                 nombre = "luz de la base (129 escenas)"
             elif txt.startswith("luz del corpus"):
                 nombre = "luz del candidato (129 escenas)"
-            elif txt.startswith("medida declarada"):
-                nombre = "medida: " + txt.split(":", 1)[1].strip()
+            elif txt.startswith("luz reutilizada"):
+                nombre = txt            # instantáneo: se cierra con el siguiente
+            elif txt.startswith("medida"):
+                nombre = txt
             elif txt.startswith("no hay referencia"):
                 continue
             else:

@@ -46,7 +46,13 @@ cumple los criterios, dilo en `motivo_descarte` y no la elijas.
 ## Qué devuelves
 
 El JSON del esquema que te piden. El `criterio_aceptacion` tiene que ser algo que
-un tercero pueda comprobar con una orden, no «se ve mejor». La `rama` sigue la
+un tercero pueda comprobar con una orden, no «se ve mejor», y va en puntos
+etiquetados **(a), (b), (c)…**: el orquestador exige una medida por etiqueta y
+tumba las compuertas si falta alguna. Un punto por cosa que se pueda medir por
+separado; no metas en uno solo dos comprobaciones distintas.
+
+Los scripts con los que cuentes el corpus guárdalos en `$WE_BUCLE_MEDIDAS`, no
+en `/tmp`: se conservan con el registro y el implementador puede partir de ellos. La `rama` sigue la
 costumbre del repositorio: palabras en mayúscula inicial unidas por `_`
 (p. ej. `Cinta_Upright`). Si no hay ninguna tarea que cumpla los criterios,
 devuelve `hay_tarea: false` y explica por qué en `motivo_descarte`.

@@ -54,9 +54,26 @@ La rama de la tarea ya está creada y sacada; tu trabajo tiene que acabar en ell
 
 ## Qué devuelves
 
-El JSON del esquema. En `comando_medida` va **una** orden de shell que el
-orquestador volverá a ejecutar en este worktree y que tiene que salir con 0 solo
-si el arreglo está: un test nuevo o ampliado en `tools/test_*.py` es lo mejor.
-Tiene que tardar menos de 15 minutos y no puede tocar el escritorio.
+El JSON del esquema. Lo importante es `medidas`: **una por cada punto del
+criterio de aceptación**, con su etiqueta en `criterio` («(a) …», «(b) …»).
+Cada `orden` es una orden de shell que el orquestador vuelve a ejecutar en este
+clon y que tiene que salir con 0 **solo si ese punto se cumple**; en `espera`,
+qué tiene que imprimir para demostrarlo. Un punto del criterio sin medida, o
+una medida que falla, tumba las compuertas.
+
+- Un test nuevo o ampliado en `tools/test_*.py` es la mejor medida.
+- Lo que no sea un test va en un script en **`$WE_BUCLE_MEDIDAS`** (la ruta te
+  la da la tarea), no en `/tmp`: esa carpeta se conserva con el registro, el
+  revisor la ve y una persona puede repetirla meses después con su
+  `repetir.sh`. Las órdenes se refieren a ella como `"$WE_BUCLE_MEDIDAS/x.py"`.
+- Si una medida compara contra la base, que la saque ella misma
+  (`git archive <base> | tar -x -C …`): el orquestador la ejecuta en frío.
+- Cada una por debajo de 15 minutos, y entre todas, de 60. No metas la pasada
+  de luz de las 129: esa la hace el orquestador siempre.
+- Ninguna puede tocar el escritorio (la guardia las mira igual que tus Bash).
+
+`medida` es el resumen en texto, con las cifras. Toda cifra que pongas ahí y en
+NOTAS.md tiene que salir de alguna de las `medidas`.
+
 Si recibes motivos de un intento anterior (compuertas o revisor), atiéndelos
 todos antes de devolver.

@@ -97,11 +97,32 @@ ESQ_IMPL = {
                            "description": "primera línea corta en castellano, cuerpo opcional"},
         "medida": {"type": "string",
                    "description": "qué se midió, sobre qué escenas, antes y después"},
-        "comando_medida": {"type": "string"},
+        "medidas": {
+            "type": "array", "minItems": 1,
+            "description": "una por cada punto del criterio de aceptación; el "
+                           "orquestador las vuelve a ejecutar todas",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "criterio": {"type": "string",
+                                 "description": "la etiqueta del punto, p. ej. «(b)», y qué comprueba"},
+                    "orden": {"type": "string",
+                              "description": "una orden de shell que sale con 0 solo si el punto se cumple"},
+                    "espera": {"type": "string",
+                               "description": "qué tiene que imprimir para demostrarlo"},
+                },
+                "required": ["criterio", "orden", "espera"],
+            },
+        },
     },
-    "required": ["estado", "resumen", "mensaje_commit", "medida",
-                 "comando_medida"],
+    "required": ["estado", "resumen", "mensaje_commit", "medida", "medidas"],
 }
+# Lo que pueden tardar entre todas las medidas declaradas.
+MEDIDAS_MAX_S = 60 * 60
+# Lo que no cambia ningún píxel: si dos árboles solo difieren en esto, su luz
+# es la misma y no se vuelve a medir.
+SIN_RENDER = ("tools/bucle/", ".claude/", "NOTAS.md", "NOTAS-INDICE.md",
+              "README.md", "CLAUDE.md", "LICENSE")
 
 ESQ_REV = {
     "type": "object",
@@ -239,6 +260,7 @@ class Claude:
         self.args, self.reg = args, reg
         self.settings = ajustes(guardia)
         self.coste = 0.0
+        self.medidas: Path | None = None    # la carpeta de la tarea en curso
 
     def __call__(self, nombre: str, prompt: str, cwd: Path, esquema: dict, *,
                  agente: str | None = None, sistema: str | None = None,
@@ -277,6 +299,7 @@ class Claude:
         try:
             r = sh(cmd, cwd=cwd, timeout=int(horas * 3600),
                    env={"WE_BUCLE_RAIZ": str(cwd),
+                        "WE_BUCLE_MEDIDAS": str(self.medidas or ""),
                         "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
                         "BASH_DEFAULT_TIMEOUT_MS": str(30 * 60_000),
                         "BASH_MAX_TIMEOUT_MS": str(60 * 60_000)})
@@ -381,17 +404,73 @@ def mide_luz(wt: Path, salida: Path, reg: Registro) -> dict:
     return json.loads(salida.read_text())
 
 
+# La luz depende del ÁRBOL y del corpus, no del commit: tras una mezcla limpia
+# el árbol de la base nueva es el del candidato, cuya luz ya se midió, y
+# medirla otra vez eran seis minutos tirados en cada tarea. Por eso la caché
+# va por árbol, y además vale la de un árbol que solo difiera en SIN_RENDER
+# (la base que se mueve por un cambio en el propio bucle costaba doce).
+
+_huella = None
+
+
+def huella_corpus() -> str:
+    """Cambia si cambia el corpus: otra escena, o un scene.pkg actualizado."""
+    global _huella
+    if _huella is None:
+        sys.path.insert(0, str(REPO / "tools"))
+        import hashlib
+        import wepaths
+        h = hashlib.sha256()
+        for d in sorted(wepaths.we_workshop().iterdir()):
+            pkg = d / "scene.pkg"
+            if pkg.is_file():
+                st = pkg.stat()
+                h.update(f"{d.name} {st.st_size} {int(st.st_mtime)}\n".encode())
+        _huella = h.hexdigest()[:8]
+    return _huella
+
+
+def ruta_luz(arbol: str) -> Path:
+    return CACHE / "luz" / f"{arbol[:12]}-{huella_corpus()}.json"
+
+
+def luz_conocida(arbol: str, cwd: Path, reg: Registro) -> dict | None:
+    exacta = ruta_luz(arbol)
+    if exacta.exists():
+        reg(f"  luz reutilizada: el árbol {arbol[:12]} ya está medido")
+        return json.loads(exacta.read_text())
+    for otra in sorted((CACHE / "luz").glob(f"*-{huella_corpus()}.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True):
+        r = sh(["git", "diff", "--name-only", otra.name[:12], arbol], cwd=cwd)
+        if r.returncode:
+            continue            # un árbol que este repositorio no conoce
+        difiere = r.stdout.split()
+        if all(f.startswith(SIN_RENDER) for f in difiere):
+            reg(f"  luz reutilizada: el árbol {otra.name[:12]} solo difiere en "
+                f"{len(difiere)} ficheros que no dibujan")
+            datos = json.loads(otra.read_text())
+            exacta.write_text(json.dumps(datos))
+            return datos
+    return None
+
+
+def arbol_de(ref: str, cwd: Path = REPO) -> str:
+    return git("rev-parse", f"{ref}^{{tree}}", cwd=cwd)
+
+
 def referencia_luz(commit: str, reg: Registro) -> dict:
-    ruta = CACHE / f"luz-{commit[:12]}.json"
-    if ruta.exists():
-        return json.loads(ruta.read_text())
+    arbol = arbol_de(commit)
+    datos = luz_conocida(arbol, REPO, reg)
+    if datos is not None:
+        return datos
     reg(f"no hay referencia de luz para {commit[:12]}: se mide la base")
     wt = nuevo_worktree("_base", commit)
     try:
         err = construye(wt, reg)
         if err:
             raise RuntimeError(f"la BASE no compila, no hay con qué comparar:\n{err}")
-        return mide_luz(wt, ruta, reg)
+        ruta_luz(arbol).parent.mkdir(parents=True, exist_ok=True)
+        return mide_luz(wt, ruta_luz(arbol), reg)
     finally:
         borra_worktree(wt)
 
@@ -424,7 +503,7 @@ def compara_luz(base: dict, nueva: dict) -> list[str]:
 # ── las compuertas ─────────────────────────────────────────────────────────
 
 def compuertas(wt: Path, base: str, impl: dict, guardia: Path, reg: Registro,
-               intento: int) -> tuple[bool, str]:
+               intento: int, criterio: str, medidas: Path) -> tuple[bool, str]:
     informe: list[str] = []
 
     def mal(msg):
@@ -442,6 +521,19 @@ def compuertas(wt: Path, base: str, impl: dict, guardia: Path, reg: Registro,
     if "NOTAS.md" not in cambios:
         return mal("NOTAS.md no cambia: la caza tiene que quedar anotada y el "
                    "pendiente tachado o actualizado")
+    # Que haya una medida por punto del criterio no cuesta nada comprobarlo:
+    # antes de compilar.
+    lista = impl.get("medidas") or []
+    if not lista:
+        return mal("no hay medidas: una por cada punto del criterio de aceptación")
+    pedidos = set(re.findall(r"\(([a-z])\)", criterio or ""))
+    cubiertos = set()
+    for m in lista:
+        cubiertos |= set(re.findall(r"\(([a-z])\)", m.get("criterio", "")))
+    faltan = sorted(pedidos - cubiertos)
+    if faltan:
+        return mal("puntos del criterio de aceptación sin orden de medida: "
+                   + ", ".join(f"({x})" for x in faltan))
     if ("tools/glexec.c" in cambios) != ("src/glexecutor.cpp" in cambios):
         informe.append("AVISO (para el revisor): cambia solo uno de los dos "
                        "ejecutores, glexec.c / glexecutor.cpp")
@@ -490,30 +582,63 @@ def compuertas(wt: Path, base: str, impl: dict, guardia: Path, reg: Registro,
             return mal(f"{t} falla (rc={r.returncode}):\n{cola(r.stdout + r.stderr)}")
     informe.append(f"tests en verde: {', '.join(tests)}")
 
-    orden = (impl.get("comando_medida") or "").strip()
-    if not orden:
-        return mal("no hay comando_medida")
-    veto = guardia_acepta(guardia, orden)
-    if veto:
-        return mal(f"comando_medida vetado: {veto}")
-    reg(f"  medida declarada: {orden}")
-    # Sin el cerrojo del corpus: si la orden lo toma ella misma (como se le
-    # pide al implementador para una pasada entera) se bloquearía contra sí.
-    r = sh(orden, cwd=wt, timeout=900)
-    reg.guarda(f"medida-{intento}.log", r.stdout + r.stderr)
-    if r.returncode:
-        return mal(f"comando_medida «{orden}» sale con {r.returncode}:\n"
-                   f"{cola(r.stdout + r.stderr)}")
-    informe.append(f"comando_medida «{orden}» → 0\n{cola(r.stdout + r.stderr, 25)}")
+    # Cada punto del criterio, con su orden, y todas se vuelven a ejecutar
+    # aquí (más abajo, tras compilar): lo que el implementador cuenta en
+    # `medida` es texto, y en el rope dejó pasar una cifra que nadie midió.
+    escribe_repetir(medidas, lista, wt)
+    t0 = time.time()
+    for k, m in enumerate(lista, 1):
+        orden, etiqueta = m["orden"].strip(), m["criterio"].strip()
+        veto = guardia_acepta(guardia, orden)
+        if veto:
+            return mal(f"medida {etiqueta}: orden vetada: {veto}")
+        restante = MEDIDAS_MAX_S - (time.time() - t0)
+        if restante < 30:
+            return mal(f"las medidas tardan más de {MEDIDAS_MAX_S // 60} min")
+        reg(f"  medida {etiqueta[:60]}: {orden[:120]}")
+        # Sin el cerrojo del corpus: si la orden lo toma ella misma (como se
+        # le pide al implementador para una pasada entera) se bloquearía.
+        try:
+            r = sh(orden, cwd=wt, timeout=int(min(900, restante)),
+                   env={"WE_BUCLE_MEDIDAS": str(medidas)})
+        except subprocess.TimeoutExpired:
+            return mal(f"medida {etiqueta}: «{orden}» sin terminar a tiempo")
+        reg.guarda(f"medida-{intento}-{k}.log", r.stdout + r.stderr)
+        if r.returncode:
+            return mal(f"medida {etiqueta}: «{orden}» sale con {r.returncode}:\n"
+                       f"{cola(r.stdout + r.stderr)}")
+        informe.append(f"medida {etiqueta} → 0\n  orden: {orden}\n"
+                       f"  espera: {m.get('espera', '')}\n"
+                       f"{cola(r.stdout + r.stderr, 20)}")
 
     ref = referencia_luz(base, reg)
-    nueva = mide_luz(wt, reg.dir / f"luz-{intento}.json", reg)
+    # El árbol del candidato tal como se confirmaría (el índice, tras add -A).
+    arbol = git("write-tree", cwd=wt)
+    nueva = luz_conocida(arbol, wt, reg)
+    if nueva is None:
+        ruta_luz(arbol).parent.mkdir(parents=True, exist_ok=True)
+        nueva = mide_luz(wt, ruta_luz(arbol), reg)
+    reg.guarda(f"luz-{intento}.json", nueva)
     malas = compara_luz(ref, nueva)
     if malas:
         return mal("la luz del corpus empeora respecto a la base:\n  "
                    + "\n  ".join(malas))
     informe.append(f"luz: {len(nueva)} escenas, ninguna empeora respecto a la base")
     return True, "\n\n".join(informe)
+
+
+def escribe_repetir(medidas: Path, lista: list, wt: Path) -> None:
+    """Un guion para repetir las medidas meses después, sin el bucle."""
+    rama = git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt)
+    lineas = ["#!/bin/sh",
+              f"# Las medidas de la rama {rama}, tal como las pasó el orquestador.",
+              f"# Se ejecutan desde un checkout de esa rama (o de donde se mezcló).",
+              "set -e",
+              f'export WE_BUCLE_MEDIDAS="{medidas}"']
+    for m in lista:
+        lineas += ["", f"echo {json.dumps('== ' + m['criterio'])}", m["orden"]]
+    (medidas / "repetir.sh").write_text("\n".join(lineas) + "\n")
+    (medidas / "repetir.sh").chmod(0o755)
 
 
 # ── mezclar ────────────────────────────────────────────────────────────────
@@ -585,6 +710,9 @@ Tarea del bucle autónomo:
 
 Escenas del corpus con el caso: {escenas}
 Criterio de aceptación: {criterio}
+
+Carpeta para tus scripts de medida (se conserva con el registro de la tarea):
+$WE_BUCLE_MEDIDAS = {medidas}
 """
 
 PROMPT_REINTENTO = """\
@@ -607,7 +735,10 @@ Tarea:
 Lo que declara el implementador:
 {impl}
 
-Salida de las compuertas automáticas (ya han pasado):
+Salida de las compuertas automáticas (ya han pasado). Las `medidas` las ha
+vuelto a ejecutar el orquestador, una por una: que salgan con 0 no basta, juzga
+si lo que imprimen demuestra el punto del criterio que dicen cubrir. Sus
+scripts están en $WE_BUCLE_MEDIDAS = {medidas} (y `repetir.sh` las repite).
 {compuertas}
 """
 
@@ -636,6 +767,9 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
         sh(["git", "reset", "-q", "--hard"], cwd=wt)
         sh(["git", "clean", "-qfd"], cwd=wt)
 
+        medidas = reg.dir / "medidas"
+        medidas.mkdir(exist_ok=True)
+        claude.medidas = medidas
         rama = tarea["rama"]
         if git("rev-parse", "--verify", "-q", f"refs/heads/{rama}", check=False):
             rama = f"{rama}_{datetime.now():%Y%m%d%H%M}"
@@ -653,7 +787,8 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                       else PROMPT_IMPL.format(
                           tarea=texto_tarea,
                           escenas=", ".join(tarea.get("escenas") or []) or "?",
-                          criterio=tarea.get("criterio_aceptacion")))
+                          criterio=tarea.get("criterio_aceptacion"),
+                          medidas=medidas))
             impl = claude(f"implementador-{n}", prompt, wt, ESQ_IMPL,
                           sistema=sistema, reanudar=sesion, horas=3)
             sesion = impl["_session_id"]
@@ -665,7 +800,8 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                        rama_sin_mezclar=rama)
                 return True
 
-            ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n)
+            ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
+                                         tarea.get("criterio_aceptacion", ""), medidas)
             reg.guarda(f"compuertas-{n}.txt", informe)
             if not ok:
                 reg("  compuertas: FALLO")
@@ -680,7 +816,7 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                 impl=json.dumps({k: v for k, v in impl.items()
                                  if not k.startswith("_")},
                                 indent=1, ensure_ascii=False),
-                compuertas=informe), wt, ESQ_REV, agente="revisor",
+                compuertas=informe, medidas=medidas), wt, ESQ_REV, agente="revisor",
                 solo_lectura=True, horas=1)
             tocado = (git("rev-parse", "HEAD", cwd=wt) != cabeza
                       or git("status", "--porcelain", cwd=wt))
@@ -712,7 +848,8 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                            motivo="conflicto con la base al mezclar")
                     return True
                 base_commit = git("rev-parse", args.base)
-                ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n)
+                ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
+                                         tarea.get("criterio_aceptacion", ""), medidas)
                 if not ok:
                     motivos = informe
                     continue
@@ -724,7 +861,8 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                        motivo=err)
                 reg(f"aprobada pero sin mezclar: {err}")
                 return False
-            apunta(estado, tarea, "hecha", observaciones=rev["motivos"])
+            apunta(estado, tarea, "hecha", observaciones=rev["motivos"],
+                   medidas=str(medidas))
             reg(f"MEZCLADA en {args.base}: {rama}")
             return True
 
