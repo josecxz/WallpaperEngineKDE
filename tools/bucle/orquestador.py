@@ -777,15 +777,136 @@ Si apruebas, en `motivos` di también qué tarea nueva queda abierta, si alguna.
 """
 
 
+def une_añadidos(texto: str) -> str | None:
+    """Resuelve un fichero en conflicto (estilo diff3) si en cada choque los
+    dos lados solo AÑADEN: el ancestro está vacío. Pone primero lo de la base
+    (`theirs`, lo que ya estaba mezclado) y después lo de la rama. Si algún
+    choque tiene texto en el ancestro, los dos editaron lo mismo: None.
+    """
+    salida, estado, nuestro, ancestro, suyo = [], None, [], [], []
+    for linea in texto.splitlines(keepends=True):
+        if linea.startswith("<<<<<<< ") and estado is None:
+            estado, nuestro, ancestro, suyo = "nuestro", [], [], []
+        elif linea.startswith("||||||| ") and estado == "nuestro":
+            estado = "ancestro"
+        elif linea.startswith("=======") and estado == "ancestro":
+            estado = "suyo"
+        elif linea.startswith(">>>>>>> ") and estado == "suyo":
+            if any(l.strip() for l in ancestro):
+                return None
+            # Una línea en blanco entre los dos bloques, como entre secciones.
+            if suyo and nuestro and suyo[-1].strip():
+                suyo.append("\n")
+            salida += suyo + nuestro
+            estado = None
+        elif estado == "nuestro":
+            nuestro.append(linea)
+        elif estado == "ancestro":
+            ancestro.append(linea)
+        elif estado == "suyo":
+            suyo.append(linea)
+        else:
+            salida.append(linea)
+    return None if estado is not None else "".join(salida)
+
+
+def une_indice(texto: str) -> str | None:
+    """Como `une_añadidos`, para NOTAS-INDICE.md.
+
+    Ahí los dos lados casi nunca solo añaden: los dos pasaron `make indice`,
+    que reescribe los números de las mismas líneas. Pero el número es
+    derivado (lo rehace `indice.py --escribir`); lo que identifica una entrada
+    es su línea SIN el número, no su título: «Lo medido» sale decenas de veces,
+    y casar por título perdía entradas nuevas. Una entrada que un lado solo
+    renumeró se toma del otro; una nueva de cualquier lado se conserva; una
+    cuya glosa cambió un lado y el otro no, con la glosa nueva; si los dos la
+    cambiaron (o uno la quitó y el otro la cambió), None.
+    """
+    entrada = re.compile(r"^- `\d+` \*\*(.+?)\*\*")
+
+    def clave(l):
+        return re.sub(r"^- `\d+`", "- `N`", l)
+
+    def titulo(l):
+        m = entrada.match(l) or entrada.match(re.sub(r"^- `N`", "- `0`", l))
+        return m.group(1) if m else None
+
+    salida, estado, nuestro, ancestro, suyo = [], None, [], [], []
+    for linea in texto.splitlines(keepends=True):
+        if linea.startswith("<<<<<<< ") and estado is None:
+            estado, nuestro, ancestro, suyo = "nuestro", [], [], []
+        elif linea.startswith("||||||| ") and estado == "nuestro":
+            estado = "ancestro"
+        elif linea.startswith("=======") and estado == "ancestro":
+            estado = "suyo"
+        elif linea.startswith(">>>>>>> ") and estado == "suyo":
+            aK = [clave(l) for l in ancestro if entrada.match(l)]
+            tK = {clave(l) for l in suyo}
+            oK = {clave(l) for l in nuestro}
+            unido = list(suyo)
+            for l in nuestro:
+                k = clave(l)
+                if k in tK or k in aK:
+                    continue                 # igual que la base, o solo renumerada
+                if not entrada.match(l):
+                    if l.strip():
+                        unido.append(l)
+                    continue
+                # Nueva, o una del ancestro cuya glosa cambió este lado: la
+                # del ancestro con el mismo título que este lado ya no tiene.
+                t = titulo(l)
+                cambiada = [ak for ak in aK if titulo(ak) == t and ak not in oK]
+                if not cambiada:
+                    unido.append(l)
+                elif cambiada[0] in tK:
+                    unido = [l if clave(x) == cambiada[0] else x for x in unido]
+                else:
+                    return None
+            salida += unido
+            estado = None
+        elif estado == "nuestro":
+            nuestro.append(linea)
+        elif estado == "ancestro":
+            ancestro.append(linea)
+        elif estado == "suyo":
+            suyo.append(linea)
+        else:
+            salida.append(linea)
+    return None if estado is not None else "".join(salida)
+
+
 def trae_base(args, wt: Path, reg: Registro) -> str | None:
     """Mezcla en la rama de la tarea lo que la base haya avanzado.
 
-    Devuelve el commit nuevo de la base, o None si hay conflicto."""
+    Devuelve el commit nuevo de la base, o None si hay conflicto que no se
+    puede resolver solo. Uno sí se puede, y pasa siempre que una rama espera:
+    las dos añadieron su sección al final de NOTAS.md y su línea al índice
+    (Emisor_Punto_Control contra Turbulencia_Ejes). Eso se une conservando los
+    dos lados y el índice se renumera; cualquier otro choque, no se toca."""
     sh(["git", "fetch", "-q", "origin", args.base], cwd=wt, check=True)
-    r = sh(["git", "merge", "--no-edit", "FETCH_HEAD"], cwd=wt)
-    if r.returncode:
+    r = sh(["git", "-c", "merge.conflictstyle=diff3", "merge", "--no-edit",
+            "FETCH_HEAD"], cwd=wt)
+    if r.returncode == 0:
+        return git("rev-parse", args.base)
+    choques = git("diff", "--name-only", "--diff-filter=U", cwd=wt).split()
+    unibles = {"NOTAS.md", "NOTAS-INDICE.md"}
+    if not choques or not set(choques) <= unibles:
+        reg(f"  conflicto con la base en {', '.join(choques) or '?'}: no se toca")
         sh(["git", "merge", "--abort"], cwd=wt)
         return None
+    for f in choques:
+        une = une_indice if f == "NOTAS-INDICE.md" else une_añadidos
+        unido = une((wt / f).read_text())
+        if unido is None:
+            reg(f"  conflicto con la base en {f}: los dos lados editan lo mismo")
+            sh(["git", "merge", "--abort"], cwd=wt)
+            return None
+        (wt / f).write_text(unido)
+    sh([sys.executable, "tools/indice.py", "--escribir"], cwd=wt, check=True)
+    sh(["git", "add", "NOTAS.md", "NOTAS-INDICE.md"], cwd=wt, check=True)
+    sh(["git", "commit", "-q", "--no-edit"], cwd=wt, check=True)
+    reg(f"  conflicto con la base resuelto en {', '.join(choques)}: se conservan "
+        "los dos lados y el índice se renumera")
     return git("rev-parse", args.base)
 
 
