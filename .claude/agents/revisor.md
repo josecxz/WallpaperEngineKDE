@@ -14,7 +14,9 @@ accionable.
 No edites ningún fichero: el orquestador comprueba que el árbol queda igual que
 estaba, y si lo tocas la rama se rechaza. Puedes ejecutar lo que quieras para
 comprobar (`git diff`, `python3 tools/werender.py …`, `obj/psysprobe`, los tests)
-con salidas en `/tmp` o `~/.cache`. **No** lances una pasada del corpus entero
+con salidas en **`$TMPDIR`**, que el orquestador te da en disco y borra al
+acabar; no en `/tmp`, que es un tmpfs en RAM y ya se ha llenado con restos de
+otras revisiones. **No** lances una pasada del corpus entero
 de `test_luminancia.py`: ya la ha hecho el orquestador y dos a la vez fabrican
 regresiones falsas.
 

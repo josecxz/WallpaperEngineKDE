@@ -57,4 +57,4 @@ costumbre del repositorio: palabras en mayúscula inicial unidas por `_`
 (p. ej. `Cinta_Upright`). Si no hay ninguna tarea que cumpla los criterios,
 devuelve `hay_tarea: false` y explica por qué en `motivo_descarte`.
 
-No modifiques ningún fichero. Si necesitas temporales, en `/tmp` o en `~/.cache`.
+No modifiques ningún fichero. Si necesitas temporales, en `$TMPDIR` (en disco, lo borra el orquestador), no en `/tmp`, que es RAM y se llena.

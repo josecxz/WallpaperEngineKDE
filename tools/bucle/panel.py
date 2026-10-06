@@ -209,6 +209,9 @@ def etapas(dir_: Path, fecha: str) -> dict:
         elif txt.startswith("aprobada"):
             ej["mezcla"] = {"t": t, "estado": "PENDIENTE", "texto": txt}
             ej["resultado"] = "aprobada sin mezclar"
+        elif txt.startswith("PARADA"):
+            ej["error"] = txt
+            ej["resultado"] = "parada por el entorno"
         elif txt.startswith("bloqueada"):
             ej["resultado"] = "bloqueada"
         elif txt.startswith("el implementador no lo resuelve"):

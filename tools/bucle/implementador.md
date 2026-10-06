@@ -17,7 +17,10 @@ La rama de la tarea ya está creada y sacada; tu trabajo tiene que acabar en ell
   carpeta `obj/` no viene con él). Si hace falta `glslcheck`:
   `cc -O2 -o obj/glslcheck tools/glslcheck.c -lEGL -lGLESv2`.
 - Se itera con el renderizador offline (`python3 tools/werender.py <dir>
-  salida.png …`), `obj/psysprobe`, y scripts tuyos en `/tmp`. **Nunca**
+  salida.png …`), `obj/psysprobe`, y scripts tuyos. Los temporales, en
+  **`$TMPDIR`** (el orquestador te da uno en disco y lo borra al acabar), no
+  en `/tmp`: `/tmp` es un tmpfs en RAM que comparten todas las tareas y ya se
+  ha llenado. **Nunca**
   plasmashell, `make reload` ni `make install`: la guardia lo bloquea y aunque
   no lo hiciera dejaría el escritorio caído.
 - Driver: el escritorio corre en Mesa. Para que tus medidas sirvan, renderiza

@@ -32,6 +32,7 @@ luz, cerrojos y worktrees en ~/.cache/wallpaperengine/bucle/.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import json
 import os
@@ -177,6 +178,51 @@ def cola(texto: str, n: int = 60) -> str:
     return "\n".join(texto.splitlines()[-n:])
 
 
+class FalloDeEntorno(RuntimeError):
+    """Algo que no es culpa de la tarea (el disco lleno): no se le pasa al
+    implementador como motivo, se para y se retoma luego."""
+
+
+@contextlib.contextmanager
+def temporal(nombre: str):
+    """Un TMPDIR propio, en disco, que se borra al salir.
+
+    /tmp es un tmpfs de 7,7 GB en RAM y los renders de `werender` dejan su
+    directorio de trabajo en él (solo lo borra su CLI): con los restos de
+    varias tareas se llenó y las compuertas de Emisor_Punto_Control fallaron
+    con «No space left on device», que el implementador recibió como si fuera
+    un defecto suyo. Con TMPDIR apuntando aquí, `tempfile` y todo lo que lo
+    use deja sus restos en un sitio que se limpia solo.
+    """
+    d = CACHE / "tmp" / f"{nombre}-{os.getpid()}-{time.time_ns()}"
+    d.mkdir(parents=True, exist_ok=True)
+    viejo = {k: os.environ.get(k) for k in ("TMPDIR", "TMP", "TEMP")}
+    try:
+        for k in viejo:
+            os.environ[k] = str(d)
+        yield d
+    finally:
+        for k, v in viejo.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def sin_espacio(texto: str) -> bool:
+    return "No space left on device" in texto or "[Errno 28]" in texto
+
+
+def comprueba_espacio(minimo_gb: float = 2.0) -> None:
+    for sitio in (Path("/tmp"), CACHE):
+        sitio.mkdir(parents=True, exist_ok=True)
+        libre = shutil.disk_usage(sitio).free / 2**30
+        if libre < minimo_gb:
+            raise FalloDeEntorno(f"quedan {libre:.1f} GB libres en {sitio} "
+                                 f"(hacen falta {minimo_gb:g})")
+
+
 class Cerrojo:
     """flock: el del corpus lo comparten todas las pasadas de 129 escenas
     (dos a la vez llenan /tmp y se inventan regresiones)."""
@@ -302,12 +348,13 @@ class Claude:
         self.reg(f"  → {nombre} (cwd {cwd.name})")
         t0 = time.time()
         try:
-            r = sh(cmd, cwd=cwd, timeout=int(horas * 3600),
-                   env={"WE_BUCLE_RAIZ": str(cwd),
-                        "WE_BUCLE_MEDIDAS": str(self.medidas or ""),
-                        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-                        "BASH_DEFAULT_TIMEOUT_MS": str(30 * 60_000),
-                        "BASH_MAX_TIMEOUT_MS": str(60 * 60_000)})
+            with temporal(nombre):
+                r = sh(cmd, cwd=cwd, timeout=int(horas * 3600),
+                       env={"WE_BUCLE_RAIZ": str(cwd),
+                            "WE_BUCLE_MEDIDAS": str(self.medidas or ""),
+                            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                            "BASH_DEFAULT_TIMEOUT_MS": str(30 * 60_000),
+                            "BASH_MAX_TIMEOUT_MS": str(60 * 60_000)})
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"{nombre}: sin terminar en {horas} h")
         self.reg.guarda(f"{nombre}.stderr", r.stderr)
@@ -510,6 +557,21 @@ def compara_luz(base: dict, nueva: dict) -> list[str]:
 def compuertas(wt: Path, base: str, impl: dict, guardia: Path, reg: Registro,
                intento: int, criterio: str, medidas: Path,
                cobertura: bool = True) -> tuple[bool, str]:
+    """`_compuertas` con su propio TMPDIR, y sin echarle a la tarea la culpa
+    de un disco lleno: eso es un FalloDeEntorno."""
+    comprueba_espacio()
+    with temporal(f"compuertas-{intento}"):
+        ok, informe = _compuertas(wt, base, impl, guardia, reg, intento,
+                                  criterio, medidas, cobertura)
+    if not ok and sin_espacio(informe):
+        raise FalloDeEntorno("las compuertas se quedaron sin espacio en disco:\n"
+                             + informe[-800:])
+    return ok, informe
+
+
+def _compuertas(wt: Path, base: str, impl: dict, guardia: Path, reg: Registro,
+                intento: int, criterio: str, medidas: Path,
+                cobertura: bool = True) -> tuple[bool, str]:
     informe: list[str] = []
 
     def mal(msg):
@@ -875,6 +937,20 @@ def une_indice(texto: str) -> str | None:
     return None if estado is not None else "".join(salida)
 
 
+def para_por_entorno(estado: dict, tarea: dict, reg: Registro, wt: Path,
+                     impl: dict, rama: str, medidas: Path, e: Exception) -> None:
+    """Un FalloDeEntorno: se guarda el trabajo y se apunta para retomarlo.
+
+    No gasta intentos ni se le pasa al implementador: no es culpa suya."""
+    if git("status", "--porcelain", cwd=wt):
+        confirma(wt, impl)
+    apunta(estado, tarea, "sin_revisar", rama_sin_mezclar=rama, medidas=str(medidas),
+           motivo=f"Parada por el entorno, no por la tarea: {str(e)[:600]}. "
+                  "El trabajo está en la rama; falta pasar compuertas y revisor "
+                  "(--retomar).")
+    reg(f"PARADA por el entorno: {str(e)[:300]}")
+
+
 def trae_base(args, wt: Path, reg: Registro) -> str | None:
     """Mezcla en la rama de la tarea lo que la base haya avanzado.
 
@@ -1037,9 +1113,12 @@ def documenta(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
                 return sin_mezclar(impl["resumen"] + "\n(la corrección tocó código)")
         texto_impl = json.dumps({k: v for k, v in impl.items() if not k.startswith("_")},
                                 indent=1, ensure_ascii=False)
-        ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
-                                 tarea.get("criterio_aceptacion", ""), medidas,
-                                 cobertura=False)
+        try:
+            ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
+                                     tarea.get("criterio_aceptacion", ""), medidas,
+                                     cobertura=False)
+        except FalloDeEntorno as e:
+            return para_por_entorno(estado, tarea, reg, wt, impl, rama, medidas, e)
         reg.guarda(f"compuertas-doc-{n}.txt", informe)
         if not ok:
             reg("  compuertas: FALLO")
@@ -1143,8 +1222,12 @@ def trabaja(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
                       impl, base_commit, medidas, n, sesion=sesion)
             return True
 
-        ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
+        try:
+            ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
                                      tarea.get("criterio_aceptacion", ""), medidas)
+        except FalloDeEntorno as e:
+            para_por_entorno(estado, tarea, reg, wt, impl, rama, medidas, e)
+            return False
         reg.guarda(f"compuertas-{n}.txt", informe)
         if not ok:
             reg("  compuertas: FALLO")
@@ -1189,8 +1272,12 @@ def trabaja(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
                        motivo="conflicto con la base al mezclar")
                 return True
             base_commit = nuevo
-            ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
-                                     tarea.get("criterio_aceptacion", ""), medidas)
+            try:
+                ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
+                                         tarea.get("criterio_aceptacion", ""), medidas)
+            except FalloDeEntorno as e:
+                para_por_entorno(estado, tarea, reg, wt, impl, rama, medidas, e)
+                return False
             if not ok:
                 motivos = informe
                 continue
