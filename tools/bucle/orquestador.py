@@ -789,9 +789,28 @@ def trae_base(args, wt: Path, reg: Registro) -> str | None:
     return git("rev-parse", args.base)
 
 
+PROMPT_DOC_CORRIGE = """\
+La tarea quedó NO RESUELTA y su rama solo documenta lo averiguado. Esa
+documentación no se ha aceptado todavía. Motivos, todos a atender:
+
+{motivos}
+
+Corrige SOLO la documentación ({documentacion}) y, si hace falta, los scripts
+de medida de $WE_BUCLE_MEDIDAS = {medidas}. No toques código: si lo tocas, la
+rama ya no se puede mezclar como documentación. Si un motivo pide comprobar
+algo en el binario o en el corpus, compruébalo antes de escribirlo. Si una
+afirmación no la puedes sostener, quítala o déjala como pregunta abierta.
+
+Devuelve el JSON del esquema con `estado: "no_resuelto"`, el `resumen`
+actualizado y las `medidas` que comprueban lo que ahora dice la documentación
+(las anteriores que sigan valiendo, y las nuevas que hagan falta).
+{contexto}"""
+
+
 def documenta(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
               wt: Path, rama: str, tarea: dict, impl: dict, base_commit: str,
-              medidas: Path, n: int) -> None:
+              medidas: Path, n: int, sesion: str | None = None,
+              motivos_previos: str | None = None) -> None:
     """Un «no resuelto» también puede dejar algo: lo averiguado.
 
     En `Emisor_Flags2` el implementador leyó en el binario que la hipótesis de
@@ -800,17 +819,27 @@ def documenta(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
     rama solo toca documentación pasa por compuertas y por un revisor que
     juzga si lo escrito es verdad, y entra como «documentada». Si no, como
     antes: `no_resuelto`, con la rama guardada.
+
+    Un rechazo vuelve al implementador con los motivos, como en el camino del
+    código: la primera revisión de `Emisor_Flags2` dio tres correcciones con
+    sus direcciones exactas, y sin reintento se perdían.
     """
     def sin_mezclar(motivo: str) -> None:
         apunta(estado, tarea, "no_resuelto", motivo=motivo, rama_sin_mezclar=rama,
                medidas=str(medidas))
 
-    cambios = git("diff", "--name-only", base_commit, "HEAD", cwd=wt).split()
+    def solo_documentacion() -> list[str] | None:
+        """Los ficheros cambiados, o None si alguno es código."""
+        cambios = git("diff", "--name-only", base_commit, "HEAD", cwd=wt).split()
+        codigo = [c for c in cambios if c not in DOCUMENTACION]
+        if codigo:
+            reg(f"no se revisa como documentación: toca {len(codigo)} ficheros "
+                f"de código ({', '.join(codigo[:5])})")
+            return None
+        return cambios
+
+    cambios = solo_documentacion()
     if not cambios:
-        return sin_mezclar(impl["resumen"])
-    codigo = [c for c in cambios if c not in DOCUMENTACION]
-    if codigo:
-        reg(f"no se revisa como documentación: toca {len(codigo)} ficheros de código")
         return sin_mezclar(impl["resumen"])
     if git("rev-parse", args.base) != base_commit:
         nuevo = trae_base(args, wt, reg)
@@ -820,34 +849,80 @@ def documenta(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
     reg(f"se revisa como documentación: {', '.join(cambios)}")
     texto_tarea = json.dumps({k: v for k, v in tarea.items() if not k.startswith("_")},
                              indent=1, ensure_ascii=False)
-    texto_impl = json.dumps({k: v for k, v in impl.items() if not k.startswith("_")},
-                            indent=1, ensure_ascii=False)
-    ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
-                             tarea.get("criterio_aceptacion", ""), medidas,
-                             cobertura=False)
-    reg.guarda(f"compuertas-doc-{n}.txt", informe)
-    if not ok:
-        reg("  compuertas: FALLO")
-        return sin_mezclar(impl["resumen"] + "\n\nCompuertas de la documentación:\n"
-                           + informe[-1500:])
-    reg("  compuertas: OK")
-    confirma(wt, impl)
-    cabeza = git("rev-parse", "HEAD", cwd=wt)
-    rev = claude(f"revisor-{n}", PROMPT_REV_DOC.format(
-        base=base_commit[:12], tarea=texto_tarea, impl=texto_impl,
-        compuertas=informe, medidas=medidas), wt, ESQ_REV, agente="revisor",
-        solo_lectura=True, horas=1)
-    if git("rev-parse", "HEAD", cwd=wt) != cabeza or git("status", "--porcelain", cwd=wt):
-        reg("  el revisor ha tocado el árbol: su veredicto no vale")
-        return sin_mezclar(impl["resumen"])
-    reg(f"  revisor: {rev['veredicto']}")
-    if rev["veredicto"] != "APRUEBA":
-        return sin_mezclar(impl["resumen"] + "\n\nDocumentación rechazada:\n"
-                           + "\n".join(f"- {m}" for m in rev["motivos"]))
+    sistema = (REPO / "tools/bucle/implementador.md").read_text()
+    # Con los motivos de una revisión anterior se empieza corrigiendo: volver
+    # a revisar lo mismo costaría otra sesión para oír lo que ya se sabe.
+    motivos = motivos_previos
+    ultimo = n + args.intentos - 1
+    while True:
+        if motivos is not None:
+            # Corregir: la misma sesión si se puede (lo sabe todo); si no —la
+            # tarea viene de otra ejecución, con otro clon—, una nueva con el
+            # contexto por escrito.
+            reg(f"intento {n}/{ultimo}")
+            contexto = "" if sesion else (
+                "\nContexto (esta sesión es nueva; la anterior era otra):\n"
+                f"Tarea original:\n{texto_tarea}\n\nLo que se averiguó y por qué "
+                f"no se resolvió:\n{impl['resumen']}\n\nLa documentación está en "
+                f"`git diff {base_commit[:12]}..HEAD`.\n")
+            prompt = PROMPT_DOC_CORRIGE.format(
+                motivos=motivos, documentacion=", ".join(DOCUMENTACION),
+                medidas=medidas, contexto=contexto)
+            try:
+                impl = claude(f"implementador-{n}", prompt, wt, ESQ_IMPL,
+                              sistema=sistema, reanudar=sesion, horas=1.5)
+            except RuntimeError as e:
+                if not sesion:
+                    raise
+                reg(f"  no se puede reanudar la sesión ({str(e)[:120]}); una nueva")
+                sesion = None
+                continue
+            sesion = impl["_session_id"]
+            if git("status", "--porcelain", cwd=wt):
+                confirma(wt, impl)
+            if solo_documentacion() is None:
+                return sin_mezclar(impl["resumen"] + "\n(la corrección tocó código)")
+        texto_impl = json.dumps({k: v for k, v in impl.items() if not k.startswith("_")},
+                                indent=1, ensure_ascii=False)
+        ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
+                                 tarea.get("criterio_aceptacion", ""), medidas,
+                                 cobertura=False)
+        reg.guarda(f"compuertas-doc-{n}.txt", informe)
+        if not ok:
+            reg("  compuertas: FALLO")
+            motivos = informe
+        else:
+            reg("  compuertas: OK")
+            confirma(wt, impl)
+            cabeza = git("rev-parse", "HEAD", cwd=wt)
+            rev = claude(f"revisor-{n}", PROMPT_REV_DOC.format(
+                base=base_commit[:12], tarea=texto_tarea, impl=texto_impl,
+                compuertas=informe, medidas=medidas), wt, ESQ_REV, agente="revisor",
+                solo_lectura=True, horas=1)
+            if (git("rev-parse", "HEAD", cwd=wt) != cabeza
+                    or git("status", "--porcelain", cwd=wt)):
+                sh(["git", "reset", "-q", "--hard", cabeza], cwd=wt)
+                sh(["git", "clean", "-qfd"], cwd=wt)
+                reg("  el revisor ha tocado el árbol: su veredicto no vale")
+                motivos = "El revisor modificó el árbol; se repite la revisión."
+            else:
+                reg(f"  revisor: {rev['veredicto']}")
+                if rev["veredicto"] == "APRUEBA":
+                    break
+                motivos = "\n".join(f"- {m}" for m in rev["motivos"])
+        if n >= ultimo:
+            return sin_mezclar(impl["resumen"] + "\n\nDocumentación no aceptada "
+                               f"tras {args.intentos} revisiones:\n" + motivos[-2000:])
+        n += 1
+
     if args.sin_mezclar:
         apunta(estado, tarea, "aprobada_sin_mezclar", rama_sin_mezclar=rama,
                motivo=impl["resumen"], observaciones=rev["motivos"])
         return None
+    if git("rev-parse", args.base) != base_commit:
+        nuevo = trae_base(args, wt, reg)
+        if nuevo is None:
+            return sin_mezclar(impl["resumen"] + "\n(conflicto con la base al mezclar)")
     trae_rama(wt, rama)
     err = mezcla(rama, args.base,
                  f"Merge branch '{rama}' (documentada): {tarea['titulo']}", reg)
@@ -916,7 +991,7 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
                 if git("status", "--porcelain", cwd=wt):
                     confirma(wt, impl)
                 documenta(args, claude, guardia, estado, reg, wt, rama, tarea,
-                          impl, base_commit, medidas, n)
+                          impl, base_commit, medidas, n, sesion=sesion)
                 return True
 
             ok, informe = compuertas(wt, base_commit, impl, guardia, reg, n,
@@ -1013,7 +1088,14 @@ def documenta_ejecucion(args, claude: Claude, guardia: Path, estado: dict,
     rama = entrada["rama_sin_mezclar"] if entrada else tarea["rama"]
     tarea["rama"] = rama
     reg(f"tarea: {tarea['titulo']}  [{rama}]")
-    reg("intento 1/1")
+    # Si la documentación ya se revisó y se rechazó, sus motivos están en el
+    # historial: se empieza por corregirlos.
+    previos = None
+    if entrada and "Documentación rechazada:" in (entrada.get("motivo") or ""):
+        previos = entrada["motivo"].split("Documentación rechazada:", 1)[1].strip()
+        reg(f"se parte del rechazo anterior ({previos.count(chr(10) + '- ') + 1} motivos)")
+    else:
+        reg("intento 1/1")
     wt = nuevo_worktree(f"tarea-{datetime.now():%Y%m%d-%H%M%S}", git("rev-parse", rama))
     try:
         git("switch", "-q", "-c", rama, cwd=wt)
@@ -1021,8 +1103,9 @@ def documenta_ejecucion(args, claude: Claude, guardia: Path, estado: dict,
         claude.medidas = medidas
         reg(f"el implementador no lo resuelve: {impl['resumen'][:300]}")
         base = git("merge-base", rama, args.base)
+        n = int(re.search(r"-(\d+)", impls[-1].stem).group(1))
         documenta(args, claude, guardia, estado, reg, wt, rama, tarea, impl,
-                  base, medidas, int(re.search(r"-(\d+)", impls[-1].stem).group(1)))
+                  base, medidas, n + 1 if previos else n, motivos_previos=previos)
     finally:
         trae_rama(wt, rama)
         borra_worktree(wt)
