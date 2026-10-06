@@ -236,10 +236,13 @@ def _init_giro_vel(e):
 # depende del factor (los tres dan -12.6 grados); lo que cambia es cuanto se
 # abre el penacho.
 #
-# Que la direccion concreta la pone nuestro ruido y no el wallpaper es
-# inevitable: el formato no trae ningun campo de direccion, solo `scale`,
-# `speedmin`/`speedmax` y un `offset` que desplaza el punto de muestreo ---y que
-# en este preset vale cero---. Lo que si vuelve a depender del wallpaper es el
+# La direccion concreta la pone nuestro ruido y no el wallpaper. No es que el
+# formato no la traiga: WE no muestrea un campo en el espacio, gira `forward`
+# ---(0, 1, 0) si falta--- alrededor de `right` un angulo que sale de un ruido
+# en el TIEMPO, y su `offset` es un angulo y no un desplazamiento del punto de
+# muestreo. Esta leido en wallpaper64.exe y sin aplicar, porque cambia las 152
+# piezas del corpus y no solo las 5 que declaran ejes: NOTAS.md, «Los ejes de la
+# turbulencia». Con el ruido de aqui, lo que si depende del wallpaper es el
 # caracter: los sistemas pequenos salen coherentes y los grandes se esparcen.
 #
 # Vive aqui y no en el `.c` por dos razones. Convertir las unidades del formato
