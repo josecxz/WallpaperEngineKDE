@@ -6389,8 +6389,13 @@ Se lee con el método de [los valores por
 defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen) sobre el
 `wallpaper64.exe` instalado. Cada fila se puede repetir con
 `objdump -d --no-show-raw-insn -M intel --start-address=<dir> --stop-address=<dir+16> wallpaper64.exe`,
-y `verifica_exe.sh` (en las medidas de la tarea, abajo) las comprueba todas:
-las cuatro cadenas y 30 instrucciones, una a una.
+y `verifica_exe.sh` las comprueba todas: las cinco cadenas y 57 instrucciones,
+una a una. Ese script y `censo_cp_emisor.py` no están en el repositorio: viven
+con las medidas de la tarea, en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261004-211604/medidas/`,
+y se ejecutan desde la raíz del repositorio (`sh …/verifica_exe.sh
+[wallpaper64.exe]`, `python3 …/censo_cp_emisor.py`); `repetir.sh`, al lado,
+pasa todas las medidas de la tarea.
 
 | qué | dónde | lo que hace |
 |---|---|---|
@@ -6401,10 +6406,12 @@ las cuatro cadenas y 30 instrucciones, una a una.
 | su defecto | `0x1401b98b1` / `0x1401b98be` | el que inserta el lector si falta: **0** |
 | `origin` | `+0x60` en los dos | (caja: `0x1401c6773`) |
 | emisión, bit 1 | `0x140237b05..0x140237b2c` | `test BYTE PTR [r15+0x4c],0x2` —`+0x4c` del bloque es `+0x3c` del emisor— y, si está, la cuenta de este paso es **`min(cuenta, 1)`**. El crédito ya se ha descontado entero (`0x140237b19`), así que lo que sobra **se pierde**, no se aplaza |
-| centro de la esfera | `0x140237c18..0x140237c82` | con el bloque de tipo 1, `índice = [r15+0xf0]` (el `controlpoint`), registro de punto de **0xd0** bytes, y centro = **punto.`+0x30` + `origin`** (`0x140237c54`, `0x140237c65`). No mira `flags` |
-| nacimiento | `0x140237f72` / `0x140237f7c` | posición = sorteo de la esfera + ese centro, a los arrays de x, y, z del sistema |
+| centro de la esfera | `0x140237c18..0x140237c82` | con el bloque de tipo 1, `índice = [r15+0xf0]` (el `controlpoint`), registro de punto de **0xd0** bytes, y centro = **punto.`+0x30` + `origin`** (`0x140237c54`, `0x140237c65`). No mira el bit 1. Sí lee el byte de `flags` (`movzx edi,BYTE PTR [r15+0x4c]`, `0x140237c2e`) para quedarse con el **bit 0** (`0x140237cbd`), que toca el sorteo y no el centro (fila siguiente) |
+| bit 0: `sign` | `0x1401c6001..0x1401c61ed`, `0x140237ee0..0x140237f18` | el lector de la esfera lee `sign` (`.rdata 0x14048f49c`, `0x1401c6001`), guarda `sign < 0` en `+0x80` y `sign ≠ 0` en `+0x90` (`0x1401c6167`, `0x1401c613f`), y si `|sign|²` pasa de `FLT_EPSILON` pone el bit 0 (`0x1401c61ed`). En la emisión, con el bit (`test dil,dil`, `0x140237ee0`), a cada eje con `sign ≠ 0` cuyo signo no coincide se le cambia el signo (`[r15+0x90]`/`[r15+0xa0]`, por −1). Lo encienden 41 de las 1146 esferas del corpus; aquí `sign` ya viaja en la línea `emit`, y no se ha cotejado con esta lectura |
+| giro con el punto | `0x140237c42..0x140237c5f`, `0x140237cc6..0x140237ce3`, `0x140237f24..0x140237f60` | carga las filas `+0x00`, `+0x10`, `+0x20` del registro del punto. `r12b = (controlpoint ≠ 0) ‖ ([sistema+0x20] & 1)`; si es cierto, el sorteo **se multiplica por esas filas** —y su cuarta componente por la fila `+0x30`— antes de sumar el centro. Si no, va tal cual (`0x140237f65`) |
+| nacimiento | `0x140237f72` / `0x140237f7c` | posición = sorteo de la esfera (girado o no) + ese centro, a los arrays de x, y, z del sistema |
 | centro de la caja | `0x14023847f..0x1402384ea` | tipo 2: `índice = [r15+0xa8]` (`+0x98`), `origin.x + punto.x` en `0x1402384c2`, igual en y, z |
-| el punto, cada fotograma | `0x14022e3e0` | recorre los puntos: `flags` del punto en `+0xc0` (`0x14022e461`); con **`flags & 1`** (`0x14022e472`) lleva el ratón a la escena, lo pasa por la matriz del sistema según un bit de este (`0x14022e4e5`) y lo escribe en **`+0x30`** (`0x14022e656`) |
+| el punto, cada fotograma | `0x14022e3e0` | recorre los puntos: `flags` del punto en `+0xc0` (`0x14022e461`); con **`flags & 1`** (`0x14022e472`) lleva el ratón a la escena, lo pasa por la matriz del sistema según `[sistema+0x20] & 1` (`0x14022e4e5`; `r14` es el sistema, cuyos puntos están en `+0x400`, `0x14022e450`) y lo escribe en **`+0x30`** (`0x14022e656`). Antes copia la matriz base del punto, `+0x80..+0xb0`, sobre `+0x00..+0x30` (`0x14022e47b..0x14022e4ae`), así que sus filas de giro son las de esa matriz base |
 
 Así que, en WE:
 
@@ -6417,9 +6424,21 @@ Así que, en WE:
   —`rope` une partículas sucesivas— da un punto por fotograma, que es lo que
   necesita un rastro continuo.
 - `flags & 4` es la emisión periódica (`minperiodicdelay` y compañía,
-  `0x140237a15`), y el bit 0 lo pone también el lector de la esfera según otro
-  campo (`0x1401c61ed`). En el corpus el `flags` de los emisores solo vale 0
-  (1380) o 2 (34).
+  `0x140237a15`), y el bit 0 lo pone el propio lector de la esfera cuando su
+  `sign` no es nulo (`0x1401c61ed`): con él, la emisión fuerza el signo del
+  sorteo eje a eje (`0x140237ee0..0x140237f18`), no toca el centro. En el
+  JSON del corpus el `flags` de los emisores solo vale 0 (1380) o 2 (34); el
+  bit 0 se lo enciende el lector a 41 esferas por su `sign`.
+- **El sorteo también gira con el punto**, no solo se traslada: si el emisor
+  tiene `controlpoint ≠ 0`, o el sistema tiene el bit 0 de `+0x20`, el vector
+  sorteado se multiplica por las filas `+0x00`, `+0x10`, `+0x20` del registro
+  del punto antes de sumarle el centro (`0x140237cc6..0x140237ce3`,
+  `0x140237f24..0x140237f60`). Su cuarta componente multiplica además la fila
+  `+0x30`, la posición; no se ha leído si vale 0. Para qué sirve el bit de
+  `+0x20` del sistema, qué campo del JSON lo enciende, no se ha leído: es el
+  mismo que decide si el ratón pasa por la matriz del sistema
+  (`0x14022e4e5`). En el corpus solo un emisor tiene `controlpoint ≠ 0`,
+  `shurikencursor_1`, y con `distancemax: 0`.
 - Al punto atado al cursor, WE le escribe **el ratón tal cual**: el `offset`
   del punto no se suma. Aquí `we_psys_puntero` sí lo suma, pero las 303
   apariciones de puntos atados al cursor del corpus declaran `0 0 0`, así que
@@ -6432,13 +6451,18 @@ Así que, en WE:
 
 | | emisores | escenas |
 |---|---|---|
-| `sphererandom` + `boxrandom` | 1414 | 109 |
+| `sphererandom` + `boxrandom` (1146 esferas) | 1414 | 109 |
 | con `flags & 2` | 34 | 15 |
 | con su punto de control **atado al cursor** | **17** | **12** |
 | — de ellos con `flags & 2` | 11 | 8 |
 | — **sin** `flags & 2` | **6** | **5** |
 | con su punto quieto pero con `offset` ≠ 0 | 0 | 0 |
 | que declaran `controlpoint` | 5 (valores 0 y 1) | 4 |
+
+Los 1414 son emisores `sphererandom`/`boxrandom` contados en el JSON; que
+coincidan con los 1414 `.psys` de [varios emisores](#varios-emisores-emiten-todos-al-mismo-depósito)
+no quiere decir que sean lo mismo: aquellos son ficheros, uno por objeto con
+partículas y por hijo, y aquí se cuentan emisores de esos dos tipos.
 
 Los seis sin el bit son lo que tumba la hipótesis desde el corpus, sin
 necesidad del binario: `mouse_trail_1`, `shurikencursor_1` (de
@@ -6464,7 +6488,15 @@ atado al cursor»:
    al `.psys`, al final de la línea `emit` para que un `.so` anterior lo
    ignore. `src/weparticles.c` centra `emite` en `cp[controlpoint]` además de
    `origin`. Los puntos quietos del corpus valen 0, así que eso no mueve
-   ningún sistema sin cursor. Ojo con los repartos por puestos
+   ningún sistema sin cursor. Además, WE **gira** el sorteo con la matriz del
+   punto cuando `controlpoint ≠ 0` o el sistema lleva el bit 0 de `+0x20`
+   (tabla, «giro con el punto»); hace falta para `shurikencursor_1`
+   (`controlpoint: 1`), aunque con su `distancemin`/`distancemax` a 0 el
+   radio del sorteo es 0. Lo que sí tiene es `speedmin`/`speedmax` 100: las
+   mismas filas se guardan también en la pila (`[rbp-0x78]..[rbp-0x58]`,
+   `0x140237cac..0x140237d16`), y si la velocidad de salida gira con ellas
+   **no se ha leído**. El punto atado al cursor gira con su matriz base
+   (`+0x80..+0xb0`), que tampoco se ha leído de dónde sale. Ojo con los repartos por puestos
    (`mapsequence*`), que ya sustituyen el origen del emisor por un punto: hay
    que ver si en WE se suman o se pisan.
 2. **Sin ratón**: hoy un punto atado al cursor se queda en su `offset` hasta
@@ -6482,10 +6514,11 @@ atado al cursor»:
 
 ### Lo medido
 
-- `verifica_exe.sh`: las cuatro cadenas y las 30 instrucciones de la tabla,
-  cada una en su dirección. **34 ok, 0 fallos.**
+- `verifica_exe.sh`: las cinco cadenas y las 57 instrucciones de la tabla,
+  cada una en su dirección. **62 ok, 0 fallos.**
 - `censo_cp_emisor.py`: las cifras de la tabla del corpus, los valores de
-  `flags`, los ritmos y los offsets de los puntos atados al cursor.
+  `flags`, los ritmos, los offsets de los puntos atados al cursor, las 41 de
+  1146 esferas con `sign` no nulo y el único emisor con `controlpoint ≠ 0`.
 - El render no cambia: ni `tools/*.py`, ni `src/`, ni `tools/*.c` tienen diff
   contra la base. `test_weparticles.py` pasa entero sobre las 129, con la
   lista de piezas fuera de la simulación vacía.
