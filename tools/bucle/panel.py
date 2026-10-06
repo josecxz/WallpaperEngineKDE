@@ -203,7 +203,9 @@ def etapas(dir_: Path, fecha: str) -> dict:
             actual["veredicto"] = txt.split(":", 1)[1].strip()
         elif txt.startswith("MEZCLADA"):
             ej["mezcla"] = {"t": t, "estado": "OK", "texto": txt}
-            ej["resultado"] = "hecha"
+            ej["resultado"] = "documentada" if "documentación" in txt else "hecha"
+        elif txt.startswith("se revisa como documentación"):
+            ej["resultado"] = None          # aún puede entrar como documentada
         elif txt.startswith("aprobada"):
             ej["mezcla"] = {"t": t, "estado": "PENDIENTE", "texto": txt}
             ej["resultado"] = "aprobada sin mezclar"
