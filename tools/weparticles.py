@@ -229,8 +229,10 @@ def _init_giro_vel(e):
 # ---|velocidad media| / rapidez media--- era 0.08: un pufo que se abre en todas
 # direcciones en vez del chorro que sale del canon.
 #
-# El factor esta CALIBRADO, no leido de WE, que no publica su funcion de ruido.
-# Con el, la coherencia de ese humo sube a 0.72: sale con rumbo pero conserva
+# El factor esta CALIBRADO, no leido de WE. Su funcion de ruido si esta leida
+# ---un simplex 1D, 0x14027b090---, pero WE la muestrea en el tiempo y no en un
+# campo en el espacio: no tiene celda que escalar ni factor que copiar. Con el
+# factor, la coherencia de ese humo sube a 0.72: sale con rumbo pero conserva
 # volumen. Se probaron 0.01 ---0.91, tan paralelo que se ve como una raya de
 # humo--- y 0.1 ---0.56, demasiado abierto---. La direccion resultante no
 # depende del factor (los tres dan -12.6 grados); lo que cambia es cuanto se
@@ -240,10 +242,13 @@ def _init_giro_vel(e):
 # formato no la traiga: WE no muestrea un campo en el espacio, gira `forward`
 # ---(0, 1, 0) si falta--- alrededor de `right` un angulo que sale de un ruido
 # en el TIEMPO, y su `offset` es un angulo y no un desplazamiento del punto de
-# muestreo. Esta leido en wallpaper64.exe y sin aplicar, porque cambia las 152
-# piezas del corpus y no solo las 5 que declaran ejes: NOTAS.md, «Los ejes de la
-# turbulencia». Con el ruido de aqui, lo que si depende del wallpaper es el
-# caracter: los sistemas pequenos salen coherentes y los grandes se esparcen.
+# muestreo. Aqui el `offset` si desplaza el punto de muestreo, y en el preset
+# medido vale cero: los -12.6 grados de arriba son solo de nuestro ruido, sin
+# nada del wallpaper que los apunte. La regla de WE esta leida en
+# wallpaper64.exe y sin aplicar, porque cambia las 152 piezas del corpus y no
+# solo las 5 que declaran ejes: NOTAS.md, «Los ejes de la turbulencia». Con el
+# ruido de aqui, lo que si depende del wallpaper es el caracter: los sistemas
+# pequenos salen coherentes y los grandes se esparcen.
 #
 # Vive aqui y no en el `.c` por dos razones. Convertir las unidades del formato
 # es interpretarlo, que es trabajo de Python; el simulador ejecuta el numero que

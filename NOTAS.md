@@ -1753,9 +1753,9 @@ turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no
 leído en `wallpaper64.exe` y sin aplicar. Lo de abajo es la regla de aquí: el
 rotacional de un ruido 3D, con `scale`, `speedmin`/`speedmax` y un `offset`
 que desplaza el punto de muestreo. Con ella, lo que sí vuelve a depender del
-wallpaper es el carácter del efecto. Si hiciera falta apuntar un penacho concreto, la palanca
-del propio formato es ese `offset`: medido sobre este humo, (0,0,0) da −12,6°,
-(5,0,0) da −48,5° y (10,10,0) da +120,5°.
+wallpaper es el carácter del efecto. Si hiciera falta apuntar un penacho
+concreto, la palanca del propio formato es ese `offset`: medido sobre este
+humo, (0,0,0) da −12,6°, (5,0,0) da −48,5° y (10,10,0) da +120,5°.
 
 El factor vive en `weparticles.py` y no en el `.c` por dos razones. La primera
 es de reparto: convertir las unidades del formato es interpretar el formato, y
@@ -2183,7 +2183,7 @@ falta son campos de piezas que sí leemos:
 |---|---|---|
 | `exponent` en los seis inicializadores aleatorios | **96** | la forma de la distribución: el autor pide un sesgo y repartimos uniforme |
 | `audioprocessing*` en 6 piezas | ~50 | reactividad al sonido |
-| ~~`right`/`up`/`forward` en `turbulentvelocityrandom`~~ | 4 c/u | **leído, sin aplicar**: `forward` gira alrededor de `right` y `up` no se lee. Aplicarlo cambia las 147 piezas sin ejes; ver [Los ejes de la turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee) |
+| `turbulentvelocityrandom` según la regla de WE (`forward`/`right`, `offset` como ángulo, fase, rapidez por defecto) | 152 piezas en 66 escenas | **leído, sin aplicar**: WE gira `forward` alrededor de `right` un ángulo de ruido en el tiempo, y `up` no lo lee. Falta sustituir el inicializador entero, porque cambian también las 147 piezas sin ejes, y un oráculo para el aspecto; ver [Los ejes de la turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee) |
 | `operation` en `remapvalue` | 2 | el modo del remapeo |
 | `blendin/out` en `oscillatealpha` | 1 c/u | las ventanas de entrada y salida |
 
@@ -6540,10 +6540,12 @@ eje, en tres escenas: `smoke2` (1877658892, tres objetos), `smoke1`
 [La turbulencia no turbulaba](#la-turbulencia-no-turbulaba) decía que el
 formato no traía ningún campo de dirección, y la tabla de cadenas del motor
 decía lo contrario. La tarea era leer qué hace WE con ellos y aplicarlo a
-nuestro ruido. **La lectura cierra la semántica, pero no se aplica**, porque
+nuestro ruido. **La lectura da la regla entera, pero no se aplica**, porque
 WE no tiene nuestro ruido: su regla no se monta encima del simulador de hoy,
 lo sustituye, y con eso cambiarían también las 147 piezas que no declaran
-ningún eje.
+ningún eje. De la regla quedan fuera una rama de audio, que aquí no tiene
+soporte, y dos preguntas abiertas: de dónde sale el booleano de la rapidez
+por defecto y qué es `[obj+0x130]`.
 
 ### Lo leído, con direcciones
 
@@ -6575,23 +6577,54 @@ La aplica el inicializador `0x14023b340`. Despacha por el tipo del bloque
 (`0x14023b5c0`, tabla en `0x14023fa78`) y el tipo 9 cae en `0x14023bdbc`:
 
 ```
-u     = sorteo uniforme                                 0x14023bdf3
-fase  = phasemin + u · (phasemax − phasemin)            0x14023bdff
+a     = phasemax − phasemin                           0x14023bdc0
+a    *= audio(bloque + 0x44)     si su modo no es 0   0x14023bdcc..0x14023bddc
+u     = sorteo uniforme                               0x14023bdf3
+fase  = phasemin + u · a                              0x14023bdfb, 0x14023bdff
 θ     = π · scale · snoise1((fase + [obj+0x130]) · timescale) + offset
-                                                         0x14023be04..0x14023be42
-G     = rotate(I, θ, right / |right|)                   0x14023be5e (glm::rotate:
-                                                         sqrt y división en 0x1401e25b0)
-v     = M · (G · forward) · (speedmin + u' · ancho)     0x14023be84, 0x14023bed8, 0x14023bef9
-vel  += v                                                0x14023bf0d
+                                                      0x14023be04..0x14023be42
+G     = rotate(I, θ, right / |right|)                 0x14023be5e
+v     = M · (G · forward) · (speedmin + u' · ancho)   0x14023be84, 0x14023bed8,
+                                                      0x14023bef9
+vel  += v                                             0x14023bf0d
 ```
 
+- **La rama de audio.** El caso 9 empieza mirando el dword de bloque+0x44
+  (`cmp DWORD PTR [rdx],r13d` en `0x14023bdcc`, con `rdx = r14+0x44` y
+  `r13d = 0` desde `0x14023b37e`). Si no es 0, llama a `0x14022a8a0`
+  (`0x14023bdd4`) y multiplica el ancho de la fase por lo que devuelve
+  (`mulss xmm6,xmm7` en `0x14023bddc`). Ese bloque+0x44, datos+0x40, lo
+  rellena el lector común de los `audioprocessing*` (`0x1401c1e20`): el de la
+  turbulencia lo llama en `0x1401c8b5b` con `rcx = datos+0x40` (`0x1401c8b23`).
+  Guarda el `audioprocessingmode` en +0 (`0x1401c2168`), el exponente en +4
+  (`0x1401c2222`), los `audioprocessingbounds` en +8/+0xc (`0x1401c21f8`,
+  `0x1401c2205`) y la banda de frecuencias en +0x10/+0x14 (`0x1401c2246`).
+  Si el modo falta, el lector inserta un 0 (`0x1401c1e83`, con `r15 = 0`
+  desde `0x1401c1e4c`), y la pieza no pasa por esta rama.
+- `0x14022a8a0` despacha por el modo (`0x14022a8b5`) y saca el máximo de las
+  bandas, entre esas dos frecuencias, del array de floats de `[obj+0x2d0]`. El
+  modo 1 lo saca de la primera mitad (`0x14022aa36`); el 2, de la segunda, 16
+  floats después (`0x14022a9b7`); y el 3, de la suma de las dos
+  (`0x14022a903`, `0x14022a909`), multiplicada por 0,5 (`0x14022a97c`).
+  Después lo lleva a [0, 1] entre los dos `bounds` (`0x14022aaa5`), lo suaviza
+  con x²·(3 − 2x) (el 3, de `0x140492830`, en `0x14022aaca`) y lo eleva al
+  exponente (`0x14022aaf2`, la llamada a `0x14041e350`). El resultado vuelve a
+  quedar en [0, 1]. Dos cosas son inferencia y no lectura. Que `[obj+0x2d0]`
+  sea el espectro de audio lo dicen los nombres de los campos, no quién
+  escribe el array. Y que `0x14041e350` sea `powf` lo dicen sus argumentos.
+- **La reactividad al audio no está soportada**, porque el motor no tiene
+  audio (CLAUDE.md, «Qué no soporta»). La regla de aquí **omite esta rama** y
+  equivale al modo 0. En el corpus la usan 2 piezas, las dos con
+  `audioprocessingmode: 3`: `wildfire.json` (1444777554) y `Stars_copy1.json`
+  (3238423642). Ninguna de las 5 con ejes la usa (`censo_turbvel.py`).
 - `snoise1` (`0x14027b090`) es el ruido simplex 1D de siempre: la tabla de
   Perlin en `0x140484f40` y el factor 0,395. Se muestrea en el **tiempo**,
   no en la posición. Las partículas que nacen a la vez salen casi paralelas,
   y el chorro serpentea al pasar los segundos. Que `[obj+0x130]` sea el reloj
   del sistema lo dice el uso, no una lectura: es también una de las entradas
   de `remapvalue` (`0x14023d219`).
-- `right` se **normaliza** y `forward` **no**. La norma de `forward` escala la
+- `right` se **normaliza** (`glm::rotate`, con la raíz y la división en
+  `0x1401e25b0`) y `forward` **no**. La norma de `forward` escala la
   velocidad: `smoke1`, con `0 0.25 0`, sale a la cuarta parte de su
   `speedmin`/`speedmax`, y `Flare_Sparks`, con `0 0 0`, no recibe ninguna
   velocidad de esta pieza. Su `up 0 100 0` no multiplica nada porque no se
@@ -6602,9 +6635,10 @@ vel  += v                                                0x14023bf0d
   pasa `velocityrandom` (tipo 7, `0x14023bbaf`): el giro del objeto lo trata
   igual en las dos piezas.
 
-`verifica_exe.sh` comprueba las 13 cadenas, las 8 constantes, la tabla de
-permutación, la entrada de la tabla de saltos, los dos tramos sin `up` y 80
-instrucciones, cada una en su dirección.
+`verifica_exe.sh` comprueba las 18 cadenas, las 9 constantes, la tabla de
+permutación, la entrada de la tabla de saltos, los dos tramos sin `up`, el
+tramo en el que `r13` sigue valiendo 0 y 122 instrucciones, cada una en su
+dirección.
 
 ### Por qué no se aplica
 
@@ -6628,9 +6662,9 @@ otras cuatro diferencias que solo se ven al leer la pieza entera
 Aplicar los ejes solo a los cinco que los declaran daría dos semánticas para
 la misma pieza: un `forward: "0 1 0"` escrito se comportaría distinto que uno
 omitido, que vale lo mismo. Sería un caso especial por campo presente, que
-tapa la causa en vez de arreglarla. Hacerlo bien es **sustituir el inicializador** por la regla de arriba en las 152
-piezas, y eso es otra tarea, con otro criterio: cambian las 66 escenas, no
-tres. Lo que haría falta:
+tapa la causa en vez de arreglarla. Hacerlo bien es **sustituir el
+inicializador** por la regla de arriba en las 152 piezas, y eso es otra tarea,
+con otro criterio: cambian las 66 escenas, no tres. Lo que haría falta:
 
 1. Python lleva al `.psys` todo lo leído (`forward`, `right`, la fase, la
    rapidez con sus defectos y el `offset` como ángulo) y deja de desplazar el
@@ -6638,7 +6672,8 @@ tres. Lo que haría falta:
    el resto.
 2. Decidir qué hacer con `ESCALA_RUIDO` y `desplazar_ruido`, que con la regla
    de WE no tienen sentido.
-3. Leer el booleano de la rapidez por defecto y confirmar `[obj+0x130]`.
+3. Leer el booleano de la rapidez por defecto y confirmar `[obj+0x130]`. La
+   rama de audio se queda fuera, como el modo 0, mientras no haya audio.
 4. Un oráculo: con 66 escenas, la regla leída sola no basta para validar el
    aspecto del humo.
 
@@ -6652,21 +6687,21 @@ nacimiento. El rumbo está en grados, en el marco del sistema (y hacia arriba),
 y `c` es la coherencia, |media| / rapidez media. La rama no toca el render,
 así que la columna de la rama es la de la base:
 
-| fichero | `.psys` | base = rama (t = 1 / 2 / 3) | regla de WE (t = 1 / 2 / 3) |
+| fichero | `.psys` | base = rama, rumbo (c), t = 1 / 2 / 3 | regla de WE, rumbo (c), t = 1 / 2 / 3 |
 |---|---|---|---|
-| `smoke2` | 1877658892/s000 | −163,2 / −163,2 / −163,2 (c 0,86) | 97,6 / 94,1 / 93,5 |
-| `smoke2` | 1877658892/s001 | 105,7 / 105,5 / 105,4 (c 0,97) | 97,6 / 94,0 / 93,4 |
-| `smoke2` | 1877658892/s002 | 45,7 / 46,1 / 45,8 (c 0,50) | 97,6 / 94,0 / 93,4 |
-| `smoke1` | 2250845956/s002 | 60,4 / 60,2 / 60,5 (c 0,88) | 94,9 / 93,5 / 92,8 |
-| `Flare_Flame` | 2937370591/s003 | 64,3 / 64,2 / 65,3 (c 0,34) | 1,3 (c 0,13) / 82,4 / 81,1 |
-| `Flare_Sparks` | 2937370591/s002 | 175,6 / −178,6 / 161,7 | sin velocidad: `forward 0 0 0` |
-| `Flare_Smoke` | 2937370591/s004 | 59,0 / 58,7 / 58,9 (c 0,56) | 57,1 / 62,9 / 63,0 |
+| `smoke2` | 1877658892/s000 | −163,2 (0,86) / −163,2 (0,86) / −163,2 (0,86) | 97,6 (1,00) / 94,1 (1,00) / 93,5 (1,00) |
+| `smoke2` | 1877658892/s001 | 105,7 (0,97) / 105,5 (0,97) / 105,4 (0,97) | 97,6 (1,00) / 94,0 (1,00) / 93,4 (1,00) |
+| `smoke2` | 1877658892/s002 | 45,7 (0,51) / 46,1 (0,50) / 45,8 (0,50) | 97,6 (1,00) / 94,0 (1,00) / 93,4 (1,00) |
+| `smoke1` | 2250845956/s002 | 60,4 (0,88) / 60,2 (0,88) / 60,5 (0,88) | 94,9 (1,00) / 93,5 (1,00) / 92,8 (1,00) |
+| `Flare_Flame` | 2937370591/s003 | 64,3 (0,34) / 64,2 (0,34) / 65,3 (0,35) | 1,3 (0,13) / 82,4 (1,00) / 81,1 (0,85) |
+| `Flare_Sparks` | 2937370591/s002 | 175,6 (0,75) / −178,6 (0,55) / 161,7 (0,75) | sin velocidad: `forward 0 0 0` |
+| `Flare_Smoke` | 2937370591/s004 | 59,0 (0,56) / 58,7 (0,55) / 58,9 (0,55) | 57,1 (0,74) / 62,9 (0,93) / 63,0 (0,95) |
 
 De las 18 medidas con rumbo en la regla, **12 caen hoy a más de ±15°**. Los
 tres objetos que comparten `smoke2` salen hoy en tres direcciones, porque cada
 uno muestrea otro trozo del ruido, y en WE salen los tres hacia arriba.
 
-- `verifica_exe.sh`: **105 ok, 0 fallos**.
+- `verifica_exe.sh`: **154 ok, 0 fallos**.
 - `planes_iguales.sh`, contra la base 78e0665 sobre las 129: **1131 de 1131
   idénticos** (`plan.txt` y `.psys`), y `psysprobe` en t = 2 y 5 da lo mismo en
   **2004 de 2004**. El único diff de código es el comentario de
