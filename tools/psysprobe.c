@@ -94,6 +94,20 @@ int main(int argc, char **argv)
         printf("ocupan x [%.0f, %.0f]  y [%.0f, %.0f]\n", x0, x1, y0, y1);
         printf("centro de la nube (%.1f, %.1f)\n", cx / n, cy / n);
     }
+    /* En una cinta no hay velocidad, pero si donde esta: cada segmento lleva
+     * su extremo mas nuevo en `a_PositionVec4`, y su media dice donde nacen y
+     * por donde van las cintas igual que en los sprites. Es lo que hace falta
+     * para ver si una estela de puntero sale del raton. */
+    if (we_psys_cinta(s) && nv > 0) {
+        double cx = 0, cy = 0;
+        int n = 0;
+        for (int i = 0; i < nv; i += por_particula) {
+            const float *w = v + (size_t)i * paso;
+            cx += w[0]; cy += w[1];
+            n++;
+        }
+        printf("centro de la nube (%.1f, %.1f)\n", cx / n, cy / n);
+    }
 
     we_psys_free(s);
     return 0;

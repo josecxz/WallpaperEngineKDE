@@ -132,6 +132,7 @@ typedef struct {
     float rate, dmin[3], dmax[3], dir[3], org[3], signo[3];
     float instantaneo, duracion;
     float velmin, velmax;           /* rapidez de salida, hacia afuera */
+    int punto;                      /* punto de control alrededor del que emite */
     float credito;                  /* particulas pendientes de emitir */
 } Emisor;
 
@@ -366,7 +367,10 @@ static int busca(const Entrada *tabla, int n, const char *nombre, int *nfloats)
  *   anim      <0 secuencia | 1 fotograma fijo> <repeticiones por vida>
  *   emit  <sphererandom|boxrandom> <rate> <dmin[3]> <dmax[3]> <dir[3]>
  *         <origen[3]> <signo[3]> <instantaneas> <duracion> <velmin> <velmax>
- *         (una linea por emisor; casi todos los sistemas traen una)
+ *         [<punto de control>]
+ *         (una linea por emisor; casi todos los sistemas traen una. El punto
+ *         de control solo se escribe si no es el 0, asi que falta en todas
+ *         menos una del corpus, y un ejecutor anterior se lo salta)
  *   cp    <indice> <x> <y> <z> [1 = lo mueve el puntero]
  *   init  <nombre> <floats...>
  *   oper  <nombre> <floats...>
@@ -432,8 +436,8 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
             if (s->n_em >= WE_MAX_EMISORES) { desconocidas++; continue; }
             Emisor *e = &s->em[s->n_em++];
             e->forma = strcmp(nombre, "boxrandom") == 0 ? EM_CAJA : EM_ESFERA;
-            float v[20] = {0};
-            lee_floats(tras_palabra(resto), v, 20);
+            float v[21] = {0};
+            lee_floats(tras_palabra(resto), v, 21);
             e->rate = v[0];
             for (int i = 0; i < 3; i++) {
                 e->dmin[i] = v[1 + i];
@@ -446,6 +450,10 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
             e->duracion = v[17];
             e->velmin = v[18];
             e->velmax = v[19];
+            /* Sin el campo es el 0, que es el defecto del lector de WE. Python
+             * ya lo topa a 7; esto solo protege el indice. */
+            e->punto = (int)v[20];
+            if (e->punto < 0 || e->punto >= MAX_CP) e->punto = 0;
         } else if (strcmp(kw, "cp") == 0) {
             /* El quinto numero es opcional: los planes escritos antes de que
              * el puntero existiera traen cuatro y siguen valiendo. */
@@ -586,11 +594,30 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
         for (int i = 0; i < 3; i++)
             d[i] = u[i] / n * radio * e->dir[i];
     }
+    /* El centro no es el origen del sistema: es el punto de control del
+     * emisor mas su `origin`. Asi lo hace WE con la esfera y con la caja
+     * (`wallpaper64.exe`, `0x140237c18..0x140237c82` y
+     * `0x14023847f..0x1402384ea`), lleve el emisor `flags: 2` o no; ver
+     * NOTAS. Un punto quieto vale su `offset`, que en el corpus es 0 en todos
+     * los que usa un emisor, asi que lo unico que se mueve es el emisor cuyo
+     * punto esta atado al cursor: nace donde el raton, que es lo que hace una
+     * estela de puntero.
+     *
+     * El sorteo NO gira con las filas del punto, aunque en WE lo hace cuando
+     * `controlpoint` no es 0 o el sistema lleva el bit 0 de su `+0x20`: aqui
+     * los puntos no tienen giro que aplicar. Queda escrito como pendiente.
+     *
+     * Un hijo de evento no: lo coloca el evento del padre (`nace`), y sumarle
+     * ademas su punto lo desplazaria dos veces cuando ese punto es el cursor. */
+    float centro[3];
+    for (int i = 0; i < 3; i++)
+        centro[i] = e->org[i] + (s->padre ? 0.0f : s->cp[e->punto][i]);
+
     /* `sign` fuerza el semieje: 29 sistemas emiten solo hacia un lado. */
     for (int i = 0; i < 3; i++) {
         if (e->signo[i] > 0.0f && d[i] < 0.0f) d[i] = -d[i];
         else if (e->signo[i] < 0.0f && d[i] > 0.0f) d[i] = -d[i];
-        q->pos[i] = e->org[i] + d[i];
+        q->pos[i] = centro[i] + d[i];
     }
 
     /* La rapidez de salida del emisor, HACIA AFUERA: la direccion es la que ya
@@ -612,7 +639,8 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
      * usos del corpus son el mismo preset ---una `Discharge` con cp0 en el
      * origen y cp1 a 512,512--- y sin esto las particulas se apelotonaban en
      * los 64 px del emisor. Lo que el emisor sorteo se conserva como sacudida
-     * alrededor del puesto. */
+     * alrededor del puesto, que sustituye al centro entero ---punto y
+     * `origin`---: si en WE se suman o se pisan no se ha leido. */
     for (int i = 0; i < s->n_init; i++) {
         if (s->init[i].codigo != IN_SECUENCIA)
             continue;
@@ -636,7 +664,7 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
         float f = u - (float)seg;
         for (int k = 0; k < 3; k++) {
             float base = mezcla(s->cp[seg][k], s->cp[seg + 1][k], f);
-            q->pos[k] = base + (q->pos[k] - e->org[k]);
+            q->pos[k] = base + (q->pos[k] - centro[k]);
         }
     }
 
@@ -649,7 +677,7 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
      * plana y girar en el plano de la pantalla es lo unico que se ve.
      *
      * Lo que el emisor sorteo se conserva, igual que en el reparto por camino:
-     * el punto de control sustituye al origen del emisor, no a la dispersion. */
+     * el punto de control sustituye al centro del emisor, no a la dispersion. */
     for (int i = 0; i < s->n_init; i++) {
         if (s->init[i].codigo != IN_SECUENCIA_CP)
             continue;
@@ -673,7 +701,7 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
         q->vel[2] += vel[2];
 
         for (int k = 0; k < 3; k++)
-            q->pos[k] = s->cp[0][k] + (q->pos[k] - e->org[k]);
+            q->pos[k] = s->cp[0][k] + (q->pos[k] - centro[k]);
     }
 
     for (int i = 0; i < s->n_init; i++) {
