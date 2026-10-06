@@ -807,6 +807,37 @@ actualizado y las `medidas` que comprueban lo que ahora dice la documentación
 {contexto}"""
 
 
+def solo_comentarios(ruta: str, base: str, wt: Path) -> bool:
+    """¿Cambia `ruta` entre `base` y HEAD solo en comentarios?
+
+    En `Turbulencia_Ejes` el implementador corrigió un comentario de
+    weparticles.py que repetía la frase errónea de NOTAS, y por eso la rama
+    no se revisaba como documentación. Python se compara por AST y C por la
+    salida de `cc -fpreprocessed`, que quita los comentarios sin expandir
+    nada; un fichero nuevo o borrado nunca cuenta.
+    """
+    def version(ref):
+        r = sh(["git", "show", f"{ref}:{ruta}"], cwd=wt)
+        return r.stdout if r.returncode == 0 else None
+    a, b = version(base), version("HEAD")
+    if a is None or b is None:
+        return False
+    if ruta.endswith(".py"):
+        import ast
+        try:
+            return ast.dump(ast.parse(a)) == ast.dump(ast.parse(b))
+        except SyntaxError:
+            return False
+    if ruta.endswith((".c", ".h", ".cpp", ".hpp")):
+        def sin(texto):
+            r = subprocess.run(["cc", "-fpreprocessed", "-dD", "-E", "-P", "-x", "c", "-"],
+                               input=texto, capture_output=True, text=True)
+            return " ".join(r.stdout.split()) if r.returncode == 0 else None
+        x, y = sin(a), sin(b)
+        return x is not None and x == y
+    return False
+
+
 def documenta(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
               wt: Path, rama: str, tarea: dict, impl: dict, base_commit: str,
               medidas: Path, n: int, sesion: str | None = None,
@@ -831,7 +862,8 @@ def documenta(args, claude: Claude, guardia: Path, estado: dict, reg: Registro,
     def solo_documentacion() -> list[str] | None:
         """Los ficheros cambiados, o None si alguno es código."""
         cambios = git("diff", "--name-only", base_commit, "HEAD", cwd=wt).split()
-        codigo = [c for c in cambios if c not in DOCUMENTACION]
+        codigo = [c for c in cambios if c not in DOCUMENTACION
+                  and not solo_comentarios(c, base_commit, wt)]
         if codigo:
             reg(f"no se revisa como documentación: toca {len(codigo)} ficheros "
                 f"de código ({', '.join(codigo[:5])})")
@@ -942,6 +974,11 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
     base_commit = git("rev-parse", args.base)
     wt = nuevo_worktree(f"tarea-{datetime.now():%Y%m%d-%H%M%S}", base_commit)
     rama = None
+    # Antes del triaje: el triador también escribe scripts de censo, y con la
+    # carpeta creada después le llegaba vacía y los dejaba en ~/.cache.
+    medidas = reg.dir / "medidas"
+    medidas.mkdir(exist_ok=True)
+    claude.medidas = medidas
     try:
         historial = "\n".join(
             f"- [{t['resultado']}] {t['titulo']} ({t.get('seccion')})"
@@ -961,9 +998,6 @@ def una_tarea(args, claude: Claude, guardia: Path, estado: dict, reg: Registro) 
         sh(["git", "reset", "-q", "--hard"], cwd=wt)
         sh(["git", "clean", "-qfd"], cwd=wt)
 
-        medidas = reg.dir / "medidas"
-        medidas.mkdir(exist_ok=True)
-        claude.medidas = medidas
         rama = tarea["rama"]
         if git("rev-parse", "--verify", "-q", f"refs/heads/{rama}", check=False):
             rama = f"{rama}_{datetime.now():%Y%m%d%H%M}"
