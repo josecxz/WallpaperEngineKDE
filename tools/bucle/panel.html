@@ -288,7 +288,7 @@ function pintaTarea(ej, d) {
   if (!ej) { $("tarea").innerHTML = '<div class="vacio">No hay ninguna ejecución registrada.</div>'; return; }
   const f = ej.ficha || {};
   const res = ej.resultado ? `<span class="etiqueta ${ej.resultado === "hecha" ? "ok" :
-    ej.resultado === "aprobada sin mezclar" ? "act" : "fallo"}">${esc(ej.resultado)}</span>` :
+    ["aprobada sin mezclar", "documentada"].includes(ej.resultado) ? "act" : "fallo"}">${esc(ej.resultado)}</span>` :
     d.en_vivo ? '<span class="etiqueta act">en curso</span>' : "";
   const ficha = f.hay_tarea ? `<details><summary>Ficha del triador</summary><dl class="ficha">
       ${f.seccion_notas ? `<dt>Sección de NOTAS</dt><dd>${md(f.seccion_notas)}</dd>` : ""}
@@ -334,7 +334,7 @@ function pintaFeed(d) {
 
 function pintaHistorial(h) {
   if (!h.length) { $("historial").innerHTML = '<div class="vacio">Aún no hay tareas terminadas.</div>'; return; }
-  const cls = r => r === "hecha" ? "ok" : r === "aprobada_sin_mezclar" ? "act" : "fallo";
+  const cls = r => r === "hecha" ? "ok" : ["aprobada_sin_mezclar", "documentada"].includes(r) ? "act" : "fallo";
   $("historial").innerHTML = `<table><tr><th>Fecha</th><th>Resultado</th><th>Tarea</th><th>Rama</th></tr>
     ${h.map(t => `<tr><td class="mono">${esc((t.fecha || "").replace("T", " ").slice(5, 16))}</td>
       <td><span class="etiqueta ${cls(t.resultado)}">${esc(t.resultado)}</span></td>
