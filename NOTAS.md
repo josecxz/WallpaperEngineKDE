@@ -5963,7 +5963,9 @@ mucho unos 240 px a 1920 con el ratón en una esquina.
 - ~~**`camerashake`**, 6 escenas~~ **hecho**: [El temblor de
   cámara](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido). Y
   `escena[+0xf0/+0xf4]` resultó ser el ojo de la cámara: ahora lleva el
-  temblor, pero no el `eye` que algunas escenas declaran fuera del origen.
+  temblor. El `eye` que algunas escenas declaran fuera del origen no llega:
+  [WE lo pone a
+  cero](#el-eye-de-la-cámara-no-llega-al-parallax-we-lo-pone-a-cero-en-las-escenas-ortográficas).
 
 ## `upright` en una cinta: WE la orienta como a un sprite, y da la base de siempre
 
@@ -6271,10 +6273,13 @@ parallax sin su parte del temblor.
   mucho en la amplitud. La de `3238423642` es de 2000×2000.
 - **Una escena en perspectiva que tiemble** no se emite. No hay ninguna en el
   corpus.
-- **El `eye` declarado fuera del origen** —`2311315748` lo tiene en
-  (57,1, −80,6)— también entra en el objetivo del parallax y aquí no se suma.
-  El temblor sí, porque el ejecutor lo conoce; el `eye` de la escena no se ha
-  tocado.
+- ~~**El `eye` declarado fuera del origen** —`2311315748` lo tiene en
+  (57,1, −80,6)— también entra en el objetivo del parallax y aquí no se suma.~~
+  **Cerrado sin cambiar el render**: [El `eye` de la cámara no llega al
+  parallax](#el-eye-de-la-cámara-no-llega-al-parallax-we-lo-pone-a-cero-en-las-escenas-ortográficas).
+  El cargador lo pone a cero en las escenas ortográficas sin `paths`
+  (`0x14018866b`), que son las 47 que lo declaran; al objetivo solo llega el
+  temblor, que ya se suma.
 
 ## Varios emisores: emiten todos, al mismo depósito
 
@@ -6712,3 +6717,142 @@ uno muestrea otro trozo del ruido, y en WE salen los tres hacia arriba.
 - Los scripts están en
   `~/.local/state/wallpaperengine-bucle/ejecuciones/20261006-134236/medidas/`,
   con su `repetir.sh`.
+
+## El `eye` de la cámara no llega al parallax: WE lo pone a cero en las escenas ortográficas
+
+Quedaba al final de [El temblor de
+cámara](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido): WE
+suma al objetivo P del parallax el ojo de la cámara (`escena+0xf0`,
+`0x140189c18`), y aquí no se sumaba el `eye` que 47 escenas declaran fuera del
+origen. Once de ellas tienen
+`cameraparallax`, y el término que faltaría, `−amount·parallaxDepth·eye`,
+llegaba a 105 px de lienzo en `2109934461`, 75 en `3521337568`, 66 en
+`3082427731` y 56 en `2262142032`. El orden era leer primero y aplicar después.
+**La lectura dice que no hay nada que aplicar:** el cargador de la escena lee
+el `eye` y, unas instrucciones más abajo, lo pone a cero si la escena es
+ortográfica y no tiene `paths`. Las 47 lo son y ninguna los tiene. El ojo que
+llega a P es (0, 0) más el temblor, que es justo lo que ya se hacía. No cambia
+el render; cambian un comentario y una prueba.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). La escena
+guarda **dos** cámaras: la **declarada** (`+0x118` ojo, `+0x124` centro,
+`+0x130` up), que sale del json, y la **vigente** (`+0xf0`, `+0xfc`, `+0x108`),
+que se rehace cada fotograma y es la que lee el parallax.
+
+- **Las cadenas**, en `.rdata`: `camera` en `0x14048e4d0`, `eye` en
+  `0x14048e59c`, `center` en `0x14048e594`, `up` en `0x14048e5ec`, `paths` en
+  `0x14048e5e4` y `orthogonalprojection` en `0x1404890c0`.
+- **El constructor** (`0x140186c90`) pone las dos cámaras en (2, 2, 2): la
+  vigente en `0x140186db3`, la declarada en `0x140186ded`.
+- **El cargador** es la misma función, partida en cuatro fragmentos
+  encadenados de `.pdata` (`0x140186c90..0x140188816`). Guarda el nodo
+  `camera` en la pila (`0x140187440`; ese `[rbp+0xf0]` es un local, no la
+  escena). Con `orthogonalprojection` —`auto`, o un ancho y un alto que no sean
+  los dos cero— enciende el bit 3 de `+0xe0` (`0x140187565`, `0x1401875df`).
+  Después lee `eye` como cadena de tres números a `+0x118/+0x11c/+0x120`
+  (`0x1401882fe`, `0x140188307`, `0x140188310`), `center` a `+0x124`
+  (`0x1401883f9`), `up` a `+0x130` (`0x1401884f3`) y `paths`, si es un array,
+  al vector `+0x310` (`0x140188597`).
+- **Y lo borra.** En `0x140188648..0x140188692`: si el bit 3 está encendido y
+  `+0x310` está vacío, ojo (0, 0, 0), centro (0, 0, −1) y up (0, 1, 0)
+  (`0x14018866b` es el `mov QWORD PTR [r14+0x118],r15` con `r15` a cero). En
+  todo el cargador `escena+0x118` se escribe tres veces: el defecto, el json y
+  este cero.
+- **Cada fotograma** (`0x1401891a0`) la cámara vigente sale de uno de tres
+  sitios. Si hay un **objeto cámara** visible (más abajo), de su matriz
+  (`0x1401892df`). Si no, y no hay `paths`, se copia la declarada
+  (`0x14018942e..0x14018944a`: `+0xf0 ← +0x118`, `+0xfc ← +0x124`) y le suma el
+  temblor (`0x14018949f`). Con `paths`, se interpolan.
+- **El objetivo**: `x += [+0xf0]` en `0x140189c18` e `y += [+0xf4]` en
+  `0x140189c24`, los dos con signo más y la y hacia arriba como el resto de la
+  fórmula (`1 − raton.y`, `0x140189b95`); P queda en `+0x340/+0x344`. Con un ojo
+  vigente no nulo, el término sería `−a·d·ojo` en el lienzo, con la y hacia
+  arriba, que es lo que suponía la tarea. Pero ese ojo es cero.
+
+El mismo cero contesta lo que la tarea dejaba fuera: el `eye` declarado
+tampoco traslada la vista en una escena ortográfica. Cuadra con el preview de
+`2821288001`, ojo en (841, 277), que sale centrado en el lienzo ([Pendiente:
+tres cabos de las
+partículas](#pendiente-tres-cabos-de-las-partículas-medidos-y-sin-cerrar)).
+
+### Lo que dicen los previews
+
+Se comprobó la hipótesis contra el preview de las once antes de descartarla:
+`ncc_preview.py` busca el mejor encaje de cada preview (o del primer fotograma
+del GIF) en el render a 1280 de ancho, barriendo escala y posición, y lo hace
+con la base, con la rama y con el `eye` sumado en memoria. La rama da el mismo
+PNG que la base en las once. Con el `eye`:
+
+| escena | base = rama | con el `eye` | escena | base = rama | con el `eye` |
+|---|---|---|---|---|---|
+| `2109934461` | 0,9906 | 0,9858 | `2250845956` | 0,9549 | 0,9547 |
+| `3521337568` | 0,8602 | 0,8522 | `2317494988` | 0,9018 | 0,9057 |
+| `3082427731` | 0,8044 | 0,8042 | `2319253136` | 0,9338 | 0,9282 |
+| `2262142032` | 0,8066 | 0,8208 | `2557734973` | 0,9619 | 0,9595 |
+| `2810252468` | 0,8351 | 0,8174 | `1173201544` | 0,9533 | 0,9417 |
+| `2311315748` | 0,8124 | 0,8124 | **media** | **0,8923** | **0,8893** |
+
+Empeora en siete y mejora en `2262142032` (+0,014) y `2317494988` (+0,004);
+en `2311315748` la diferencia está en la quinta cifra. La que más discrimina
+es `2109934461`, con profundidades de 1 a 0,32 entre sus capas y hasta 71 px
+de desplazamiento relativo: empeora. Es una medida ruidosa —`1173201544`
+baja 0,012 con 2 px de diferencia—, de apoyo; manda el código.
+
+La pista que traía la tarea, el reloj de `2262142032`, tampoco decide.
+`reloj_2262.py`, con la hora congelada a la del preview (17:38), encaja el
+preview y busca después el reloj alrededor de donde ese encaje lo pone: queda
+a (+22,8, +11,7) px de lienzo en la base, |d| = 25,7, y a (+15,4, +1,1), |d| =
+15,5, con el `eye`. Pero el reloj y el fondo tienen la misma profundidad, 1, y
+el `eye` los mueve juntos: la mejora sale del encaje global (escala 0,970 →
+0,980), no del reloj. Que el preview de esta escena encaje mejor movido no se
+ha explicado; un preview es una captura del autor, quizá desde el editor, y
+nada dice que el editor cargue la escena igual.
+
+### Cómo queda aquí
+
+- `parallax_de_camara` (`werender.py`) dice por qué no suma el `eye`, con las
+  dos direcciones.
+- `prueba_parallax_de_camara` (`test_werender.py`) declara ahora la escena
+  ortográfica y con el `eye` en (200, 40): si alguien lo suma, la raíz se va a
+  (700, 80) en vez de (900, 100) y la prueba falla.
+
+### Lo medido
+
+Contra la base `d01ed59`, con los scripts de
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261007-171029/medidas/`:
+
+- `verifica_ojo.sh`: **86 ok, 0 fallos**: las cadenas, los fragmentos de
+  `.pdata`, cada instrucción citada arriba y el recuento de escrituras.
+- `censo_orto.py`: de las **47** escenas con `eye` fuera del origen, **47**
+  ortográficas, **0** con `paths` y **1** con objeto cámara, `3521337568`.
+- `planes_ojo.py`, las 129 con la hora congelada (`hora.py`, porque los
+  relojes de texto se resuelven al emitir): **129 de 129 planes idénticos** y
+  ninguna línea cambiada en las once. Con el `eye` sumado cambiarían entre 6
+  (`2311315748`) y 348 (`2262142032`) líneas en cada una, así que la
+  comparación lo habría visto.
+- `paralaje_ojo.py`: las **137 raíces** con profundidad de las once dan
+  `_paralaje(rama) − _paralaje(base)` = −a·d·ojo vigente con error 0, y el ojo
+  vigente es (0, 0) en diez; en `3521337568` es el del objeto cámara, que no se
+  emula, y la diferencia también es 0.
+- `luz_11.py`: `test_luminancia` (`mide`, `preview` e `informe` del test) sobre
+  las once, la rama contra la base: la misma media en las once, 0 apagadas, 0
+  regresiones. Las 118 restantes tienen el plan idéntico.
+- `guarda_test.sh`: `test_werender` pasa, y con el `eye` sumado falla con la
+  raíz en (700, 80).
+
+### Lo que queda
+
+- **Los objetos cámara.** Un objeto con `camera` de texto —`3521337568` y
+  `3462491575` lo tienen, `"default"`, con `path` a un
+  `scripts/camera_paths_*.json` vacío y `origin` o `zoom` animados— es un objeto
+  cámara: el cargador de objetos lo crea (`0x140190693`, `0x360` bytes) y lo
+  mete en `escena+0x1f8` (`0x140190722`). Si está visible, con sus padres, la
+  cámara vigente sale de su matriz (`0x1401892df..0x140189361`) y no de la
+  declarada: mueve la vista y el P del parallax. Aquí no se lee. `3521337568`
+  es una de las once, y en ella el ojo que llega a P no es cero; no se sabe
+  cuánto vale.
+- **Las escenas con `paths`** conservan el `eye` y lo interpolan. No hay
+  ninguna en el corpus.
