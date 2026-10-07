@@ -7,7 +7,7 @@ plasmashell. No es un envoltorio: donde una capa **es** un vídeo lo decodifica
 y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
 
 - Qué hace y cómo se instala → `README.md`
-- **Por qué** cada cosa es como es → `NOTAS.md` (5939 líneas, 238 secciones en
+- **Por qué** cada cosa es como es → `NOTAS.md` (6524 líneas, 259 secciones en
   orden cronológico). **No lo leas entero.** `NOTAS-INDICE.md` dice qué sección
   resuelve qué problema y en qué línea empieza; se lee el trozo con
   `sed -n '<línea>,+40p' NOTAS.md`. Tras editar NOTAS.md, `make indice`.
@@ -60,7 +60,8 @@ scene.pkg ──pkg_inspect──┬─ .tex  ──wetex────┐  (IS_VI
                             glexec.c (offline)   glexecutor.cpp (en vivo)
                                     ├──── src/weparticles.c ────┤  (compartidos)
                                     ├──── src/wevideo.c ────────┤
-                                    └──── src/wereloj.c ────────┘
+                                    ├──── src/wereloj.c ────────┤
+                                    └──── src/wetemblor.c ──────┘
 ```
 
 Un wallpaper de **tipo vídeo** (15 en la biblioteca) no pasa por el grafo: es un
@@ -68,15 +69,16 @@ MP4 y su plan lo escribe `plan_de_video()` directo —`canvas`, `video`, un
 `object` y un pase con un quad—. `emit_plan` despacha solo, así que `wectl` no
 tiene que saber de qué tipo es lo que pone.
 
-`werender.py` (3352 líneas) es donde vive **lo que hay que decidir**: binding de
+`werender.py` (3418 líneas) es donde vive **lo que hay que decidir**: binding de
 propiedades, uniforms del motor, resolución de bindings. Los ejecutores solo
 ejecutan un plan ya resuelto. La implementación de referencia está en Python a
 propósito; `src/` es el port a C++ de lo mismo.
 
 **Regla de oro del reparto:** `glexec.c` y `glexecutor.cpp` enlazan **los
-mismos** `src/weparticles.c`, `src/wevideo.c` y `src/wereloj.c`. Si tocas la
-simulación, la decodificación de vídeo o la disposición de un reloj, tocas los
-dos a la vez o divergen.
+mismos** `src/weparticles.c`, `src/wevideo.c`, `src/wereloj.c` y
+`src/wetemblor.c`. Si tocas la simulación, la decodificación de vídeo, la
+disposición de un reloj o el temblor de cámara, tocas los dos a la vez o
+divergen.
 
 ## Dónde vive cada cosa
 
@@ -100,6 +102,7 @@ dos a la vez o divergen.
 | `src/weparticles.c` | simulador, **compartido** por los dos ejecutores |
 | `src/wevideo.c` | decodificador libav, **compartido** por los dos ejecutores |
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
+| `src/wetemblor.c` | la curva de `camerashake`, **compartida** por los dos |
 | `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`) |
 
 ## Comandos
@@ -159,6 +162,6 @@ El **puntero sí llega** —los uniforms del ratón y los 123 sistemas de
 partículas que lo persiguen, en 46 escenas— y la **cámara también se mueve**:
 `cameraparallax`, con la fórmula leída en el motor de WE, desplaza cada capa
 según la profundidad de su raíz en 29 escenas, también en reposo. Lo que sigue
-sin confirmar es `g_ParallaxPosition`, y `camerashake` está sin hacer. Y el
-fondo solo ve el ratón mientras está encima: sobre una ventana se queda en la
-última posición.
+sin confirmar es `g_ParallaxPosition`. `camerashake` también está leído en el
+motor y tiembla en sus 6 escenas. Y el fondo solo ve el ratón mientras está
+encima: sobre una ventana se queda en la última posición.

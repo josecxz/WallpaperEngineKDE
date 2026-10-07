@@ -1287,6 +1287,12 @@ nuestro constructor de vértices, que la pone perpendicular al camino. El `rope`
 de *Vapor 1* con `upright` sigue anotado, y es lo único del corpus que queda
 fuera junto con un emisor extra en dos sistemas.
 
+**Corregido después:** lo de la cinta era falso. Su anchura la calcula
+`genericropeparticle.vert` con `g_OrientationForward`, y WE pone ese uniform con
+la misma rutina para los cuatro renderers; con `upright`, en el corpus, sale la
+base de siempre. Ver [`upright` en una
+cinta](#upright-en-una-cinta-we-la-orienta-como-a-un-sprite-y-da-la-base-de-siempre).
+
 **Verificación.** De los 823 sistemas, **819 dan un `.psys` idéntico byte a byte**
 y los 4 que cambian son exactamente estos. Comparar el `.psys` antes que el PNG
 es lo que hace la comprobación barata: es el contrato entero del sistema, y
@@ -1736,13 +1742,20 @@ corpus con turbulencia, 0,05 reparte así: **57 en chorro (>0,7), 38 en penacho
 (0,3–0,7) y 41 esparciéndose (<0,3)**, que es lo que dicta el `scale` y el tamaño
 de cada emisor.
 
-**La dirección concreta la pone nuestro ruido, no el wallpaper**, y eso no tiene
-arreglo: el formato no trae ningún campo de dirección ---solo `scale`,
-`speedmin`/`speedmax` y un `offset` que desplaza el punto de muestreo--- y WE no
-publica su función de ruido. Lo que sí vuelve a depender del wallpaper es el
-carácter del efecto. Si hiciera falta apuntar un penacho concreto, la palanca
-del propio formato es ese `offset`: medido sobre este humo, (0,0,0) da −12,6°,
-(5,0,0) da −48,5° y (10,10,0) da +120,5°.
+**La dirección concreta la pone nuestro ruido, no el wallpaper.** Aquí se
+escribió que eso no tenía arreglo porque el formato no traía ningún campo de
+dirección. **Corregido después:** sí lo trae. WE lee `forward` (defecto
+`0 1 0`) y `right` (`0 0 1`), y no saca la dirección de un campo de ruido en el
+espacio. Gira `forward` alrededor de `right` un ángulo que sale de un ruido en
+el **tiempo**, y su `offset` es ese ángulo, no un desplazamiento del punto de
+muestreo. `up` no lo lee. Está en [Los ejes de la
+turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee),
+leído en `wallpaper64.exe` y sin aplicar. Lo de abajo es la regla de aquí: el
+rotacional de un ruido 3D, con `scale`, `speedmin`/`speedmax` y un `offset`
+que desplaza el punto de muestreo. Con ella, lo que sí vuelve a depender del
+wallpaper es el carácter del efecto. Si hiciera falta apuntar un penacho
+concreto, la palanca del propio formato es ese `offset`: medido sobre este
+humo, (0,0,0) da −12,6°, (5,0,0) da −48,5° y (10,10,0) da +120,5°.
 
 El factor vive en `weparticles.py` y no en el `.c` por dos razones. La primera
 es de reparto: convertir las unidades del formato es interpretar el formato, y
@@ -2170,7 +2183,7 @@ falta son campos de piezas que sí leemos:
 |---|---|---|
 | `exponent` en los seis inicializadores aleatorios | **96** | la forma de la distribución: el autor pide un sesgo y repartimos uniforme |
 | `audioprocessing*` en 6 piezas | ~50 | reactividad al sonido |
-| `right`/`up`/`forward` en `turbulentvelocityrandom` | 4 c/u | los ejes de la turbulencia |
+| `turbulentvelocityrandom` según la regla de WE (`forward`/`right`, `offset` como ángulo, fase, rapidez por defecto) | 152 piezas en 66 escenas | **leído, sin aplicar**: WE gira `forward` alrededor de `right` un ángulo de ruido en el tiempo, y `up` no lo lee. Falta sustituir el inicializador entero, porque cambian también las 147 piezas sin ejes, y un oráculo para el aspecto; ver [Los ejes de la turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee) |
 | `operation` en `remapvalue` | 2 | el modo del remapeo |
 | `blendin/out` en `oscillatealpha` | 1 c/u | las ventanas de entrada y salida |
 
@@ -3883,11 +3896,17 @@ simulación son tres cosas, ninguna bloqueante:
 
 - ~~`controlpointattract` sobre puntos atados al cursor (**111 de 136 usos**)~~
   **hecho**: entró con el puntero, como estaba previsto.
-- Un `rope` con `orientation: upright`, **1 sistema**: la anchura de la cinta la
-  monta nuestro constructor de vértices, perpendicular al camino, y ese la
-  quiere vertical.
-- Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
-  ese; tomar el primero es preferible a sumarlos mal.
+- ~~Un `rope` con `orientation: upright`, **1 sistema**: la anchura de la cinta
+  la monta nuestro constructor de vértices, perpendicular al camino, y ese la
+  quiere vertical.~~ **cerrado sin cambio de render**: la anchura la pone
+  `g_OrientationForward`, y con `upright` WE da la misma base que ya se emite.
+  Ver [`upright` en una
+  cinta](#upright-en-una-cinta-we-la-orienta-como-a-un-sprite-y-da-la-base-de-siempre).
+- ~~Dos emisores extra en **1 sistema**: WE permite varios y el corpus solo tiene
+  ese; tomar el primero es preferible a sumarlos mal.~~ **hecho**: con la
+  biblioteca de 129 son **2 sistemas en 2 escenas**, y ahora emiten por los dos
+  al mismo depósito. Ver [Varios
+  emisores](#varios-emisores-emiten-todos-al-mismo-deposito).
 
 ### Los 19 wallpapers que trae la aplicación: 7 servirían
 
@@ -5373,6 +5392,11 @@ la fuerza es cosa suya, no de la cámara.
   estela que sale del puntero, con `distancemax: 0` y ese flag—, pero en 14 de
   los 25 el punto del cursor es el 1 y no el 0, así que «emite en el punto 0»
   no lo explica. Sin una lectura que cubra los 25 no se toca.
+  **Leído después en el motor**: `flags: 2` no coloca nada —es una partícula
+  por fotograma—, y lo que lleva la estela al cursor es que **todo** emisor
+  emite en su punto de control. Sigue sin hacerse; ver [`flags: 2` no coloca
+  el
+  emisor](#flags-2-no-coloca-el-emisor-es-una-partícula-por-fotograma-y-al-cursor-lo-lleva-el-punto-de-control).
 - **El puntero por debajo de las ventanas**, que en Wayland pide otra fuente
   distinta de los eventos del propio fondo.
 
@@ -5936,4 +5960,755 @@ mucho unos 240 px a 1920 con el ratón en una esquina.
   se toca sin eso: lo usan 6 escenas con `depthparallax`.
 - **`escena[+0xf0/+0xf4]`**, un término que WE suma al objetivo y que aquí se
   toma como cero; y una marca de la escena que invierte la x.
-- **`camerashake`**, 6 escenas.
+- ~~**`camerashake`**, 6 escenas~~ **hecho**: [El temblor de
+  cámara](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido). Y
+  `escena[+0xf0/+0xf4]` resultó ser el ojo de la cámara: ahora lleva el
+  temblor, pero no el `eye` que algunas escenas declaran fuera del origen.
+
+## `upright` en una cinta: WE la orienta como a un sprite, y da la base de siempre
+
+Quedaba en [Lo siguiente](#lo-siguiente) un `rope` con `orientation: upright`
+—*Vapor 1*, el objeto 445 de `2870014907`, con `subdivision: 2`— apuntado como
+lo único de `orientation` que no se dibujaba bien, con este argumento: «la
+anchura de la cinta la monta nuestro constructor de vértices, perpendicular al
+camino». **Era falso.** `construye_cinta` (`src/weparticles.c`) solo pasa
+extremos y puntos de control; la anchura la calcula el vértice de WE,
+`genericropeparticle.vert`, en la ruta sin geometry shader que usamos:
+
+```glsl
+vec3 eyeDirection = mul(g_OrientationForward, CAST3X3(g_ModelMatrixInverse));
+vec3 trailRightStart = cross(eyeDirection, trailDelta + CPStart);
+```
+
+Así que la pregunta era la de cualquier sprite: qué `g_Orientation*` pone el
+motor con `upright`. Se leyó en `wallpaper64.exe` con el método de [los valores
+por defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen).
+
+### El lector: tres modos y una base
+
+`orientation` (`.rdata 0x14048fb70`) solo lo usa una función, `0x1401c22e0`, y
+la llaman las cuatro fábricas de renderer —`sprite` en `0x1401cc5f5`,
+`spritetrail` en `0x1401cfe61`, `rope` en `0x1401cff73`, `ropetrail` en
+`0x1401d00ff`—, cada una justo después de reservar su bloque (tipo 1 a 4 en el
+primer byte; la carga útil empieza en `+4`). Lo que guarda en la carga útil:
+
+| campo | dónde | qué |
+|---|---|---|
+| modo | `+0x08` | `upright` → 1 (`0x1401c262b`), `fixed` → 2 (`0x1401c2682`), cualquier otro → 0; el defecto es la cadena `screen` (`0x14048fb64`), y `camera` no se compara: cae en 0 |
+| `axis` | `+0x0c` | normalizado; si es nulo o falta, **(0, 1, 0)** (`0x1401c277f`) |
+| derecha, arriba | `+0x18`, `+0x24` | una base ortonormal a partir de `axis` |
+| `flags` | `+0x30` | un byte |
+
+El modo además pasa al material de la cinta como combo `ORIENTATION`
+(`0x1401d2b55`), pero solo lo lee `genericropeparticle.geom`, el geometry
+shader, que no usamos.
+
+### La rutina que pone los tres uniforms, igual para los cuatro renderers
+
+El bucle de dibujo del sistema (`0x1402368ef`) recorre los bloques y, sea cual
+sea el tipo, llama a `0x1402298b0(contexto, carga útil)` antes de dibujar. Esa
+función escribe tres vectores en el contexto: `+0x184` (`forward`), `+0x190`
+(`right`) y `+0x19c` (`up`) —el orden de los ids `0x1d`, `0x1e`, `0x1f` que la
+tabla de uniforms da a `g_OrientationForward`, `Right` y `Up`, y el `fixed`
+copia `axis` a `+0x184`—. Con `c` la dirección de la vista (`contexto+0x160`;
+`+0x16c` y `+0x178` son la derecha y el arriba de la vista, que
+`0x140256899` invierte y restaura) y `M` la matriz del objeto:
+
+- **modo 0** (`0x140229c35`): `forward = −c`; `up` = eje Y del objeto (`M` por
+  (0, 1, 0)) si `flags & 1` es 0, o el arriba de la vista si es 1; y `up` se
+  ortogonaliza contra `forward`.
+- **modo 1, `upright`** (`0x140229ab8`): `up` = `axis` llevado por `M` si
+  `flags & 1` es 0, o (0, 1, 0) del mundo si es 1 (`0x140229b39`); luego
+  `right = c × up` y `forward = right × up`.
+- **modo 2, `fixed`** (`0x140229a87`): `forward` y `up` salen de la carga útil.
+
+Y al final (`0x140229d55`), para los tres: los dos vectores se llevan al espacio
+del objeto, `right = up × forward`, y **los tres se normalizan**.
+
+### Por qué en el corpus no cambia nada
+
+`(c × u) × u = u·(c·u) − c·|u|²`. Si `u` es perpendicular a la vista, eso es
+`−c` escalado: el `forward` de `upright` es el de `screen`, y tras normalizar la
+base es la misma, la canónica que el plan ya emite (`forward` 0 0 1, `right` 1 0
+0, `up` en Y). Solo se tuerce si el `up` efectivo tiene componente a lo largo de
+la vista.
+
+*Vapor 1* no tiene `flags` ni `axis`: su `up` es el eje Y del objeto, y el
+objeto solo gira en Z (`angles 0 0 1.47345`). La cámara de la escena mira de
+`eye 0 0 0` a `center 0 0 −1` con `up 0 1 0`. Perpendicular: **sin efecto**.
+Los otros tres `upright` del corpus, los sprites de `Rain_Splash` en
+`2464842912`, llevan `flags: 1`, y su `up` es el del mundo: también.
+
+Tampoco hay diferencia entre `rope` y `ropetrail` aquí: los dos pasan por la
+misma `0x1402298b0`.
+
+### Lo hecho
+
+`_orientacion` (`tools/weparticles.py`) deja de tratar la cinta como excepción
+y aplica la regla leída a los cuatro renderers: `upright` solo avisa si el `up`
+efectivo tiene z —sin `flags & 1` y con un `axis` con z—, y `fixed` si el eje no
+es Z. El `cinta` solo cambia el nombre del aviso. No se toca ni el plan ni los
+ejecutores.
+
+Una salvedad que el corpus no ejercita: la regla mira `axis` y `flags`, no el
+giro del objeto. Un objeto girado en x o en y llevaría el `up` fuera del plano
+aunque `axis` no tuviera z; en el corpus los cuatro `upright` cuelgan de objetos
+que solo giran en z (`angles 0 0 0` los de `Rain_Splash`, `0 −0 1.47345` el de
+*Vapor 1*).
+
+### Lo medido
+
+Todo desde la raíz del repositorio, con la rama base (`Bucle_Autonomo`)
+extraída aparte con `git archive HEAD tools | tar -x -C /tmp/cu/base_src`.
+
+- **El censo de `orientation` y los avisos**, sobre cada renderer de los
+  sistemas de las 129 escenas (`/tmp/cu/censo.py <raíz>`):
+
+  ```python
+  import sys; sys.path.insert(0, sys.argv[1] + '/tools')
+  from collections import Counter; import wepaths, weparticles as w; from wescene import AssetResolver
+  n, av = Counter(), Counter()
+  for d in sorted(d for d in wepaths.we_workshop().iterdir() if (d / 'scene.pkg').is_file()):
+      r = AssetResolver.for_wallpaper(d, wepaths.we_assets())
+      for o in r.read_json('scene.json').get('objects', []):
+          for e in (r.read_json(o['particle']).get('renderer') or []) if o.get('particle') else []:
+              n[e.get('orientation')] += 1; a = w._orientacion(e, e.get('name') in ('rope', 'ropetrail')); av[a] += bool(a)
+  print(dict(n), {k: v for k, v in av.items() if k})
+  ```
+
+  Da **771 renderers sin campo, 38 `screen`, 4 `upright` y 1 `fixed`** en las
+  dos ramas —las cifras del docstring de `_orientacion`, que antes decía 722 sin
+  campo, la cuenta de la biblioteca anterior—. Avisos: en la base, 1
+  (`estela upright`, `2870014907`); ahora, **0**. Los tres `upright` de
+  `Rain_Splash_copy2.json` en `2464842912` (`flags: 1`, `axis 0 0 1`) eran el
+  control: no avisaban antes y no avisan ahora.
+- **Planes y `.psys` de las 129, byte a byte.** Cada escena se emite con
+  `werender.py <escena> --emit-plan /tmp/cu/out/<id>` —la MISMA ruta en las dos
+  ramas, porque el plan nombra sus assets por ruta absoluta—, se hace
+  `sha256sum` de `plan.txt` y de cada `.psys`, y se borra el directorio. Ocho
+  escenas en paralelo con `xargs -P 8` y `timeout 900` por escena: unos 50 s
+  la pasada. Resultado: **129 de 129 escenas emitidas en las dos ramas, ninguna
+  falla ni se agota; 1131 de 1131 ficheros idénticos** (129 `plan.txt` y 1002
+  `.psys`). El sistema de *Vapor 1* tampoco cambia: la marca de soporte parcial
+  vive solo en `sin_soporte`, en Python, y no llega ni al `.psys` ni al plan.
+  Una segunda pasada de la base da los mismos 1131 sha256, así que la
+  comparación no tiene ruido.
+- **`2870014907` renderizada** con `--time 2 --frames 120` y Mesa
+  (`__EGL_VENDOR_LIBRARY_FILENAMES=…/50_mesa.json`): el PNG es idéntico con
+  `cmp` entre base y rama. Lo único que cambia en la salida es la cuenta
+  `psys_parcial`, de 1 a 0.
+- **`test_luminancia.py obj/glexec --referencia`** contra la referencia del
+  bucle (`luz-a7f291acc0fe.json`): 129/129 renderizadas, **0 regresiones**, 0
+  apagadas.
+- **`test_weparticles`**: la prueba nueva, `prueba_orientacion`, son 14 casos
+  de la regla, cada uno como sprite y como cinta, y además el recorrido del
+  corpus falla si un renderer vuelve a dar aviso de orientación. Con el
+  `_orientacion` de la base fallan 9 casos y el aviso de *Vapor 1*: 10
+  discrepancias, código 1.
+
+## El temblor de cámara: también estaba en el motor, y no es ruido
+
+Quedaba al final de [El parallax de
+cámara](#el-parallax-de-cámara-la-fórmula-estaba-en-el-motor-y-mueve-las-capas-también-en-reposo):
+`general.camerashake`, con `camerashakeamplitude`, `camerashakespeed` y
+`camerashakeroughness`, no se leía. Nueve escenas lo declaran y seis lo
+encienden una vez resuelta la propiedad de usuario —`1692307745`,
+`2930166418` y `3146507587` con `true` literal; `2970694180`, `3053927686` y
+`3238423642` con `{user, value: true}`—; esas seis se dibujaban con la cámara
+quieta. Las otras tres —`1518454472`, `2311315748` y `2968771936`, esta con un
+`script` en el campo— lo tienen en `false` por su propiedad.
+
+### Cómo se encontró
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen), sobre
+`wallpaper64.exe`:
+
+- **Los campos.** Las cadenas están en `.rdata` (`camerashake` en
+  `0x14048e918`, `camerashakespeed` en `0x14048e900`, `…amplitude` en
+  `0x14048e998`, `…roughness` en `0x14048e980`). El lector de `general` las
+  registra en `0x14019ae14..0x14019b05d`, justo antes de `cameraparallax*`:
+  `camerashakespeed` en **`+0x328`**, `camerashakeamplitude` en **`+0x32c`** y
+  `camerashakeroughness` en **`+0x330`**, los tres float. `camerashake` es de
+  los de accesor propio (`0x14019c620`, `0x14019c830`): el **bit 7 de
+  `+0xe0`**.
+- **Los defectos**, en el constructor de la escena (`0x140186c90`):
+  `0x140186f84..0x140186f9a` ponen velocidad **3**, amplitud **0,5** y
+  rugosidad **1**. El corpus los declara siempre.
+- **Quién los lee.** Una sola función lee los tres: **`0x140199580`**. La
+  llaman los tres caminos de la actualización de la cámara, `0x1401891a0`
+  (`0x140189420`, `0x14018949f`, `0x140189a6f`), los tres detrás de un `jns`
+  sobre el byte bajo de `+0xe0`, que es el bit 7. Recibe el **ojo** (`+0xf0`)
+  y el **centro** (`+0xfc`) de la cámara y les suma el mismo vector: mueve la
+  cámara entera, no cada capa, y no mira `parallaxDepth`.
+- **El reloj** es `[[escena+0xd8]+0x130]`. Al construir la escena se le pasa
+  `renderizador+0x10` (`0x140181b82`), así que es `renderizador+0x140`: el
+  float del doble `+0x148`, que suma el dt de cada fotograma (`0x14017fcca`),
+  se pone a 0 al cargar la escena (`0x140181b2a`) y vuelve a 0 a los 432000 s.
+  Los segundos de la escena.
+- **La proyección.** El bit 3 de `+0xe0` es `orthogonalprojection`
+  (`0x1401875df`), y `+0x354`/`+0x358` son su ancho y su alto
+  (`0x14018759e`, `0x1401875c0`).
+- **Las funciones de la CRT**: `0x14041a2e0` es `cosf` (cerca de 0 devuelve
+  la constante 1), `0x14041a9c0` es `sinf` (devuelve x) y `0x14041e350`,
+  `powf`. Las constantes: 3,0 en `0x140492830`, 0,1 en `0x140492654`, 1,333 en
+  `0x140492728`, 0,001 en `0x140492608` y 1,0 en `0x140492704`.
+
+### Lo que hace WE
+
+```
+s = velocidad² · t                         t: segundos de escena
+v = (cos s, sin 1,333·s, sin s)
+ortográfica: v.z = 0 y k = 0,1·amplitud · 0,1·alto     (alto: +0x358)
+si no:                 k = 0,1·amplitud                (unidades de mundo)
+r = rugosidad³;  si r > 0,001 y r ≠ 1:  v = v/|v| · |v|^r
+ojo += k·v;  centro += k·v
+```
+
+Tres cosas que no se habrían adivinado midiendo:
+
+- **No es ruido.** Es una curva de Lissajous determinista, sin semilla: lo que
+  da WE en el segundo t es lo que da aquí en el segundo t. El riesgo de no poder
+  igualar el generador no existe.
+- **La «rugosidad» no añade aspereza.** Solo deforma la norma: con r³ entre
+  0,001 y 1 la acerca a 1, y con 0 o con 1 no toca nada. Cinco de las seis
+  escenas usan 0 o 1; solo `3238423642` la nota, con 0,92.
+- **En t = 0 la cámara ya está movida** `k` hacia la derecha (cos 0 = 1). Con
+  la amplitud mayor del corpus, 0,5 sobre un lienzo de 2160, son 10,8 px; |v|
+  llega a √2, unos 15 px.
+
+Y una cuarta que cierra un cabo de la sección anterior: la `escena[+0xf0]` que
+WE suma al objetivo del parallax (`0x140189c18`) **es el ojo de la cámara**.
+Con el temblor el ojo se mueve, así que el punto P del parallax se corre lo
+mismo que la cámara.
+
+### Cómo está hecho aquí
+
+- `temblor_de_camara` (`werender.py`) resuelve `camerashake` como `visible`
+  —manda la propiedad del usuario, no la copia— y escala la amplitud con el
+  alto del lienzo, que es el de `orthogonalprojection`. Sin
+  `orthogonalprojection` no se emite: no hay cámara en perspectiva en este
+  motor y en el corpus no hay ninguna escena así que tiemble.
+- El plan lleva dos líneas nuevas, solo en las escenas que tiemblan:
+
+```
+temblor <ax> <ay> <velocidad> <rugosidad>   cabecera; k/ancho y k/alto
+tiembla                                     tras el `object` de cada capa
+```
+
+- La curva vive una vez, en **`src/wetemblor.c`**, y la enlazan los dos
+  ejecutores. `glexec.c` la evalúa en el instante del plan (`meshtime`);
+  `glexecutor.cpp`, con su reloj, cada fotograma, antes que el puntero. Los dos
+  restan el resultado de la colocación de cada capa con `tiembla`, y lo suman
+  al punto P de las que llevan `paralaje`: offline también sin ratón, y en
+  vivo dentro del objetivo, antes del suavizado, que es donde lo suma WE.
+- **Las `passthrough` no tiemblan.** Las que no son `composelayer` no miran la
+  MVP: leen y escriben el fotograma entero, que ya viene movido. Las
+  `composelayer` leen lo que tienen debajo con la MVP horneada en el plan, que
+  no tiembla. Con `tiembla` también en ellas, el contenido se iba **el doble**:
+  21,7 px donde la cámara mueve 10,8 en `2970694180`, `3053927686` y
+  `3146507587`, las tres con una `composelayer` a pantalla completa. Si se
+  quedan quietas, lo que leen ya está movido y queda en su sitio; lo único que
+  se retrasa es el marco del efecto, como mucho la amplitud.
+
+Se descartó mover la imagen final entera: habría arrastrado también el grano,
+la viñeta y demás capas de postproceso, que en WE no se mueven. Y dejaba el
+parallax sin su parte del temblor.
+
+### Lo medido
+
+- **Planes de las 144 carpetas** (129 escenas y 15 vídeos), emitidos con
+  `werender.emit_plan(dir, tmp, ruta_final=Path('/RUTA'))` en la base y en la
+  rama y comparados con `cmp`: **138 idénticos byte a byte**, incluidas las tres
+  apagadas. Cambian solo las seis encendidas, y solo porque se añaden líneas: una
+  `temblor` y 8, 14, 39, 26, 15 y 40 `tiembla` (de 9, 14, 41, 31, 18 y 42
+  `object`), en el orden de la lista de arriba.
+- **El desplazamiento**, con `werender.py <dir> out.png --time t` en Mesa, a
+  t = 0; 0,5 y 1. Se mide por correlación de fase, con un paso bajo para que el
+  grano de película —idéntico en las dos imágenes— no tire del pico a cero, y
+  con el pico buscado a ±25 px. Entre la base y la rama **en el mismo instante**
+  la única diferencia es el temblor, y da (px de PNG, x a la derecha, y hacia
+  abajo; predicción / medida):
+
+| escena | t = 0 | t = 0,5 | t = 1 |
+|---|---|---|---|
+| `1692307745` | −1,94, 0 / −1,96, 0 | −1,08, +1,88 / −1,07, +1,88 | +0,74, +0,98 / +0,75, +0,98 |
+| `2930166418` | −3,46, 0 / −3,45, 0 | −2,51, +2,92 / −2,51, +2,93 | −0,20, +3,12 / −0,19, +3,11 |
+| `2970694180` | −10,80, 0 / −10,79, 0 | −10,00, +5,33 / −9,98, +5,33 | −7,72, +9,27 / −7,73, +9,26 |
+| `3053927686` | −10,80, 0 / −11,61, 0 | −9,53, +6,56 / −10,23, +7,00 | −6,01, +10,42 / −6,45, +11,09 |
+| `3146507587` | −10,80, 0 / −10,81, 0 | −9,48, +6,68 / −9,48, +6,68 | −5,84, +10,50 / −5,84, +10,50 |
+| `3238423642` | −7,99, 0 / −8,00, 0 | −5,39, +6,86 / −5,40, +6,87 | +0,35, +6,96 / +0,34, +6,96 |
+
+  Entre t = 0 y t = 0,5 de una misma rama se mezcla la animación propia de cada
+  escena —la base ya se mueve hasta 8 px en `2970694180`—. Lo que aporta el
+  temblor, (rama − base), es lo predicho: por ejemplo +1,34, +6,65 frente a
+  +1,32, +6,68 en `3146507587`, y +2,60, +6,85 frente a +2,60, +6,86 en
+  `3238423642`. En las **tres apagadas** los PNG de la rama son idénticos a
+  los de la base a los tres instantes, y su desplazamiento entre 0 y 0,5 es el
+  mismo que tenían.
+- **`test_luminancia.py obj/glexec --referencia`** contra la de la base, las
+  dos bajo el cerrojo y en Mesa: 129/129, **0 apagadas, 0 regresiones**. Las
+  seis escenas mueven su media 0,39 como mucho (`2930166418`); las de plan
+  idéntico, 0,13 como mucho, que es el ruido de relojes y vídeos entre dos
+  pasadas.
+- **`test_werender`**: `prueba_temblor_de_camara` fija la escala de la
+  amplitud, el apagado —también cuando lo apaga una propiedad cuya copia dice
+  `true`—, la curva de `src/wetemblor.c` compilada contra valores calculados a
+  mano con la forma de arriba, y el plan de `1692307745` (con la línea
+  `temblor 0.0010125 0.0018 1.4 1` y sus `tiembla`) y de `2968771936` (sin
+  ninguna). Falla quitando la línea del plan, quitando la comprobación de
+  `camerashake`, y con 1,3 en vez de 1,333 en la curva.
+
+### Lo que queda
+
+- **`3053927686` sale un 7 % largo** (11,6 px donde la fórmula da 10,8). El
+  paralaje acoplado de sus capas, con `amount × depth` de 0,02 como mucho,
+  explica un 2 %. Tiene una `composelayer` a pantalla completa con
+  `depthparallax`, que deforma lo que lee según un mapa de profundidad que no
+  tiembla; no se ha aislado.
+- **El marco de las `composelayer` que no cubren la pantalla** se queda quieto
+  cuando en WE se mueve con la cámara. Solo es visible en su borde, y como
+  mucho en la amplitud. La de `3238423642` es de 2000×2000.
+- **Una escena en perspectiva que tiemble** no se emite. No hay ninguna en el
+  corpus.
+- **El `eye` declarado fuera del origen** —`2311315748` lo tiene en
+  (57,1, −80,6)— también entra en el objetivo del parallax y aquí no se suma.
+  El temblor sí, porque el ejecutor lo conoce; el `eye` de la escena no se ha
+  tocado.
+
+## Varios emisores: emiten todos, al mismo depósito
+
+Un sistema de WE puede declarar más de un emisor en `emitter`, y aquí solo
+emitía el primero: `weparticles.py` anotaba el resto como `emitter extra` y el
+`.psys` llevaba una sola línea `emit`. «Lo siguiente» contaba 1 sistema, con la
+biblioteca de 125; con la de 129 son **2 sistemas en 2 escenas**, y en los dos
+el segundo emisor es una `sphererandom` **sin un solo campo**:
+
+| escena | objeto | preset | emisores | override |
+|---|---|---|---|---|
+| `2367577039` | Fog 2 | `particles/presets/fog2.json` | `sphererandom` rate 1, `distancemax` 512 + `sphererandom` vacío | `rate` 0,5 |
+| `3238423642` | reactive Stars | `particles/workshop/2365221023/Stars_copy1.json` | `boxrandom` rate 40, `distancemax` `1000 500 0` + `sphererandom` vacío | `rate` 0,5 (propiedad), `count` 0,19 |
+
+### Lo leído y lo supuesto
+
+**Leído:** que cada emisor tiene sus propios campos y que el que no declara
+nada sale de los defectos del lector del emisor —`distancemax` `256 256 0`,
+`directions` `1 1 0` y 10 por segundo, los de [los valores por
+defecto](#los-valores-por-defecto-estaban-en-el-binario-el-giro-la-caja-el-ritmo-y-el-sesgo)—,
+porque son los mismos dos lectores (`sphererandom` y `boxrandom`) los que se
+desensamblaron. Así que el segundo emisor de los dos casos es una esfera de 256
+en el origen del objeto, a 10/s.
+
+**Supuesto, no leído en el binario:**
+
+- **El `rate` del `instanceoverride` multiplica a CADA emisor.** Es un solo
+  factor por objeto y es la única lectura que deja la proporción entre emisores
+  como la puso el autor del preset. Con 0,5, los dos segundos emisores emiten
+  a 5/s.
+- **El depósito es uno**: `maxcount` está en la raíz del sistema, no en el
+  emisor, y todos sueltan al mismo. Cuando está lleno, los emisores se atienden
+  **en orden** en cada paso, así que el primero ocupa antes los huecos que se
+  liberan. El orden también es un supuesto.
+- `instantaneous` y `duration` van por emisor: el estallido de cada uno ocupa
+  los huecos que siguen a los del anterior, y cada uno deja de emitir a su
+  `duration`.
+- Un **hijo de evento** se sigue colocando con su primer emisor y emitiendo a
+  su `rate` (el `eventfollow`). Ningún hijo del corpus tiene dos.
+
+El `audioprocessingmode` de los dos emisores de `Stars_copy1` se ignora, igual
+que antes con el primero: no hay audio.
+
+### Lo hecho
+
+- `weparticles.py`: `Sistema.emisores` es una lista de `(forma, 20 floats)` y
+  `escribir` saca una línea `emit` por emisor, en el orden del JSON. Un sistema
+  de un solo emisor sale byte a byte igual. Hasta `MAX_EMISORES` (4); el que
+  sobre se sigue anotando como `emitter extra`, y `test_weparticles` lo cuenta
+  como fallo.
+- `src/weparticles.c`, que enlazan los dos ejecutores: un array `Emisor em[4]`
+  con forma, campos y **crédito propio**, que reemplaza a los campos sueltos del
+  sistema. `emite`/`nace` reciben el emisor; cada partícula guarda cuál la soltó
+  solo para contarlas (`we_psys_emisores`, `we_psys_vivas`, que usan
+  `psysprobe` y la prueba). Un `.psys` de un solo `emit` se lee igual que antes.
+  Al revés no: un `.so` anterior que lea uno de los dos `.psys` nuevos se queda
+  con la **última** línea `emit`, o sea solo con la esfera vacía, hasta el
+  `make reload`. Afecta a esos dos sistemas y a nada más.
+- `werender.py` toma la ráfaga del hijo del primer emisor, como hacía.
+
+### Lo medido
+
+- **Censo**: `test_weparticles.py` sobre las 129 — 842 sistemas,
+  `varios_emisores 2`, y la lista de piezas fuera de la simulación queda
+  **vacía** (antes, `emitter extra:sphererandom` 2).
+- **Los `.psys` de las 129**, con `cargar` + `escribir` para cada objeto con
+  partículas y sus hijos (1414 ficheros, semilla fija), en la base y en la
+  rama, con `diff -rq`: **1412 idénticos**; los dos que cambian son `fog2` y
+  `Stars_copy1`, y solo por una línea añadida, la misma en los dos:
+  `emit sphererandom 5 0 0 0 256 256 0 1 1 0 0 0 0 0 0 0 0 0 0 0`.
+- **El simulador con un emisor no cambia**: `psysprobe` de la base y de la rama
+  sobre los 1414 `.psys` de la base, a t = 3 y t = 20 —16 068 líneas de
+  posiciones, velocidades y cuentas—: idénticas.
+- **`psysprobe` sobre `Stars_copy1`** (depósito 95): a t = 3, 10 y 30, emisor 0
+  44, 42 y 44 vivas; emisor 1, 14, 11 y 12. No se llena, así que no hay robo.
+  **Sobre `fog2`** (depósito 20) sí lo hay: a t = 10, 2 del primero y **17 del
+  segundo**. A 0,5/s con 3–5 s de vida el primero sostenía unas 2; el segundo,
+  a 5/s, llena el resto. La niebla pasa de dos sprites sueltos por un óvalo de
+  512 a un velo concentrado en el centro del objeto. Es lo que sale de los
+  supuestos de arriba; no hay captura de Windows con que confirmarlo.
+- **Contrato Python↔C** (`prueba_emisores` en `test_weparticles.py`): un preset
+  con una caja de 100 px de semieje en x = 2000 a 30/s y una esfera vacía, con
+  `rate` 0,5. Python da ritmos 15 y 5 y los defectos en la esfera; el C, a los
+  10 s, **149 en la caja y 49 en la esfera, 0 fuera**, y con `maxcount 40`,
+  30 + 10. Igual con `LC_ALL=C` y `es_ES.utf8`. Falla con el C de la base
+  (no tiene `we_psys_emisores`) y con el Python de la base (`emisores` no
+  existe).
+- **`test_luminancia.py obj/glexec --referencia`** contra la base, las dos en
+  Mesa y bajo el cerrojo: 129/129, **0 apagadas, 0 regresiones**.
+  `3238423642` se queda en 32,32 (cambian 142 000 píxeles: las estrellas del
+  segundo emisor, rojas y con alfa 0,4, y el reloj). `2367577039` baja de 67,49
+  a 64,96, p99 de 242,3 a 228,7: el velo de niebla acerca todo a su color —los
+  píxeles por debajo de 40 suben de 32,5 a 32,9 y los de más de 140 bajan de
+  197,9 a 182,6—. Por eso «más partículas» no da más luz aquí. Las otras siete
+  que se mueven tienen `.psys` y plan idénticos; la mayor es `3097749052`,
+  36,52 → 35,08, que ya cambia entre dos renders del mismo binario.
+
+## `flags: 2` no coloca el emisor: es una partícula por fotograma, y al cursor lo lleva el punto de control
+
+**De dónde se partía.** El preset `trail_1` —el «Mouse Trail» del Workshop:
+`sphererandom` con `distancemax: 0` y `flags: 2`, renderer `rope`, sin
+velocidad, y el punto de control 0 con `flags: 1`— dibuja aquí la estela
+clavada en el `origin` del objeto en vez de seguir al ratón. `weparticles.py`
+no lee el `flags` del emisor y `src/weparticles.c` suelta cada partícula
+alrededor del origen del sistema. La hipótesis a comprobar era «`flags & 2`: el
+emisor se coloca en un punto de control». Encajaba con las 34 apariciones del
+corpus (15 escenas), porque en todas las que no tienen el cursor en el punto 0,
+ese punto coincide con el origen.
+
+**La lectura la refuta.** El bit no coloca nada. Lo que coloca el emisor es
+otra cosa, y vale para **todos** los emisores, lleven el bit o no. Así que no
+se ha tocado el render: implementar «el bit 2 coloca» haría lo correcto en 11
+emisores por la razón equivocada y dejaría fuera a los 6 que hacen lo mismo
+sin el bit.
+
+### Lo que hace WE, con direcciones
+
+Se lee con el método de [los valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen) sobre el
+`wallpaper64.exe` instalado. Cada fila se puede repetir con
+`objdump -d --no-show-raw-insn -M intel --start-address=<dir> --stop-address=<dir+16> wallpaper64.exe`,
+y `verifica_exe.sh` las comprueba todas: las cinco cadenas y 57 instrucciones,
+una a una. Ese script y `censo_cp_emisor.py` no están en el repositorio: viven
+con las medidas de la tarea, en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261004-211604/medidas/`,
+y se ejecutan desde la raíz del repositorio (`sh …/verifica_exe.sh
+[wallpaper64.exe]`, `python3 …/censo_cp_emisor.py`); `repetir.sh`, al lado,
+pasa todas las medidas de la tarea.
+
+| qué | dónde | lo que hace |
+|---|---|---|
+| bloques del emisor | `0x1401d83b0` / `0x1401d8450` | cada pieza va en un bloque con cabecera de 16 bytes: tipo **1** `sphererandom` (`0x1401d83ba`), **2** `boxrandom` (`0x1401d845a`) |
+| lector común | `0x1401c1c70` | `rate` → `+0x00`, `instantaneous` → `+0x34`; **`flags` (`.rdata 0x14048f4cc`) → `+0x3c`** (`0x1401c1d35`). Lo llaman los dos (`0x1401c61d6`, `0x1401c691e`) |
+| `controlpoint` en la esfera | `0x1401c5fb9..0x1401c600d` | **existe**: se lee como entero, se topa a **7** (`cmovb`, `0x1401c600a`) y va a `+0xe0` |
+| `controlpoint` en la caja | `0x1401c6889..0x1401c6915` | lo mismo, a `+0x98` |
+| su defecto | `0x1401b98b1` / `0x1401b98be` | el que inserta el lector si falta: **0** |
+| `origin` | `+0x60` en los dos | (caja: `0x1401c6773`) |
+| emisión, bit 1 | `0x140237b05..0x140237b2c` | `test BYTE PTR [r15+0x4c],0x2` —`+0x4c` del bloque es `+0x3c` del emisor— y, si está, la cuenta de este paso es **`min(cuenta, 1)`**. El crédito ya se ha descontado entero (`0x140237b19`), así que lo que sobra **se pierde**, no se aplaza |
+| centro de la esfera | `0x140237c18..0x140237c82` | con el bloque de tipo 1, `índice = [r15+0xf0]` (el `controlpoint`), registro de punto de **0xd0** bytes, y centro = **punto.`+0x30` + `origin`** (`0x140237c54`, `0x140237c65`). No mira el bit 1. Sí lee el byte de `flags` (`movzx edi,BYTE PTR [r15+0x4c]`, `0x140237c2e`) para quedarse con el **bit 0** (`0x140237cbd`), que toca el sorteo y no el centro (fila siguiente) |
+| bit 0: `sign` | `0x1401c6001..0x1401c61ed`, `0x140237ee0..0x140237f18` | el lector de la esfera lee `sign` (`.rdata 0x14048f49c`, `0x1401c6001`), guarda `sign < 0` en `+0x80` y `sign ≠ 0` en `+0x90` (`0x1401c6167`, `0x1401c613f`), y si `|sign|²` pasa de `FLT_EPSILON` pone el bit 0 (`0x1401c61ed`). En la emisión, con el bit (`test dil,dil`, `0x140237ee0`), a cada eje con `sign ≠ 0` cuyo signo no coincide se le cambia el signo (`[r15+0x90]`/`[r15+0xa0]`, por −1). Lo encienden 41 de las 1146 esferas del corpus; aquí `sign` ya viaja en la línea `emit`, y no se ha cotejado con esta lectura |
+| giro con el punto | `0x140237c42..0x140237c5f`, `0x140237cc6..0x140237ce3`, `0x140237f24..0x140237f60` | carga las filas `+0x00`, `+0x10`, `+0x20` del registro del punto. `r12b = (controlpoint ≠ 0) ‖ ([sistema+0x20] & 1)`; si es cierto, el sorteo **se multiplica por esas filas** —y su cuarta componente por la fila `+0x30`— antes de sumar el centro. Si no, va tal cual (`0x140237f65`) |
+| nacimiento | `0x140237f72` / `0x140237f7c` | posición = sorteo de la esfera (girado o no) + ese centro, a los arrays de x, y, z del sistema |
+| centro de la caja | `0x14023847f..0x1402384ea` | tipo 2: `índice = [r15+0xa8]` (`+0x98`), `origin.x + punto.x` en `0x1402384c2`, igual en y, z |
+| el punto, cada fotograma | `0x14022e3e0` | recorre los puntos: `flags` del punto en `+0xc0` (`0x14022e461`); con **`flags & 1`** (`0x14022e472`) lleva el ratón a la escena, lo pasa por la matriz del sistema según `[sistema+0x20] & 1` (`0x14022e4e5`; `r14` es el sistema, cuyos puntos están en `+0x400`, `0x14022e450`) y lo escribe en **`+0x30`** (`0x14022e656`). Antes copia la matriz base del punto, `+0x80..+0xb0`, sobre `+0x00..+0x30` (`0x14022e47b..0x14022e4ae`), así que sus filas de giro son las de esa matriz base |
+
+Así que, en WE:
+
+- **Todo emisor emite alrededor de su punto de control**, el que diga su
+  `controlpoint` (0 por defecto, 7 como mucho), más su `origin`. Un punto
+  atado al cursor se mueve cada fotograma con el ratón, y el emisor con él.
+  Eso es lo que hace de `trail_1` una estela.
+- **`flags & 2` es «una por fotograma»**: con el bit, el emisor suelta como
+  mucho una partícula por paso y tira el resto del crédito. En una cinta
+  —`rope` une partículas sucesivas— da un punto por fotograma, que es lo que
+  necesita un rastro continuo.
+- `flags & 4` es la emisión periódica (`minperiodicdelay` y compañía,
+  `0x140237a15`), y el bit 0 lo pone el propio lector de la esfera cuando su
+  `sign` no es nulo (`0x1401c61ed`): con él, la emisión fuerza el signo del
+  sorteo eje a eje (`0x140237ee0..0x140237f18`), no toca el centro. En el
+  JSON del corpus el `flags` de los emisores solo vale 0 (1380) o 2 (34); el
+  bit 0 se lo enciende el lector a 41 esferas por su `sign`.
+- **El sorteo también gira con el punto**, no solo se traslada: si el emisor
+  tiene `controlpoint ≠ 0`, o el sistema tiene el bit 0 de `+0x20`, el vector
+  sorteado se multiplica por las filas `+0x00`, `+0x10`, `+0x20` del registro
+  del punto antes de sumarle el centro (`0x140237cc6..0x140237ce3`,
+  `0x140237f24..0x140237f60`). Su cuarta componente multiplica además la fila
+  `+0x30`, la posición; no se ha leído si vale 0. Para qué sirve el bit de
+  `+0x20` del sistema, qué campo del JSON lo enciende, no se ha leído: es el
+  mismo que decide si el ratón pasa por la matriz del sistema
+  (`0x14022e4e5`). En el corpus solo un emisor tiene `controlpoint ≠ 0`,
+  `shurikencursor_1`, y con `distancemax: 0`.
+- Al punto atado al cursor, WE le escribe **el ratón tal cual**: el `offset`
+  del punto no se suma. Aquí `we_psys_puntero` sí lo suma, pero las 303
+  apariciones de puntos atados al cursor del corpus declaran `0 0 0`, así que
+  no cambia nada.
+
+### El corpus con la regla leída
+
+`censo_cp_emisor.py`, sobre las 129 (presets, hijos y el `controlpointN` del
+`instanceoverride`):
+
+| | emisores | escenas |
+|---|---|---|
+| `sphererandom` + `boxrandom` (1146 esferas) | 1414 | 109 |
+| con `flags & 2` | 34 | 15 |
+| con su punto de control **atado al cursor** | **17** | **12** |
+| — de ellos con `flags & 2` | 11 | 8 |
+| — **sin** `flags & 2` | **6** | **5** |
+| con su punto quieto pero con `offset` ≠ 0 | 0 | 0 |
+| que declaran `controlpoint` | 5 (valores 0 y 1) | 4 |
+
+Los 1414 son emisores `sphererandom`/`boxrandom` contados en el JSON; que
+coincidan con los 1414 `.psys` de [varios emisores](#varios-emisores-emiten-todos-al-mismo-depósito)
+no quiere decir que sean lo mismo: aquellos son ficheros, uno por objeto con
+partículas y por hijo, y aquí se cuentan emisores de esos dos tipos.
+
+Los seis sin el bit son lo que tumba la hipótesis desde el corpus, sin
+necesidad del binario: `mouse_trail_1`, `shurikencursor_1` (de
+`3238423642`, que declara **`controlpoint: 1`** y tiene el cursor justo en el
+1), dos `Cherry_Blossoms_2`, `new_particle_system_6` y
+`new_particle_system_copy1`. Son efectos de cursor que hoy nacen en el origen
+igual que `trail_1`. Las 12 escenas son `1507488058 1571201795 1670374509
+1811999326 2556172772 2710814362 2788036464 2821288001 2864647826 3082427731
+3238423642 3462491575`. Los `vapor`, `shootingstar` y `短` no cambian con
+ninguna de las dos lecturas: su punto es el 0, quieto y en el origen.
+
+Del tope de una por fotograma: de los 34 con el bit, 10 piden más de 30 por
+segundo y 1 más de 60 (el máximo, 70/s). `trail_1` pide 32. Cuánto recorta
+depende de los fps a los que corra WE, que el usuario elige.
+
+### Lo que queda, para hacerlo bien
+
+Es una tarea distinta de la que se pidió, y su criterio no es «solo cambian
+los sistemas con `flags & 2`», sino «solo cambian los 17 emisores con su punto
+atado al cursor»:
+
+1. `weparticles.py` lee `controlpoint` (entero, defecto 0, tope 7) y lo lleva
+   al `.psys`, al final de la línea `emit` para que un `.so` anterior lo
+   ignore. `src/weparticles.c` centra `emite` en `cp[controlpoint]` además de
+   `origin`. Los puntos quietos del corpus valen 0, así que eso no mueve
+   ningún sistema sin cursor. Además, WE **gira** el sorteo con la matriz del
+   punto cuando `controlpoint ≠ 0` o el sistema lleva el bit 0 de `+0x20`
+   (tabla, «giro con el punto»); hace falta para `shurikencursor_1`
+   (`controlpoint: 1`), aunque con su `distancemin`/`distancemax` a 0 el
+   radio del sorteo es 0. Lo que sí tiene es `speedmin`/`speedmax` 100: las
+   mismas filas se guardan también en la pila (`[rbp-0x78]..[rbp-0x58]`,
+   `0x140237cac..0x140237d16`), y si la velocidad de salida gira con ellas
+   **no se ha leído**. El punto atado al cursor gira con su matriz base
+   (`+0x80..+0xb0`), que tampoco se ha leído de dónde sale. Ojo con los repartos por puestos
+   (`mapsequence*`), que ya sustituyen el origen del emisor por un punto: hay
+   que ver si en WE se suman o se pisan.
+2. **Sin ratón**: hoy un punto atado al cursor se queda en su `offset` hasta
+   que llega el puntero. Mantenerlo así hace que `test_luminancia`, sin
+   `--puntero`, no cambie; es lo coherente con [«sin ratón» no es «ratón en el
+   centro»](#el-puntero-viaja-como-el-tiempo-un-marcador-en-la-plantilla). Lo
+   que WE pone antes del primer movimiento no se ha leído.
+3. `flags & 2`, una por fotograma, por separado. En el simulador, el paso es
+   fijo (`1/60`) y no el fotograma, así que hay que decidir a qué se ata el
+   tope.
+4. Cómo une WE las partículas de un `rope` (si es una cinta por partícula, como
+   aquí, o una que cose las partículas sucesivas) **no se ha leído**. Con
+   `trail_1` importa: sus partículas nacen quietas, y una cinta por partícula
+   quieta no dibuja nada aunque nazca en el cursor.
+
+### Lo medido
+
+- `verifica_exe.sh`: las cinco cadenas y las 57 instrucciones de la tabla,
+  cada una en su dirección. **62 ok, 0 fallos.**
+- `censo_cp_emisor.py`: las cifras de la tabla del corpus, los valores de
+  `flags`, los ritmos, los offsets de los puntos atados al cursor, las 41 de
+  1146 esferas con `sign` no nulo y el único emisor con `controlpoint ≠ 0`.
+- El render no cambia: ni `tools/*.py`, ni `src/`, ni `tools/*.c` tienen diff
+  contra la base. `test_weparticles.py` pasa entero sobre las 129, con la
+  lista de piezas fuera de la simulación vacía.
+
+## Los ejes de la turbulencia: `forward` gira alrededor de `right`, y `up` no se lee
+
+**De dónde se partía.** `weparticles.py` lee de `turbulentvelocityrandom` solo
+`scale`, `timescale`, `speedmin`/`speedmax`, `phasemax` y `offset`, y tira
+`forward`, `right`, `up` y `phasemin`. Cinco ficheros del corpus declaran algún
+eje, en tres escenas: `smoke2` (1877658892, tres objetos), `smoke1`
+(2250845956) y `Flare_Flame`, `Flare_Sparks` y `Flare_Smoke` (2937370591).
+[La turbulencia no turbulaba](#la-turbulencia-no-turbulaba) decía que el
+formato no traía ningún campo de dirección, y la tabla de cadenas del motor
+decía lo contrario. La tarea era leer qué hace WE con ellos y aplicarlo a
+nuestro ruido. **La lectura da la regla entera, pero no se aplica**, porque
+WE no tiene nuestro ruido: su regla no se monta encima del simulador de hoy,
+lo sustituye, y con eso cambiarían también las 147 piezas que no declaran
+ningún eje. De la regla quedan fuera una rama de audio, que aquí no tiene
+soporte, y dos preguntas abiertas: de dónde sale el booleano de la rapidez
+por defecto y qué es `[obj+0x130]`.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). La fábrica
+compara el nombre (`0x1401c8748`) y reserva un bloque de **tipo 9** y `0x64`
+bytes (`0x1401d8847`), con los datos desde el byte 4. Antes de leer nada,
+inserta los defectos que falten (`0x1401c8782` → `0x1401bb030`):
+
+| campo | defecto | dónde se inserta | dónde se guarda (datos / bloque) |
+|---|---|---|---|
+| `speedmin` | **0,5**, o **100** con un booleano de la fábrica | `0x1401bb060` / `0x1401bb056` | `+0x0` / `+0x4` |
+| `speedmax` | **1**, o **250** con el booleano | `0x1401bb134` / `0x1401bb12a` | `speedmax − speedmin` en `+0x4` / `+0x8` (`0x1401c8b19`) |
+| `phasemin` | 0 | `0x1401bb240` | `+0x8` / `+0xc` |
+| `phasemax` | **0,1** | `0x1401bb2e4` | `phasemax − phasemin` en `+0xc` / `+0x10` (`0x1401c8899`) |
+| `timescale` | 1 | `0x1401bb30f` | `+0x10` / `+0x14` |
+| `scale` | **1** | `0x1401bb326` | `+0x14` / `+0x18` |
+| `offset` | 0, **escalar** | `0x1401bb33d` | `+0x18` / `+0x1c` |
+| `forward` | **`0 1 0`** (`0x14048f6d0`) | `0x1401bb34f` | `+0x1c..+0x24` / `+0x20` (`0x1401c88f4`, `0x1401c8a05`, `0x1401c8a17`) |
+| `right` | **`0 0 1`** (`0x14048f6e0`) | `0x1401bb365` | `+0x28..+0x30` / `+0x2c` (`0x1401c89fe`, `0x1401c8b1e`, `0x1401c8b30`) |
+| `up` | — | — | **no se lee**: ni el lector (`0x1401c873d..0x1401c8b60`) ni los defectos (`0x1401bb030..0x1401bb38c`) citan la cadena `up` (`0x14048e5ec`) |
+
+El booleano llega a la fábrica desde la pila (`0x1401c701b`, `[rbp+0x2238]`),
+y de dónde sale no se ha leído.
+
+### La regla
+
+La aplica el inicializador `0x14023b340`. Despacha por el tipo del bloque
+(`0x14023b5c0`, tabla en `0x14023fa78`) y el tipo 9 cae en `0x14023bdbc`:
+
+```
+a     = phasemax − phasemin                           0x14023bdc0
+a    *= audio(bloque + 0x44)     si su modo no es 0   0x14023bdcc..0x14023bddc
+u     = sorteo uniforme                               0x14023bdf3
+fase  = phasemin + u · a                              0x14023bdfb, 0x14023bdff
+θ     = π · scale · snoise1((fase + [obj+0x130]) · timescale) + offset
+                                                      0x14023be04..0x14023be42
+G     = rotate(I, θ, right / |right|)                 0x14023be5e
+v     = M · (G · forward) · (speedmin + u' · ancho)   0x14023be84, 0x14023bed8,
+                                                      0x14023bef9
+vel  += v                                             0x14023bf0d
+```
+
+- **La rama de audio.** El caso 9 empieza mirando el dword de bloque+0x44
+  (`cmp DWORD PTR [rdx],r13d` en `0x14023bdcc`, con `rdx = r14+0x44` y
+  `r13d = 0` desde `0x14023b37e`). Si no es 0, llama a `0x14022a8a0`
+  (`0x14023bdd4`) y multiplica el ancho de la fase por lo que devuelve
+  (`mulss xmm6,xmm7` en `0x14023bddc`). Ese bloque+0x44, datos+0x40, lo
+  rellena el lector común de los `audioprocessing*` (`0x1401c1e20`): el de la
+  turbulencia lo llama en `0x1401c8b5b` con `rcx = datos+0x40` (`0x1401c8b23`).
+  Guarda el `audioprocessingmode` en +0 (`0x1401c2168`), el exponente en +4
+  (`0x1401c2222`), los `audioprocessingbounds` en +8/+0xc (`0x1401c21f8`,
+  `0x1401c2205`) y la banda de frecuencias en +0x10/+0x14 (`0x1401c2246`).
+  Si el modo falta, el lector inserta un 0 (`0x1401c1e83`, con `r15 = 0`
+  desde `0x1401c1e4c`), y la pieza no pasa por esta rama.
+- `0x14022a8a0` despacha por el modo (`0x14022a8b5`) y saca el máximo de las
+  bandas, entre esas dos frecuencias, del array de floats de `[obj+0x2d0]`. El
+  modo 1 lo saca de la primera mitad (`0x14022aa36`); el 2, de la segunda, 16
+  floats después (`0x14022a9b7`); y el 3, de la suma de las dos
+  (`0x14022a903`, `0x14022a909`), multiplicada por 0,5 (`0x14022a97c`).
+  Después lo lleva a [0, 1] entre los dos `bounds` (`0x14022aaa5`), lo suaviza
+  con x²·(3 − 2x) (el 3, de `0x140492830`, en `0x14022aaca`) y lo eleva al
+  exponente (`0x14022aaf2`, la llamada a `0x14041e350`). El resultado vuelve a
+  quedar en [0, 1]. Dos cosas son inferencia y no lectura. Que `[obj+0x2d0]`
+  sea el espectro de audio lo dicen los nombres de los campos, no quién
+  escribe el array. Y que `0x14041e350` sea `powf` lo dicen sus argumentos.
+- **La reactividad al audio no está soportada**, porque el motor no tiene
+  audio (CLAUDE.md, «Qué no soporta»). La regla de aquí **omite esta rama** y
+  equivale al modo 0. En el corpus la usan 2 piezas, las dos con
+  `audioprocessingmode: 3`: `wildfire.json` (1444777554) y `Stars_copy1.json`
+  (3238423642). Ninguna de las 5 con ejes la usa (`censo_turbvel.py`).
+- `snoise1` (`0x14027b090`) es el ruido simplex 1D de siempre: la tabla de
+  Perlin en `0x140484f40` y el factor 0,395. Se muestrea en el **tiempo**,
+  no en la posición. Las partículas que nacen a la vez salen casi paralelas,
+  y el chorro serpentea al pasar los segundos. Que `[obj+0x130]` sea el reloj
+  del sistema lo dice el uso, no una lectura: es también una de las entradas
+  de `remapvalue` (`0x14023d219`).
+- `right` se **normaliza** (`glm::rotate`, con la raíz y la división en
+  `0x1401e25b0`) y `forward` **no**. La norma de `forward` escala la
+  velocidad: `smoke1`, con `0 0.25 0`, sale a la cuarta parte de su
+  `speedmin`/`speedmax`, y `Flare_Sparks`, con `0 0 0`, no recibe ninguna
+  velocidad de esta pieza. Su `up 0 100 0` no multiplica nada porque no se
+  lee, y el `right 10 0 1` de `Flare_Smoke` es solo una dirección.
+- `offset` es un **ángulo** que se suma a θ, no un desplazamiento del punto de
+  muestreo.
+- `M` (`r15`, el tercer argumento: `0x14023b364`) es la misma matriz por la que
+  pasa `velocityrandom` (tipo 7, `0x14023bbaf`): el giro del objeto lo trata
+  igual en las dos piezas.
+
+`verifica_exe.sh` comprueba las 18 cadenas, las 9 constantes, la tabla de
+permutación, la entrada de la tabla de saltos, los dos tramos sin `up`, el
+tramo en el que `r13` sigue valiendo 0 y 122 instrucciones, cada una en su
+dirección.
+
+### Por qué no se aplica
+
+La identidad implícita de hoy no es el defecto de WE. Hoy, sin ejes, cada
+partícula sale por el rotacional de un ruido 3D evaluado en su posición,
+desplazado por el sitio del objeto (`desplazar_ruido`). En WE, sin ejes, todas
+salen por `forward = (0, 1, 0)` girado ±π·`scale` alrededor de z. Además, hay
+otras cuatro diferencias que solo se ven al leer la pieza entera
+(`censo_turbvel.py`, 152 piezas en 66 escenas):
+
+- `offset`: 97 piezas lo declaran (−0,5 ×45, 3 ×34, −0,1 ×14, 0 ×3 y 0,5 ×1),
+  todas como escalar. Hoy se reparte a los tres ejes del punto de muestreo y
+  en WE es un giro en radianes.
+- `speedmin`/`speedmax`: 53 piezas no declaran el primero y 50 el segundo, y
+  esas 50 no declaran ninguno de los dos. Hoy faltan como 0, así que esas 50
+  no dan velocidad; en WE valen 0,5–1 o 100–250, según el booleano.
+- `phasemax`: 117 no lo declaran (WE, 0,1). `timescale` y la fase no se usan
+  hoy en el inicializador.
+- `scale`: solo 1 pieza no lo declara (WE, 1; aquí, 0,01).
+
+Aplicar los ejes solo a los cinco que los declaran daría dos semánticas para
+la misma pieza: un `forward: "0 1 0"` escrito se comportaría distinto que uno
+omitido, que vale lo mismo. Sería un caso especial por campo presente, que
+tapa la causa en vez de arreglarla. Hacerlo bien es **sustituir el
+inicializador** por la regla de arriba en las 152 piezas, y eso es otra tarea,
+con otro criterio: cambian las 66 escenas, no tres. Lo que haría falta:
+
+1. Python lleva al `.psys` todo lo leído (`forward`, `right`, la fase, la
+   rapidez con sus defectos y el `offset` como ángulo) y deja de desplazar el
+   punto de muestreo. El simulador hace el giro con el ruido 1D, sembrado como
+   el resto.
+2. Decidir qué hacer con `ESCALA_RUIDO` y `desplazar_ruido`, que con la regla
+   de WE no tienen sentido.
+3. Leer el booleano de la rapidez por defecto y confirmar `[obj+0x130]`. La
+   rama de audio se queda fuera, como el modo 0, mientras no haya audio.
+4. Un oráculo: con 66 escenas, la regla leída sola no basta para validar el
+   aspecto del humo.
+
+### Lo medido
+
+`rumbo_turbvel.py` aísla la pieza: deja en cada `.psys` solo
+`lifetimerandom` y `turbulentvelocityrandom`, sin operadores, y le pasa
+`psysprobe` en t = 1, 2 y 3. Al lado pone la regla de arriba por Monte Carlo,
+con el ruido del exe y suponiendo que `[obj+0x130]` es el instante de
+nacimiento. El rumbo está en grados, en el marco del sistema (y hacia arriba),
+y `c` es la coherencia, |media| / rapidez media. La rama no toca el render,
+así que la columna de la rama es la de la base:
+
+| fichero | `.psys` | base = rama, rumbo (c), t = 1 / 2 / 3 | regla de WE, rumbo (c), t = 1 / 2 / 3 |
+|---|---|---|---|
+| `smoke2` | 1877658892/s000 | −163,2 (0,86) / −163,2 (0,86) / −163,2 (0,86) | 97,6 (1,00) / 94,1 (1,00) / 93,5 (1,00) |
+| `smoke2` | 1877658892/s001 | 105,7 (0,97) / 105,5 (0,97) / 105,4 (0,97) | 97,6 (1,00) / 94,0 (1,00) / 93,4 (1,00) |
+| `smoke2` | 1877658892/s002 | 45,7 (0,51) / 46,1 (0,50) / 45,8 (0,50) | 97,6 (1,00) / 94,0 (1,00) / 93,4 (1,00) |
+| `smoke1` | 2250845956/s002 | 60,4 (0,88) / 60,2 (0,88) / 60,5 (0,88) | 94,9 (1,00) / 93,5 (1,00) / 92,8 (1,00) |
+| `Flare_Flame` | 2937370591/s003 | 64,3 (0,34) / 64,2 (0,34) / 65,3 (0,35) | 1,3 (0,13) / 82,4 (1,00) / 81,1 (0,85) |
+| `Flare_Sparks` | 2937370591/s002 | 175,6 (0,75) / −178,6 (0,55) / 161,7 (0,75) | sin velocidad: `forward 0 0 0` |
+| `Flare_Smoke` | 2937370591/s004 | 59,0 (0,56) / 58,7 (0,55) / 58,9 (0,55) | 57,1 (0,74) / 62,9 (0,93) / 63,0 (0,95) |
+
+De las 18 medidas con rumbo en la regla, **12 caen hoy a más de ±15°**. Los
+tres objetos que comparten `smoke2` salen hoy en tres direcciones, porque cada
+uno muestrea otro trozo del ruido, y en WE salen los tres hacia arriba.
+
+- `verifica_exe.sh`: **154 ok, 0 fallos**.
+- `planes_iguales.sh`, contra la base 78e0665 sobre las 129: **1131 de 1131
+  idénticos** (`plan.txt` y `.psys`), y `psysprobe` en t = 2 y 5 da lo mismo en
+  **2004 de 2004**. El único diff de código es el comentario de
+  `ESCALA_RUIDO` en `weparticles.py`, que repetía la frase equivocada, y su
+  AST es idéntico al de la base (`sin_cambio_render.sh`).
+- `censo_turbvel.py`: las cifras de arriba. `censo_campos_psys.py` del triador
+  sigue dando los 5 ficheros.
+- Los scripts están en
+  `~/.local/state/wallpaperengine-bucle/ejecuciones/20261006-134236/medidas/`,
+  con su `repetir.sh`.

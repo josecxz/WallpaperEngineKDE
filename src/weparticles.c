@@ -33,6 +33,9 @@
  * el estallido `instantaneous` del arranque, que suelta el deposito entero de
  * una vez (100 en las chispas de WE). 256 lo cubre y son 4 KB por sistema. */
 #define WE_MAX_EVENTOS 256
+/* Emisores por sistema. WE permite varios; el corpus no pasa de 2 (2 sistemas
+ * en 2 escenas) y `tools/weparticles.py` anota los que sobren de estos. */
+#define WE_MAX_EMISORES 4
 
 /* ── vocabulario ───────────────────────────────────────────────────────────
  *
@@ -105,6 +108,7 @@ typedef struct {
      * falta para el siguiente. Ver `guarda_punto`. */
     int n_hist;
     float t_hist;
+    int emisor;                     /* cual la solto; solo para contarlas */
 } Particula;
 
 /* Un punto del historial de una cinta: posicion, tamano, color y alfa TAL COMO
@@ -121,14 +125,25 @@ typedef struct { float pos[3]; int idx; } Evento;
  * pasaria a seguir a la siguiente que naciera ahi. */
 typedef struct { int idx; unsigned int semilla; float credito; } Seguidora;
 
+/* Una linea `emit`. Cada emisor lleva su forma, su ritmo y su credito, pero
+ * todos sueltan al MISMO deposito: `maxcount` es del sistema, no del emisor. */
+typedef struct {
+    int forma;                      /* EM_ESFERA | EM_CAJA */
+    float rate, dmin[3], dmax[3], dir[3], org[3], signo[3];
+    float instantaneo, duracion;
+    float velmin, velmax;           /* rapidez de salida, hacia afuera */
+    float credito;                  /* particulas pendientes de emitir */
+} Emisor;
+
 struct WeParticleSystem {
     int maxcount;
     float starttime;
 
-    int emisor;                     /* -1 si el sistema no emite */
-    float rate, dmin[3], dmax[3], dir[3], org[3], signo[3];
-    float instantaneo, duracion;
-    float velmin, velmax;           /* rapidez de salida, hacia afuera */
+    /* Los emisores, en el orden del `.psys`. Con `n_em` a 0 el sistema no
+     * emite, pero `em[0]` sigue valiendo: es con el que se coloca un hijo de
+     * evento, y sin linea `emit` es un punto. */
+    int n_em;
+    Emisor em[WE_MAX_EMISORES];
 
     int n_init, n_oper;
     Pieza init[MAX_PIEZAS], oper[MAX_PIEZAS];
@@ -167,7 +182,6 @@ struct WeParticleSystem {
     int n_verts;
 
     float t_prev;
-    float credito;                  /* particulas pendientes de emitir */
     int estacion;                   /* siguiente puesto del reparto por camino */
     int estacion_cp;                /* ...y el del reparto en corro */
     int cursor;                     /* por donde seguir buscando hueco */
@@ -352,6 +366,7 @@ static int busca(const Entrada *tabla, int n, const char *nombre, int *nfloats)
  *   anim      <0 secuencia | 1 fotograma fijo> <repeticiones por vida>
  *   emit  <sphererandom|boxrandom> <rate> <dmin[3]> <dmax[3]> <dir[3]>
  *         <origen[3]> <signo[3]> <instantaneas> <duracion> <velmin> <velmax>
+ *         (una linea por emisor; casi todos los sistemas traen una)
  *   cp    <indice> <x> <y> <z> [1 = lo mueve el puntero]
  *   init  <nombre> <floats...>
  *   oper  <nombre> <floats...>
@@ -368,11 +383,10 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
     WeParticleSystem *s = calloc(1, sizeof *s);
     if (!s) { fclose(f); return NULL; }
     s->maxcount = 32;
-    s->emisor = -1;
     s->anim_mult = 1.0f;
     s->rng = 0x1234567u;
     s->t_prev = -1.0f;
-    for (int i = 0; i < 3; i++) s->dir[i] = 1.0f;
+    for (int i = 0; i < 3; i++) s->em[0].dir[i] = 1.0f;
 
     /* `strtof` mira LC_NUMERIC. Este fichero lo escribe siempre con punto
      * decimal, pero el motor vive dentro de plasmashell, y Qt hace
@@ -415,21 +429,23 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
         } else if (strcmp(kw, "emit") == 0) {
             if (sscanf(resto, "%63s", nombre) != 1)
                 continue;
-            s->emisor = strcmp(nombre, "boxrandom") == 0 ? EM_CAJA : EM_ESFERA;
+            if (s->n_em >= WE_MAX_EMISORES) { desconocidas++; continue; }
+            Emisor *e = &s->em[s->n_em++];
+            e->forma = strcmp(nombre, "boxrandom") == 0 ? EM_CAJA : EM_ESFERA;
             float v[20] = {0};
             lee_floats(tras_palabra(resto), v, 20);
-            s->rate = v[0];
+            e->rate = v[0];
             for (int i = 0; i < 3; i++) {
-                s->dmin[i] = v[1 + i];
-                s->dmax[i] = v[4 + i];
-                s->dir[i] = v[7 + i];
-                s->org[i] = v[10 + i];
-                s->signo[i] = v[13 + i];
+                e->dmin[i] = v[1 + i];
+                e->dmax[i] = v[4 + i];
+                e->dir[i] = v[7 + i];
+                e->org[i] = v[10 + i];
+                e->signo[i] = v[13 + i];
             }
-            s->instantaneo = v[16];
-            s->duracion = v[17];
-            s->velmin = v[18];
-            s->velmax = v[19];
+            e->instantaneo = v[16];
+            e->duracion = v[17];
+            e->velmin = v[18];
+            e->velmax = v[19];
         } else if (strcmp(kw, "cp") == 0) {
             /* El quinto numero es opcional: los planes escritos antes de que
              * el puntero existiera traen cuatro y siguen valiendo. */
@@ -541,10 +557,11 @@ static int puesto(int n, int puestos, int rebota)
     return m < puestos ? m : periodo - m;
 }
 
-static void emite(WeParticleSystem *s, Particula *q)
+static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
 {
     memset(q, 0, sizeof *q);
     q->viva = 1;
+    q->emisor = (int)(e - s->em);
     q->semilla = siguiente(&s->rng);
     q->vida = 1.0f;
     q->tam_base = 32.0f;
@@ -556,24 +573,24 @@ static void emite(WeParticleSystem *s, Particula *q)
      * semieje. Es lo que aplana casi todos los sistemas del corpus contra el
      * plano z=0 (`1 0.2 0`, `1 0.03 0`...). */
     float d[3];
-    if (s->emisor == EM_CAJA) {
+    if (e->forma == EM_CAJA) {
         for (int i = 0; i < 3; i++)
-            d[i] = (azar(&s->rng) * 2.0f - 1.0f) * s->dmax[i] * s->dir[i];
+            d[i] = (azar(&s->rng) * 2.0f - 1.0f) * e->dmax[i] * e->dir[i];
     } else {
         float u[3];
         for (int i = 0; i < 3; i++)
             u[i] = azar(&s->rng) * 2.0f - 1.0f;
         float n = sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
         if (n < 1e-6f) { u[0] = 1.0f; u[1] = u[2] = 0.0f; n = 1.0f; }
-        float radio = mezcla(s->dmin[0], s->dmax[0], azar(&s->rng));
+        float radio = mezcla(e->dmin[0], e->dmax[0], azar(&s->rng));
         for (int i = 0; i < 3; i++)
-            d[i] = u[i] / n * radio * s->dir[i];
+            d[i] = u[i] / n * radio * e->dir[i];
     }
     /* `sign` fuerza el semieje: 29 sistemas emiten solo hacia un lado. */
     for (int i = 0; i < 3; i++) {
-        if (s->signo[i] > 0.0f && d[i] < 0.0f) d[i] = -d[i];
-        else if (s->signo[i] < 0.0f && d[i] > 0.0f) d[i] = -d[i];
-        q->pos[i] = s->org[i] + d[i];
+        if (e->signo[i] > 0.0f && d[i] < 0.0f) d[i] = -d[i];
+        else if (e->signo[i] < 0.0f && d[i] > 0.0f) d[i] = -d[i];
+        q->pos[i] = e->org[i] + d[i];
     }
 
     /* La rapidez de salida del emisor, HACIA AFUERA: la direccion es la que ya
@@ -581,9 +598,9 @@ static void emite(WeParticleSystem *s, Particula *q)
      * unica velocidad de 12 sistemas del corpus ---sin ella nacen quietos--- y
      * en `3219398263` es lo que se ve en WE: rayas cortas y radiales, no el
      * anillo que salia de dejar mandando al vortice. */
-    if (s->velmax != 0.0f || s->velmin != 0.0f) {
+    if (e->velmax != 0.0f || e->velmin != 0.0f) {
         float n = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-        float rapidez = mezcla(s->velmin, s->velmax, azar(&s->rng));
+        float rapidez = mezcla(e->velmin, e->velmax, azar(&s->rng));
         if (n > 1e-4f)
             for (int i = 0; i < 3; i++)
                 q->vel[i] = d[i] / n * rapidez;
@@ -619,7 +636,7 @@ static void emite(WeParticleSystem *s, Particula *q)
         float f = u - (float)seg;
         for (int k = 0; k < 3; k++) {
             float base = mezcla(s->cp[seg][k], s->cp[seg + 1][k], f);
-            q->pos[k] = base + (q->pos[k] - s->org[k]);
+            q->pos[k] = base + (q->pos[k] - e->org[k]);
         }
     }
 
@@ -656,7 +673,7 @@ static void emite(WeParticleSystem *s, Particula *q)
         q->vel[2] += vel[2];
 
         for (int k = 0; k < 3; k++)
-            q->pos[k] = s->cp[0][k] + (q->pos[k] - s->org[k]);
+            q->pos[k] = s->cp[0][k] + (q->pos[k] - e->org[k]);
     }
 
     for (int i = 0; i < s->n_init; i++) {
@@ -710,8 +727,8 @@ static void emite(WeParticleSystem *s, Particula *q)
     if (q->vida < 1e-3f) q->vida = 1e-3f;
 }
 
-/* Hace nacer la particula del hueco `i`, desplazada por `donde` si no es
- * NULL, y lo anota para los hijos. Es el UNICO sitio por el que nace una
+/* Hace nacer la particula del hueco `i` desde el emisor `e`, desplazada por
+ * `donde` si no es NULL, y lo anota para los hijos. Es el UNICO sitio por el que nace una
  * particula: el emisor libre, el estallido del arranque y los eventos de un
  * padre pasan todos por aqui, y por eso un `eventspawn` ve los nacimientos de
  * su padre vengan de donde vengan ---tambien cuando el padre es a su vez un
@@ -719,10 +736,10 @@ static void emite(WeParticleSystem *s, Particula *q)
  *
  * Se anota DESPUES de desplazar: lo que le interesa al hijo es donde ha nacido
  * de verdad, no donde la puso el emisor antes de llevarla al evento. */
-static void nace(WeParticleSystem *s, int i, const float *donde)
+static void nace(WeParticleSystem *s, const Emisor *e, int i, const float *donde)
 {
     Particula *q = &s->p[i];
-    emite(s, q);
+    emite(s, e, q);
     if (donde)
         for (int k = 0; k < 3; k++)
             q->pos[k] += donde[k];
@@ -763,15 +780,22 @@ static void paso(WeParticleSystem *s, float dt)
      *
      * Un hijo de evento no emite por su cuenta: su `rate` es el de CADA
      * instancia, y quien lo aplica es `paso_con_hijos`, donde esta la
-     * particula que sigue. */
-    int emitiendo = s->duracion <= 0.0f || s->vivido < s->duracion;
-    if (s->emisor >= 0 && emitiendo && !s->padre) {
-        s->credito += s->rate * dt;
-        while (s->credito >= 1.0f) {
-            s->credito -= 1.0f;
+     * particula que sigue.
+     *
+     * Con varios emisores, cada uno lleva su credito y su `duration`, y van
+     * por orden al mismo deposito: si esta lleno, el primero ocupa los huecos
+     * que se liberen antes que el segundo. El orden es un supuesto; lo de que
+     * el deposito sea uno solo, tambien (ver NOTAS). */
+    for (int j = 0; j < s->n_em && !s->padre; j++) {
+        Emisor *e = &s->em[j];
+        if (e->duracion > 0.0f && s->vivido >= e->duracion)
+            continue;
+        e->credito += e->rate * dt;
+        while (e->credito >= 1.0f) {
+            e->credito -= 1.0f;
             int hueco = hueco_libre(s);
             if (hueco < 0) break;
-            nace(s, hueco, NULL);
+            nace(s, e, hueco, NULL);
         }
     }
     s->vivido += dt;
@@ -1175,7 +1199,8 @@ static int construye(WeParticleSystem *s)
 
 /* `n` particulas del hijo en la posicion de un evento del padre.
  *
- * El hijo se coloca con su PROPIO emisor ---`shootingstarglow` usa una esfera
+ * El hijo se coloca con su PROPIO emisor ---el primero, si trae varios: ningun
+ * hijo del corpus los trae---`shootingstarglow` usa una esfera
  * de radio 0, o sea el punto exacto; `Flare` una caja de 100x100, o sea un
  * corro alrededor--- y luego se desplaza al sitio del evento. Asi el preset
  * sigue decidiendo la forma del estallido y el evento solo dice donde.
@@ -1192,7 +1217,7 @@ static void suelta(WeParticleSystem *s, int n, const float *donde)
         int hueco = hueco_libre(s);
         if (hueco < 0)
             return;                 /* deposito lleno: lo demas se pierde */
-        nace(s, hueco, d);
+        nace(s, &s->em[0], hueco, d);
     }
 }
 
@@ -1240,13 +1265,13 @@ static void sigue(WeParticleSystem *c, const WeParticleSystem *pa, float h)
         c->sigue[libre].credito = 0.0f;
         suelta(c, c->rafaga, e->pos);
     }
-    if (c->rate <= 0.0f)
+    if (c->em[0].rate <= 0.0f)
         return;
     for (int j = 0; j < c->n_sigue; j++) {
         Seguidora *f = &c->sigue[j];
         if (f->idx < 0)
             continue;
-        f->credito += c->rate * h;
+        f->credito += c->em[0].rate * h;
         int n = (int)f->credito;
         f->credito -= (float)n;
         suelta(c, n, pa->p[f->idx].pos);
@@ -1338,6 +1363,20 @@ int we_psys_cursor(const WeParticleSystem *s)
     return s && s->cp_cursor ? 1 : 0;
 }
 
+int we_psys_emisores(const WeParticleSystem *s)
+{
+    return s ? s->n_em : 0;
+}
+
+int we_psys_vivas(const WeParticleSystem *s, int emisor)
+{
+    int n = 0;
+    for (int i = 0; s && i < s->maxcount; i++)
+        if (s->p[i].viva && s->p[i].emisor == emisor)
+            n++;
+    return n;
+}
+
 void we_psys_puntero(WeParticleSystem *s, const float *xyz)
 {
     if (!s)
@@ -1394,12 +1433,20 @@ int we_psys_update(WeParticleSystem *s, float t)
     if (dt > tope)
         dt = tope;
 
-    /* Las particulas instantaneas son un unico estallido al arrancar. */
-    if (s->instantaneo > 0.0f && s->vivido == 0.0f) {
-        int n = (int)s->instantaneo;
-        if (n > s->maxcount) n = s->maxcount;
-        for (int i = 0; i < n; i++)
-            nace(s, i, NULL);
+    /* Las particulas instantaneas son un unico estallido al arrancar. Cada
+     * emisor suelta las suyas en los huecos que siguen a las del anterior. */
+    if (s->vivido == 0.0f) {
+        int ocupados = 0;
+        for (int j = 0; j < s->n_em; j++) {
+            const Emisor *e = &s->em[j];
+            if (e->instantaneo <= 0.0f)
+                continue;
+            int n = (int)e->instantaneo;
+            if (n > s->maxcount - ocupados) n = s->maxcount - ocupados;
+            for (int i = 0; i < n; i++)
+                nace(s, e, ocupados + i, NULL);
+            ocupados += n;
+        }
     }
 
     /* Paso fijo: el resultado no puede depender de a cuantos fotogramas por

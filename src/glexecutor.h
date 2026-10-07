@@ -217,6 +217,10 @@ private:
         // del plan ya trae la parte en reposo.
         bool tieneParalaje = false;
         float paralaje[2] = {0.0f, 0.0f};
+        // La capa la coloca la camara (linea `tiembla`), asi que el temblor de
+        // `camerashake` la mueve. No la llevan las `passthrough`, que leen el
+        // fotograma ya movido; ver `temblor_de_camara` en werender.py.
+        bool tiembla = false;
         // Pass
         QString vert, frag;             // solo hasta initialize()
         QString targetName;             // idem
@@ -420,6 +424,12 @@ private:
     // `m_parallax`, que es lo que se sube como `g_ParallaxPosition`.
     float m_camara[2] = {0.5f, 0.5f};
     float m_camaraInfluencia = 0.5f;
+    // `camerashake` (linea `temblor`): amplitud en fracciones del lienzo por
+    // eje, velocidad y rugosidad, tal cual las evalua `src/wetemblor.c`. Y lo
+    // que se ha movido la camara en este fotograma, con la y hacia arriba.
+    bool m_hayTemblor = false;
+    float m_temblor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float m_temblorDelta[2] = {0.0f, 0.0f};
     float m_tiempoPrevio = -1.0f;      // para sacar el dt del fotograma
     quint64 m_diagFitSig = 0;   // ultimo encaje trazado, para no repetirlo
     int m_passCount = 0;

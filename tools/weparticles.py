@@ -27,10 +27,9 @@ Censo del corpus (823 sistemas en 106 escenas) que decide que hay que cubrir:
     renderers      sprite 586, spritetrail 145, rope 34, ropetrail 32
     shader         genericparticle, uno solo, en los 823
 
-El vocabulario esta cubierto entero. Lo unico que queda sin dibujar del corpus
-son un emisor extra en dos sistemas ---WE permite varios y sumarlos mal es peor
-que tomar el primero--- y la anchura de la cinta de un `rope` con
-`orientation: upright`; ver `_orientacion`.
+El vocabulario esta cubierto entero, tambien los sistemas con dos emisores: 2
+en el corpus, que emiten por los dos al mismo deposito. `orientation` no deja
+nada fuera; ver `_orientacion`.
 
 Los dos repartos por puestos se colocan: `mapsequencebetweencontrolpoints` (11)
 por un camino y `mapsequencearoundcontrolpoint` (3) en corro. Ver
@@ -230,18 +229,26 @@ def _init_giro_vel(e):
 # ---|velocidad media| / rapidez media--- era 0.08: un pufo que se abre en todas
 # direcciones en vez del chorro que sale del canon.
 #
-# El factor esta CALIBRADO, no leido de WE, que no publica su funcion de ruido.
-# Con el, la coherencia de ese humo sube a 0.72: sale con rumbo pero conserva
+# El factor esta CALIBRADO, no leido de WE. Su funcion de ruido si esta leida
+# ---un simplex 1D, 0x14027b090---, pero WE la muestrea en el tiempo y no en un
+# campo en el espacio: no tiene celda que escalar ni factor que copiar. Con el
+# factor, la coherencia de ese humo sube a 0.72: sale con rumbo pero conserva
 # volumen. Se probaron 0.01 ---0.91, tan paralelo que se ve como una raya de
 # humo--- y 0.1 ---0.56, demasiado abierto---. La direccion resultante no
 # depende del factor (los tres dan -12.6 grados); lo que cambia es cuanto se
 # abre el penacho.
 #
-# Que la direccion concreta la pone nuestro ruido y no el wallpaper es
-# inevitable: el formato no trae ningun campo de direccion, solo `scale`,
-# `speedmin`/`speedmax` y un `offset` que desplaza el punto de muestreo ---y que
-# en este preset vale cero---. Lo que si vuelve a depender del wallpaper es el
-# caracter: los sistemas pequenos salen coherentes y los grandes se esparcen.
+# La direccion concreta la pone nuestro ruido y no el wallpaper. No es que el
+# formato no la traiga: WE no muestrea un campo en el espacio, gira `forward`
+# ---(0, 1, 0) si falta--- alrededor de `right` un angulo que sale de un ruido
+# en el TIEMPO, y su `offset` es un angulo y no un desplazamiento del punto de
+# muestreo. Aqui el `offset` si desplaza el punto de muestreo, y en el preset
+# medido vale cero: los -12.6 grados de arriba son solo de nuestro ruido, sin
+# nada del wallpaper que los apunte. La regla de WE esta leida en
+# wallpaper64.exe y sin aplicar, porque cambia las 152 piezas del corpus y no
+# solo las 5 que declaran ejes: NOTAS.md, «Los ejes de la turbulencia». Con el
+# ruido de aqui, lo que si depende del wallpaper es el caracter: los sistemas
+# pequenos salen coherentes y los grandes se esparcen.
 #
 # Vive aqui y no en el `.c` por dos razones. Convertir las unidades del formato
 # es interpretarlo, que es trabajo de Python; el simulador ejecuta el numero que
@@ -592,39 +599,48 @@ def _estela(e: dict) -> tuple[float, float, float]:
 def _orientacion(e: dict, cinta: bool) -> str | None:
     """Que valor de `orientation` no sabemos dibujar; `None` si vale el nuestro.
 
-    Reparto del corpus: 722 renderers sin campo, 38 `screen`, 4 `upright` y 1
-    `fixed`. Los tres nombres piden lo mismo en una escena PLANA:
+    Reparto del corpus: 771 renderers sin campo, 38 `screen`, 4 `upright` y 1
+    `fixed`. Lo unico que el campo cambia son los tres `g_Orientation*` del
+    pase, y WE los calcula con UNA misma rutina para los cuatro renderers
+    ---sprite, estela, `rope` y `ropetrail`---, leida en `wallpaper64.exe`
+    (NOTAS, «`upright` en una cinta»). La escena es plana y su camara mira por
+    el eje Z sin girar; con eso:
 
-    * `camera` (el defecto) orienta el sprite hacia la camara.
-    * `screen` lo orienta al plano de pantalla, que sin rotacion de camara es el
-      mismo plano.
-    * `upright` le clava el eje vertical al del mundo, que ya lo es.
+    * `screen` ---el defecto del lector de WE--- y `camera`, que ese lector no
+      distingue de `screen`, ponen `forward` contra la vista y `up` en el eje Y
+      del objeto: los canonicos.
+    * `upright` toma `up` del mundo si `flags & 1`, y si no `axis` llevado por
+      el objeto, con `axis` (0, 1, 0) por defecto; `forward` sale de dos
+      productos vectoriales con la vista. Mientras ese `up` no tenga z da
+      exactamente la base de `screen`. Con z se tuerce, y se anota.
+    * `fixed` pone `forward` en `axis`. El `spritetrail` de `Magic_Vortex` lo
+      tiene en (0, 0, 1), que es nuestro `forward`; otro eje si pediria otra
+      base, y se anota.
 
-    `fixed` sustituye la direccion de la vista por un eje propio. Es el
-    `spritetrail` de `Magic_Vortex`, y su eje es (0, 0, 1):
-    `ComputeParticleTrailTangents` calcula `right = cross(vista, velocidad)` con
-    la vista en -Z, asi que el eje fijo da el MISMO quad con la u espejada ---y
-    su sprite es un halo con simetria de giro. Con un eje que no fuera paralelo
-    a Z si habria trabajo; en el corpus no hay ninguno.
-
-    Las cintas son otra cosa y por eso reciben `cinta=True`: su anchura no la
-    calcula el shader de WE sino nuestro constructor de vertices, que la pone
-    perpendicular al camino. Ahi `upright` ---el `rope` de *Vapor 1*--- si pide
-    otra geometria, y se sigue anotando.
+    Las cintas no son una excepcion: su anchura tambien la decide
+    `g_OrientationForward`, en `genericropeparticle.vert`, y el constructor de
+    vertices solo pasa extremos y puntos de control. `cinta` solo cambia como
+    se nombra el aviso.
     """
     o = e.get("orientation")
-    if o in (None, "camera"):
+    if o in (None, "camera", "screen"):
         return None
-    if cinta:
-        return f"estela {o}"
-    if o in ("screen", "upright"):
-        return None
+    pieza = "estela" if cinta else "orientacion"
+    if o == "upright":
+        if int(_f1(e.get("flags"), 0.0)) & 1:
+            return None
+        # Un eje nulo ---o ausente--- el lector de WE lo cambia por (0, 1, 0),
+        # que tampoco tiene z.
+        x, y, z = _v3(e.get("axis"))
+        if abs(z) < 1e-6:
+            return None
+        return f"{pieza} upright eje {x:g} {y:g} {z:g}"
     if o == "fixed":
         x, y, z = _v3(e.get("axis"))
         if abs(z) > 1e-6 and abs(x) < 1e-6 and abs(y) < 1e-6:
             return None
-        return f"orientacion fixed eje {x:g} {y:g} {z:g}"
-    return f"orientacion {o}"
+        return f"{pieza} fixed eje {x:g} {y:g} {z:g}"
+    return f"{pieza} {o}"
 
 
 def _cursor(op: dict, cursor: set[int]) -> bool:
@@ -654,8 +670,9 @@ def _cursor(op: dict, cursor: set[int]) -> bool:
 class Sistema:
     maxcount: int = 32
     starttime: float = 0.0
-    emisor: str = ""
-    emit: list[float] = field(default_factory=list)
+    # Uno por emisor del JSON, en su orden: la forma y sus 20 floats. Casi
+    # todos los sistemas tienen uno; ver `cargar`.
+    emisores: list[tuple[str, list[float]]] = field(default_factory=list)
     cps: dict[int, list[float]] = field(default_factory=dict)
     inits: list[tuple[str, list[float]]] = field(default_factory=list)
     opers: list[tuple[str, list[float]]] = field(default_factory=list)
@@ -684,7 +701,7 @@ class Sistema:
     con_cursor: list[str] = field(default_factory=list)
     @property
     def dibujable(self) -> bool:
-        return bool(self.material and self.emisor)
+        return bool(self.material and self.emisores)
 
 
 def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Sistema:
@@ -722,8 +739,10 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
                 cursor.add(i)
                 s.cps_cursor.add(i)
 
-    # WE permite varios emisores; el corpus no usa ninguno con mas de uno, y
-    # tomar el primero es preferible a sumarlos mal.
+    # WE permite varios emisores, y emiten TODOS: cada uno con su forma y su
+    # ritmo, al mismo deposito. En el corpus son 2 sistemas en 2 escenas, y en
+    # los dos el segundo emisor es una `sphererandom` sin un solo campo, asi que
+    # sale entero de los defectos de abajo. Ver NOTAS.
     for e in pj.get("emitter") or []:
         if not isinstance(e, dict):
             continue
@@ -731,10 +750,9 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         if nombre not in ("sphererandom", "boxrandom"):
             s.sin_soporte.append(f"emitter:{nombre}")
             continue
-        if s.emisor:
+        if len(s.emisores) >= MAX_EMISORES:
             s.sin_soporte.append(f"emitter extra:{nombre}")
             continue
-        s.emisor = nombre
         # `distancemax` es un escalar en la esfera (el radio) y un vector en la
         # caja (los tres semiejes). `_v3` reparte el escalar a los tres, que es
         # justo lo que hace falta en los dos casos.
@@ -757,7 +775,8 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         # mismo punto. Es lo que hacia que la lluvia de estrellas de la `City`
         # saliera entera por el mismo sitio en vez de cruzar el fondo. Son 6
         # presets-emisor del corpus, en 7 escenas.
-        s.emit = ([_f1(e.get("rate"), RITMO_POR_DEFECTO)]
+        s.emisores.append((nombre,
+                  [_f1(e.get("rate"), RITMO_POR_DEFECTO)]
                   + _v3(e.get("distancemin"), 0.0)
                   + (_v3(e.get("distancemax"))
                      if e.get("distancemax") is not None
@@ -787,7 +806,7 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
                   # descolocarse. Importa porque plasmashell conserva mapeada
                   # la `.so` con la que arranco y puede leer un plan nuevo.
                   + [_f1(e.get("speedmin"), 0.0),
-                     _f1(e.get("speedmax"), 0.0)])
+                     _f1(e.get("speedmax"), 0.0)]))
 
     # Una pieza que esta en la tabla pero devuelve None es una VARIANTE que no
     # sabemos traducir --- otro canal de `remapvalue`, otra funcion de ruido ---
@@ -844,6 +863,10 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
 # ritmo de `maxcount` y la vida para sostener el 48 % del deposito. Ver NOTAS.
 RITMO_POR_DEFECTO = 10.0
 
+# Emisores por sistema que lee el simulador (`WE_MAX_EMISORES` en
+# `src/weparticles.c`). El corpus no pasa de 2; los que sobren se anotan.
+MAX_EMISORES = 4
+
 
 def _aplicar_override(s: Sistema, ov: dict) -> None:
     """Escala el preset con los factores que declara el objeto.
@@ -858,9 +881,13 @@ def _aplicar_override(s: Sistema, ov: dict) -> None:
     k = _f1(ov.get("count"), 1.0)
     if k != 1.0:
         s.maxcount = max(1, int(round(s.maxcount * k)))
+    # El `rate` multiplica a CADA emisor. Es un supuesto: en el binario no se ha
+    # leido, pero con un solo factor por objeto no hay otra lectura que deje la
+    # proporcion entre emisores como la puso el autor del preset.
     k = _f1(ov.get("rate"), 1.0)
-    if k != 1.0 and s.emit:
-        s.emit[0] *= k
+    if k != 1.0:
+        for _, emit in s.emisores:
+            emit[0] *= k
 
     esc = {"lifetimerandom": _f1(ov.get("lifetime"), 1.0),
            "sizerandom": _f1(ov.get("size"), 1.0),
@@ -949,8 +976,8 @@ def escribir(s: Sistema, destino: Path, semilla: int) -> None:
               f"anim {s.anim_modo} {num(s.anim_mult)}"]
     if s.cinta:
         lineas.append(f"cinta {s.cinta[0]} {s.cinta[1]} {num(s.cinta[2])}")
-    if s.emisor:
-        lineas.append(f"emit {s.emisor} " + " ".join(num(v) for v in s.emit))
+    for nombre, emit in s.emisores:
+        lineas.append(f"emit {nombre} " + " ".join(num(v) for v in emit))
     for i, off in sorted(s.cps.items()):
         # El quinto numero dice que a ese punto lo mueve el puntero. Se escribe
         # siempre, tambien cuando es 0, para que la linea tenga una sola forma.
@@ -979,7 +1006,8 @@ def main() -> int:
         except SceneError as e:
             print(f"  {o.get('name')!r}: {e}")
             continue
-        print(f"  {o.get('name')!r:32} {s.emisor or '(sin emisor)':<14} "
+        emisores = "+".join(n for n, _ in s.emisores) or "(sin emisor)"
+        print(f"  {o.get('name')!r:32} {emisores:<14} "
               f"max={s.maxcount:<5} t0={s.starttime:<5g} {s.renderer}")
         print(f"      init: {', '.join(k for k, _ in s.inits) or '-'}")
         print(f"      oper: {', '.join(k for k, _ in s.opers) or '-'}")

@@ -173,6 +173,55 @@ def parallax_de_camara(scene, canvas: tuple[int, int]) -> int:
     return n
 
 
+def temblor_de_camara(general: dict, properties: dict,
+                      canvas: tuple[int, int]) -> tuple[float, ...] | None:
+    """El temblor de camara de WE (`camerashake`): con que amplitud y ritmo.
+
+    Leido en el motor (`wallpaper64.exe`), no deducido. El lector de `general`
+    registra `camerashakespeed` en `+0x328`, `camerashakeamplitude` en `+0x32c`
+    y `camerashakeroughness` en `+0x330` de los ajustes de la escena, y
+    `camerashake` es el bit 7 de `+0xe0` (accesores en 0x14019c620). Los lee
+    una sola funcion, 0x140199580, que la actualizacion de la camara
+    (0x1401891a0) llama cada fotograma si el bit esta puesto, y que le suma al
+    ojo y al centro ---la camara entera, no cada capa--- el vector
+
+        amplitud' * v(s),   s = velocidad^2 * t
+
+    con t el reloj de la escena en segundos (`[contexto+0x130]`) y la forma
+    que evalua `src/wetemblor.c`. La amplitud se escala dos veces por 0,1, y
+    en una escena ortografica (bit 3 de `+0xe0`) ademas por el alto de
+    `orthogonalprojection` (`+0x358`), que es el lienzo de aqui:
+
+        amplitud' = 0,1 * amplitud * 0,1 * alto     pixeles de lienzo
+
+    Con la amplitud mas alta del corpus, 0,5 en un lienzo de 2160, son
+    10,8 px, y |v| llega a raiz de 2. Sin `orthogonalprojection` WE lo aplica
+    en unidades de mundo de una camara en perspectiva, que aqui no hay: no se
+    emite.
+
+    Devuelve `(ax, ay, velocidad, rugosidad)` para la linea `temblor` del
+    plan, con la amplitud ya en fracciones del ancho y del alto, o None si la
+    escena no tiembla. `camerashake` se resuelve como `visible`: en tres de
+    las seis escenas que lo encienden cuelga de una propiedad del usuario.
+    """
+    if not wescene.is_visible(general.get("camerashake", False) or False,
+                              properties):
+        return None
+    if not isinstance(general.get("orthogonalprojection"), dict):
+        return None
+    # Sin el campo, los defectos que pone el constructor de la escena
+    # (0x140186f84): velocidad 3, amplitud 0,5, rugosidad 1. El corpus los
+    # declara siempre.
+    amplitud = (_floats(general.get("camerashakeamplitude")) + [0.5])[0]
+    velocidad = (_floats(general.get("camerashakespeed")) + [3.0])[0]
+    rugosidad = (_floats(general.get("camerashakeroughness")) + [1.0])[0]
+    w, h = canvas
+    pixeles = 0.1 * amplitud * 0.1 * h
+    if pixeles == 0.0 or w <= 0 or h <= 0:
+        return None
+    return (pixeles / w, pixeles / h, velocidad, rugosidad)
+
+
 def _escapa(s: str) -> str:
     """Una cadena dentro de una linea del plan, que se parte por espacios.
 
@@ -1525,7 +1574,8 @@ class Renderer:
         modo = obj.raw.get("_hijo_modo")
         if obj.raw.get("_padre") is not None and modo is not None:
             preset = max(1, sis.maxcount)
-            inst = int(sis.emit[16]) if len(sis.emit) > 16 else 0
+            emit = sis.emisores[0][1] if sis.emisores else []
+            inst = int(emit[16]) if len(emit) > 16 else 0
             if inst > 0:
                 rafaga = min(inst, preset)
             else:
@@ -2837,6 +2887,7 @@ class Renderer:
         # Antes que nada que coloque objetos: el parallax en reposo cambia el
         # `origin` efectivo de las raices, y de ahi cuelga todo lo demas.
         self.stats["paralaje"] = parallax_de_camara(scene, canvas)
+        self.temblor = temblor_de_camara(general, scene.properties, canvas)
         self.luces = luces_de_escena(scene, self.por_id)
         self.por_clase = por_tipo(self.luces)
         # `ambientcolor` es la luz que llega a todo por igual y `skylightcolor`
@@ -2870,6 +2921,12 @@ class Renderer:
         influencia = _floats(general.get("cameraparallaxmouseinfluence"))
         self.lines.append(f"parallax {retardo[0] if retardo else 0.1:.4f} "
                           f"{influencia[0] if influencia else 0.5:.4f}")
+        # `camerashake`: la camara tiembla, y cada capa que coloca la camara
+        # lleva una linea `tiembla`. Solo en las escenas que lo encienden; ver
+        # `temblor_de_camara`. El ejecutor evalua la curva con su reloj.
+        if self.temblor:
+            ax, ay, vel, rug = self.temblor
+            self.lines.append(f"temblor {ax:.6g} {ay:.6g} {vel:.6g} {rug:.6g}")
         # Donde esta el raton, para el ejecutor OFFLINE. En vivo esta linea no
         # aparece ---`emit_plan` no pasa puntero--- y el ejecutor usa el del
         # escritorio; ver `self.puntero`. Va la primera del cuerpo porque los
@@ -2967,6 +3024,17 @@ class Renderer:
             k = raiz.raw.get("_paralaje_k")
             if k:
                 self.body.append(f"paralaje {k[0]:.6g} {k[1]:.6g}")
+            # Y lo que lo mueve el temblor de camara, que es a todas las capas
+            # menos a las `passthrough`. Las que no son `composelayer` no
+            # miran la MVP: leen y escriben el fotograma entero, que ya viene
+            # movido. Las `composelayer` leen lo que tienen debajo con la MVP
+            # del plan, que no tiembla: moviendo tambien su colocacion, su
+            # contenido se iba el doble ---medido: 21,7 px donde la camara
+            # mueve 10,8 en las tres escenas con una a pantalla completa---.
+            # Quietas, lo que leen ya esta movido y queda en su sitio; solo
+            # se queda atras el marco del efecto, a lo sumo la amplitud.
+            if self.temblor and not obj.raw.get("_passthrough"):
+                self.body.append("tiembla")
             buffers = self.buffers_de.get(str(obj.raw.get("id")), ())
             for p in obj.passes:
                 if p.command == "copy":
