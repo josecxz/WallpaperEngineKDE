@@ -348,8 +348,13 @@ def prueba_parallax_de_camara(fallos: list[str]) -> None:
                                         "parallaxDepth": "5 5"})
         quieto = wescene.SceneObject(id=3, name="fondo", kind="image",
                                      raw={"id": 3, "origin": "100 100 0"})
-        general = {"cameraparallax": encendido, "cameraparallaxamount": 0.5}
-        return wescene.Scene(general=general, camera={},
+        general = {"cameraparallax": encendido, "cameraparallaxamount": 0.5,
+                   "orthogonalprojection": {"width": 1000, "height": 500}}
+        # El ojo fuera del origen no cuenta: WE lo pone a cero en una escena
+        # ortografica sin `paths` antes de que llegue al objetivo del parallax.
+        # Sumado, la raiz se iria (-200, -20) y el test lo cazaria.
+        camara = {"eye": "200 40 0", "center": "200 40 -1", "up": "0 1 0"}
+        return wescene.Scene(general=general, camera=camara,
                              objects=[raiz, hijo, quieto]), raiz, hijo, quieto
 
     sc, raiz, hijo, quieto = escena(True)

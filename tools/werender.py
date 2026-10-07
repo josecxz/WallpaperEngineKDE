@@ -146,6 +146,13 @@ def parallax_de_camara(scene, canvas: tuple[int, int]) -> int:
       de `a * d`, que va en `_paralaje_k` y el plan lleva en la linea
       `paralaje` de cada objeto; lo aplica el ejecutor cada fotograma.
 
+    WE le suma ademas al objetivo el ojo de la camara (`0x140189c18`), y aqui
+    no se suma A PROPOSITO: el `eye` del `scene.json` se lee, pero en una
+    escena ortografica sin `paths` el cargador lo pone a cero justo despues
+    (`0x14018866b`), y de ahi lo copia cada fotograma. Las 47 escenas con el
+    `eye` fuera del origen son de esas. Lo unico que lleva el ojo es el
+    temblor, que ya suma el ejecutor. Ver `verifica_ojo.sh` en NOTAS.
+
     Solo si la escena lo enciende (`cameraparallax`, que en 5 escenas cuelga
     de una propiedad del usuario). Devuelve cuantos objetos raiz se mueven.
     """
