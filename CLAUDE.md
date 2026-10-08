@@ -161,7 +161,8 @@ y deduce la plantilla) y 25 se quedan con el texto literal: las que usan
 El **puntero sí llega** —los uniforms del ratón y los 123 sistemas de
 partículas que lo persiguen, en 46 escenas— y la **cámara también se mueve**:
 `cameraparallax`, con la fórmula leída en el motor de WE, desplaza cada capa
-según la profundidad de su raíz en 29 escenas, también en reposo. Lo que sigue
-sin confirmar es `g_ParallaxPosition`. `camerashake` también está leído en el
+según la profundidad de su raíz en 29 escenas, también en reposo, y el mismo
+punto de la cámara es el `g_ParallaxPosition` de las 6 escenas con
+`depthparallax`. `camerashake` también está leído en el
 motor y tiembla en sus 6 escenas. Y el fondo solo ve el ratón mientras está
 encima: sobre una ventana se queda en la última posición.

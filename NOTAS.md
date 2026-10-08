@@ -5379,6 +5379,13 @@ dos habrían puesto un efecto marcado como *expensive* sobre una entrada muerta.
 El efecto ya trae sus propios mandos —`g_Scale`, `g_Sensitivity`, `g_Center`—:
 la fuerza es cosa suya, no de la cámara.
 
+**Corregido después**, leyendo el motor: no es el puntero con retardo sino el
+punto P de la cámara partido por el lienzo, y sí lleva
+`cameraparallaxmouseinfluence` —lo que no lleva es el amount—. Las dos escenas
+de amount 0 son justo las de influencia negativa. Ver [`g_ParallaxPosition` es
+el punto P de la
+cámara](#g_parallaxposition-es-el-punto-p-de-la-cámara-no-el-puntero-con-retardo).
+
 ### Lo que queda, medido
 
 - **La cámara**. `cameraparallax` está en 29 escenas de 129 y mueve cada capa
@@ -5955,11 +5962,14 @@ mucho unos 240 px a 1920 con el ratón en una esquina.
 
 ### Lo que queda
 
-- **`g_ParallaxPosition`**. Lo más probable es que WE suba el P normalizado de
+- ~~**`g_ParallaxPosition`**. Lo más probable es que WE suba el P normalizado de
   arriba —con la influencia y la y hacia arriba—, y aquí se sube el ratón con
   retardo y la y hacia abajo. El nombre del uniform es el `0x6b` de su tabla,
   pero el `switch` que lo sube va por tabla de saltos y no se ha encontrado. No
-  se toca sin eso: lo usan 6 escenas con `depthparallax`.
+  se toca sin eso: lo usan 6 escenas con `depthparallax`.~~ **Hecho**: era eso,
+  y con `cameraparallax` apagado se queda en el centro; ver
+  [`g_ParallaxPosition` es el punto P de la
+  cámara](#g_parallaxposition-es-el-punto-p-de-la-cámara-no-el-puntero-con-retardo).
 - **`escena[+0xf0/+0xf4]`**, un término que WE suma al objetivo y que aquí se
   toma como cero; y una marca de la escena que invierte la x.
 - ~~**`camerashake`**, 6 escenas~~ **hecho**: [El temblor de
@@ -7029,3 +7039,173 @@ Contra la base `a81d43a` y con Mesa, con los scripts de
 - **`compila.sh`**: `make glexec psysprobe build` sin errores ni avisos en
   `src/weparticles.c`, y la tabla de `snoise1` está en `obj/glexec`, en
   `obj/psysprobe` y en la `.so`.
+
+## `g_ParallaxPosition` es el punto P de la cámara, no el puntero con retardo
+
+Quedaba en [Lo que queda](#lo-que-queda-1) del parallax de cámara: «lo más
+probable es que WE suba el P normalizado —con la influencia y la y hacia
+arriba—, y aquí se sube el ratón con retardo y la y hacia abajo», sin tocar
+porque el `switch` que sube el uniform `0x6b` iba por una tabla de saltos que
+nadie había encontrado. El corpus ya apuntaba a eso: de las 6 escenas con
+`depthparallax`, `3077334064` y `3624164256` declaran
+`cameraparallaxamount: 0` y aun así ajustan `cameraparallaxmouseinfluence`
+(−0,2 y −0,27). Con amount 0 la cámara no se mueve; esa influencia solo pinta
+algo si llega a `g_ParallaxPosition`. Es justo el argumento que [la sección
+del puntero](#g_parallaxposition-es-el-puntero-con-retardo-y-nada-más) usaba
+al revés —«si el amount lo escalara, esas dos habrían puesto un efecto caro
+sobre una entrada muerta»—: lo que llega no es el amount, es la influencia.
+
+La lectura lo confirma y además dice algo que la hipótesis no traía: con
+`cameraparallax` apagado el uniform se queda en el centro, no sigue al ratón.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). Las comprueba
+todas `verifica_exe.sh`.
+
+- **El nombre y su índice.** La cadena está en `.rdata`, `0x14048dad0`. Un
+  inicializador estático arma la tabla nombre → índice de los uniforms del
+  motor: `0x140003f0f` pone `0x6b` y `0x140003f17` carga la cadena
+  (`g_PointerPosition` es el `0x69`, `0x140003ecf`). Al enlazar un shader, el
+  nombre se busca en esa tabla (`0x1400db7c7`; `0x8c` es «no es del motor»,
+  `0x1400db7d0`) y el índice se guarda como WORD en la lista de uniforms del
+  pase (`0x1400dbc9b`).
+- **El `switch`.** Cada pase recorre esa lista en `0x1400d83b3`: índice ≤ `0x8f`
+  (`0x1400d8355`, `0x1400d83b8`) y salto de dos niveles, una tabla de bytes en
+  `0x1400daaac` y otra de destinos en `0x1400da984` (`0x1400d83c1`,
+  `0x1400d83ca`, `jmp rcx` en `0x1400d83d5`). Para `0x6b` el byte es `0x34` y
+  el destino `0x1400d9e90`; para `0x69`, `0x32` y `0x1400d9df8`. Por eso no
+  aparecía buscando un `cmp eax, 0x6b`: el `switch` compara con el tope y
+  salta por la tabla.
+- **El caso.** `0x1400d9e90..0x1400d9ea1`: toma el contexto de render
+  (`[r14+0x8]`) y copia **ocho bytes de `contexto+0x9c`** al buffer de
+  uniforms. El de `g_PointerPosition` copia `contexto+0x8c`, el ratón
+  (`0x1400d9e02`).
+- **Quién escribe `contexto+0x9c`.** El constructor del contexto lo pone a
+  cero (`0x14017c78b`). El cargador de la escena, a **(0,5, 0,5)** al terminar
+  de cargar, haya parallax o no (`0x1401886e3..0x1401886f4`). Y la
+  actualización de la cámara (`0x1401891a0`), cada fotograma, pero **solo si
+  `cameraparallax` está encendido**: `test [escena+0xe0], 0x100` en
+  `0x140189b42`, y con el bit apagado salta a `0x140189cf3` sin tocarlo. Que
+  el bit 8 de `+0xe0` es `cameraparallax` lo dice el lector de `general`: la
+  cadena (`0x140488ae0`, cargada en `0x14019b0c8`) se registra en `+0xe0`
+  (`0x14019b0e5`) con un accesor (`0x14019c850`) que hace `bts ecx, 8`
+  (`0x14019c889`). No hay más escrituras de `+0x9c` en ese contexto.
+- **Lo que escribe la cámara.** Es la P de [Lo que hace
+  WE](#lo-que-hace-we): el objetivo con `m = mouseinfluence`
+  (`0x140189b6f`), el ratón acotado a [0, 1] (`0x140189b8d`), la y como
+  `1 − ratón.y` (`0x140189b95`), más el ojo (`0x140189c18`, `0x140189c24`),
+  suavizada con `min(1, (1 − delay/3)·10·dt)` (`0x140189c3b`) y guardada en
+  `escena+0x340/0x344` (`0x140189c79`, `0x140189c84`). Justo después la parte
+  por el alto y el ancho del lienzo (`0x140189c98`, `0x140189ca9`), la acota a
+  [0, 1] (`0x140189cba`) y la escribe en `contexto+0x9c` y `+0xa0`
+  (`0x140189cbe`, `0x140189cc6`).
+
+Queda así:
+
+```
+cameraparallax apagado:   g_ParallaxPosition = (0,5, 0,5), siempre
+encendido:                g_ParallaxPosition = clamp(P / lienzo, 0, 1)
+    P/lienzo = (0,5·(1 − m) + ratón.x·m,  0,5·(1 − m) + (1 − ratón.y)·m) + ojo/lienzo
+```
+
+con la y hacia **arriba**, la influencia, el suavizado de la cámara y, en
+reposo, el centro. Sin `amount`, que no entra en P.
+
+Dos marcas de `contexto+0x118` tocan el cálculo y no se sabe quién las pone:
+con `0x200200` la influencia vale 0 (`0x140189b67`, `0x140189b7a`); con
+`0x800` la x del ratón se voltea para P (`0x140189bac`) y la del uniform se
+vuelve a voltear al escribirla (`0x140189cd5..0x140189cea`). Esa segunda es la
+«marca que invierte la x» que quedaba apuntada, y para este uniform se anula:
+`1 − (0,5·(1 − m) + (1 − x)·m)` es otra vez `0,5·(1 − m) + x·m`, sin el ojo.
+Ninguna se modela.
+
+### Lo que cambia en el corpus
+
+Las 6 escenas con `depthparallax` tienen `cameraparallax` encendido —en
+`2810252468` y `3624164256` por una propiedad del usuario que vale `true`—, así
+que en las 6 pasa a valer la regla. Con el ratón en (0,2, 0,3) de la pantalla:
+
+| escena | m | antes | ahora |
+|---|---|---|---|
+| `2349856302`, `3053927686` | 1 | (0,2, 0,3) | (0,2, 0,7) |
+| `2810252468` | 0,7 | (0,2, 0,3) | (0,29, 0,64) |
+| `3775394622` | 0,5 | (0,2, 0,3) | (0,35, 0,6) |
+| `3077334064` | −0,2 | (0,2, 0,3) | (0,56, 0,46) |
+| `3624164256` | −0,27 | (0,2, 0,3) | (0,581, 0,446) |
+
+En las dos de influencia negativa el efecto iba en x al revés y, en las dos
+direcciones, más fuerte de lo que pidió el autor: cinco veces en
+`3077334064` (1/0,2) y 3,7 en `3624164256` (1/0,27). En las de influencia 1
+la x ya estaba bien y la y iba al revés.
+Con el ratón en el centro las seis dan (0,5, 0,5), antes y ahora.
+
+### Cómo está hecho aquí
+
+- **`posicion_de_parallax`** (`werender.py`) es la regla sin suavizar y sin el
+  ojo. La usa `_fotograma` para poner `@PARALLAX_X/Y@` con el `--puntero`, y
+  la influencia sale de la línea `parallax` del plan, redondeada igual que la
+  lee el ejecutor.
+- **`emit_pass`** decide el caso apagado: si la escena no tiene
+  `cameraparallax` y el shader del pase lee `g_ParallaxPosition`, escribe
+  `u2f g_ParallaxPosition 0.5 0.5` sin marcadores. En los pases que no lo leen
+  se deja la línea como estaba; el valor ahí no pinta nada y así los planes de
+  las escenas sin el efecto no cambian. En el corpus ningún pase cae en ese
+  caso.
+- **En vivo** (`glexecutor.cpp`), `@PARALLAX_X/Y@` es `m_camara` acotado a
+  [0, 1]: el mismo P que ya movía las capas con `paralaje`, con su suavizado y
+  el temblor. La exponencial propia `1 − exp(−dt/retardo)` y `m_parallax`
+  desaparecen. Con el retardo de 2 s de cuatro de las seis escenas el efecto
+  llega ahora 6,7 veces antes (3,33 por segundo contra 0,50); en
+  `3053927686`, con 0,55 s, 4,5 veces (8,17 contra 1,82), y en `3624164256`,
+  con 0,11 s, casi igual (9,63 contra 9,09).
+- `glexec.c` no cambia: offline los marcadores los pone Python.
+
+### Lo medido
+
+Contra la base `afd62c6` y con Mesa, con los scripts de
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261007-231823/medidas/`
+(`repetir.sh`):
+
+- **`verifica_exe.sh`**: **57 ok, 0 fallos**: la cadena, el índice `0x6b`, el
+  enlace, el `switch` con sus dos tablas leídas byte a byte, el caso, el
+  constructor, el cargador, el bit de `cameraparallax` y la actualización de
+  la cámara hasta las dos escrituras.
+- **`parallax_plan.py`**: arma el plan de fotograma de las 6 escenas con
+  cuatro posiciones del ratón —sin puntero, (0,2, 0,3), (0,8, 0,9) y
+  (0,1, 0,75)— y compara el `u2f g_ParallaxPosition` de los pases que lo leen
+  con la regla calculada aparte desde el `scene.json` y el `project.json`:
+  **24 de 24** a 1e-4, las dos de influencia negativa incluidas. Imprime
+  también, por escena, la influencia, el ritmo del suavizado de WE contra el
+  de la exponencial que había y la amplitud del temblor.
+- **`test_werender.py`**: `prueba_posicion_de_parallax`, nueva, mira la
+  función, el plan de `3077334064` y `3624164256` y `3624164256` con la
+  propiedad que enciende su parallax a `false`, que tiene que dar el centro.
+  `mutaciones_e.sh` la pasa sin tocar (pasa), quitando la influencia (falla,
+  4 quejas) y con la y al revés (falla, 6 quejas).
+- **`planes_iguales.py`**: las 129 con `--emit-plan`, sin puntero y con la
+  hora congelada: **1131 de 1131** ficheros idénticos (129 `plan.txt` y
+  1002 `.psys`), también en las seis del efecto: sin ratón el valor es el
+  centro, como antes.
+- **`test_luminancia.py obj/glexec --referencia`** con una referencia de main
+  (`luz_main.json`), Mesa en las dos pasadas: **129/129** renderizadas,
+  **0 apagadas, 0 regresiones**. 118 dan la misma media; las 11 que cambian
+  son todas escenas con reloj (`reloj` en el plan), y la pasada no congela la
+  hora. Las seis del efecto, idénticas: sin ratón el plan no cambia.
+  `luz_f.sh` reanaliza las dos pasadas y renderiza además las seis con el
+  ratón en (0,2, 0,3), base contra rama: ninguna apagada; la media se mueve
+  entre −2,5 (`2349856302`, de 90,05 a 87,54) y +0,97 (`3624164256`).
+- `make build` y `make glexec` sin errores ni avisos nuevos.
+
+### Lo que queda
+
+- **El ojo, offline.** WE suma a P el ojo de la cámara, que en estas escenas
+  solo lleva el temblor. En vivo entra, porque `m_camara` ya lo lleva; offline
+  no, porque `_fotograma` lo pone Python y la curva vive en `src/wetemblor.c`.
+  De las seis solo `3053927686` tiembla, con 10,8 px de amplitud: hasta
+  0,0028 del ancho y 0,005 del alto en el uniform.
+- **Las marcas `0x200200` y `0x800` de `contexto+0x118`**, de origen sin leer.
+- **Que se vea en el escritorio**: el efecto se mueve ahora con la influencia
+  y la y del autor, y en las de 2 s llega mucho antes. Ningún oráculo offline
+  lo dice; hay que mirarlo en vivo.

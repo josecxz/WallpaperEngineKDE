@@ -35,6 +35,7 @@ Uso:
 from __future__ import annotations
 
 import math
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -381,6 +382,75 @@ def prueba_parallax_de_camara(fallos: list[str]) -> None:
         fallos.append("parallax: con `cameraparallax` apagado no deberia mover nada")
 
 
+def prueba_posicion_de_parallax(fallos: list[str]) -> None:
+    """`g_ParallaxPosition` es el P de la camara partido por el lienzo.
+
+    Leido en wallpaper64.exe (caso 0x6b del `switch` de uniforms, 0x1400d9e90,
+    que copia lo que la camara escribe en 0x140189cbe): con
+    `cameraparallaxmouseinfluence` y la y hacia ARRIBA. Las dos formas de
+    equivocarse dan un numero razonable y ninguna avisa:
+
+    * Sin la influencia, las dos escenas del corpus que la ponen negativa
+      ---y `cameraparallaxamount` a 0, asi que la camara no se mueve y la
+      influencia solo llega aqui--- mueven la profundidad al reves y entre
+      3,7 y cinco veces mas fuerte.
+    * Con la y de la pantalla, el efecto se mueve al reves en vertical.
+
+    Se mira la funcion y el plan de fotograma de `3077334064` (m = -0,2) y de
+    `3624164256` (m = -0,27), y que con `cameraparallax` apagado ---en
+    `3624164256` cuelga de una propiedad del usuario--- se quede en el centro.
+    """
+    casos = [(((0.2, 0.3), -0.2), (0.56, 0.46)),
+             (((0.8, 0.9), 0.7), (0.71, 0.22)),
+             (((0.1, 0.75), 1.0), (0.1, 0.25)),
+             (((1.4, -0.3), 1.0), (1.0, 1.0))]      # el raton, acotado
+    for (puntero, m), esperado in casos:
+        got = werender.posicion_de_parallax(puntero, m)
+        if any(abs(a - b) > 1e-9 for a, b in zip(got, esperado)):
+            fallos.append(f"g_ParallaxPosition: con el raton en {puntero} y "
+                          f"m = {m} da {got}, se esperaba {esperado}")
+
+    import wepaths
+    raiz = Path(__file__).resolve().parent.parent
+    for escena, apagado, esperado in (("3077334064", False, (0.56, 0.46)),
+                                      ("3624164256", False, (0.581, 0.446)),
+                                      ("3624164256", True, (0.5, 0.5))):
+        d = wepaths.we_workshop() / escena
+        if not d.is_dir():
+            fallos.append(f"g_ParallaxPosition: falta la escena {escena}")
+            continue
+        r = werender.Renderer(d, raiz / "obj" / "glexec", 0.0,
+                              puntero=(0.2, 0.3))
+        if apagado:
+            # La propiedad del usuario que enciende su `cameraparallax`.
+            leer = r.res.read_json
+
+            def sin_parallax(nombre, leer=leer):
+                datos = leer(nombre)
+                if nombre == "project.json":
+                    datos["general"]["properties"]["disableparallax"]["value"] = False
+                return datos
+            r.res.read_json = sin_parallax
+        try:
+            r._build(None)
+            plan = r._fotograma(r.time)
+            vals, prog = [], None
+            for linea in plan:
+                if linea.startswith("prog "):
+                    prog = linea.split()[1:3]
+                elif linea.startswith("u2f g_ParallaxPosition") and prog and \
+                        "g_ParallaxPosition" in "".join(Path(f).read_text()
+                                                        for f in prog):
+                    vals.append([float(x) for x in linea.split()[2:4]])
+        finally:
+            shutil.rmtree(r.tmp, ignore_errors=True)
+        if not vals or any(abs(a - b) > 1e-4 for v in vals
+                           for a, b in zip(v, esperado)):
+            fallos.append(f"g_ParallaxPosition: {escena} "
+                          f"{'apagado ' if apagado else ''}con el raton en "
+                          f"(0.2, 0.3) sube {vals}, se esperaba {esperado}")
+
+
 def prueba_visibilidad_heredada(fallos: list[str]) -> None:
     """Apagar un grupo apaga lo que cuelga de el.
 
@@ -610,7 +680,8 @@ def main() -> int:
                    prueba_sampler_por_defecto, prueba_niveles_mipmap,
                    prueba_valor_de_usuario, prueba_curva_de_animacion,
                    prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
-                   prueba_parallax_de_camara, prueba_temblor_de_camara,
+                   prueba_parallax_de_camara, prueba_posicion_de_parallax,
+                   prueba_temblor_de_camara,
                    prueba_visibilidad_heredada,
                    prueba_opacidad_del_objeto,
                    prueba_color_del_shader_plano):
