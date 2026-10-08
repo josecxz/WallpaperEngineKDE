@@ -1149,8 +1149,12 @@ float GlExecutor::valorDeMarca(Marca m) const
     case Marca::PunteroY:  return m_puntero[1];
     case Marca::AnteriorX: return m_punteroAnt[0];
     case Marca::AnteriorY: return m_punteroAnt[1];
-    case Marca::ParallaxX: return m_parallax[0];
-    case Marca::ParallaxY: return m_parallax[1];
+    // `g_ParallaxPosition` es el P de la camara partido por el lienzo,
+    // acotado: lo que WE escribe en `contexto+0x9c` (0x140189cbe). Ver
+    // `posicion_de_parallax` en werender.py. Si la escena no tiene
+    // `cameraparallax`, el plan ya trae el centro y no hay marca.
+    case Marca::ParallaxX: return qBound(0.0f, m_camara[0], 1.0f);
+    case Marca::ParallaxY: return qBound(0.0f, m_camara[1], 1.0f);
     default:               return 0.0f;
     }
 }
@@ -1173,23 +1177,13 @@ void GlExecutor::avanzaPuntero(float dt, int viewW, int viewH)
     m_puntero[0] = float(qBound(0.0, sx / qMax(1, m_scene.w), 1.0));
     m_puntero[1] = float(qBound(0.0, 1.0 - sy / qMax(1, m_scene.h), 1.0));
 
-    // El parallax persigue al raton con retardo ---`cameraparallaxdelay` de la
-    // escena, que cuatro de las seis que usan el efecto de profundidad ponen
-    // en 2 s---. Exponencial y no lineal: asi el tiempo de llegada no depende
-    // del fotograma en que se empiece, y con dt grandes ---el escritorio vuelve
-    // de estar tapado--- se queda en el destino en vez de pasarse.
-    const float k = m_parallaxRetardo > 1e-3f && dt > 0.0f
-                  ? 1.0f - std::exp(-dt / m_parallaxRetardo) : 1.0f;
-    for (int i = 0; i < 2; ++i)
-        m_parallax[i] += (m_puntero[i] - m_parallax[i]) * k;
-
     // El punto de la camara, tal como lo calcula WE (leido en
     // `wallpaper64.exe`): entre el centro y el raton segun la influencia, con
     // la y del raton volteada, y suavizado con
-    // `min(1, (1 - retardo/3) * 10 * dt)` en vez de una exponencial. Con el
-    // retardo de 2 s de cuatro escenas eso llega siete veces antes que la
-    // exponencial. Se acota a [0, 1] para que un retardo de mas de 3 s no lo
-    // haga divergir.
+    // `min(1, (1 - retardo/3) * 10 * dt)`, que no es una exponencial: con el
+    // retardo de 2 s de cuatro escenas llega siete veces antes que la que se
+    // usaba. Se acota a [0, 1] para que un retardo de mas de 3 s no lo haga
+    // divergir. De aqui sale tambien `g_ParallaxPosition`.
     {
         const float m = m_camaraInfluencia;
         // WE le suma la posicion del ojo de la camara, que solo se mueve aqui

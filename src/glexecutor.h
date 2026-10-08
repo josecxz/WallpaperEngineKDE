@@ -401,9 +401,9 @@ private:
     int m_fit = Cubrir;
     float m_zoom = 1.0f, m_despX = 0.0f, m_despY = 0.0f;
     float m_bar[3] = {0.0f, 0.0f, 0.0f};
-    // El raton: donde esta, donde estaba en el fotograma anterior, y el
-    // parallax, que es lo mismo con retardo. En reposo, el centro: cero seria
-    // el cursor clavado en la esquina, que es un valor y ademas el peor.
+    // El raton: donde esta y donde estaba en el fotograma anterior. En
+    // reposo, el centro: cero seria el cursor clavado en la esquina, que es un
+    // valor y ademas el peor.
     // En coordenadas de la VISTA (lo que Qt entrega) y en coordenadas de la
     // ESCENA (lo que quieren los shaders). No son lo mismo en cuanto el encaje
     // recorta o deja barras, que es lo normal: 99 de las 129 escenas son 16:9
@@ -411,7 +411,6 @@ private:
     float m_punteroVista[2] = {0.5f, 0.5f};
     float m_puntero[2] = {0.5f, 0.5f};
     float m_punteroAnt[2] = {0.5f, 0.5f};
-    float m_parallax[2] = {0.5f, 0.5f};
     bool m_hayPuntero = false;
     bool m_punteroVisto = false;       // ya se aviso de que el raton llega
     bool m_punteroRepartido = false;   // ya se le dijo a los sistemas
@@ -420,8 +419,8 @@ private:
     float m_parallaxRetardo = 0.1f;
     // El punto que mueve la camara, normalizado al lienzo y con la y hacia
     // ARRIBA, como lo calcula WE: entre el centro y el raton segun
-    // `cameraparallaxmouseinfluence`, y persiguiendolo con su suavizado. No es
-    // `m_parallax`, que es lo que se sube como `g_ParallaxPosition`.
+    // `cameraparallaxmouseinfluence`, y persiguiendolo con su suavizado. Es
+    // tambien lo que se sube como `g_ParallaxPosition`, acotado a [0, 1].
     float m_camara[2] = {0.5f, 0.5f};
     float m_camaraInfluencia = 0.5f;
     // `camerashake` (linea `temblor`): amplitud en fracciones del lienzo por

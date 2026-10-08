@@ -180,6 +180,35 @@ def parallax_de_camara(scene, canvas: tuple[int, int]) -> int:
     return n
 
 
+def posicion_de_parallax(puntero: tuple[float, float],
+                         influencia: float) -> tuple[float, float]:
+    """`g_ParallaxPosition`: el punto P de la camara partido por el lienzo.
+
+    Leido en `wallpaper64.exe`, no deducido. El uniform es el indice 0x6b de
+    la tabla de nombres, y su caso del `switch` que sube los uniforms
+    (0x1400d9e90) copia `contexto+0x9c`. Eso lo escribe la actualizacion de
+    la camara (0x140189cbe), justo despues de mover P: es la misma P de
+    `parallax_de_camara`, con la influencia y la y hacia ARRIBA, partida por
+    el ancho y el alto del lienzo y acotada a [0, 1]:
+
+        x = 0.5 * (1 - m) + raton.x * m
+        y = 0.5 * (1 - m) + (1 - raton.y) * m       m = mouseinfluence
+
+    con el raton tambien acotado a [0, 1] antes. Aqui sin suavizar ---offline
+    no hay trayectoria--- y sin el ojo de la camara, que en las escenas
+    ortograficas solo lleva el temblor, y ese lo evalua el ejecutor.
+
+    Solo con `cameraparallax` encendido: apagado, el cargador lo deja en
+    (0.5, 0.5) (0x1401886ea) y nadie mas lo toca. Eso lo decide `emit_pass`.
+    """
+    u = min(1.0, max(0.0, puntero[0]))
+    v = min(1.0, max(0.0, puntero[1]))
+    m = influencia
+    x = 0.5 * (1.0 - m) + u * m
+    y = 0.5 * (1.0 - m) + (1.0 - v) * m
+    return (min(1.0, max(0.0, x)), min(1.0, max(0.0, y)))
+
+
 def temblor_de_camara(general: dict, properties: dict,
                       canvas: tuple[int, int]) -> tuple[float, ...] | None:
     """El temblor de camara de WE (`camerashake`): con que amplitud y ritmo.
@@ -1265,6 +1294,10 @@ class Renderer:
         # nada--- y es el que reproduce lo que se veia antes de que el puntero
         # existiera. En vivo lo pone el escritorio, no el plan.
         self.puntero = puntero
+        # `cameraparallaxmouseinfluence` y `cameraparallax` de la escena, para
+        # `g_ParallaxPosition`. Los fija `_build`.
+        self.influencia = 0.5
+        self.parallax_encendido = False
         # A que instante se congelan los campos animados. Por defecto el mismo
         # que se renderiza; `emit_plan` lo lleva al reposo, ver TIEMPO_EN_REPOSO.
         self.tiempo_animacion = time
@@ -2624,14 +2657,16 @@ class Renderer:
         # puede cambiar por cero: cero no es "sin cursor", es el cursor clavado
         # en la esquina superior izquierda, y 14 variantes del corpus lo leen.
         #
-        # `g_ParallaxPosition` va aparte porque no es el puntero sino el
-        # puntero CON RETARDO ---`cameraparallaxdelay`, hasta 2 s en cuatro de
-        # las seis escenas que lo usan---, y ese retardo solo lo puede llevar
-        # quien dibuja fotogramas seguidos. No lleva ni `cameraparallaxamount`
-        # ni `cameraparallaxmouseinfluence`: dos de las seis escenas con el
-        # efecto de profundidad declaran amount 0, y si el amount lo escalara
-        # habrian puesto un efecto caro sobre una entrada muerta.
-        self.body.append("u2f g_ParallaxPosition @PARALLAX_X@ @PARALLAX_Y@")
+        # `g_ParallaxPosition` va aparte porque no es el puntero sino el punto
+        # P de la camara partido por el lienzo: con la influencia, la y hacia
+        # ARRIBA y el suavizado de la camara; ver `posicion_de_parallax`. Con
+        # `cameraparallax` apagado WE lo deja en el centro, y eso solo se
+        # escribe en los pases que lo leen: en el resto el valor no pinta nada
+        # y el plan se queda como estaba.
+        if self.parallax_encendido or "g_ParallaxPosition" not in vert + frag:
+            self.body.append("u2f g_ParallaxPosition @PARALLAX_X@ @PARALLAX_Y@")
+        else:
+            self.body.append("u2f g_ParallaxPosition 0.5 0.5")
         self.body.append("u2f g_PointerPosition @PUNTERO_X@ @PUNTERO_Y@")
         self.body.append("u2f g_PointerPositionLast "
                          "@PUNTERO_ANT_X@ @PUNTERO_ANT_Y@")
@@ -2732,15 +2767,16 @@ class Renderer:
     def _fotograma(self, t: float) -> list[str]:
         """El cuerpo del plan con los marcadores de este instante puestos."""
         u, v = self.puntero if self.puntero else (0.5, 0.5)
+        px, py = posicion_de_parallax((u, v), self.influencia)
         marcas = {"@TIME@": f"{t:.5f}",
                   "@PUNTERO_X@": f"{u:.6g}", "@PUNTERO_Y@": f"{v:.6g}",
                   # Sin movimiento entre fotogramas: offline se renderiza un
                   # instante, no una trayectoria. Lo que lee la diferencia
                   # ---la ondulacion del cursor--- ve cero, que es lo que hay.
                   "@PUNTERO_ANT_X@": f"{u:.6g}", "@PUNTERO_ANT_Y@": f"{v:.6g}",
-                  # El parallax es el puntero con retardo, y un retardo sobre
-                  # un puntero quieto acaba en el propio puntero.
-                  "@PARALLAX_X@": f"{u:.6g}", "@PARALLAX_Y@": f"{v:.6g}"}
+                  # El P de la camara con este raton: el suavizado sobre un
+                  # raton quieto acaba en su objetivo. Sin raton es el centro.
+                  "@PARALLAX_X@": f"{px:.6g}", "@PARALLAX_Y@": f"{py:.6g}"}
         salida = []
         for linea in self.body:
             if "@" in linea:
@@ -2923,6 +2959,13 @@ class Renderer:
         influencia = _floats(general.get("cameraparallaxmouseinfluence"))
         self.lines.append(f"parallax {retardo[0] if retardo else 0.1:.4f} "
                           f"{influencia[0] if influencia else 0.5:.4f}")
+        # Lo mismo, para `g_ParallaxPosition`: el `_fotograma` offline lo saca
+        # de aqui, y `emit_pass` decide si lo mueve la camara o se queda en el
+        # centro. Con el numero de la linea, redondeado igual: en vivo el
+        # ejecutor no tiene otro.
+        self.influencia = float(f"{influencia[0] if influencia else 0.5:.4f}")
+        self.parallax_encendido = wescene.is_visible(
+            general.get("cameraparallax", False) or False, scene.properties)
         # `camerashake`: la camara tiembla, y cada capa que coloca la camara
         # lleva una linea `tiembla`. Solo en las escenas que lo encienden; ver
         # `temblor_de_camara`. El ejecutor evalua la curva con su reloj.
