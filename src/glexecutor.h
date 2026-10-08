@@ -419,9 +419,13 @@ private:
     float m_parallaxRetardo = 0.1f;
     // El punto que mueve la camara, normalizado al lienzo y con la y hacia
     // ARRIBA, como lo calcula WE: entre el centro y el raton segun
-    // `cameraparallaxmouseinfluence`, y persiguiendolo con su suavizado. Es
-    // tambien lo que se sube como `g_ParallaxPosition`, acotado a [0, 1].
+    // `cameraparallaxmouseinfluence`. Es tambien lo que se sube como
+    // `g_ParallaxPosition`, acotado a [0, 1]. Son dos partes que se suavizan
+    // distinto (ver `avanzaPuntero`): la del raton, casi pegada a el, y la del
+    // temblor, con el suavizado de WE.
     float m_camara[2] = {0.5f, 0.5f};
+    float m_camaraRaton[2] = {0.5f, 0.5f};
+    float m_camaraTemblor[2] = {0.0f, 0.0f};
     float m_camaraInfluencia = 0.5f;
     // `camerashake` (linea `temblor`): amplitud en fracciones del lienzo por
     // eje, velocidad y rugosidad, tal cual las evalua `src/wetemblor.c`. Y lo

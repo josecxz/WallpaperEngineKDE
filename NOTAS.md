@@ -7209,3 +7209,76 @@ Contra la base `afd62c6` y con Mesa, con los scripts de
 - **Que se vea en el escritorio**: el efecto se mueve ahora con la influencia
   y la y del autor, y en las de 2 s llega mucho antes. Ningún oráculo offline
   lo dice; hay que mirarlo en vivo.
+
+## El parallax sigue al ratón en tiempo real: el cursor lo da KWin, y el retardo de WE se queda para el temblor
+
+Visto en el escritorio con `2220826239` (parallax de cámara, retardo 1,8,
+influencia −0,69): la escena no seguía al ratón; había que esperar segundos y
+luego saltaba de golpe. Dos causas, y la que importaba no era la primera que
+se arregló.
+
+### La que importaba: al fondo no le llegaba el ratón
+
+Medido con un registro temporal en `synchronize()` (sincronías y posiciones
+nuevas por segundo): el motor dibujaba a ~42 fps con 23,5 ms de GPU, pero le
+llegaban **de 1 a 5 posiciones por segundo**, con huecos de hasta 576 ms, todas
+con y ≈ 0,96 —pegadas al panel— y con `hovered` siempre a false. Moviendo el
+ratón por el centro de la pantalla no llegaba nada.
+
+- Primero se colgó el `HoverHandler` de la raíz de la ventana en vez de la
+  escena: la capa de iconos de Plasma es hermana de encima y acepta el hover,
+  y en Qt 6 el hover aceptado no baja a los hermanos, solo sube a los
+  ancestros (comprobado con `qmltestrunner`: el handler de la escena, 0
+  eventos; el de la raíz, 20 de 20). **No cambió nada en el escritorio**: la
+  misma medida, 1 a 5 por segundo y `hovered` a false.
+- La pila de KWin lo explica: cuatro ventanas maximizadas (1920×1168) encima
+  del escritorio. Con «Mostrar el escritorio» KWin las aparta, pero a la
+  ventana del escritorio el puntero casi no le llega. Ningún arreglo dentro de
+  plasmashell puede con eso: en Wayland una ventana ve el ratón cuando el
+  compositor se lo da.
+
+Wallpaper Engine en Windows lee el cursor **global**. Aquí lo tiene KWin:
+`CursorKWin` (`src/escritorio.cpp`) carga al arrancar un script de KWin
+(`wallpaperengine-cursor`, escrito en `$XDG_RUNTIME_DIR`) que escucha
+`workspace.cursorPosChanged` y llama por D-Bus a `posicion(x, y)` del objeto
+`/WallpaperEngine/Cursor` de esta conexión —como mucho cada 8 ms y siempre con
+la última—. `SceneView` lo pasa a su pantalla y, desde la primera posición,
+ignora el `HoverHandler`, que queda de respaldo si KWin no responde. Ojo: KWin
+manda **enteros** (`cursorPos` es un `QPoint`); con solo la firma `(dd)` D-Bus
+no casaba ningún slot. Están las dos.
+
+Medido después, en el escritorio y con la misma escena: **18 a 40 posiciones
+nuevas por segundo** moviendo el ratón —el ritmo de los fotogramas, ~41—, por
+toda la pantalla y con `presente=1`. Y el fondo sigue al ratón también por
+debajo de las ventanas, como en WE: para los 123 sistemas de partículas que lo
+persiguen, «presente» es ahora «en esta pantalla».
+
+### La otra: el retardo de WE
+
+Con el ratón llegando, la cámara seguía yendo **detrás** de él por el
+suavizado que se copió de WE (`(1 − delay/3)·10·dt`, sección de
+`cameraparallax`), y su respuesta a un salto del ratón es esta:
+
+| | 95 % del camino, a 60 fps |
+|---|---|
+| WE, `cameraparallaxdelay` 0,1 (108 de las 129) | 300 ms |
+| WE, `cameraparallaxdelay` 2 (4 de las 6 con `depthparallax`) | 883 ms |
+| ahora: exponencial de 25 ms | 83 ms (63 % en 25 ms) |
+
+Es una **decisión del usuario, no una lectura del motor** (2026-10-08): el
+parallax tiene que seguir al ratón en tiempo real y suave, aunque WE lo
+retrase. Así que en vivo el punto de la cámara se parte en dos:
+
+- **la parte del ratón** (centro y ratón según la influencia) lleva solo
+  `1 − exp(−dt/0,025)`, independiente de los FPS. Lo justo para que los
+  eventos del ratón, que no llegan al ritmo del refresco, no hagan temblar la
+  escena;
+- **la parte del temblor** (`camerashake`) sigue con el suavizado de WE y el
+  retardo de la escena. El filtro es lineal: suavizar las dos por separado y
+  sumarlas deja el temblor de las 6 escenas exactamente como estaba.
+
+`g_ParallaxPosition` sale del mismo punto, así que el `depthparallax` también
+deja de ir retrasado. Offline no cambia nada: allí el punto es el `--puntero`,
+sin suavizar, y `glexec.c` ya ignoraba el retardo. Está en `avanzaPuntero`
+(`src/glexecutor.cpp`), con `RATON_TAU`. Lo que no se mide offline: cómo se
+siente en el escritorio.

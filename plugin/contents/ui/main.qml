@@ -108,15 +108,29 @@ WallpaperItem {
         // les toca. Un `MouseArea` con `hoverEnabled` se los habria quedado, y
         // eso es exactamente lo que un fondo no puede hacer.
         //
-        // Mientras el raton esta sobre una ventana el fondo no recibe nada:
-        // `hovered` se va a false y el motor se queda con la ultima posicion en
-        // vez de inventarse uno nuevo. Es lo mas parecido a la verdad que se
-        // puede saber desde aqui.
+        // Es el RESPALDO: en cuanto KWin manda el cursor global (CursorKWin en
+        // src/escritorio.cpp) el motor ignora lo que diga este handler. Hace
+        // falta asi porque en Wayland el hover solo llega a la ventana que el
+        // compositor decide, y a la del escritorio casi no le llega: con
+        // ventanas maximizadas apiladas, incluso con "Mostrar el escritorio",
+        // recibia de 1 a 5 posiciones por segundo pegadas al panel y nunca
+        // `hovered`. Sin KWin, mientras el raton esta sobre una ventana el
+        // fondo no recibe nada y el motor se queda con la ultima posicion.
+        //
+        // Cuelga de la RAIZ de la ventana del escritorio, no de la escena: la
+        // capa de iconos de Plasma es hermana de encima del fondo y acepta el
+        // hover, y en Qt 6 el hover aceptado no baja a los hermanos, solo sube
+        // a los ancestros (probado con qmltestrunner).
         HoverHandler {
             id: raton
+            parent: escena.Window.contentItem ?? escena
         }
-        puntero: Qt.point(raton.point.position.x / Math.max(1, escena.width),
-                          raton.point.position.y / Math.max(1, escena.height))
+        puntero: {
+            const p = escena.mapFromItem(raton.parent, raton.point.position.x,
+                                         raton.point.position.y)
+            return Qt.point(p.x / Math.max(1, escena.width),
+                            p.y / Math.max(1, escena.height))
+        }
         punteroPresente: raton.hovered
     }
 

@@ -20,6 +20,7 @@
 #pragma once
 
 #include <QObject>
+#include <QPointF>
 #include <qqmlintegration.h>
 
 class Escritorio : public QObject
@@ -48,4 +49,46 @@ private Q_SLOTS:
 private:
     bool m_mostrando = false;
     bool m_disponible = false;
+};
+
+// Donde esta el cursor en la pantalla, preguntado a KWin.
+//
+// Un fondo en Wayland solo ve el raton cuando el compositor se lo da, y en este
+// escritorio casi nunca se lo da: con cuatro ventanas maximizadas apiladas
+// encima, incluso con "Mostrar el escritorio" la ventana del escritorio recibio
+// de 1 a 5 posiciones por segundo, todas pegadas al panel, y `hovered` nunca a
+// true ---medido con un `HoverHandler` en la escena y otro en la raiz de la
+// ventana---. El parallax iba a saltos de segundos. Wallpaper Engine en Windows
+// lee el cursor global; aqui quien lo tiene es KWin.
+//
+// Un script de KWin escucha `workspace.cursorPosChanged` y llama por D-Bus a
+// `posicion(x, y)` de este objeto, como mucho una vez cada 8 ms y siempre con la
+// ultima. Lo carga este objeto al crearse ---con el nombre unico de esta
+// conexion, que es la direccion a la que llamar--- y lo descarga al destruirse;
+// uno de un plasmashell anterior se descarga antes por el nombre del script.
+// Si KWin no responde, nunca llega una posicion y `SceneView` se queda con el
+// `HoverHandler` del QML.
+class CursorKWin : public QObject
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.jose.wallpaperengine.Cursor")
+
+public:
+    // Una por proceso: los dos fondos de dos escritorios comparten cursor.
+    static CursorKWin *instancia();
+    ~CursorKWin() override;
+
+public Q_SLOTS:
+    // KWin manda enteros (`cursorPos` es un QPoint); con escala fraccional
+    // podria mandar reales. D-Bus elige por la firma, asi que van las dos.
+    Q_SCRIPTABLE void posicion(double x, double y);
+    Q_SCRIPTABLE void posicion(int x, int y);
+
+Q_SIGNALS:
+    // Coordenadas globales de KWin, en pixeles logicos.
+    void movido(QPointF global);
+
+private:
+    explicit CursorKWin(QObject *parent);
+    bool m_cargado = false;
 };
