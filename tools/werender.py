@@ -1291,6 +1291,9 @@ class Renderer:
         # por dos deja una malla de 600 ocupando el doble de pantalla, porque
         # el mismo numero la situa.
         self.canvas: tuple[int, int] = (1920, 1080)
+        # Si la escena es ortografica; lo rellena `_build` y lo necesita la
+        # rapidez por defecto de `turbulentvelocityrandom`.
+        self.ortografica = True
         self.pixeles: tuple[int, int] = (1920, 1080)
         self.pantalla = resolucion
         # Luces de la escena y su ambiente; los rellena `_build` al leerla.
@@ -1531,7 +1534,8 @@ class Renderer:
             return
         try:
             sis = weparticles.cargar(self.res, ruta,
-                                     obj.raw.get("instanceoverride"))
+                                     obj.raw.get("instanceoverride"),
+                                     ortografica=self.ortografica)
         except Exception as e:
             self.notes.append(f"[{obj.name}] particulas: {e}")
             return
@@ -1551,16 +1555,6 @@ class Renderer:
         # Que dependa del id, y no del indice, evita ademas que dos sistemas de
         # la misma escena caigan en la misma secuencia.
         semilla = zlib.crc32(str(obj.raw.get("id")).encode()) or 1
-        # El campo de ruido de la turbulencia se muestrea en coordenadas del
-        # LIENZO, no del sistema. El simulador solo conoce la posicion local de
-        # cada particula ---todos los sistemas nacen alrededor de su (0,0,0)---
-        # asi que sin esto todos muestrean la misma zona del campo y salen en la
-        # misma direccion, sea cual sea el wallpaper. Desplazando el muestreo
-        # por el origen del objeto, la direccion pasa a depender de DONDE esta
-        # el sistema, que es dato del wallpaper, y dos humos distintos de la
-        # misma escena dejan de correr en paralelo.
-        org, _, _ = transform_absoluto(obj, self.por_id)
-        weparticles.desplazar_ruido(sis, org)
 
         # Un hijo de evento no emite por su cuenta: cada evento del padre crea
         # una INSTANCIA suya, y lo que el preset describe es una instancia.
@@ -2887,6 +2881,7 @@ class Renderer:
                    int(_floats(proj.get("height", 1080))[0]))
                   if isinstance(proj, dict) else (1920, 1080))
         self.canvas = canvas
+        self.ortografica = wescene.ortografica(general)
         self.pixeles = resolucion_de_dibujo(canvas, self.pantalla)
         # El indice por id se arma aqui y no mas abajo porque las luces
         # tambien pueden colgar de un grupo.
