@@ -219,47 +219,54 @@ def _init_giro_vel(e):
     return _vec_con_defecto(e, *GIRO_VEL_POR_DEFECTO)
 
 
-# La `scale` de la turbulencia de WE no esta en las unidades de la celda de
-# ruido del simulador, que mide 1. Se ve en el corpus: 148 sistemas declaran
-# `turbulentvelocityrandom`, casi todos con `scale` entre 0.1 y 0.5, y sin
-# convertir nada el emisor abarcaria una MEDIANA de 102 celdas ---hasta 750---.
-# Con eso, dos particulas nacidas juntas salen en direcciones sin relacion: el
-# campo deja de ser turbulencia y se vuelve una direccion al azar por particula.
-# Medido con `psysprobe` sobre el humo de Sniper Girl, la coherencia
-# ---|velocidad media| / rapidez media--- era 0.08: un pufo que se abre en todas
-# direcciones en vez del chorro que sale del canon.
+# `turbulentvelocityrandom` es la regla de WE, leida en wallpaper64.exe y no
+# un campo de ruido: gira `forward` alrededor de `right` un angulo que sale de
+# un ruido simplex 1D muestreado en el RELOJ de la escena, no en la posicion.
+# El simulador la hace en `gira_turbulenta` (src/weparticles.c); aqui solo se
+# resuelven los campos con los defectos que inserta la fabrica cuando faltan
+# (0x1401bb030): fase 0..0,1, `timescale` 1, `scale` 1, `offset` 0 ---un
+# angulo en radianes, escalar---, `forward` 0 1 0 y `right` 0 0 1. `up` no lo
+# lee WE, y aqui tampoco. La rama de audio (`audioprocessingmode` distinto de
+# 0, 2 piezas del corpus) se queda en el modo 0: no hay audio.
 #
-# El factor esta CALIBRADO, no leido de WE. Su funcion de ruido si esta leida
-# ---un simplex 1D, 0x14027b090---, pero WE la muestrea en el tiempo y no en un
-# campo en el espacio: no tiene celda que escalar ni factor que copiar. Con el
-# factor, la coherencia de ese humo sube a 0.72: sale con rumbo pero conserva
-# volumen. Se probaron 0.01 ---0.91, tan paralelo que se ve como una raya de
-# humo--- y 0.1 ---0.56, demasiado abierto---. La direccion resultante no
-# depende del factor (los tres dan -12.6 grados); lo que cambia es cuanto se
-# abre el penacho.
+# La rapidez por defecto depende de la ESCENA, no de la pieza: 100..250 si es
+# ortografica, 0,5..1 si no. El booleano que lo decide es el bit 10 de
+# `[contexto+0x118]`, que el cargador de la escena enciende justo cuando
+# enciende el de `orthogonalprojection` (0x14018768a). Ver `ortografica` en
+# wescene.py y NOTAS.md, «La turbulencia con la regla de WE».
 #
-# La direccion concreta la pone nuestro ruido y no el wallpaper. No es que el
-# formato no la traiga: WE no muestrea un campo en el espacio, gira `forward`
-# ---(0, 1, 0) si falta--- alrededor de `right` un angulo que sale de un ruido
-# en el TIEMPO, y su `offset` es un angulo y no un desplazamiento del punto de
-# muestreo. Aqui el `offset` si desplaza el punto de muestreo, y en el preset
-# medido vale cero: los -12.6 grados de arriba son solo de nuestro ruido, sin
-# nada del wallpaper que los apunte. La regla de WE esta leida en
-# wallpaper64.exe y sin aplicar, porque cambia las 152 piezas del corpus y no
-# solo las 5 que declaran ejes: NOTAS.md, «Los ejes de la turbulencia». Con el
-# ruido de aqui, lo que si depende del wallpaper es el caracter: los sistemas
-# pequenos salen coherentes y los grandes se esparcen.
+# Antes esta pieza muestreaba el rotacional de nuestro ruido 3D en la posicion
+# de la particula, con la `scale` por ESCALA_RUIDO y el punto desplazado al
+# sitio del objeto. Con la regla de WE no hay punto de muestreo: ESCALA_RUIDO
+# queda solo para el operador `turbulence`, y el desplazamiento desaparece.
+TURBVEL_FORWARD = [0.0, 1.0, 0.0]
+TURBVEL_RIGHT = [0.0, 0.0, 1.0]
+TURBVEL_RAPIDEZ_ORTO = (100.0, 250.0)
+TURBVEL_RAPIDEZ_PERSPECTIVA = (0.5, 1.0)
+
+
+def _init_turbvel(e, ortografica: bool = True):
+    vmin, vmax = TURBVEL_RAPIDEZ_ORTO if ortografica else TURBVEL_RAPIDEZ_PERSPECTIVA
+    fw = _v3(e.get("forward")) if e.get("forward") is not None else list(TURBVEL_FORWARD)
+    rt = _v3(e.get("right")) if e.get("right") is not None else list(TURBVEL_RIGHT)
+    return [_f1(e.get("speedmin"), vmin), _f1(e.get("speedmax"), vmax),
+            _f1(e.get("phasemin"), 0.0), _f1(e.get("phasemax"), 0.1),
+            _f1(e.get("timescale"), 1.0), _f1(e.get("scale"), 1.0),
+            _f1(e.get("offset"), 0.0)] + fw + rt
+
+
+# La `scale` del operador `turbulence` no esta en las unidades de la celda de
+# ruido del simulador, que mide 1. El factor esta CALIBRADO, no leido de WE: se
+# fijo para el inicializador `turbulentvelocityrandom` cuando este tambien
+# muestreaba nuestro ruido ---la coherencia del humo de Sniper Girl pasaba de
+# 0,08 a 0,72---, y el operador lo comparte desde entonces. El inicializador ya
+# no lo usa: sigue la regla de WE, ver arriba.
 #
 # Vive aqui y no en el `.c` por dos razones. Convertir las unidades del formato
 # es interpretarlo, que es trabajo de Python; el simulador ejecuta el numero que
 # le llega. Y asi el cambio viaja en el plan, en vez de esperar a que
 # plasmashell reinicie para soltar la `.so` que tiene mapeada.
 ESCALA_RUIDO = 0.05
-
-def _init_turbvel(e):
-    return [_f1(e.get("scale"), 0.01) * ESCALA_RUIDO, _f1(e.get("timescale"), 1.0),
-            _f1(e.get("speedmin"), 0.0), _f1(e.get("speedmax"), 0.0),
-            _f1(e.get("phasemax"), 0.0)] + _v3(e.get("offset"))
 
 
 def _init_secuencia(e):
@@ -406,8 +413,8 @@ def _op_angmov(e):
 # del autor; ese es el unico numero que hay que tocar para revertirlo.
 #
 # Toca solo al OPERADOR, no a `turbulentvelocityrandom`: ese fija la velocidad
-# inicial de los chorros de humo y su coherencia esta calibrada aparte, ver
-# ESCALA_RUIDO. Alcance: 86 operadores del corpus, en 48 escenas.
+# inicial de los chorros de humo con la regla de WE, ver `_init_turbvel`.
+# Alcance: 86 operadores del corpus, en 48 escenas.
 #
 # Vive aqui y no en el `.c` por lo mismo que ESCALA_RUIDO: interpretar el
 # formato es trabajo de Python, y asi el cambio viaja en el plan en vez de
@@ -704,7 +711,8 @@ class Sistema:
         return bool(self.material and self.emisores)
 
 
-def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Sistema:
+def cargar(res: AssetResolver, ruta: str, override: dict | None = None,
+           ortografica: bool = True) -> Sistema:
     """Resuelve el JSON de un sistema de particulas.
 
     `override` es el `instanceoverride` del objeto que lo usa. No es un detalle:
@@ -716,6 +724,10 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
     Se aplican aqui, sobre los valores ya resueltos, y no en el simulador: el
     fichero `.psys` describe el sistema tal y como esta escena lo quiere, y el
     lado C no tiene que saber que existe un mecanismo de presets.
+
+    `ortografica` es si la escena lo es (`wescene.ortografica`): decide la
+    rapidez por defecto de `turbulentvelocityrandom`. Las 129 del corpus lo
+    son; `werender.py` lo pasa leido de la escena.
     """
     pj = res.read_json(ruta)
     s = Sistema(maxcount=int(_f1(pj.get("maxcount"), 32.0)),
@@ -815,7 +827,12 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None) -> Siste
         if not isinstance(e, dict):
             continue
         fn = INICIALIZADORES.get(e.get("name", ""))
-        vals = fn(e) if fn else None
+        # La turbulencia es la unica pieza con un defecto que depende de la
+        # escena; ver `_init_turbvel`.
+        if fn is _init_turbvel:
+            vals = fn(e, ortografica)
+        else:
+            vals = fn(e) if fn else None
         if vals is None:
             s.sin_soporte.append(f"initializer:{e.get('name')}")
         else:
@@ -938,26 +955,6 @@ def _aplicar_override(s: Sistema, ov: dict) -> None:
         m = re.fullmatch(r"controlpoint(\d+)", str(clave))
         if m:
             s.cps[int(m.group(1))] = _v3(valor)
-
-
-def desplazar_ruido(s: Sistema, origen: list[float]) -> None:
-    """Mueve el muestreo del ruido al sitio del sistema en el lienzo.
-
-    El simulador evalua el campo en `pos * scale + offset` con la posicion
-    LOCAL de la particula, asi que sin tocar nada todos los sistemas ---esten
-    donde esten y sean del wallpaper que sean--- muestrean el mismo trozo del
-    campo y su turbulencia sale en la misma direccion. Sumando el origen del
-    objeto ya escalado, `(pos + origen) * scale`, la direccion depende de donde
-    lo puso el autor.
-    """
-    nuevas = []
-    for nombre, vals in s.inits:
-        if nombre == "turbulentvelocityrandom" and len(vals) >= 8:
-            esc, vals = vals[0], list(vals)
-            for k in range(3):
-                vals[5 + k] += origen[k] * esc
-        nuevas.append((nombre, vals))
-    s.inits = nuevas
 
 
 def escribir(s: Sistema, destino: Path, semilla: int) -> None:

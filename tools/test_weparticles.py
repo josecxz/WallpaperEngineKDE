@@ -13,7 +13,7 @@ que el .py emite, para cada sistema del corpus. Es la misma leccion que la
 inferencia de anchos --- validar contra un oraculo antes de conectar --- con el
 oraculo siendo esta vez la otra mitad de la implementacion.
 
-Se comprueban ocho cosas:
+Se comprueban nueve cosas:
 
   1. Los dos lados conocen exactamente los mismos nombres.
   2. Cada pieza emitida trae los floats que el lector espera.
@@ -29,6 +29,8 @@ Se comprueban ocho cosas:
      canonica.
   8. Un sistema con varios emisores emite por todos, cada uno en su forma y a
      su ritmo, al mismo deposito; ver `prueba_emisores`.
+  9. `turbulentvelocityrandom` sigue la regla leida en `wallpaper64.exe`, con
+     sus defectos; ver `prueba_turbvel`.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -49,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import weparticles
 import wepaths
+import wescene
 from wescene import AssetResolver
 
 FUENTE_C = Path(__file__).resolve().parent.parent / "src" / "weparticles.c"
@@ -428,6 +431,193 @@ def prueba_emisores(tmp: Path) -> list[str]:
     return fallos
 
 
+ARNES_TURBVEL_C = r"""
+#include <locale.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "weparticles.h"
+/* <psys> <segundos>: simula con la locale del entorno y escribe las piezas sin
+ * reconocer, cuantas particulas hay, su velocidad media y cuanto se aparta de
+ * ella la que mas. */
+int main(int argc, char **argv)
+{
+    setlocale(LC_ALL, "");
+    int desconocidas = -1;
+    WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
+    if (!s) { printf("-1\n"); return 0; }
+    int nv = we_psys_update(s, (float)atof(argv[2]));
+    const float *v = we_psys_vertices(s);
+    int paso = we_psys_floats_por_vertice(s);
+    double m[3] = {0, 0, 0}, dev = 0;
+    int n = 0;
+    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA, n++)
+        for (int k = 0; k < 3; k++)
+            m[k] += v[(size_t)i * paso + 13 + k];
+    for (int k = 0; k < 3 && n; k++)
+        m[k] /= n;
+    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA)
+        for (int k = 0; k < 3; k++)
+            dev = fmax(dev, fabs(v[(size_t)i * paso + 13 + k] - m[k]));
+    setlocale(LC_NUMERIC, "C");
+    printf("%d %d %.5f %.5f %.5f %.5f\n", desconocidas, n, m[0], m[1], m[2], dev);
+    return 0;
+}
+"""
+
+# La tabla de permutacion de Perlin (Improved Noise, 2002), que es la que
+# `wallpaper64.exe` guarda en 0x140484f40. Va escrita aqui y no leida del .c
+# para que la prueba no compare el simulador consigo mismo.
+PERLIN = [
+    151, 160, 137, 91, 90, 15, 131, 13, 201, 95, 96, 53, 194, 233, 7, 225,
+    140, 36, 103, 30, 69, 142, 8, 99, 37, 240, 21, 10, 23, 190, 6, 148,
+    247, 120, 234, 75, 0, 26, 197, 62, 94, 252, 219, 203, 117, 35, 11, 32,
+    57, 177, 33, 88, 237, 149, 56, 87, 174, 20, 125, 136, 171, 168, 68, 175,
+    74, 165, 71, 134, 139, 48, 27, 166, 77, 146, 158, 231, 83, 111, 229, 122,
+    60, 211, 133, 230, 220, 105, 92, 41, 55, 46, 245, 40, 244, 102, 143, 54,
+    65, 25, 63, 161, 1, 216, 80, 73, 209, 76, 132, 187, 208, 89, 18, 169,
+    200, 196, 135, 130, 116, 188, 159, 86, 164, 100, 109, 198, 173, 186, 3, 64,
+    52, 217, 226, 250, 124, 123, 5, 202, 38, 147, 118, 126, 255, 82, 85, 212,
+    207, 206, 59, 227, 47, 16, 58, 17, 182, 189, 28, 42, 223, 183, 170, 213,
+    119, 248, 152, 2, 44, 154, 163, 70, 221, 153, 101, 155, 167, 43, 172, 9,
+    129, 22, 39, 253, 19, 98, 108, 110, 79, 113, 224, 232, 178, 185, 112, 104,
+    218, 246, 97, 228, 251, 34, 242, 193, 238, 210, 144, 12, 191, 179, 162, 241,
+    81, 51, 145, 235, 249, 14, 239, 107, 49, 192, 214, 31, 181, 199, 106, 157,
+    184, 84, 204, 176, 115, 121, 50, 45, 127, 4, 150, 254, 138, 236, 205, 93,
+    222, 114, 67, 29, 24, 72, 243, 141, 128, 195, 78, 66, 215, 61, 156, 180,
+]
+
+
+def _snoise1(x: float) -> float:
+    """El `snoise1` de WE (0x14027b090), en doble precision."""
+    i0 = math.floor(x)
+    x0 = x - i0
+    x1 = x0 - 1.0
+    def grad(h: int, d: float) -> float:
+        g = 1.0 + (h & 7)
+        return (-g if h & 8 else g) * d
+    return 0.395 * ((1 - x0 * x0) ** 4 * grad(PERLIN[i0 & 255], x0)
+                    + (1 - x1 * x1) ** 4 * grad(PERLIN[(i0 + 1) & 255], x1))
+
+
+def _regla_turbvel(v: list[float], reloj: float) -> list[float]:
+    """La velocidad que da la regla de WE con fase y rapidez FIJAS (min = max).
+
+    `v` son los 13 floats de la pieza. Rodrigues con `right` normalizado, que es
+    lo que hace `glm::rotate` (0x1401e2500) por el vector."""
+    vmin, _, fmin, _, ts, esc, off = v[:7]
+    fw, rt = v[7:10], v[10:13]
+    ang = math.pi * esc * _snoise1((fmin + reloj) * ts) + off
+    n = math.sqrt(sum(c * c for c in rt))
+    e = [c / n for c in rt]
+    c, s = math.cos(ang), math.sin(ang)
+    ef = sum(a * b for a, b in zip(e, fw))
+    x = [e[1] * fw[2] - e[2] * fw[1], e[2] * fw[0] - e[0] * fw[2],
+         e[0] * fw[1] - e[1] * fw[0]]
+    return [(fw[k] * c + x[k] * s + e[k] * ef * (1 - c)) * vmin for k in range(3)]
+
+
+def prueba_turbvel(tmp: Path) -> list[str]:
+    """`turbulentvelocityrandom` con la regla leida en wallpaper64.exe.
+
+    Lo que se exige:
+
+    - Python inserta los defectos de WE: rapidez 100..250 en una escena
+      ortografica y 0,5..1 si no, fase 0..0,1, `timescale` 1, `scale` 1,
+      `offset` 0, `forward` 0 1 0 y `right` 0 0 1; y `wescene.ortografica`
+      decide como el cargador de WE.
+    - El simulador gira `forward` alrededor de `right` el angulo
+      pi * scale * snoise1((fase + reloj) * timescale) + offset. Con la fase y
+      la rapidez fijas, todas las particulas de una rafaga nacen con la MISMA
+      velocidad, y tiene que ser la de la regla: sin el giro saldrian por
+      `forward` tal cual; con el `offset` como desplazamiento, sin sumarlo al
+      angulo; con `right` sin normalizar, girando de mas; y con el reloj del
+      sistema en vez del de la escena, en otro sitio del ruido.
+    """
+    fallos = []
+    pz = {"name": "turbulentvelocityrandom"}
+    orto, persp = weparticles._init_turbvel(pz), weparticles._init_turbvel(pz, False)
+    if orto != [100.0, 250.0, 0.0, 0.1, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]:
+        fallos.append(f"turbvel: defectos en una escena ortografica {orto}")
+    if persp[:2] != [0.5, 1.0] or persp[2:] != orto[2:]:
+        fallos.append(f"turbvel: defectos en una escena en perspectiva {persp}")
+    pz_up = dict(pz, up="0 100 0", offset=-0.5, forward="0 0.25 0", right="10 0 1")
+    v = weparticles._init_turbvel(pz_up)
+    if v[6] != -0.5 or v[7:] != [0.0, 0.25, 0.0, 10.0, 0.0, 1.0]:
+        fallos.append(f"turbvel: `offset`, `forward` o `right` no llegan tal cual: {v}")
+    for general, quiere in (({}, False),
+                            ({"orthogonalprojection": None}, False),
+                            ({"orthogonalprojection": {"auto": True}}, True),
+                            ({"orthogonalprojection": {"width": 1920, "height": 1080}}, True),
+                            ({"orthogonalprojection": {"width": 1920, "height": 0}}, False),
+                            ({"orthogonalprojection": {"width": 0, "height": 1080}}, False)):
+        if wescene.ortografica(general) != quiere:
+            fallos.append(f"ortografica({general}) no da {quiere}")
+
+    fuente, binario = tmp / "arnes_turbvel.c", tmp / "arnes_turbvel"
+    fuente.write_text(ARNES_TURBVEL_C)
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{FUENTE_C.parent}",
+                        "-o", str(binario), str(fuente), str(FUENTE_C), "-lm"],
+                       check=True, capture_output=True)
+    except Exception as e:
+        if shutil.which("cc") is None:
+            print(f"  (sin compilador de C: {e}, prueba omitida)")
+            return fallos
+        return fallos + [f"el arnes de la turbulencia no compila: {e}"]
+
+    loc = locale_con_coma()
+    locales = [("C", "C")] + ([(loc, loc)] if loc else [])
+    # Una rafaga de 20 que nace en el primer paso, sin ritmo, con fase y
+    # rapidez fijas. `starttime` pone el reloj de la escena en -starttime al
+    # nacer.
+    casos = [
+        ("defectos de ejes", {"phasemin": 0.37, "phasemax": 0.37, "scale": 0.5,
+                              "speedmin": 100, "speedmax": 100}, 0.0),
+        ("offset es un angulo", {"phasemin": 0.37, "phasemax": 0.37, "scale": 0.5,
+                                 "offset": 1.0, "speedmin": 100, "speedmax": 100}, 0.0),
+        ("right sin normalizar", {"phasemin": 0.37, "phasemax": 0.37, "scale": 0.5,
+                                  "forward": "0 0.25 0", "right": "10 0 1",
+                                  "up": "0 100 0", "speedmin": 80, "speedmax": 80}, 0.0),
+        ("reloj de la escena", {"phasemin": 0.37, "phasemax": 0.37, "scale": 0.5,
+                                "timescale": 2, "speedmin": 100, "speedmax": 100}, 1.5),
+        ("forward nulo", {"phasemin": 0.37, "phasemax": 0.37, "forward": "0 0 0",
+                          "speedmin": 100, "speedmax": 100}, 0.0),
+    ]
+    for etq, campos, arranque in casos:
+        preset = {"maxcount": 20, "starttime": arranque,
+                  "emitter": [{"name": "sphererandom", "rate": 0,
+                               "instantaneous": 20}],
+                  "initializer": [{"name": "lifetimerandom", "min": 100, "max": 100},
+                                  dict(pz, **campos)],
+                  "renderer": [{"name": "sprite"}],
+                  "material": "x.json"}
+        s = weparticles.cargar(_Resolver(preset), "p.json")
+        vals = dict(s.inits)["turbulentvelocityrandom"]
+        quiere = _regla_turbvel(vals, -arranque)
+        psys = tmp / "turbvel.psys"
+        weparticles.escribir(s, psys, 5)
+        for etq_loc, entorno in locales:
+            r = subprocess.run([str(binario), str(psys), "0.01"],
+                               capture_output=True, text=True,
+                               env=dict(os.environ, LC_ALL=entorno))
+            c = r.stdout.split()
+            if len(c) != 6:
+                fallos.append(f"turbvel {etq}: el arnes no devolvio nada ({etq_loc})")
+                continue
+            desc, n = int(c[0]), int(c[1])
+            hay, dev = [float(x) for x in c[2:5]], float(c[5])
+            print(f"  {etq:<22} LC_ALL={etq_loc:<12} n {n:<3} v ({hay[0]:8.3f}, "
+                  f"{hay[1]:8.3f}, {hay[2]:8.3f})  regla ({quiere[0]:8.3f}, "
+                  f"{quiere[1]:8.3f}, {quiere[2]:8.3f})")
+            err = max(abs(a - b) for a, b in zip(hay, quiere))
+            if desc or n != 20 or dev > 1e-3 or err > 1e-2:
+                fallos.append(f"turbvel {etq} (LC_ALL={etq_loc}): {n} particulas, "
+                              f"{desc} piezas descartadas, v {hay} contra la regla "
+                              f"{[round(x, 3) for x in quiere]}")
+    return fallos
+
+
 def locale_con_coma() -> str | None:
     """Primera locale instalada cuyo separador decimal NO sea el punto."""
     try:
@@ -669,6 +859,10 @@ def main() -> int:
     print("\n── varios emisores ──")
     fallos += prueba_emisores(tmp)
 
+    # ── 9. la turbulencia con la regla de WE ──
+    print("\n── turbulentvelocityrandom ──")
+    fallos += prueba_turbvel(tmp)
+
     st = Counter()
     fuera = Counter()
     largos: list[tuple[float, str]] = []
@@ -685,7 +879,9 @@ def main() -> int:
             st["sistemas"] += 1
             try:
                 s = weparticles.cargar(res, o["particle"],
-                                       o.get("instanceoverride"))
+                                       o.get("instanceoverride"),
+                                       ortografica=wescene.ortografica(
+                                           escena.get("general") or {}))
             except Exception as e:
                 st["error"] += 1
                 fallos.append(f"{d.name} {o.get('name')!r}: {type(e).__name__}: {e}")

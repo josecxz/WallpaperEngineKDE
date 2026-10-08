@@ -348,6 +348,30 @@ def is_visible(value, properties: dict) -> bool:
     return bool(prop["value"])
 
 
+def ortografica(general: dict) -> bool:
+    """Si la escena es ortografica, como lo decide el cargador de WE.
+
+    Es el bit 3 de `escena+0xe0`, y lo lee asi (wallpaper64.exe, 0x1401874ec
+    en adelante): `orthogonalprojection` tiene que ser un objeto; con `auto`
+    a true lo es sin mas (0x140187565), y si no, `width` y `height` tienen que
+    ser numeros y los DOS distintos de cero (0x1401875c9..0x1401875df). Sin el
+    campo, el constructor deja el bit apagado (`+0xe0 = 0x26`, 0x140186d1f).
+
+    Las 129 escenas del corpus lo son. Hace falta saberlo para la rapidez por
+    defecto de `turbulentvelocityrandom`, que el cargador ata a este mismo bit
+    (0x14018768a); ver `weparticles._init_turbvel`.
+    """
+    proj = general.get("orthogonalprojection")
+    if not isinstance(proj, dict):
+        return False
+    if proj.get("auto") is True:
+        return True
+    w, h = proj.get("width"), proj.get("height")
+    numeros = all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                  for v in (w, h))
+    return numeros and w != 0 and h != 0
+
+
 def _object_kind(o: dict) -> str:
     """Tipo del objeto, por el primer campo con VALOR, no con clave.
 

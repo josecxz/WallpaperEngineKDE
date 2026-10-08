@@ -1750,7 +1750,9 @@ espacio. Gira `forward` alrededor de `right` un ángulo que sale de un ruido en
 el **tiempo**, y su `offset` es ese ángulo, no un desplazamiento del punto de
 muestreo. `up` no lo lee. Está en [Los ejes de la
 turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee),
-leído en `wallpaper64.exe` y sin aplicar. Lo de abajo es la regla de aquí: el
+leído en `wallpaper64.exe`, y desde [La turbulencia con la regla de
+WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido) es lo que se
+aplica. Lo de abajo era la regla de aquí hasta entonces: el
 rotacional de un ruido 3D, con `scale`, `speedmin`/`speedmax` y un `offset`
 que desplaza el punto de muestreo. Con ella, lo que sí vuelve a depender del
 wallpaper es el carácter del efecto. Si hiciera falta apuntar un penacho
@@ -2183,7 +2185,7 @@ falta son campos de piezas que sí leemos:
 |---|---|---|
 | `exponent` en los seis inicializadores aleatorios | **96** | la forma de la distribución: el autor pide un sesgo y repartimos uniforme |
 | `audioprocessing*` en 6 piezas | ~50 | reactividad al sonido |
-| `turbulentvelocityrandom` según la regla de WE (`forward`/`right`, `offset` como ángulo, fase, rapidez por defecto) | 152 piezas en 66 escenas | **leído, sin aplicar**: WE gira `forward` alrededor de `right` un ángulo de ruido en el tiempo, y `up` no lo lee. Falta sustituir el inicializador entero, porque cambian también las 147 piezas sin ejes, y un oráculo para el aspecto; ver [Los ejes de la turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee) |
+| ~~`turbulentvelocityrandom` según la regla de WE (`forward`/`right`, `offset` como ángulo, fase, rapidez por defecto)~~ | 152 piezas en 66 escenas | **aplicado**: el inicializador entero se sustituyó por la regla leída, y la rapidez por defecto es 100–250 porque las 129 escenas son ortográficas. El aspecto solo lo respalda la lectura. Ver [La turbulencia con la regla de WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido) |
 | `operation` en `remapvalue` | 2 | el modo del remapeo |
 | `blendin/out` en `oscillatealpha` | 1 c/u | las ventanas de entrada y salida |
 
@@ -6647,6 +6649,10 @@ dirección.
 
 ### Por qué no se aplica
 
+**Aplicado después**, con los dos cabos leídos: el booleano es «la escena es
+ortográfica» y `[obj+0x130]` son los segundos de la escena. Ver [La turbulencia
+con la regla de WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido).
+
 La identidad implícita de hoy no es el defecto de WE. Hoy, sin ejes, cada
 partícula sale por el rotacional de un ruido 3D evaluado en su posición,
 desplazado por el sitio del objeto (`desplazar_ruido`). En WE, sin ejes, todas
@@ -6856,3 +6862,170 @@ Contra la base `d01ed59`, con los scripts de
   cuánto vale.
 - **Las escenas con `paths`** conservan el `eye` y lo interpolan. No hay
   ninguna en el corpus.
+
+## La turbulencia con la regla de WE: `turbulentvelocityrandom` deja de muestrear nuestro ruido
+
+[Los ejes de la
+turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee)
+leyó la regla entera del inicializador y no la aplicó. La razón era que no se
+monta encima del ruido 3D de aquí: lo sustituye, en las 152 piezas de 66
+escenas. El síntoma seguía ahí. Los tres objetos que comparten `smoke2`
+(1877658892) salían en tres direcciones (−163°, 105° y 46°) y la regla los manda
+a los tres hacia arriba. Además, 12 de las 18 medidas de rumbo caían a más de
+±15°. Para aplicarla faltaban dos lecturas: de dónde sale el booleano de la
+rapidez por defecto y qué es `[obj+0x130]`. De la primera dependían las 50 piezas
+sin `speedmin` ni `speedmax`, que hoy no dan velocidad y con la regla dan
+0,5–1 o 100–250. Si el booleano no se dejaba leer, no se aplicaba nada.
+
+### El booleano es «la escena es ortográfica»
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen):
+
+- **En la fábrica.** La fábrica de partículas (`0x1401c5490`) guarda su primer
+  argumento en `[rsp+8]`. Con `rbp = rsp − 0x2210` tras el `push`
+  (`0x1401c54a0`), ese hueco es `[rbp+0x2220]`, y de ahí sale `r14`
+  (`0x1401c579b`). `[r14]` es el **contexto** del renderizador. En `0x1401c5b75`
+  la fábrica llama a `0x14010daa0` con él, y lo que devuelve va a `[rbp+0x2238]`
+  (`0x1401c5b7e`). Nada más escribe ahí antes de `0x1401c701b`.
+- **El bit.** `0x14010daa0` es `([contexto+0x118] >> 10) & 1`.
+- **Quién lo pone.** Ese bit lo apaga (`0x1401872ca`) y lo enciende
+  (`0x14018768a`) el cargador de la escena, y son las dos únicas instrucciones
+  del binario que lo tocan. Lo enciende si está encendido el bit 3 de
+  `escena+0xe0`, el de la proyección ortográfica. El contexto es el cuarto
+  argumento del cargador: `[rsp+0x20]`, que es `[rbp+0x1e8]` y pasa a `r13`
+  (`0x1401872ad`) y a `escena+0xd8` (`0x140186d13`).
+- **Cuándo es ortográfica** (`0x1401874ec..0x1401875df`).
+  `orthogonalprojection` tiene que ser un objeto. Con `auto` a true lo es
+  (`0x140187565`). Si no, `width` y `height` tienen que ser números y **los
+  dos** distintos de cero: con el ancho a cero apaga el bit (`0x1401875cb`), y
+  con el alto a cero también. Lo que se dijo en [el `eye` de la
+  cámara](#el-eye-de-la-cámara-no-llega-al-parallax-we-lo-pone-a-cero-en-las-escenas-ortográficas),
+  «que no sean los dos cero», era impreciso, aunque no cambiaba nada allí. Sin
+  el campo, el constructor deja `+0xe0 = 0x26`, sin el bit (`0x140186d1f`).
+- **Las 129 escenas del corpus son ortográficas**: 128 con ancho y alto
+  distintos de cero y una con `auto`. El defecto es **100–250** en todas.
+
+### `[obj+0x130]` son los segundos de la escena
+
+- **Es el mismo contexto.** El `obj` del inicializador es `[instancia]`
+  (`0x14023b361`, `0x14023bdf8`), y el sorteo lo usa con `+0x20` y `+0x1cd0`
+  (`0x14023b367`). Esos dos campos los rellena el constructor `0x14017c6d0`:
+  `+0x20 = 0` y `+0x24 = 1`, el rango del sorteo, y `+0x1cd0 = 624`, el índice
+  del generador (`0x14017d523`). Lo llaman los dos sitios que crean el
+  renderizador, con `renderizador+0x10` (`0x140110ae1`, `0x14012b8b8`). Es el
+  mismo puntero que el renderizador le pasa al cargador de la escena
+  (`0x140181b82`). El contexto de la fábrica tiene el `+0x1510` que escriben ese
+  constructor (`0x14017d014`) y el cargador (`0x1401872e8`). Las tres funciones
+  ven el mismo objeto.
+- **El reloj.** `contexto+0x130` es `renderizador+0x140`. Cada fotograma el
+  renderizador suma el dt a un doble en `+0x148` (`0x14017fcca`) y deja su float
+  en `+0x140` (`0x14017fce5`). Pasados 432 000 s lo vuelve a 0 (`0x14017fcef`),
+  y al cargar la escena también (`0x140181b2a`, `0x140181b31`). Es el reloj que
+  [el temblor](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido)
+  ya había leído como `[[escena+0xd8]+0x130]`.
+- **Y WE le da nombre.** `remapinitialvalue` busca su `input` en una tabla de
+  20 nombres (`0x140484e80`, `0x140260f50`) y despacha por el índice
+  (`0x14023ce53`, saltos en `0x14023fab8`). El 9 es `runtime`, y su caso lee
+  `[contexto+0x130]` (`0x14023d219`). El 11, `particlesystemtime`, lee
+  `[instancia+0x3f0]` (`0x14023d230`): el reloj **del sistema** es otro campo.
+
+Aquí el reloj de la escena es el `t` que recibe `we_psys_update`. Mientras el
+arranque recupera `starttime`, vale de −`starttime` a 0. Qué reloj ven en WE
+las partículas de esos segundos no está leído. Es la única suposición del port,
+y solo toca a los sistemas con `starttime`.
+
+### Cómo queda aquí
+
+- **`weparticles.py`.** `_init_turbvel` escribe 13 floats: rapidez mínima y
+  máxima, fase mínima y máxima, `timescale`, `scale`, `offset` (un ángulo),
+  `forward[3]` y `right[3]`, con los defectos leídos. La rapidez por defecto la
+  decide `wescene.ortografica(general)`, que `werender` le pasa a `cargar`. `up`
+  y la rama de audio se ignoran: las 2 piezas con `audioprocessingmode: 3` se
+  tratan como modo 0.
+- **`src/weparticles.c`.** `gira_turbulenta` usa `snoise1`, portado de
+  `0x14027b090` con la tabla de Perlin y el 0,395, y gira con Rodrigues:
+  `right` normalizado y `forward` sin normalizar. Lo de `glm::rotate` está
+  comprobado. El giro es el positivo, porque la fila 1 de la columna 0 es
+  `x·y·(1 − c) + z·sen` (`0x1401e2653`). Y `0x140184440` es `M·v`, no `v·M`. La
+  matriz del emisor no se aplica, igual que en `velocityrandom`: la velocidad
+  vive en el espacio del sistema. El reloj de la escena viaja en `s->reloj`, y
+  los hijos de evento lo heredan del padre. Con un `right` nulo WE dividiría por
+  cero; aquí no gira, y el corpus no tiene ninguno. Lo enlazan `glexec.c` y
+  `glexecutor.cpp`.
+- **`desplazar_ruido` desaparece**, porque con la regla no hay punto de
+  muestreo que desplazar. **`ESCALA_RUIDO` se queda solo para el operador
+  `turbulence`**, que no se toca. El factor se calibró para esta pieza con
+  nuestro ruido, cuando la coherencia del humo de Sniper Girl pasó de 0,08 a
+  0,72. El operador lo comparte desde entonces, y su número se queda como está.
+
+### Lo que cambia en el aspecto
+
+Con la regla, las partículas que nacen a la vez salen paralelas y el chorro
+serpentea con los segundos. El penacho que se abría era de nuestro ruido 3D.
+`coherencia_turbvel.py` pasa `psysprobe` en t = 2 por los 271 `.psys` con la
+pieza, enteros, con todas sus piezas, y los reparte como [La turbulencia no
+turbulaba](#la-turbulencia-no-turbulaba):
+
+| | chorro (c > 0,7) | penacho (0,3–0,7) | esparcido (< 0,3) | quietos (rapidez < 1) |
+|---|---|---|---|---|
+| base `a81d43a` | 114 | 73 | 80 | 4 |
+| rama | **269** | 0 | 1 | 1 |
+
+En el humo de Sniper Girl (1160677675), `s002` pasa de c = 0,27 a 0,98 y de 27,1
+a 175,2 de rapidez. Es una de las 50 piezas sin rapidez declarada. El único
+oráculo del aspecto es la lectura: ningún preview de humo se ha comparado, y la
+regresión de luz solo caza apagados.
+
+### Lo medido
+
+Contra la base `a81d43a` y con Mesa, con los scripts de
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261007-182522/medidas/`
+(`repetir.sh`):
+
+- **`verifica_exe.sh`**: **254 ok, 0 fallos**, los 154 de antes y 100 nuevos.
+  Los nuevos cubren las direcciones de las dos secciones de arriba, el recuento
+  de quién toca el bit 10, los 256 bytes de la tabla de permutación, que son los
+  de Perlin, y el signo del giro.
+- **`rumbo_turbvel.py --ejes`**: aísla la pieza con solo `lifetimerandom`, sin
+  operadores y con la rapidez de salida del emisor a 0, y compara su rumbo con
+  la regla por Monte Carlo. psysprobe se promedia sobre 32 semillas. Hace falta:
+  `Flare_Flame` en t = 1 tiene unas 8 partículas vivas con c = 0,13, y ahí el
+  rumbo de una sola siembra es ruido. **18 de 18** quedan a ≤ 15°, y la que más
+  se aparta lo hace por 1,6°. Con la semilla del plan son 17 de 18, porque
+  `Flare_Flame` en t = 1 da 22,2° contra 1,0°. Con el mismo script, la base da
+  **6 de 18**.
+
+  | fichero | `.psys` | rama, t = 1 / 2 / 3 | regla, t = 1 / 2 / 3 |
+  |---|---|---|---|
+  | `smoke2` | 1877658892/s000, s001, s002 | 97,5 / 94,0 / 93,4 | 97,6 / 94,0–94,1 / 93,4–93,5 |
+  | `smoke1` | 2250845956/s002 | 91,5 / 91,7 / 91,8 | 91,5 / 91,6 / 91,8 |
+  | `Flare_Flame` | 2937370591/s003 | −0,6 / 82,4 / 81,1 | 1,0 / 82,4 / 81,1 |
+  | `Flare_Smoke` | 2937370591/s004 | 57,2 / 63,0 / 63,0 | 57,2 / 63,0 / 63,0 |
+
+- **`rumbo_turbvel.py --sparks`**: `Flare_Sparks` (`forward 0 0 0`) da rapidez
+  media **0 / 0 / 0**. En la base daba 73,5 / 75,4 / 75,2.
+- **`rumbo_turbvel.py --sin-rapidez`**: las **50** piezas sin `speedmin` ni
+  `speedmax`, aisladas igual, en t = 2. De los 98 `.psys` que las llevan,
+  **95** quedan a ±10 % de 175.
+- **`planes_iguales.py`**, las 129 con la hora congelada. Las **63** sin la
+  pieza salen idénticas byte a byte. En las **66** con ella, el `plan.txt` es
+  idéntico y las únicas líneas distintas son las 295
+  `init turbulentvelocityrandom`. Los otros 513 `.psys` de esas escenas no
+  cambian.
+- **`test_weparticles.py`**: la prueba 9 nueva pasa, también con
+  `LC_ALL=es_ES.UTF-8`. Cubre los defectos y `ortografica`, y pasa por el
+  simulador cinco ráfagas con la fase y la rapidez fijas: los ejes por defecto,
+  el `offset` como ángulo, el `right` sin normalizar, el reloj con `starttime`
+  y el `forward` nulo. `mutacion_giro.sh` comprueba que la prueba falla sin el
+  giro (8 discrepancias), sin el `offset` en el ángulo (2) y con el reloj del
+  sistema (2).
+- **`luz_turbvel.py`**: las 66 con la pieza, rama contra base: **66 de 66**
+  renderizadas, 0 apagadas y 0 regresiones. La media se mueve entre −0,7 %
+  (2658583633) y +9,7 % (3050043876); 3097749052 da entre −0,6 % y −0,9 %
+  según la pasada, porque su base no es estable. La pasada de las 129 de
+  `test_luminancia.py` contra una referencia de main da 129 renderizadas, 0
+  apagadas y 0 regresiones.
+- **`compila.sh`**: `make glexec psysprobe build` sin errores ni avisos en
+  `src/weparticles.c`, y la tabla de `snoise1` está en `obj/glexec`, en
+  `obj/psysprobe` y en la `.so`.

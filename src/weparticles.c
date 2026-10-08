@@ -12,7 +12,7 @@
 
 #define MAX_PIEZAS 24
 #define MAX_CP 8
-#define MAX_F 12          /* floats por pieza; ninguna del corpus pasa de 10 */
+#define MAX_F 16          /* floats por pieza; la que mas lleva, 13 */
 #define PASO (1.0f / 60.0f)
 /* Dos topes de simulacion en una sola llamada, y son distintos a proposito.
  *
@@ -66,8 +66,9 @@ static const Entrada INICIALIZADORES[] = {
     {"velocityrandom",          IN_VEL,     7},
     {"rotationrandom",          IN_ROT,     7},
     {"angularvelocityrandom",   IN_ANGVEL,  7},
-    /* escala, escalatiempo, velmin, velmax, fasemax, desplazamiento[3] */
-    {"turbulentvelocityrandom", IN_TURBVEL, 8},
+    /* velmin, velmax, fasemin, fasemax, escalatiempo, escala, angulo,
+     * forward[3], right[3]: la regla de WE, ver `gira_turbulenta` */
+    {"turbulentvelocityrandom", IN_TURBVEL, 13},
     /* estaciones, 0 repite / 1 rebota */
     {"mapsequencebetweencontrolpoints", IN_SECUENCIA, 2},
     /* ...los 2 de arriba + vuelta[2] + velmin[3] + velmax[3] */
@@ -186,6 +187,11 @@ struct WeParticleSystem {
     int estacion_cp;                /* ...y el del reparto en corro */
     int cursor;                     /* por donde seguir buscando hueco */
     float vivido;                   /* segundos simulados, para `duracion` */
+    /* El reloj de la ESCENA en el paso en curso: el `t` que recibe
+     * `we_psys_update`, no los segundos del sistema. Lo lee
+     * `turbulentvelocityrandom`; en el arranque es negativo mientras se
+     * recupera `starttime`. Un hijo de evento lo hereda de su padre. */
+    float reloj;
     unsigned int rng;
     int arrancado;
 
@@ -264,9 +270,11 @@ static float mezcla(float a, float b, float t) { return a + (b - a) * t; }
 static float sujeta(float v, float a, float b) { return v < a ? a : (v > b ? b : v); }
 
 /* ── ruido ─────────────────────────────────────────────────────────────────
- * Ruido de valor en 3D y su rotacional. La turbulencia de WE es un campo
- * solenoidal (las particulas giran, no divergen); el rotacional de un potencial
- * de ruido da eso mismo sin tener que reproducir su implementacion exacta. */
+ * Ruido de valor en 3D y su rotacional, para el operador `turbulence`. Es un
+ * campo solenoidal (las particulas giran, no divergen); el rotacional de un
+ * potencial de ruido da eso mismo sin tener que reproducir su implementacion
+ * exacta. El inicializador `turbulentvelocityrandom` ya no lo usa: ver
+ * `snoise1`. */
 static float ruido_hash(int x, int y, int z, int c)
 {
     unsigned int h = (unsigned int)(x * 374761393 + y * 668265263 + z * 2147483647
@@ -321,6 +329,81 @@ static void rotacional(float x, float y, float z, float out[3])
     out[0] = dp3dy - dp2dz;
     out[1] = dp1dz - dp3dx;
     out[2] = dp2dx - dp1dy;
+}
+
+/* El ruido simplex 1D de Wallpaper Engine, `snoise1` (0x14027b090 de
+ * wallpaper64.exe), con su tabla de permutacion (0x140484f40, que es la de
+ * Perlin) y su factor 0,395. Port literal: la celda sale de truncar y corregir
+ * hacia abajo, el gradiente es 1 + (h & 7) con el signo del bit 3 y cada
+ * esquina pesa (1 - d^2)^4. Lo usa solo `turbulentvelocityrandom`, que lo
+ * muestrea en el TIEMPO. */
+static const unsigned char PERMUTACION[256] = {
+    151, 160, 137, 91, 90, 15, 131, 13, 201, 95, 96, 53, 194, 233, 7, 225,
+    140, 36, 103, 30, 69, 142, 8, 99, 37, 240, 21, 10, 23, 190, 6, 148,
+    247, 120, 234, 75, 0, 26, 197, 62, 94, 252, 219, 203, 117, 35, 11, 32,
+    57, 177, 33, 88, 237, 149, 56, 87, 174, 20, 125, 136, 171, 168, 68, 175,
+    74, 165, 71, 134, 139, 48, 27, 166, 77, 146, 158, 231, 83, 111, 229, 122,
+    60, 211, 133, 230, 220, 105, 92, 41, 55, 46, 245, 40, 244, 102, 143, 54,
+    65, 25, 63, 161, 1, 216, 80, 73, 209, 76, 132, 187, 208, 89, 18, 169,
+    200, 196, 135, 130, 116, 188, 159, 86, 164, 100, 109, 198, 173, 186, 3, 64,
+    52, 217, 226, 250, 124, 123, 5, 202, 38, 147, 118, 126, 255, 82, 85, 212,
+    207, 206, 59, 227, 47, 16, 58, 17, 182, 189, 28, 42, 223, 183, 170, 213,
+    119, 248, 152, 2, 44, 154, 163, 70, 221, 153, 101, 155, 167, 43, 172, 9,
+    129, 22, 39, 253, 19, 98, 108, 110, 79, 113, 224, 232, 178, 185, 112, 104,
+    218, 246, 97, 228, 251, 34, 242, 193, 238, 210, 144, 12, 191, 179, 162, 241,
+    81, 51, 145, 235, 249, 14, 239, 107, 49, 192, 214, 31, 181, 199, 106, 157,
+    184, 84, 204, 176, 115, 121, 50, 45, 127, 4, 150, 254, 138, 236, 205, 93,
+    222, 114, 67, 29, 24, 72, 243, 141, 128, 195, 78, 66, 215, 61, 156, 180,
+};
+
+static float snoise1(float x)
+{
+    int i0 = (int)x;
+    if ((float)i0 > x)
+        i0--;
+    float x0 = x - (float)i0, x1 = x0 - 1.0f;
+    unsigned char h0 = PERMUTACION[i0 & 0xff], h1 = PERMUTACION[(i0 + 1) & 0xff];
+    float g0 = 1.0f + (float)(h0 & 7), g1 = 1.0f + (float)(h1 & 7);
+    if (h0 & 8) g0 = -g0;
+    if (h1 & 8) g1 = -g1;
+    float t0 = 1.0f - x0 * x0, t1 = 1.0f - x1 * x1;
+    t0 *= t0; t0 *= t0;
+    t1 *= t1; t1 *= t1;
+    return 0.395f * (t0 * g0 * x0 + t1 * g1 * x1);
+}
+
+/* `turbulentvelocityrandom` como lo hace WE (el caso 9 de 0x14023b340):
+ *
+ *   fase = fasemin + u * (fasemax - fasemin)
+ *   ang  = pi * escala * snoise1((fase + reloj) * escalatiempo) + angulo
+ *   vel += giro(ang, right / |right|) * forward * mezcla(velmin, velmax, u')
+ *
+ * `forward` NO se normaliza: su norma escala la velocidad, y un `forward` nulo
+ * no da ninguna. `right` si, como en `glm::rotate`; un `right` nulo dejaria a
+ * WE dividiendo por cero, y aqui no gira (el corpus no tiene ninguno). El giro
+ * es el de Rodrigues, que es lo que da la matriz de `glm::rotate` por el
+ * vector. La matriz del emisor por la que WE pasa el resultado es la misma que
+ * la de `velocityrandom`, y aqui ninguna de las dos la necesita: la velocidad
+ * vive en el espacio del sistema. */
+static void gira_turbulenta(const float *v, float u, float u2, float reloj, float out[3])
+{
+    float fase = mezcla(v[2], v[3], u);
+    float ang = 3.14159265f * v[5] * snoise1((fase + reloj) * v[4]) + v[6];
+    const float *f = v + 7, *r = v + 10;
+    float n = sqrtf(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    float rapidez = mezcla(v[0], v[1], u2);
+    if (n <= 0.0f) {
+        for (int k = 0; k < 3; k++)
+            out[k] = f[k] * rapidez;
+        return;
+    }
+    float e[3] = {r[0] / n, r[1] / n, r[2] / n};
+    float c = cosf(ang), sn = sinf(ang);
+    float ef = e[0] * f[0] + e[1] * f[1] + e[2] * f[2];
+    float x[3] = {e[1] * f[2] - e[2] * f[1], e[2] * f[0] - e[0] * f[2],
+                  e[0] * f[1] - e[1] * f[0]};
+    for (int k = 0; k < 3; k++)
+        out[k] = (f[k] * c + x[k] * sn + e[k] * ef * (1.0f - c)) * rapidez;
 }
 
 /* ── carga ─────────────────────────────────────────────────────────────── */
@@ -710,15 +793,13 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
                 q->angvel[k] = mezcla(v[k], v[3 + k], sesgo(azar(&s->rng), v[6]));
             break;
         case IN_TURBVEL: {
-            /* Velocidad inicial tomada de un campo de ruido: las particulas
-             * nacidas cerca salen en la misma direccion, que es lo que da a la
-             * niebla y al humo su aspecto de corriente. */
+            /* El ruido no se muestrea en la posicion sino en el reloj: las
+             * particulas que nacen a la vez salen casi paralelas y el chorro
+             * serpentea con los segundos. Ver `gira_turbulenta`. */
             float c[3];
-            rotacional(q->pos[0] * v[0] + v[5], q->pos[1] * v[0] + v[6],
-                       q->pos[2] * v[0] + v[7], c);
-            float vel = mezcla(v[2], v[3], azar(&s->rng));
+            gira_turbulenta(v, t, azar(&s->rng), s->reloj, c);
             for (int k = 0; k < 3; k++)
-                q->vel[k] += c[k] * vel;
+                q->vel[k] += c[k];
             break;
         }
         default: break;
@@ -1298,6 +1379,7 @@ static void paso_con_hijos(WeParticleSystem *s, float h)
     if (!s->hijo)
         return;
     for (WeParticleSystem *c = s->hijo; c; c = c->hermano) {
+        c->reloj = s->reloj;
         if (c->modo == WE_HIJO_SIGUE) {
             sigue(c, s, h);
             continue;
@@ -1432,6 +1514,8 @@ int we_psys_update(WeParticleSystem *s, float t)
     s->t_prev = t;
     if (dt > tope)
         dt = tope;
+    /* Lo que se simula ahora es el tramo que acaba en `t`. */
+    s->reloj = t - dt;
 
     /* Las particulas instantaneas son un unico estallido al arrancar. Cada
      * emisor suelta las suyas en los huecos que siguen a las del anterior. */
@@ -1455,6 +1539,7 @@ int we_psys_update(WeParticleSystem *s, float t)
     while (dt > 0.0f) {
         float h = dt > PASO ? PASO : dt;
         paso_con_hijos(s, h);
+        s->reloj += h;
         dt -= h;
     }
     return construye(s);
