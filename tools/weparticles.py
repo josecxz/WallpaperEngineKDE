@@ -706,6 +706,10 @@ class Sistema:
     # Operadores que tiran de uno de esos puntos. Solo para contarlos: el que
     # decide si actuan o no es el simulador, segun haya puntero o no.
     con_cursor: list[str] = field(default_factory=list)
+    # «Perspective rendering»: el bit 0x4 del `flags` del SISTEMA. No cambia la
+    # simulacion sino la camara con la que WE lo dibuja; la matriz la pone
+    # `werender.particle_mvp_perspectiva`. Ver `cargar`.
+    perspectiva: bool = False
     @property
     def dibujable(self) -> bool:
         return bool(self.material and self.emisores)
@@ -740,6 +744,15 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None,
     # variedad esta entre particulas, no dentro de cada una.
     s.anim_modo = 1 if pj.get("animationmode") == "randomframe" else 0
     s.anim_mult = max(1.0, _f1(pj.get("sequencemultiplier"), 1.0))
+
+    # El `flags` del sistema es un byte de casillas del editor
+    # (`wallpaperui.exe`, 0x1401b6cb5..0x1401b6e10): 0x1 worldspace, 0x4
+    # perspectiva, 0x8..0x80 «disable ... overrides». El motor lo guarda en
+    # el descriptor+0x8 (0x1401c56e1..0x1401c56f0) y de ahi va a sistema+0x20
+    # (0x1401c423d). Solo se lee el 0x4: el dibujo lo prueba (0x140236761) y
+    # cambia de camara. Son 153 sistemas en 58 escenas; el 0x1 y el 0x2 quedan
+    # anotados en NOTAS.
+    s.perspectiva = bool(int(_f1(pj.get("flags"), 0.0)) & 4)
 
     # Puntos de control movidos por el cursor. Ver `_cursor`.
     cursor: set[int] = set()
@@ -984,6 +997,12 @@ def escribir(s: Sistema, destino: Path, semilla: int) -> None:
         lineas.append(f"init {nombre} " + " ".join(num(v) for v in vals))
     for nombre, vals in s.opers:
         lineas.append(f"oper {nombre} " + " ".join(num(v) for v in vals))
+    # El simulador no la usa ---la perspectiva va en la MVP del pase--- y
+    # `we_psys_load` se salta en silencio las palabras que no conoce, asi que
+    # un ejecutor anterior lee el fichero igual. Va al final y solo cuando
+    # esta puesta: un sistema sin el bit sale byte a byte como antes.
+    if s.perspectiva:
+        lineas.append("perspectiva 1")
     destino.write_text("\n".join(lineas) + "\n")
 
 

@@ -472,6 +472,82 @@ def particle_world(obj, canvas: tuple[int, int],
             0.0,           0.0,          0.0,      1.0]
 
 
+# La camara con la que WE dibuja un sistema con «Perspective rendering» (bit
+# 0x4 del `flags` del sistema) en una escena ortografica. Todo leido en
+# `wallpaper64.exe`; ver NOTAS, «Particulas con perspectiva».
+#
+# El fov es el de la escena, pero en una ortografica no es `fov` sino
+# `perspectiveoverridefov` (0x140189271..0x1401892c4 eligen +0x144 si la
+# escena es ortografica y +0x140 si no), el que el editor ensena como «FOV»
+# en las opciones de camara de una escena ortografica. Sin declarar vale 95
+# (el constructor de la escena, 0x140186d67), y se acota a [0,1, 179,9]
+# (0x140189b12..0x140189b4c). Los planos son fijos: 5 el cercano y el lejano
+# max(15000, ojo + 1000) (0x1401e5b98..0x1401e5bc8).
+PERSPECTIVA_FOV = 95.0
+PERSPECTIVA_FOV_RANGO = (0.1, 179.9)
+PERSPECTIVA_CERCA = 5.0
+PERSPECTIVA_LEJOS = 15000.0
+PERSPECTIVA_MARGEN_LEJOS = 1000.0
+
+
+def fov_de_perspectiva(general: dict) -> float:
+    """El fov vertical, en grados, de la camara de un sistema con perspectiva."""
+    v = _floats(general.get("perspectiveoverridefov"))
+    fov = v[0] if v else PERSPECTIVA_FOV
+    return min(max(fov, PERSPECTIVA_FOV_RANGO[0]), PERSPECTIVA_FOV_RANGO[1])
+
+
+def particle_mvp_perspectiva(obj, canvas: tuple[int, int], fov: float,
+                             por_id: dict | None = None) -> list[float]:
+    """`particle_mvp` con la camara en perspectiva que WE pone al bit 0x4.
+
+    Al dibujar el sistema (0x1402366f0), si `[sistema+0x20] & 4`
+    (0x140236761) WE apila la vista y la proyeccion y llama a 0x1401e5b60,
+    que las rehace a partir de la ortografica de la escena:
+
+    - el ojo se aleja del lienzo `d = 1 / (tan(fov/2) * P[1][1])`, con P la
+      ortografica: `P[1][1] = 2/alto`, asi que `d = alto / (2 tan(fov/2))`,
+      la distancia a la que el alto del lienzo llena el fov;
+    - la vista se centra: x e y de su traslacion pierden el centro de la
+      ventana ortografica (`[ctx+0x84] * [ctx+0xf8]`, ancho por 0,5 sin
+      margenes) y la z pasa a ser `-d`;
+    - la proyeccion es la entrada +0x10 del dispositivo (0x14009a360): una
+      `XMMatrixPerspectiveFovRH` con la z invertida ---el plano cercano va a
+      1 y el lejano a 0, `cerca / (lejos - cerca)`, 0x14009a517..0x14009a57b---
+      con ese fov, el aspecto del destino (`[ctx+0x74] / [ctx+0x78]`, que en
+      el pase de la escena es el lienzo), 5 y max(15000, d + 1000).
+
+    Por construccion el plano z = 0 cae en el mismo pixel que con la
+    ortografica, y lo que tiene z positiva se acerca al ojo: se agranda y se
+    aparta del centro, por `d / (d - z)`. Con z >= d - 5 queda detras del
+    plano cercano y el recorte lo tira, igual que en WE.
+
+    La z va en pixeles de lienzo ---la que deja `particle_world`, con la escala
+    y el `origin` del objeto---, y la profundidad la da el recorte: aqui la
+    tercera fila NO se aplana, porque es la proyeccion la que decide el
+    tamano. La z de recorte va con la convencion de GL (entre -w y w) y no
+    con la de WE: cambia la profundidad, que aqui no se prueba, pero x, y y w
+    son las mismas y los dos planos de recorte tambien.
+    """
+    w, h = canvas
+    f = 1.0 / math.tan(math.radians(fov) / 2.0)
+    d = h * f / 2.0
+    cerca = PERSPECTIVA_CERCA
+    lejos = max(PERSPECTIVA_LEJOS, d + PERSPECTIVA_MARGEN_LEJOS)
+    a = w / h
+    proy = np.array([[f / a, 0.0, 0.0, 0.0],
+                     [0.0, f, 0.0, 0.0],
+                     [0.0, 0.0, (lejos + cerca) / (cerca - lejos),
+                      2.0 * lejos * cerca / (cerca - lejos)],
+                     [0.0, 0.0, -1.0, 0.0]])
+    vista = np.array([[1.0, 0.0, 0.0, -w / 2.0],
+                      [0.0, 1.0, 0.0, -h / 2.0],
+                      [0.0, 0.0, 1.0, -d],
+                      [0.0, 0.0, 0.0, 1.0]])
+    mundo = np.array(particle_world(obj, canvas, por_id)).reshape(4, 4)
+    return [float(x) for x in (proy @ vista @ mundo).ravel()]
+
+
 def puntero_a_sistema(obj, canvas: tuple[int, int],
                       por_id: dict | None = None) -> list[float] | None:
     """Afin que lleva el PUNTERO al espacio de un sistema de particulas.
@@ -1343,7 +1419,8 @@ class Renderer:
                       "psys": 0, "psys_parcial": 0, "psys_estela": 0,
                       "psys_cinta": 0, "psys_sin_estela": 0,
                       "texto": 0, "texto_vacio": 0, "texto_omitido": 0,
-                      "reloj": 0, "bloom": 0, "psys_hijo": 0}
+                      "reloj": 0, "bloom": 0, "psys_hijo": 0,
+                      "psys_perspectiva": 0}
         self.dump_dir: Path | None = None
         self._tex_dims: dict[int, tuple[int, int]] = {}
         # Las texturas se numeran con un contador propio y no con el tamano de
@@ -1366,6 +1443,11 @@ class Renderer:
         self.estelas: dict[int, tuple[float, float, float]] = {}
         # `(modo, puntos, intervalo)` de los objetos con `rope` o `ropetrail`.
         self.cintas: dict[int, tuple[int, int, float]] = {}
+        # Objetos cuyo sistema lleva «Perspective rendering» (bit 0x4 de su
+        # `flags`), y el fov con el que WE los dibuja; ver
+        # `particle_mvp_perspectiva`. El fov lo rellena `_build`.
+        self.perspectivas: set[int] = set()
+        self.fov_perspectiva = PERSPECTIVA_FOV
         self._hojas: dict[str, tuple[int, tuple | None]] = {}
         self.por_id: dict[str, object] = {}
 
@@ -1644,6 +1726,9 @@ class Renderer:
             self.stats["psys_cinta"] += 1
         elif sis.renderer != "sprite":
             self.stats["psys_sin_estela"] += 1
+        if sis.perspectiva:
+            self.perspectivas.add(id(obj))
+            self.stats["psys_perspectiva"] += 1
 
     # ── un pase ───────────────────────────────────────────────────────────
     def _resolver_anclajes(self, scene) -> None:
@@ -2463,7 +2548,12 @@ class Renderer:
         # estiraba sobre el lienzo: en Jeanne (capa 4200x2227, lienzo
         # 3840x2160) el parpadeo -- un `shake` cuya mascara son literalmente
         # los parpados -- caia cerca de los ojos pero descuadrado.
-        if particula:
+        if particula and self.ortografica and id(obj) in self.perspectivas:
+            # En una escena en perspectiva WE dibujaria con su propia camara,
+            # y esas no se soportan: el bit solo cambia algo en una ortografica.
+            mvp = particle_mvp_perspectiva(obj, canvas, self.fov_perspectiva,
+                                           por_id=self.por_id)
+        elif particula:
             mvp = particle_mvp(obj, canvas, por_id=self.por_id)
         elif obj is not None and p.stage == "base" and mesh_id is not None:
             sw, sh = layer_size(obj, canvas)
@@ -2918,6 +3008,7 @@ class Renderer:
                   if isinstance(proj, dict) else (1920, 1080))
         self.canvas = canvas
         self.ortografica = wescene.ortografica(general)
+        self.fov_perspectiva = fov_de_perspectiva(general)
         self.pixeles = resolucion_de_dibujo(canvas, self.pantalla)
         # El indice por id se arma aqui y no mas abajo porque las luces
         # tambien pueden colgar de un grupo.

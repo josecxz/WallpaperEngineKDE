@@ -74,6 +74,7 @@ int main(int argc, char **argv)
         double sx = 0, sy = 0, rap = 0, rmin = 1e30, rmax = -1e30;
         double cx = 0, cy = 0;
         double x0 = 1e30, x1 = -1e30, y0 = 1e30, y1 = -1e30;
+        double z0 = 1e30, z1 = -1e30;
         int n = 0;
         for (int i = 0; i < nv; i += por_particula) {
             const float *w = v + (size_t)i * paso;
@@ -87,11 +88,16 @@ int main(int argc, char **argv)
             if (w[0] > x1) x1 = w[0];
             if (w[1] < y0) y0 = w[1];
             if (w[1] > y1) y1 = w[1];
+            /* La z no se ve en una escena ortografica, pero si en un sistema
+             * con perspectiva (bit 0x4 del `flags`): decide el tamano. */
+            if (w[2] < z0) z0 = w[2];
+            if (w[2] > z1) z1 = w[2];
             n++;
         }
         printf("velocidad media (%.1f, %.1f)   rapidez media %.1f  min %.1f  max %.1f\n",
                sx / n, sy / n, rap / n, rmin, rmax);
-        printf("ocupan x [%.0f, %.0f]  y [%.0f, %.0f]\n", x0, x1, y0, y1);
+        printf("ocupan x [%.0f, %.0f]  y [%.0f, %.0f]  z [%.0f, %.0f]\n",
+               x0, x1, y0, y1, z0, z1);
         printf("centro de la nube (%.1f, %.1f)\n", cx / n, cy / n);
     }
 
