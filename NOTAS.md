@@ -6464,8 +6464,10 @@ Así que, en WE:
   `+0x20` del sistema, qué campo del JSON lo enciende, no se ha leído~~: es
   el bit 0x1 del `flags` del SISTEMA, la casilla «worldspace» del editor
   (leído después: el `flags` va al descriptor+0x8 y de ahí a sistema+0x20;
-  ver [Partículas con perspectiva](#partículas-con-perspectiva-el-bit-0x4-del-flags-del-sistema-es-otra-cámara-no-otra-simulación)). Es el mismo que decide si el
-  ratón pasa por la matriz del sistema (`0x14022e4e5`). En el corpus solo un emisor tiene `controlpoint ≠ 0`,
+  ver [Partículas con
+  perspectiva](#partículas-con-perspectiva-el-bit-0x4-del-flags-del-sistema-es-otra-cámara-no-otra-simulación)).
+  Es el mismo que decide si el ratón pasa por la matriz del sistema
+  (`0x14022e4e5`). En el corpus solo un emisor tiene `controlpoint ≠ 0`,
   `shurikencursor_1`, y con `distancemax: 0`.
 - Al punto atado al cursor, WE le escribe **el ratón tal cual**: el `offset`
   del punto no se suma. Aquí `we_psys_puntero` sí lo suma, pero las 303
@@ -7348,13 +7350,14 @@ Así que, para un sistema con el bit en una escena ortográfica de alto `h`:
 - el ojo está a **`d = h / (2 tan(fov/2))`** del lienzo, la distancia a la que
   el alto del lienzo llena el fov, y mira a su centro;
 - `fov` es `perspectiveoverridefov`, 95° si no se declara (46 de las 58
-  escenas; las demás, 95, 90 o 30);
+  escenas; de las demás, 6 declaran 95, 4 90 y 2 30:
+  `censo_perspectiva_escena.py`, abajo);
 - **el plano z = 0 cae en el mismo píxel que en ortográfico**, y lo que tiene
   z positiva **se acerca al ojo**: posición respecto al centro y tamaño se
   multiplican por `d / (d − z)`. Con `z ≥ d − 5` queda detrás del plano
   cercano y el recorte lo tira. La z crece hacia el espectador porque la
   cámara de estas escenas mira hacia −z: en las 129, `center` está una unidad
-  por debajo de `eye` en z.
+  por debajo de `eye` en z (`censo_perspectiva_escena.py`).
 
 ### Cómo está hecho aquí
 
@@ -7377,10 +7380,10 @@ heredan del plan.
 - `obj/psysprobe` da ahora también el rango en z.
 
 La nieve de `1237434258` (`snowperspective`: `distancemax 900`, `directions
-0.6 0.03 1`, `sign 0 0 1`) nace con z de 1 a 717 a los 10 s (`psysprobe`), y
-con un lienzo de 992 de alto y 95° el ojo está a 454: más o menos la mitad de
-los copos queda detrás del ojo, y los que se le acercan crecen hasta seis
-veces. Que en WE se vea igual lo respalda solo la lectura: no se ha comparado
+0.6 0.03 1`, `sign 0 0 1`) tiene a los 10 s 299 copos con z de 1 a 717, y con
+un lienzo de 992 de alto y 95° (no declara `perspectiveoverridefov`) el ojo
+está a 454,5: 48 de los 299 quedan detrás del plano cercano, y los que se le
+acercan crecen hasta 6,4 veces (`tamano_copos.py`, abajo). Que en WE se vea igual lo respalda solo la lectura: no se ha comparado
 con WE corriendo.
 
 ### Lo medido
@@ -7420,9 +7423,16 @@ Todo con las medidas de la tarea (`repetir.sh` las pasa todas):
   `1828218519`, sin el bit, ninguna de las dos. Con
   `particle_mvp_perspectiva` devolviendo la ortográfica falla con 11
   problemas.
-- **Los copos** (`tamano_copos.py <repo> 10`): simulados con el simulador de
-  los ejecutores y proyectados con la MVP del plan, en main 226 copos en el
-  lienzo, todos a 1,000 px por unidad de tamaño, coeficiente de variación del
+- **La cámara del corpus** (`censo_perspectiva_escena.py <repo>/tools`): 58
+  escenas y 153 sistemas con el bit; `perspectiveoverridefov` sin declarar en
+  46 escenas, 95 en 6, 90 en 4 y 30 en 2; renderers: 117 `sprite`, 30
+  `spritetrail`, 3 `rope` y 3 `ropetrail`; y en las 129 escenas `center`
+  menos `eye` en z vale −1.
+- **Los copos** (`tamano_copos.py <repo> 10`): la escena tiene un lienzo de
+  992 de alto y 95°, así que el ojo está a 454,5; a los 10 s hay 299 copos con
+  z de 1 a 717, 48 de ellos detrás del plano cercano. Simulados con el
+  simulador de los ejecutores y proyectados con la MVP del plan, en main 226
+  copos en el lienzo, todos a 1,000 px por unidad de tamaño, coeficiente de variación del
   tamaño proyectado 0,514; en la rama 132 delante del ojo, de 1,001 a 6,410
   px por unidad (Spearman con z 1,000) y coeficiente de variación 0,642.
 - **La luz** (`luz_g.py`, sobre `luz_main.json` y `luz_rama.json`, las dos
@@ -7460,7 +7470,7 @@ que en main no se veían.
   WE es el del destino (`[ctx+0x74]/[ctx+0x78]`) y aquí el del lienzo: son el
   mismo si WE dibuja la escena a su tamaño, y eso no se ha leído.
 - **Las estelas y las cintas** (30 `spritetrail` y 6 `rope`/`ropetrail` de
-  los 153) orientan su anchura con `g_EyePosition`, que sigue siendo el ojo
+  los 153, según `censo_perspectiva_escena.py`) orientan su anchura con `g_EyePosition`, que sigue siendo el ojo
   ortográfico: si WE les da el de esta cámara no se ha leído. Los pases
   iluminados tampoco cambian el ojo.
 - La turbulencia (`turbulentvelocityrandom`) ya distingue ortográfica de
