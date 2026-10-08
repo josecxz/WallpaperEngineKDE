@@ -9,6 +9,8 @@
 #include "wereloj.h"
 #include "wetemblor.h"
 
+#include <cmath>
+
 #include <QElapsedTimer>
 #include <QVarLengthArray>
 #include <QFile>
@@ -1179,24 +1181,38 @@ void GlExecutor::avanzaPuntero(float dt, int viewW, int viewH)
 
     // El punto de la camara, tal como lo calcula WE (leido en
     // `wallpaper64.exe`): entre el centro y el raton segun la influencia, con
-    // la y del raton volteada, y suavizado con
-    // `min(1, (1 - retardo/3) * 10 * dt)`, que no es una exponencial: con el
-    // retardo de 2 s de cuatro escenas llega siete veces antes que la que se
-    // usaba. Se acota a [0, 1] para que un retardo de mas de 3 s no lo haga
-    // divergir. De aqui sale tambien `g_ParallaxPosition`.
+    // la y del raton volteada, mas el temblor. WE lo persigue con
+    // `min(1, (1 - retardo/3) * 10 * dt)`, y aqui eso solo se aplica al
+    // temblor. Al raton NO: con el retardo de 0,1 s de 108 de las 129 escenas
+    // tarda 0,3 s en llegar al 95 %, y con el de 2 s, casi un segundo; en el
+    // escritorio se ve como la escena arrastrandose detras del raton, y se
+    // quiere que lo siga en tiempo real. La parte del raton lleva solo una
+    // exponencial de RATON_TAU, independiente de los FPS: lo justo para que
+    // los eventos del raton, que no llegan al ritmo del refresco, no hagan
+    // temblar la escena. El filtro es lineal, asi que suavizar las dos partes
+    // por separado y sumarlas deja el temblor exactamente como estaba.
+    // Offline no cambia nada: alli el punto es el `--puntero`, sin suavizar.
+    // De aqui sale tambien `g_ParallaxPosition`.
     {
+        constexpr float RATON_TAU = 0.025f;     // segundos
         const float m = m_camaraInfluencia;
-        // WE le suma la posicion del ojo de la camara, que solo se mueve aqui
-        // con el temblor; ver `render`.
-        const float objetivo[2] = {
-            0.5f * (1.0f - m) + m_puntero[0] * m + m_temblorDelta[0],
-            0.5f * (1.0f - m) + (1.0f - m_puntero[1]) * m + m_temblorDelta[1]};
+        const float raton[2] = {
+            0.5f * (1.0f - m) + m_puntero[0] * m,
+            0.5f * (1.0f - m) + (1.0f - m_puntero[1]) * m};
+        const float kr = 1.0f - std::exp(-qMax(0.0f, dt) / RATON_TAU);
+        // El retardo de la escena sigue mandando en el temblor: WE le suma la
+        // posicion del ojo de la camara, que solo se mueve aqui con el
+        // temblor; ver `render`. Se acota a [0, 1] para que un retardo de mas
+        // de 3 s no lo haga divergir.
         float kc = 1.0f;
         if (m_parallaxRetardo > 0.0f)
             kc = qBound(0.0f, (1.0f - m_parallaxRetardo / 3.0f) * 10.0f * qMax(0.0f, dt),
                         1.0f);
-        for (int i = 0; i < 2; ++i)
-            m_camara[i] += (objetivo[i] - m_camara[i]) * kc;
+        for (int i = 0; i < 2; ++i) {
+            m_camaraRaton[i] += (raton[i] - m_camaraRaton[i]) * kr;
+            m_camaraTemblor[i] += (m_temblorDelta[i] - m_camaraTemblor[i]) * kc;
+            m_camara[i] = m_camaraRaton[i] + m_camaraTemblor[i];
+        }
     }
 
     // A los sistemas de particulas solo hay que hablarles cuando el raton se

@@ -164,5 +164,8 @@ partículas que lo persiguen, en 46 escenas— y la **cámara también se mueve*
 según la profundidad de su raíz en 29 escenas, también en reposo, y el mismo
 punto de la cámara es el `g_ParallaxPosition` de las 6 escenas con
 `depthparallax`. `camerashake` también está leído en el
-motor y tiembla en sus 6 escenas. Y el fondo solo ve el ratón mientras está
-encima: sobre una ventana se queda en la última posición.
+motor y tiembla en sus 6 escenas. El ratón lo da **KWin** (`CursorKWin` en
+`src/escritorio.cpp`: un script de KWin manda el cursor global por D-Bus), así
+que se sigue también bajo las ventanas; el `HoverHandler` del QML queda solo
+de respaldo, porque a plasmashell casi no le llega el hover. En vivo el
+parallax sigue al ratón con 25 ms de suavizado, no con el retardo de WE.
