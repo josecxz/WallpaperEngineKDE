@@ -4210,8 +4210,10 @@ antes. Por eso esto no puede empeorar ninguna escena: o acierta o no toca nada.
 
 Ahí se cayó `2946362143`, y por un motivo que conviene tener escrito: su tabla
 de días empieza el sábado por `\n`. Es un reloj de **dos líneas** y la
-disposición del ejecutor es de una, así que se descarta a propósito en vez de
-dibujarlo en el renglón que no es.
+disposición del ejecutor era de una, así que se descartó a propósito en vez de
+dibujarlo en el renglón que no es. Ya no se descarta: la ruta del reloj apila
+renglones igual que la estática —ver [Relojes de varias
+líneas](#relojes-de-varias-líneas-el-salto-viaja-al-plan-y-wereloj-apila-renglones)—.
 
 ### El alfabeto, y lo que se pierde
 
@@ -4244,14 +4246,15 @@ que la prueba pruebe algo.
 
 ### Lo medido sobre las 129
 
-**123 capas de reloj en 20 escenas** dan la hora de verdad. Las dos mitades
-—`quads_de_reloj` en Python y `we_reloj_vertices` en C— coinciden en las 123,
-en seis instantes que cruzan la medianoche, el cambio de mes y un 29 de
-febrero, y con las locales `C` y `es_ES` las dos.
+**124 capas de reloj en 21 escenas** dan la hora de verdad (eran 123 en 20
+hasta que entró el reloj de dos líneas de `2946362143`). Las dos mitades
+—`quads_de_reloj` en Python y `we_reloj_vertices` en C— coinciden en las 124,
+en siete instantes que cruzan la medianoche, el cambio de mes, un 29 de
+febrero y un sábado, y con las locales `C` y `es_ES` las dos.
 
-Las 25 capas con script que se quedan sin reloj están contadas arriba: 19 que
-el intérprete no cubre, una de dos líneas y cinco que no son un reloj —un
-contador de fps, un `undefined` y tres títulos de canción vacíos—.
+Las 24 capas con script que se quedan sin reloj están contadas arriba: 19 que
+el intérprete no cubre y cinco que no son un reloj —un contador de fps, un
+`undefined` y tres títulos de canción vacíos—.
 
 ## `wectl list` dice de qué tipo es cada wallpaper
 
@@ -7756,3 +7759,99 @@ imagen quieta: el oráculo del cambio es la lectura del binario, no el aspecto.
   en WE.
 - **La curva** (`subdivision`) sigue siendo la del geometry shader, que no se
   usa: los segmentos salen rectos, ahora entre partícula y partícula.
+
+## Relojes de varias líneas: el salto viaja al plan y `wereloj` apila renglones
+
+**El síntoma.** La capa 217 de `2946362143` enseñaba `T H U R S D A Y ` todos
+los días. `wescript.formato_de` sí deducía y comprobaba su formato —plantilla
+`%A ` con la tabla de días del script— pero lo tiraba a propósito, porque el
+`SATURDAY` de esa tabla empieza por `\n` y la ruta del reloj solo sabía
+disponer una línea (ver [La hora de
+verdad](#la-hora-de-verdad-interpretar-el-script-sin-un-motor-de-javascript)).
+Era la única capa del corpus descartada solo por el salto
+(`censo_reloj_multilinea.py`, del triador).
+
+### Lo que cambia
+
+La ruta del reloj aprende lo que la estática (`wetext.disponer`) ya hacía:
+partir la cadena por `\n` y apilar renglones con `alto_linea` + `espaciado`,
+el bloque alineado en vertical **contando los renglones vacíos** y cada
+renglón alineado por su lado en horizontal. Como cuántos renglones hay cambia
+con la hora (uno entre semana, dos el sábado), el bloque se mide con cada
+cadena, en `quads_de_reloj` y en `we_reloj_vertices` igual.
+
+- `wescript`: fuera la guarda; `alfabeto` no mete el `\n` como glifo y
+  `max_longitud` no lo cuenta, porque no lleva quad.
+- El plan: `_escapa` escribe el salto como `\n` —uno de verdad partiría la
+  línea del plan— y `desescapa()` en `wereloj.c` lo deshace. La línea `reloj`
+  lleva un undécimo número, el `espaciado` en px del atlas, **al final**: un
+  ejecutor anterior lee los diez primeros y no lo ve, y un plan anterior que no
+  lo trae lo deja a cero.
+- `src/wereloj.c` es el que comparten los dos ejecutores, así que `glexec.c` y
+  `glexecutor.cpp` no se tocan: los dos le pasan la línea tal cual.
+
+Y una cosa más, que salió al medir. El tope de ancho del atlas se **estimaba**
+con el glifo más ancho por el número de glifos; para esta capa son 18 `W`, y
+dejaba la em en 160 px donde su renglón más largo, `W E D N E S D A Y `, cabe
+a 409. La tinta caía en el mismo sitio, pero rasterizada a menos de la mitad
+que el texto congelado al que sustituye. `disponer_reloj` acepta ahora las
+cadenas que la plantilla puede escribir —las mismas con las que `werender` ya
+medía el margen— y con ellas mide el renglón más largo de verdad. Cambia el
+tamaño de 11 capas en 2 escenas, todas hacia arriba: esta y diez de
+`3462491575` (de 170–476 px a 409 o 512), `px_de_reloj.py`.
+
+### Lo que se descartó
+
+- **Comparar la caja del quad** contra la ruta estática. `getbbox` de Pillow
+  mete en la caja de una línea el avance de un espacio final, y esta cadena
+  acaba en uno, así que el quad
+  estático lleva un espacio de píxeles en blanco a la derecha que el del
+  reloj no lleva: 33 unidades de ancho de diferencia que no son tinta. Lo que
+  se compara es la **tinta**, los píxeles con cobertura del atlas llevados al
+  lienzo por la uv de cada quad.
+- **`dayFormat: '1'`**: la escena lo declara en `scriptproperties` y el
+  intérprete devuelve los nombres largos (`S A T U R D A Y`, no `S A T`). Puede
+  venir de una propiedad de usuario del `project.json`; no se ha medido y no
+  se toca de paso.
+
+### Lo medido
+
+Las medidas viven con la tarea, en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261009-173634/medidas/`,
+y se ejecutan desde la raíz del repositorio.
+
+- **Relojes deducidos** (`listado_relojes.py`, que saca main con `git
+  archive`): 123 en main y 124 en la rama; el listado (escena, id, plantilla,
+  tablas) solo gana la línea de `2946362143 217 '%A '`.
+- **El contrato** (`tools/test_wereloj.py`): 124 capas en 21 escenas, las 124
+  también con `es_ES`, una con varios renglones —la de los sábados: la prueba
+  lleva ahora un sábado entre sus siete instantes—, y un caso sintético nuevo
+  de cinco plantillas con el salto en mitad, al principio y dentro de una
+  tabla, con las tres alineaciones y espaciado. El arnés escribe el texto con
+  el `\n` escapado, que si no partiría su propia salida.
+- **Que la prueba caza un C que ignora el salto** (`rompe_salto_en_c.sh`):
+  sobre una copia, `we_reloj_vertices` dispone la cadena en un solo renglón, y
+  la prueba cae con los cinco sintéticos (vértices a 11,25, 20,25, 43,125,
+  10,875 y 23,25 unidades) y con la capa de `2946362143` en el sábado (79,73;
+  «con la locale es_ES 123»). Sin romper, OK.
+- **La misma caja que la ruta estática** (`cajas_reloj_vs_estatico.py`): la
+  capa 217 en un sábado y un jueves, a 0,5 y 1 px por unidad y a la densidad
+  de `werender` en 1920x1200 (3,404). Tinta renglón a renglón: bordes superior
+  e inferior a 0,070 unidades como mucho, centro horizontal a 0,165, ancho a
+  0,329 (el kerning). Con `--estimado`, la estimación vieja del ancho, 0,298 y
+  0,356: la estimación no movía renglones, solo bajaba la resolución.
+- **Plan y render** (`plan_y_render.sh`): el plan lleva `relojfmt 0 %A\s` y
+  su `relojtab` acaba en `\nS\sA\sT\sU\sR\sD\sA\sY`; `glexec` dibuja 12 pases
+  con 0 omitidos, igual que main. Cambiando a mano en ese plan la palabra del
+  viernes por la del sábado, el día baja un renglón y no se recorta.
+- **La luz** (`luz_relojes.py`, las 21 escenas con reloj, que son las únicas
+  cuyo plan puede cambiar; Mesa, `--time 4`, 6 fotogramas, contra main):
+  0 apagadas, 0 regresiones; `2946362143` −0,22 de media (el día cambia de
+  palabra y de sitio) y ninguna otra se mueve más de 0,02.
+- `tools/test_wetext.py` pasa; `make build` y `make glexec` compilan.
+
+### Lo que queda fuera
+
+Las otras capas con `\n` en el script (`3521337568`, `3577990983`,
+`3299228616`…) no las deduce el intérprete por otros motivos, y siguen con su
+cadena congelada. El `spacing` horizontal sigue sin usarse, en las dos rutas.

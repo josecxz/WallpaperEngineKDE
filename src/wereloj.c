@@ -45,6 +45,7 @@ struct WeReloj {
     int halign, valign;     /* 0 izquierda/arriba, 1 centro, 2 derecha/abajo */
     float u;                /* unidades de lienzo por píxel del atlas */
     float alto_linea;
+    float espaciado;        /* entre renglón y renglón, en px del atlas */
     int max_glifos;
     int configurado;
 };
@@ -68,7 +69,9 @@ void we_reloj_free(WeReloj *r)
 
 /* Las cadenas del plan viajan con los espacios escapados: una línea del plan
  * se parte por espacios y hay nombres de mes que llevan uno dentro
- * ---`Thứ Sáu`, de la fecha en vietnamita de `3299228616`---. */
+ * ---`Thứ Sáu`, de la fecha en vietnamita de `3299228616`---. El salto de
+ * línea también, como `\n`: partiría la línea del plan en dos, y hay tablas
+ * que lo llevan ---el `SATURDAY` de `2946362143` empieza por uno---. */
 static void desescapa(const char *src, char *dst, int tope)
 {
     int j = 0;
@@ -82,6 +85,9 @@ static void desescapa(const char *src, char *dst, int tope)
     for (int i = 0; i < largo && j < tope - 1; i++) {
         if (src[i] == '\\' && src[i + 1] == 's') {
             dst[j++] = ' ';
+            i++;
+        } else if (src[i] == '\\' && src[i + 1] == 'n') {
+            dst[j++] = '\n';
             i++;
         } else if (src[i] == '\\' && src[i + 1] == '\\') {
             dst[j++] = '\\';
@@ -115,10 +121,12 @@ int we_reloj_linea(WeReloj *r, const char *kw, const char *resto)
     int ok = 0;
 
     if (strcmp(kw, "reloj") == 0) {
-        float v[10] = {0};
+        /* Diez obligatorios y el espaciado entre renglones, que llegó después
+         * y va el último: un plan anterior no lo trae y vale cero. */
+        float v[11] = {0};
         int n = 0;
         const char *p = resto;
-        while (n < 10 && *p) {
+        while (n < 11 && *p) {
             char *fin;
             float x = strtof(p, &fin);
             if (fin == p) break;
@@ -134,6 +142,7 @@ int we_reloj_linea(WeReloj *r, const char *kw, const char *resto)
             r->u = v[7] != 0.0f ? v[7] : 1.0f;
             r->alto_linea = v[8];
             r->max_glifos = (int)v[9];
+            r->espaciado = v[10];
             if (r->max_glifos > MAX_GLIFOS) r->max_glifos = MAX_GLIFOS;
             r->configurado = 1;
             ok = 1;
@@ -313,63 +322,80 @@ int we_reloj_vertices(const WeReloj *r, time_t cuando, float *verts)
     char texto[MAX_TEXTO];
     we_reloj_texto(r, cuando, texto, MAX_TEXTO);
 
-    /* Primera pasada: cuánto avanza la línea entera. Hace falta antes de
-     * colocar nada, porque la alineación se mide desde el otro extremo. */
-    float avance = 0.0f;
-    for (int i = 0; texto[i];) {
-        int cp;
-        i += siguiente_cp(texto + i, &cp);
-        const Glifo *g = busca_glifo(r, cp);
-        if (g) avance += g->avance;
-    }
-
     float util_w = r->caja[0] - 2.0f * r->pad[0];
     float util_h = r->caja[1] - 2.0f * r->pad[1];
     if (util_w < 0.0f) util_w = 0.0f;
     if (util_h < 0.0f) util_h = 0.0f;
 
-    float x_linea = (r->halign == 0) ? 0.0f
-                  : (r->halign == 2) ? util_w / r->u - avance
-                  : (util_w / r->u - avance) / 2.0f;
-    float y_linea = (r->valign == 0) ? 0.0f
-                  : (r->valign == 2) ? util_h / r->u - r->alto_linea
-                  : (util_h / r->u - r->alto_linea) / 2.0f;
+    /* Los renglones se apilan como en `wetext.disponer`: el bloque se alinea
+     * en vertical contando también los renglones VACÍOS ---el `SATURDAY` de
+     * `2946362143` empieza por `\n`---, y cada renglón por su lado en
+     * horizontal. Cuántos hay cambia con la hora, así que se cuenta aquí. */
+    int renglones = 1;
+    for (int i = 0; texto[i]; i++)
+        if (texto[i] == '\n') renglones++;
+    float bloque_h = renglones * r->alto_linea + (renglones - 1) * r->espaciado;
+    float y_bloque = (r->valign == 0) ? 0.0f
+                   : (r->valign == 2) ? util_h / r->u - bloque_h
+                   : (util_h / r->u - bloque_h) / 2.0f;
 
     memset(verts, 0, (size_t)r->max_glifos * 4 * 5 * sizeof *verts);
-    float pluma = 0.0f;
     int n = 0;
-    for (int i = 0; texto[i] && n < r->max_glifos;) {
-        int cp;
-        i += siguiente_cp(texto + i, &cp);
-        const Glifo *g = busca_glifo(r, cp);
-        if (!g)
-            continue;
-        if (g->ink[2] > g->ink[0]) {
-            float x_a = (x_linea + pluma + g->ink[0]) * r->u;
-            float x_b = (x_linea + pluma + g->ink[2]) * r->u;
-            float y_a = (y_linea + g->ink[1]) * r->u;
-            float y_b = (y_linea + g->ink[3]) * r->u;
-            float X0 = -r->caja[0] / 2.0f + r->pad[0] + x_a;
-            float X1 = -r->caja[0] / 2.0f + r->pad[0] + x_b;
-            float Y0 =  r->caja[1] / 2.0f - r->pad[1] - y_a;
-            float Y1 =  r->caja[1] / 2.0f - r->pad[1] - y_b;
-            float esq[4][4] = {
-                {X0, Y0, g->uv[0], 1.0f - g->uv[1]},
-                {X1, Y0, g->uv[2], 1.0f - g->uv[1]},
-                {X1, Y1, g->uv[2], 1.0f - g->uv[3]},
-                {X0, Y1, g->uv[0], 1.0f - g->uv[3]},
-            };
-            for (int j = 0; j < 4; j++) {
-                float *v = verts + (n * 4 + j) * 5;
-                v[0] = esq[j][0];
-                v[1] = esq[j][1];
-                v[2] = 0.0f;
-                v[3] = esq[j][2];
-                v[4] = esq[j][3];
-            }
-            n++;
+    int inicio = 0;
+    for (int k = 0; k < renglones; k++) {
+        int fin = inicio;
+        while (texto[fin] && texto[fin] != '\n') fin++;
+
+        /* Primera pasada: cuánto avanza el renglón entero. Hace falta antes
+         * de colocar nada, porque la alineación se mide desde el otro
+         * extremo. */
+        float avance = 0.0f;
+        for (int i = inicio; i < fin;) {
+            int cp;
+            i += siguiente_cp(texto + i, &cp);
+            const Glifo *g = busca_glifo(r, cp);
+            if (g) avance += g->avance;
         }
-        pluma += g->avance;
+        float x_linea = (r->halign == 0) ? 0.0f
+                      : (r->halign == 2) ? util_w / r->u - avance
+                      : (util_w / r->u - avance) / 2.0f;
+        float y_linea = y_bloque + k * (r->alto_linea + r->espaciado);
+
+        float pluma = 0.0f;
+        for (int i = inicio; i < fin && n < r->max_glifos;) {
+            int cp;
+            i += siguiente_cp(texto + i, &cp);
+            const Glifo *g = busca_glifo(r, cp);
+            if (!g)
+                continue;
+            if (g->ink[2] > g->ink[0]) {
+                float x_a = (x_linea + pluma + g->ink[0]) * r->u;
+                float x_b = (x_linea + pluma + g->ink[2]) * r->u;
+                float y_a = (y_linea + g->ink[1]) * r->u;
+                float y_b = (y_linea + g->ink[3]) * r->u;
+                float X0 = -r->caja[0] / 2.0f + r->pad[0] + x_a;
+                float X1 = -r->caja[0] / 2.0f + r->pad[0] + x_b;
+                float Y0 =  r->caja[1] / 2.0f - r->pad[1] - y_a;
+                float Y1 =  r->caja[1] / 2.0f - r->pad[1] - y_b;
+                float esq[4][4] = {
+                    {X0, Y0, g->uv[0], 1.0f - g->uv[1]},
+                    {X1, Y0, g->uv[2], 1.0f - g->uv[1]},
+                    {X1, Y1, g->uv[2], 1.0f - g->uv[3]},
+                    {X0, Y1, g->uv[0], 1.0f - g->uv[3]},
+                };
+                for (int j = 0; j < 4; j++) {
+                    float *v = verts + (n * 4 + j) * 5;
+                    v[0] = esq[j][0];
+                    v[1] = esq[j][1];
+                    v[2] = 0.0f;
+                    v[3] = esq[j][2];
+                    v[4] = esq[j][3];
+                }
+                n++;
+            }
+            pluma += g->avance;
+        }
+        inicio = texto[fin] ? fin + 1 : fin;
     }
     return r->max_glifos * 4;
 }
