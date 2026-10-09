@@ -2186,6 +2186,8 @@ falta son campos de piezas que sí leemos:
 | `exponent` en los seis inicializadores aleatorios | **96** | la forma de la distribución: el autor pide un sesgo y repartimos uniforme |
 | `audioprocessing*` en 6 piezas | ~50 | reactividad al sonido |
 | ~~`turbulentvelocityrandom` según la regla de WE (`forward`/`right`, `offset` como ángulo, fase, rapidez por defecto)~~ | 152 piezas en 66 escenas | **aplicado**: el inicializador entero se sustituyó por la regla leída, y la rapidez por defecto es 100–250 porque las 129 escenas son ortográficas. El aspecto solo lo respalda la lectura. Ver [La turbulencia con la regla de WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido) |
+| ~~`flags` del SISTEMA, bit 0x4 («Perspective rendering»)~~ | 153 sistemas en 58 escenas | **aplicado**: la cámara en perspectiva que WE les pone en una escena ortográfica, leída en `wallpaper64.exe`, va en la MVP del pase. Ver [Partículas con perspectiva](#partículas-con-perspectiva-el-bit-0x4-del-flags-del-sistema-es-otra-cámara-no-otra-simulación) |
+| `flags` del SISTEMA, bits 0x1 («worldspace») y 0x2 | 93 sistemas en 28 escenas / 89 en 32 | el 0x1 solo se nota si el objeto se mueve con el tiempo; el 0x2 no tiene casilla en el editor. Mismo sitio |
 | `operation` en `remapvalue` | 2 | el modo del remapeo |
 | `blendin/out` en `oscillatealpha` | 1 c/u | las ventanas de entrada y salida |
 
@@ -6458,9 +6460,13 @@ Así que, en WE:
   sorteado se multiplica por las filas `+0x00`, `+0x10`, `+0x20` del registro
   del punto antes de sumarle el centro (`0x140237cc6..0x140237ce3`,
   `0x140237f24..0x140237f60`). Su cuarta componente multiplica además la fila
-  `+0x30`, la posición; no se ha leído si vale 0. Para qué sirve el bit de
-  `+0x20` del sistema, qué campo del JSON lo enciende, no se ha leído: es el
-  mismo que decide si el ratón pasa por la matriz del sistema
+  `+0x30`, la posición; no se ha leído si vale 0. ~~Para qué sirve el bit de
+  `+0x20` del sistema, qué campo del JSON lo enciende, no se ha leído~~: es
+  el bit 0x1 del `flags` del SISTEMA, la casilla «worldspace» del editor
+  (leído después: el `flags` va al descriptor+0x8 y de ahí a sistema+0x20;
+  ver [Partículas con
+  perspectiva](#partículas-con-perspectiva-el-bit-0x4-del-flags-del-sistema-es-otra-cámara-no-otra-simulación)).
+  Es el mismo que decide si el ratón pasa por la matriz del sistema
   (`0x14022e4e5`). En el corpus solo un emisor tiene `controlpoint ≠ 0`,
   `shurikencursor_1`, y con `distancemax: 0`.
 - Al punto atado al cursor, WE le escribe **el ratón tal cual**: el `offset`
@@ -7282,3 +7288,193 @@ deja de ir retrasado. Offline no cambia nada: allí el punto es el `--puntero`,
 sin suavizar, y `glexec.c` ya ignoraba el retardo. Está en `avanzaPuntero`
 (`src/glexecutor.cpp`), con `RATON_TAU`. Lo que no se mide offline: cómo se
 siente en el escritorio.
+
+## Partículas con perspectiva: el bit 0x4 del `flags` del sistema es otra cámara, no otra simulación
+
+**De dónde se partía.** El JSON de cada sistema de partículas trae un `flags`
+de nivel de SISTEMA que se descartaba entero: `weparticles.py` solo leía el de
+los puntos de control y el del renderer. Lo encienden presets como
+`snowperspective`, `rainperspective`, `snowstorm`, `ash`, `leaves1..5` o
+`starfield`, y **todos** se mueven en z —por el emisor (`distancemax` ×
+`directions` con componente z), por la velocidad o por la gravedad—. Con la
+proyección ortográfica de siempre esa z no contaba: la nieve salía plana y el
+`starfield` de `1927028828`, cuyas estrellas solo avanzan en z, no se veía.
+
+### Qué bit es cuál: la tabla del editor
+
+El editor registra cada casilla del sistema con su máscara y su cadena de
+locale (`bin/wallpaperui.exe`, `0x1401b6cb5..0x1401b6e10`):
+
+| máscara | dirección | cadena (`.rdata`) | en el corpus |
+|---|---|---|---|
+| `0x1` | `0x1401b6cb5` | `ui_editor_properties_worldspace` (`0x140ada440`) | 93 sistemas en 28 escenas |
+| `0x2` | — | no tiene casilla | 89 sistemas en 32 escenas |
+| `0x4` | `0x1401b6cff` | `ui_editor_properties_perspective`, «Perspective rendering» (`0x140ad8488`) | **153 sistemas en 58 escenas** |
+| `0x8` | `0x1401b6d32` | `ui_editor_properties_disable_color_overrides` (`0x140ada410`) | 0 |
+| `0x10` | `0x1401b6dfe` | `..._disable_speed_overrides` (`0x140ada4c0`) | 0 |
+| `0x20` | `0x1401b6d65` | `..._disable_count_overrides` (`0x140ada490`) | 0 |
+| `0x40` | `0x1401b6d98` | `..._disable_lifetime_overrides` (`0x140ada460`) | 0 |
+| `0x80` | `0x1401b6dcb` | `..._disable_size_overrides` (`0x140ada4f0`) | 0 |
+
+La casilla de perspectiva solo se ofrece si la escena es ortográfica (el bit 3
+de `[[rsi+0x10]+0x140]`, `0x1401b6cdb..0x1401b6cde`). En el corpus el `flags`
+del sistema vale 0, 1, 2, 3, 4, 6 o 7: ningún bit de los «overrides».
+
+### Lo que hace WE, con direcciones
+
+Se lee con el método de [los valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen) sobre el
+`wallpaper64.exe` instalado. `verifica_perspectiva.sh` comprueba cada fila,
+instrucción a instrucción —121 comprobaciones en el motor y 28 en el editor—;
+vive con las medidas de la tarea, en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261008-135219/medidas/`,
+y se ejecuta desde la raíz del repositorio (`sh …/verifica_perspectiva.sh
+[a|b]`). `repetir.sh`, al lado, pasa todas las medidas.
+
+| qué | dónde | lo que hace |
+|---|---|---|
+| lector del sistema | `0x1401c5490` | `r13` es el descriptor (`0x1401c54eb`). Lee `flags` (`.rdata 0x14048f4cc`, `0x1401c55e4`) como entero (`0x1401c56e4`), se queda con el **byte bajo** (`movzx`, `0x1401c56e9`), 0 si falta, y lo guarda en **descriptor+0x8** (`0x1401c56f0`) |
+| creación | `0x14022cc5a..0x14022cc8f` | descriptor de 0x1e0 bytes, lo rellena el lector y `0x1401c4220` lo copia a **sistema+0x18**: el `+0x8` pasa a **sistema+0x20** (`0x1401c423d`/`0x1401c4240`) |
+| dibujo del sistema | `0x1402366f0` | `[sistema+0x20] & 1` («worldspace», `0x14023670c`) cambia la matriz de modelo por la del contexto `+0xaf0`. Y **`([sistema+0x20] >> 2) & 1`** (`0x140236761..0x140236767`): con el bit apila la vista (`[ctx+0x38]`, `0x14023677f`) y la proyección (`[ctx+0x40]`, `0x1402367b3`), llama a `0x1401e5b60` (`0x1402367d8`) y al acabar las desapila (`0x140236ac6..0x140236add`). Los hijos se dibujan después, cada uno con su bit (`0x140236bb7`) |
+| la cámara nueva | `0x1401e5b60` | fov = `[ctx+0x110]`, en radianes. **`d = 1 / (tan(fov/2) · P[1][1])`** con P la proyección vigente, la ortográfica de la escena (`0x1401e5b93..0x1401e5bb4`). Lejano **max(15000, d + 1000)** (`0x1401e5ba0..0x1401e5bc8`), cercano **5** (`0x1401e5c20`). La vista pierde el centro de la ventana ortográfica —`[ctx+0x84] · [ctx+0xf8]` en x, `[ctx+0x88] · [ctx+0xfc]` en y (`0x1401e5bd3..0x1401e5c1b`)— y su z pasa a ser **−d** (`0x1401e5c28`). Aspecto `[ctx+0x74] / [ctx+0x78]` (`0x1401e5c2d..0x1401e5c39`), y la proyección la hace la entrada **+0x10 del dispositivo** (`0x1401e5c47`). Con `[ctx+0x118] & 0x800` niega la fila x (espejo global; no se emite) |
+| el dispositivo | vtable `0x140485b90` | `+0x10` es `0x14009a360`: `XMMatrixPerspectiveFovRH` de DirectXMath (sus `assert`, `0x14009a3b8`; la fila de w `(0, 0, 0, −1)`, `0x14009a5db`) con la **z invertida**: `cerca / (lejos − cerca)` (`0x14009a513..0x14009a527`) y `· lejos` (`0x14009a57b`), el cercano a 1 y el lejano a 0. `+0x18` es la ortográfica, `0x14009a630` |
+| el contexto | `0x14017c6d0` | pilas de modelo, vista y proyección en `+0x30`, `+0x38`, `+0x40` (`0x14017c723..0x14017c739`). Su tamaño de destino, en float, en `+0x74`/`+0x78` (`0x14017f222`/`0x14017f22d`, vistos desde 0x10 bytes antes: allí su dispositivo `+0x1518` es `+0x1528`) |
+| ancho y alto | `0x1401875df..0x1401875fb` | el cargador marca la escena como ortográfica (bit 3 de `+0xe0`, ver `wescene.ortografica`) y pone el ancho y el alto de `orthogonalprojection`, enteros, en `[ctx+0x84]`/`[ctx+0x88]` |
+| la cámara ortográfica | `0x140183d57..0x140183e95` | cada fotograma: el centro de la ventana, en fracción del lienzo, a `[ctx+0xf8]`/`[ctx+0xfc]` (`0x140183d96`, `0x140183dc1`) —0,5 sin márgenes—, **el fov efectivo de la escena en radianes a `[ctx+0x110]`** (`0x140183dc9..0x140183dd9`) y `OffCenter(izq, der, abajo, arriba, nearz, farz)` del dispositivo `+0x18` (`0x140183e95`) |
+| qué fov | `0x140189271..0x1401892c4` | el fov efectivo (`escena+0x148`) es **`perspectiveoverridefov` (`+0x144`) si la escena es ortográfica** y `fov` (`+0x140`) si no. En una ortográfica el nodo de cámara no lo pisa (`0x1401893b9`). Se acota a **[0,1, 179,9]** (`0x140189b12..0x140189b4c`) |
+| sus defectos | `0x140186d5c..0x140186d72` | el constructor de la escena: `fov` 50, **`perspectiveoverridefov` 95**. Los campos de `general`: `fov` → `+0x140` (`0x14019aa21`), `perspectiveoverridefov` → `+0x144` (`0x14019aaa5`), `nearz` → `+0x14c`, `farz` → `+0x150` |
+| en el editor | `0x1401aa34d..0x1401aa4a8` | el «FOV» de las opciones de cámara edita `perspectiveoverridefov` en una escena ortográfica y `fov` en una en perspectiva |
+
+Así que, para un sistema con el bit en una escena ortográfica de alto `h`:
+
+- el ojo está a **`d = h / (2 tan(fov/2))`** del lienzo, la distancia a la que
+  el alto del lienzo llena el fov, y mira a su centro;
+- `fov` es `perspectiveoverridefov`, 95° si no se declara (46 de las 58
+  escenas; de las demás, 6 declaran 95, 4 90 y 2 30:
+  `censo_perspectiva_escena.py`, abajo);
+- **el plano z = 0 cae en el mismo píxel que en ortográfico**, y lo que tiene
+  z positiva **se acerca al ojo**: posición respecto al centro y tamaño se
+  multiplican por `d / (d − z)`. Con `z ≥ d − 5` queda detrás del plano
+  cercano y el recorte lo tira. La z crece hacia el espectador porque la
+  cámara de estas escenas mira hacia −z: en las 129, `center` está una unidad
+  por debajo de `eye` en z (`censo_perspectiva_escena.py`).
+
+### Cómo está hecho aquí
+
+No hay que tocar C. El vértice de partícula de WE (`genericparticle.vert`)
+arma el quad en el espacio del sistema y lo proyecta con
+`g_ModelViewProjectionMatrix`, así que una matriz proyectiva completa basta
+para que lo cercano salga más grande y apartado; los dos ejecutores la
+heredan del plan.
+
+- `weparticles.py` lee el bit en `Sistema.perspectiva` y escribe
+  `perspectiva 1` al final del `.psys`, solo cuando está. El simulador no la
+  usa, y `we_psys_load` se salta en silencio las palabras que no conoce: un
+  `.so` anterior lee el fichero igual.
+- `werender.py`: `fov_de_perspectiva(general)` y
+  `particle_mvp_perspectiva`, que es `proyección · vista · particle_world` con
+  las cuentas de arriba; `emit_pass` la usa en vez de `particle_mvp` para esos
+  pases si la escena es ortográfica. La z de recorte va con la convención de
+  GL y no con la z invertida de WE: cambia la profundidad, que aquí no se
+  prueba; x, y, w y los planos de recorte son los mismos.
+- `obj/psysprobe` da ahora también el rango en z.
+
+La nieve de `1237434258` (`snowperspective`: `distancemax 900`, `directions
+0.6 0.03 1`, `sign 0 0 1`) tiene a los 10 s 299 copos con z de 1 a 717, y con
+un lienzo de 992 de alto y 95° (no declara `perspectiveoverridefov`) el ojo
+está a 454,5: 48 de los 299 quedan detrás del plano cercano, y los que se le
+acercan crecen hasta 6,4 veces (`tamano_copos.py`, abajo). Que en WE se vea
+igual lo respalda solo la lectura: no se ha comparado con WE corriendo.
+
+### Lo medido
+
+Todo con las medidas de la tarea (`repetir.sh` las pasa todas):
+
+- **Direcciones**: `verifica_perspectiva.sh`, 149 comprobaciones —121 en
+  `wallpaper64.exe`, 28 en `wallpaperui.exe`—, 0 fallos. Y caza los fallos:
+  `verifica_mutado.sh` le cambia tres expectativas (la instrucción de
+  `0x140236764`, la constante de `0x140492944` y la cadena de `0x140ada440`)
+  y salen exactamente tres `FALLA`, en esas tres direcciones.
+- **El bit llega donde debe** (`planes_perspectiva.py <repo> c`): el censo
+  cuenta 153 sistemas con el bit en 58 escenas, y los planes de la rama
+  llevan 140 `.psys` con `perspectiva 1`. Los 13 que faltan son los que
+  `werender` no dibuja por visibilidad: 6 con `visible: false` (`ash` en
+  `2128224409` y dos en `2527248676`, tres `leaves5` en `2870014907`), 2
+  `rainperspective` de `2658583633` atados a `rainatmosphereonoff`, apagado,
+  y en `3238423642` el `star trail-W` atado a una propiedad apagada, sus dos
+  hijos `star trail-R`/`-G` que heredan su invisibilidad, y los dos presets
+  del «Getsuga Tenshou Mouse Trail», cuyo `visible` es una condición sobre
+  `cursortrail` con la copia a false.
+  Ningún `.psys` de main lleva la línea.
+- **Sin el bit no cambia nada** (`planes_perspectiva.py <repo> d`): las 71
+  escenas sin ningún sistema con el bit dan planes, `.psys`, texturas y
+  shaders **idénticos byte a byte** a los de main, y en las 58 solo cambian
+  los `.psys` marcados (una línea más al final) y las matrices de los pases
+  que los dibujan —la MVP y la `g_ModelMatrix`, la `g_ViewProjectionMatrix`
+  y la inversa que salen de ella—. Ojo al repetirlo: los relojes hornean en
+  el plan la hora a la que se emite, y sin fijarla un minuto que cambia entre
+  main y la rama daba `text*.bin` distintos; la medida emite con
+  `datetime.now()` fijo.
+- **El contrato** (`prueba_particulas_en_perspectiva` en
+  `test_werender.py`): en z = 0 la partícula cae en el mismo píxel que en
+  ortográfico (tres puntos, fov 95 y 30, objeto girado, escalado y con
+  `origin` en z), a z ≠ 0 posición y tamaño van por `d / (d − z)`, detrás del
+  ojo w < 0, el fov por defecto y su cota, y el plan del `starfield` lleva
+  `perspectiva 1` y MVP proyectiva justo en el mismo `.psys`, y el de
+  `1828218519`, sin el bit, ninguna de las dos. Con
+  `particle_mvp_perspectiva` devolviendo la ortográfica falla con 11
+  problemas.
+- **La cámara del corpus** (`censo_perspectiva_escena.py <repo>/tools`): 58
+  escenas y 153 sistemas con el bit; `perspectiveoverridefov` sin declarar en
+  46 escenas, 95 en 6, 90 en 4 y 30 en 2; renderers: 117 `sprite`, 30
+  `spritetrail`, 3 `rope` y 3 `ropetrail`; y en las 129 escenas `center`
+  menos `eye` en z vale −1.
+- **Los copos** (`tamano_copos.py <repo> 10`): la escena tiene un lienzo de
+  992 de alto y 95°, así que el ojo está a 454,5; a los 10 s hay 299 copos con
+  z de 1 a 717, 48 de ellos detrás del plano cercano. Simulados con el
+  simulador de los ejecutores y proyectados con la MVP del plan, en main 226
+  copos en el lienzo, todos a 1,000 px por unidad de tamaño, coeficiente de
+  variación del tamaño proyectado 0,514; en la rama 132 delante del ojo, de
+  1,001 a 6,410 px por unidad (Spearman con z 1,000) y coeficiente de
+  variación 0,642.
+- **La luz** (`luz_g.py`, sobre `luz_main.json` y `luz_rama.json`, las dos
+  pasadas de `test_luminancia.py` con Mesa): 129/129 renderizan, 0 apagadas, 0
+  regresiones. Dentro de las 58 cambian 27, entre −1,3 % (`3362719513`) y
+  +1,2 % (`1927028828`, las estelas del `starfield`). Fuera de las 58 cambian
+  seis, como mucho 0,18 de media (una solo en el p99), y las seis son
+  escenas con reloj; repetidas con la hora fija —`datetime.now()` en Python
+  y `time()` en `glexec` con un `LD_PRELOAD`—, main y la rama dan la misma
+  luz en las seis.
+- `test_weparticles.py` y `test_werender.py` pasan enteros; `make build` y
+  `make glexec` compilan.
+
+Las tres escenas de muestra a `--time 10`: en `1237434258` los pétalos y los
+copos cercanos salen más grandes y variados; en `2114511766` (hojas) apenas
+cambia; en `1927028828` aparecen las estelas radiales que salen del centro,
+que en main no se veían.
+
+### Lo que queda
+
+- **El bit 0x1, «worldspace»** (93 sistemas en 28 escenas): es el
+  `[sistema+0x20] & 1` que [`flags: 2` no coloca el
+  emisor](#flags-2-no-coloca-el-emisor-es-una-partícula-por-fotograma-y-al-cursor-lo-lleva-el-punto-de-control)
+  dejó sin saber qué campo lo encendía. Al dibujar cambia la matriz de modelo
+  por la del contexto `+0xaf0` (`0x14023670c..0x140236748`); al emitir gira
+  el sorteo con el punto de control, y al mover el punto del cursor lo pasa
+  por la matriz del sistema. Solo se nota si el objeto se mueve con el
+  tiempo, y offline eso pasa en 2 objetos con `origin`/`angles` por script.
+  No se ha tocado.
+- **El bit 0x2** (89 sistemas en 32 escenas): no tiene casilla en el editor
+  y no se ha buscado dónde lo prueba el motor.
+- **Lo que esta cámara no lleva**: los márgenes de la ventana ortográfica
+  (`[ctx+0xf8]` es 0,5 sin ellos; salen del zoom y del parallax, que aquí se
+  aplican al componer), el espejo `[ctx+0x118] & 0x800`, y el aspecto, que en
+  WE es el del destino (`[ctx+0x74]/[ctx+0x78]`) y aquí el del lienzo: son el
+  mismo si WE dibuja la escena a su tamaño, y eso no se ha leído.
+- **Las estelas y las cintas** (30 `spritetrail` y 6 `rope`/`ropetrail` de los
+  153, según `censo_perspectiva_escena.py`) orientan su anchura con
+  `g_EyePosition`, que sigue siendo el ojo ortográfico: si WE les da el de
+  esta cámara no se ha leído. Los pases iluminados tampoco cambian el ojo.
+- La turbulencia (`turbulentvelocityrandom`) ya distingue ortográfica de
+  perspectiva por ESCENA (el bit 3 de `+0xe0`), no por este bit, y no se ha
+  tocado.

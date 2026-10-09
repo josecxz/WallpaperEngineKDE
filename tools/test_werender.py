@@ -673,6 +673,109 @@ def prueba_temblor_de_camara(fallos: list[str]) -> None:
                           f"{objetos} objetos")
 
 
+def prueba_particulas_en_perspectiva(fallos: list[str]) -> None:
+    """Un sistema con el bit 0x4 de su `flags` («Perspective rendering»).
+
+    WE lo dibuja con una camara en perspectiva que rehace a partir de la
+    ortografica (0x1401e5b60): ojo a `d = alto / (2 tan(fov/2))` del lienzo,
+    centrado en el, y `XMMatrixPerspectiveFovRH` con 5 y max(15000, d + 1000).
+    Lo que tiene que cumplirse, con las cuentas hechas aqui a mano:
+
+    * En z = 0 la particula cae en el MISMO pixel que con la ortografica: el
+      ojo esta justo a la distancia a la que el lienzo llena el fov.
+    * A otra z, su posicion respecto al centro del lienzo y su tamano se
+      multiplican por `d / (d - z)`, con z en pixeles de lienzo; detras del
+      ojo (z > d) el recorte la tira.
+    * El fov es `perspectiveoverridefov`, 95 si no esta, acotado a
+      [0,1, 179,9].
+    * El plan del starfield de `1927028828` ---estrellas que solo se mueven en
+      z--- lleva `perspectiva 1` en su `.psys` y una MVP proyectiva en su
+      pase; el de una escena sin el bit no lleva ninguna de las dos cosas.
+    """
+    if werender.fov_de_perspectiva({}) != 95.0:
+        fallos.append("perspectiva: sin `perspectiveoverridefov` el fov es 95")
+    if werender.fov_de_perspectiva({"perspectiveoverridefov": 30.0}) != 30.0:
+        fallos.append("perspectiva: el fov es `perspectiveoverridefov`")
+    if werender.fov_de_perspectiva({"perspectiveoverridefov": 200}) != 179.9:
+        fallos.append("perspectiva: el fov se acota a 179,9")
+
+    w, h = CANVAS
+    obj = _objeto(origin="1500 700 40", scale="2 1.5 3", angles="0 0 0.4",
+                  particle="p.json")
+    orto = np.array(werender.particle_mvp(obj, CANVAS)).reshape(4, 4)
+    for fov in (95.0, 30.0):
+        m = np.array(werender.particle_mvp_perspectiva(obj, CANVAS, fov)
+                     ).reshape(4, 4)
+        d = h / (2.0 * math.tan(math.radians(fov) / 2.0))
+
+        def pixel(mat, p):
+            c = mat @ np.array([p[0], p[1], p[2], 1.0])
+            return np.array([(c[0] / c[3] + 1) * w / 2,
+                             (c[1] / c[3] + 1) * h / 2]), c[3]
+
+        # El origin del objeto tiene z = 40 y su escala en z es 3: el plano
+        # z = 0 del LIENZO es la z del sistema -40/3.
+        z0 = -40.0 / 3.0
+        for x, y in ((0.0, 0.0), (300.0, -200.0), (-900.0, 450.0)):
+            a, _ = pixel(orto, (x, y, z0))
+            b, _ = pixel(m, (x, y, z0))
+            if np.abs(a - b).max() > 1e-6:
+                fallos.append(f"perspectiva (fov {fov}): en z = 0 la particula "
+                              f"({x}, {y}) cae en {b}, no en {a} como en "
+                              f"ortografico")
+        centro = np.array([w / 2, h / 2])
+        for zs in (60.0, -150.0):
+            zl = 3.0 * zs + 40.0
+            k = d / (d - zl)
+            p0, _ = pixel(orto, (300.0, -200.0, zs))
+            p1, _ = pixel(orto, (310.0, -200.0, zs))
+            q0, _ = pixel(m, (300.0, -200.0, zs))
+            q1, _ = pixel(m, (310.0, -200.0, zs))
+            if np.abs((q0 - centro) - k * (p0 - centro)).max() > 1e-6:
+                fallos.append(f"perspectiva (fov {fov}): a z = {zl} la "
+                              f"posicion no se aleja del centro por "
+                              f"d/(d-z) = {k:.4f}")
+            tam_o, tam_p = np.linalg.norm(p1 - p0), np.linalg.norm(q1 - q0)
+            if abs(tam_p - k * tam_o) > 1e-6:
+                fallos.append(f"perspectiva (fov {fov}): a z = {zl} el tamano "
+                              f"es {tam_p:.4f} px y no {k * tam_o:.4f}")
+        _, wc = pixel(m, (0.0, 0.0, (d + 10.0 - 40.0) / 3.0))
+        if wc >= 0:
+            fallos.append(f"perspectiva (fov {fov}): detras del ojo w tiene "
+                          f"que ser negativa y es {wc}")
+
+    import wepaths
+    taller = wepaths.we_workshop()
+    for escena, con_bit in (("1927028828", True), ("1828218519", False)):
+        d = taller / escena
+        if not d.is_dir():
+            fallos.append(f"perspectiva: falta la escena {escena} del corpus")
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            werender.emit_plan(d, Path(tmp))
+            plan = (Path(tmp) / "plan.txt").read_text().splitlines()
+            marcados = {p.name for p in Path(tmp).glob("*.psys")
+                        if "perspectiva 1" in p.read_text().splitlines()}
+        # La MVP de cada pase que dibuja un `psys`, por su indice.
+        mvps, actual = {}, None
+        for l in plan:
+            if l.startswith("psys ") and len(l.split()) == 2:
+                actual = int(l.split()[1])
+            elif l.startswith("umat4 g_ModelViewProjectionMatrix ") and \
+                    actual is not None:
+                mvps[actual] = [float(x) for x in l.split()[2:]]
+                actual = None
+        proyectivas = {i for i, v in mvps.items() if v[12:16] != [0, 0, 0, 1]}
+        nombres = {f"s{i:03d}.psys" for i in proyectivas}
+        if con_bit and (not marcados or nombres != marcados):
+            fallos.append(f"perspectiva: en {escena} los .psys con "
+                          f"`perspectiva 1` son {sorted(marcados)} y los "
+                          f"pases con MVP proyectiva {sorted(nombres)}")
+        if not con_bit and (marcados or proyectivas):
+            fallos.append(f"perspectiva: {escena} no tiene el bit y lleva "
+                          f"{sorted(marcados)} / {sorted(proyectivas)}")
+
+
 def main() -> int:
     fallos: list[str] = []
     for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
@@ -682,6 +785,7 @@ def main() -> int:
                    prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
                    prueba_parallax_de_camara, prueba_posicion_de_parallax,
                    prueba_temblor_de_camara,
+                   prueba_particulas_en_perspectiva,
                    prueba_visibilidad_heredada,
                    prueba_opacidad_del_objeto,
                    prueba_color_del_shader_plano):
