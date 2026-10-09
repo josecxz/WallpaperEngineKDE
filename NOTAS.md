@@ -6614,8 +6614,13 @@ quedan fuera, y están abajo.
 
 Los scripts están en
 `~/.local/state/wallpaperengine-bucle/ejecuciones/20261006-094833/medidas/`
-y se ejecutan desde la raíz del repositorio. La base, `78e066585321`, la
-sacan ellos mismos con `git archive`. `planes.py` escribe los `plan.txt` y
+y se ejecutan desde la raíz del repositorio. La base la sacan ellos mismos
+con `git archive`, y es `79c67c2ba83c`, el `main` que se mezcló en la rama, y
+no `78e066585321`, de donde salió: entre los dos entraron las partículas con
+perspectiva y la turbulencia de WE, que cambian `.psys` y `plan.txt` de
+muchas escenas (`perspectiva 1`, el formato nuevo de
+`turbulentvelocityrandom`) y no son de esta tarea. Contra `78e066585321`,
+`criterio_a.sh` daba esas diferencias además de la del `Shuriken Cursor`. `planes.py` escribe los `plan.txt` y
 los `.psys` de los planes de las 129 escenas, con `ruta_final=/PLAN` para que
 se comparen sin normalizar nada. `psys_todos.py` escribe un `.psys` por
 sistema, visible o no y con sus hijos, que es el camino de
@@ -6633,9 +6638,10 @@ simulador y no la sonda.
   nacen en el puntero. Todos declaran `origin` 0 y el centro de la rama cae a
   menos de `distancemax + velocidad_max · 0,5` de (600, −400). Los ocho
   `trail_1`, `getsuga_tenshou` y `getsuga` caen en (600,0, −400,0) exactos, y
-  el que más se aparta es `red_fire`, a 31,8 de una tolerancia de 60 por su
-  `turbulentvelocityrandom`. En la base, 15 de los 17 se quedan junto al
-  `origin`, a entre 0 y 29,1, y a más de 700 del puntero. Los otros dos son
+  el que más se aparta es `red_fire`, a 40,7 de una tolerancia de 60 por la
+  `speedmax` de 120 de su `turbulentvelocityrandom`. En la base,
+  15 de los 17 se quedan junto al `origin`, a entre 0 y 40,7, y a más de 700
+  del puntero. Los otros dos son
   los `Cherry_Blossoms_2`: su `mapsequencearoundcontrolpoint` ya los ponía en
   el punto 0 en la base, y ahí siguen. El `Shuriken Cursor` vive 0,0004 s y el
   `Trails 2` de `3238423642` tiene `maxcount 1`, ritmo 0,32/s y vida 0,01 s:
@@ -6648,9 +6654,9 @@ simulador y no la sonda.
   2388 salidas idénticas (los 2414 menos los 26 ficheros de los 17 entre los
   dos árboles).
 - **Luz**: `test_luminancia.py` sobre las 129 con Mesa forzado, guardada con
-  la base y pasada con `--referencia` en la rama (la misma pasada que repite
-  el bucle al cerrar la tarea): **0 apagadas, 0 regresiones, 0 que no
-  renderizan**. La referencia queda en
+  la base `79c67c2ba83c` y pasada con `--referencia` en la rama (la misma
+  pasada que repite el bucle al cerrar la tarea): **0 apagadas, 0
+  regresiones, 0 que no renderizan**, y la misma sospechosa que da la base. La referencia queda en
   `luz_base_129.json`. `criterio_g.sh` repite eso sobre las 12 escenas del
   caso, base contra rama: 0 apagadas y 0 que pierden luz. Los píxeles no
   sirven de oráculo aquí, porque el render offline no es determinista entre
