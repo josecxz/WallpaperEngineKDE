@@ -7383,8 +7383,8 @@ La nieve de `1237434258` (`snowperspective`: `distancemax 900`, `directions
 0.6 0.03 1`, `sign 0 0 1`) tiene a los 10 s 299 copos con z de 1 a 717, y con
 un lienzo de 992 de alto y 95° (no declara `perspectiveoverridefov`) el ojo
 está a 454,5: 48 de los 299 quedan detrás del plano cercano, y los que se le
-acercan crecen hasta 6,4 veces (`tamano_copos.py`, abajo). Que en WE se vea igual lo respalda solo la lectura: no se ha comparado
-con WE corriendo.
+acercan crecen hasta 6,4 veces (`tamano_copos.py`, abajo). Que en WE se vea
+igual lo respalda solo la lectura: no se ha comparado con WE corriendo.
 
 ### Lo medido
 
@@ -7432,17 +7432,18 @@ Todo con las medidas de la tarea (`repetir.sh` las pasa todas):
   992 de alto y 95°, así que el ojo está a 454,5; a los 10 s hay 299 copos con
   z de 1 a 717, 48 de ellos detrás del plano cercano. Simulados con el
   simulador de los ejecutores y proyectados con la MVP del plan, en main 226
-  copos en el lienzo, todos a 1,000 px por unidad de tamaño, coeficiente de variación del
-  tamaño proyectado 0,514; en la rama 132 delante del ojo, de 1,001 a 6,410
-  px por unidad (Spearman con z 1,000) y coeficiente de variación 0,642.
+  copos en el lienzo, todos a 1,000 px por unidad de tamaño, coeficiente de
+  variación del tamaño proyectado 0,514; en la rama 132 delante del ojo, de
+  1,001 a 6,410 px por unidad (Spearman con z 1,000) y coeficiente de
+  variación 0,642.
 - **La luz** (`luz_g.py`, sobre `luz_main.json` y `luz_rama.json`, las dos
-  pasadas de `test_luminancia.py` con Mesa): 129/129 renderizan, 0 apagadas,
-  0 regresiones. Dentro de las 58 cambian 27, entre −1,3 % (`3362719513`) y
-  +1,2 % (`1927028828`, las estelas del `starfield`). Fuera de las 58
-  cambian seis, como mucho 0,18 de media (una solo en el p99), y las seis
-  son escenas con reloj; repetidas con la hora fija —`datetime.now()` en Python y `time()`
-  en `glexec` con un `LD_PRELOAD`—, main y la rama dan la misma luz en las
-  seis.
+  pasadas de `test_luminancia.py` con Mesa): 129/129 renderizan, 0 apagadas, 0
+  regresiones. Dentro de las 58 cambian 27, entre −1,3 % (`3362719513`) y
+  +1,2 % (`1927028828`, las estelas del `starfield`). Fuera de las 58 cambian
+  seis, como mucho 0,18 de media (una solo en el p99), y las seis son
+  escenas con reloj; repetidas con la hora fija —`datetime.now()` en Python
+  y `time()` en `glexec` con un `LD_PRELOAD`—, main y la rama dan la misma
+  luz en las seis.
 - `test_weparticles.py` y `test_werender.py` pasan enteros; `make build` y
   `make glexec` compilan.
 
@@ -7469,10 +7470,10 @@ que en main no se veían.
   aplican al componer), el espejo `[ctx+0x118] & 0x800`, y el aspecto, que en
   WE es el del destino (`[ctx+0x74]/[ctx+0x78]`) y aquí el del lienzo: son el
   mismo si WE dibuja la escena a su tamaño, y eso no se ha leído.
-- **Las estelas y las cintas** (30 `spritetrail` y 6 `rope`/`ropetrail` de
-  los 153, según `censo_perspectiva_escena.py`) orientan su anchura con `g_EyePosition`, que sigue siendo el ojo
-  ortográfico: si WE les da el de esta cámara no se ha leído. Los pases
-  iluminados tampoco cambian el ojo.
+- **Las estelas y las cintas** (30 `spritetrail` y 6 `rope`/`ropetrail` de los
+  153, según `censo_perspectiva_escena.py`) orientan su anchura con
+  `g_EyePosition`, que sigue siendo el ojo ortográfico: si WE les da el de
+  esta cámara no se ha leído. Los pases iluminados tampoco cambian el ojo.
 - La turbulencia (`turbulentvelocityrandom`) ya distingue ortográfica de
   perspectiva por ESCENA (el bit 3 de `+0xe0`), no por este bit, y no se ha
   tocado.
