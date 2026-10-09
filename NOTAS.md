@@ -7845,9 +7845,14 @@ y se ejecutan desde la raíz del repositorio.
   con 0 omitidos, igual que main. Cambiando a mano en ese plan la palabra del
   viernes por la del sábado, el día baja un renglón y no se recorta.
 - **La luz** (`luz_relojes.py`, las 21 escenas con reloj, que son las únicas
-  cuyo plan puede cambiar; Mesa, `--time 4`, 6 fotogramas, contra main):
-  0 apagadas, 0 regresiones; `2946362143` −0,22 de media (el día cambia de
-  palabra y de sitio) y ninguna otra se mueve más de 0,02.
+  cuyo plan puede cambiar; Mesa, `--time 4`, 6 fotogramas, contra main). La
+  hora va **congelada** con `hora_fija.c` por `LD_PRELOAD`: sin ella, el
+  minuto que pasa entre el render de la base y el de la rama movió 0,28 la
+  media de `2864255069`, que no tiene nada que ver. Con ella, un jueves y un
+  sábado: 0 apagadas, 0 regresiones, las otras 20 con la misma media que main
+  —también las diez capas de `3462491575` que ahora se rasterizan más
+  grandes—, y `2946362143` −0,13 el jueves (la misma palabra, glifo a glifo) y
+  −0,26 el sábado (un renglón más abajo).
 - `tools/test_wetext.py` pasa; `make build` y `make glexec` compilan.
 
 ### Lo que queda fuera
