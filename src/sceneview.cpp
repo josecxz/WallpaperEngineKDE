@@ -5,6 +5,10 @@
 #include <GL/glext.h>
 
 #include "sceneview.h"
+#include "escritorio.h"
+
+#include <QQuickWindow>
+#include <QScreen>
 
 #include <cmath>
 
@@ -24,6 +28,10 @@ SceneView::SceneView(QQuickItem *parent)
     // El plan ya trae el color con alfa correcto; sin esto Qt lo compondria
     // otra vez y volveria a oscurecer los bordes.
     setAlphaBlending(false);
+    // El cursor de KWin manda sobre el HoverHandler del QML en cuanto llega la
+    // primera posicion; ver CursorKWin.
+    connect(CursorKWin::instancia(), &CursorKWin::movido, this,
+            &SceneView::alMoverCursorGlobal);
 }
 
 void SceneView::setPlanSource(const QUrl &source)
@@ -104,18 +112,45 @@ void SceneView::setColorBarras(const QColor &c)
 // refresco y el puntero viaja en el de al lado.
 void SceneView::setPuntero(const QPointF &p)
 {
-    if (p == m_puntero)
-        return;
-    m_puntero = p;
-    Q_EMIT punteroChanged();
+    if (!m_cursorKWin)
+        ponPuntero(p, m_punteroPresente);
 }
 
 void SceneView::setPunteroPresente(bool v)
 {
-    if (v == m_punteroPresente)
+    if (!m_cursorKWin)
+        ponPuntero(m_puntero, v);
+}
+
+void SceneView::ponPuntero(const QPointF &p, bool presente)
+{
+    if (p == m_puntero && presente == m_punteroPresente)
         return;
-    m_punteroPresente = v;
+    m_puntero = p;
+    m_punteroPresente = presente;
     Q_EMIT punteroChanged();
+}
+
+// El cursor global de KWin, a la pantalla de ESTE fondo. La ventana del
+// escritorio ocupa su pantalla entera desde la esquina, asi que restar la
+// esquina de la pantalla da coordenadas de la ventana, y de ahi al item.
+// Fuera de esta pantalla no hay raton para este fondo. Sobre una ventana SI:
+// como en Wallpaper Engine, que sigue el cursor por debajo de ellas.
+void SceneView::alMoverCursorGlobal(QPointF global)
+{
+    QQuickWindow *w = window();
+    QScreen *pantalla = w ? w->screen() : nullptr;
+    if (!pantalla)
+        return;
+    m_cursorKWin = true;
+    const QRectF g = pantalla->geometry();
+    if (!g.contains(global)) {
+        ponPuntero(m_puntero, false);
+        return;
+    }
+    const QPointF enItem = mapFromScene(global - g.topLeft());
+    ponPuntero(QPointF(enItem.x() / qMax(1.0, width()), enItem.y() / qMax(1.0, height())),
+               true);
 }
 
 void SceneView::setStatusFromRenderer(const QString &s)

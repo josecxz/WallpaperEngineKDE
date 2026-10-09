@@ -35,6 +35,7 @@ Uso:
 from __future__ import annotations
 
 import math
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -348,8 +349,13 @@ def prueba_parallax_de_camara(fallos: list[str]) -> None:
                                         "parallaxDepth": "5 5"})
         quieto = wescene.SceneObject(id=3, name="fondo", kind="image",
                                      raw={"id": 3, "origin": "100 100 0"})
-        general = {"cameraparallax": encendido, "cameraparallaxamount": 0.5}
-        return wescene.Scene(general=general, camera={},
+        general = {"cameraparallax": encendido, "cameraparallaxamount": 0.5,
+                   "orthogonalprojection": {"width": 1000, "height": 500}}
+        # El ojo fuera del origen no cuenta: WE lo pone a cero en una escena
+        # ortografica sin `paths` antes de que llegue al objetivo del parallax.
+        # Sumado, la raiz se iria (-200, -20) y el test lo cazaria.
+        camara = {"eye": "200 40 0", "center": "200 40 -1", "up": "0 1 0"}
+        return wescene.Scene(general=general, camera=camara,
                              objects=[raiz, hijo, quieto]), raiz, hijo, quieto
 
     sc, raiz, hijo, quieto = escena(True)
@@ -374,6 +380,75 @@ def prueba_parallax_de_camara(fallos: list[str]) -> None:
     sc, raiz, _hijo, _quieto = escena(False)
     if werender.parallax_de_camara(sc, (1000, 500)) or raiz.raw.get("_paralaje"):
         fallos.append("parallax: con `cameraparallax` apagado no deberia mover nada")
+
+
+def prueba_posicion_de_parallax(fallos: list[str]) -> None:
+    """`g_ParallaxPosition` es el P de la camara partido por el lienzo.
+
+    Leido en wallpaper64.exe (caso 0x6b del `switch` de uniforms, 0x1400d9e90,
+    que copia lo que la camara escribe en 0x140189cbe): con
+    `cameraparallaxmouseinfluence` y la y hacia ARRIBA. Las dos formas de
+    equivocarse dan un numero razonable y ninguna avisa:
+
+    * Sin la influencia, las dos escenas del corpus que la ponen negativa
+      ---y `cameraparallaxamount` a 0, asi que la camara no se mueve y la
+      influencia solo llega aqui--- mueven la profundidad al reves y entre
+      3,7 y cinco veces mas fuerte.
+    * Con la y de la pantalla, el efecto se mueve al reves en vertical.
+
+    Se mira la funcion y el plan de fotograma de `3077334064` (m = -0,2) y de
+    `3624164256` (m = -0,27), y que con `cameraparallax` apagado ---en
+    `3624164256` cuelga de una propiedad del usuario--- se quede en el centro.
+    """
+    casos = [(((0.2, 0.3), -0.2), (0.56, 0.46)),
+             (((0.8, 0.9), 0.7), (0.71, 0.22)),
+             (((0.1, 0.75), 1.0), (0.1, 0.25)),
+             (((1.4, -0.3), 1.0), (1.0, 1.0))]      # el raton, acotado
+    for (puntero, m), esperado in casos:
+        got = werender.posicion_de_parallax(puntero, m)
+        if any(abs(a - b) > 1e-9 for a, b in zip(got, esperado)):
+            fallos.append(f"g_ParallaxPosition: con el raton en {puntero} y "
+                          f"m = {m} da {got}, se esperaba {esperado}")
+
+    import wepaths
+    raiz = Path(__file__).resolve().parent.parent
+    for escena, apagado, esperado in (("3077334064", False, (0.56, 0.46)),
+                                      ("3624164256", False, (0.581, 0.446)),
+                                      ("3624164256", True, (0.5, 0.5))):
+        d = wepaths.we_workshop() / escena
+        if not d.is_dir():
+            fallos.append(f"g_ParallaxPosition: falta la escena {escena}")
+            continue
+        r = werender.Renderer(d, raiz / "obj" / "glexec", 0.0,
+                              puntero=(0.2, 0.3))
+        if apagado:
+            # La propiedad del usuario que enciende su `cameraparallax`.
+            leer = r.res.read_json
+
+            def sin_parallax(nombre, leer=leer):
+                datos = leer(nombre)
+                if nombre == "project.json":
+                    datos["general"]["properties"]["disableparallax"]["value"] = False
+                return datos
+            r.res.read_json = sin_parallax
+        try:
+            r._build(None)
+            plan = r._fotograma(r.time)
+            vals, prog = [], None
+            for linea in plan:
+                if linea.startswith("prog "):
+                    prog = linea.split()[1:3]
+                elif linea.startswith("u2f g_ParallaxPosition") and prog and \
+                        "g_ParallaxPosition" in "".join(Path(f).read_text()
+                                                        for f in prog):
+                    vals.append([float(x) for x in linea.split()[2:4]])
+        finally:
+            shutil.rmtree(r.tmp, ignore_errors=True)
+        if not vals or any(abs(a - b) > 1e-4 for v in vals
+                           for a, b in zip(v, esperado)):
+            fallos.append(f"g_ParallaxPosition: {escena} "
+                          f"{'apagado ' if apagado else ''}con el raton en "
+                          f"(0.2, 0.3) sube {vals}, se esperaba {esperado}")
 
 
 def prueba_visibilidad_heredada(fallos: list[str]) -> None:
@@ -598,6 +673,109 @@ def prueba_temblor_de_camara(fallos: list[str]) -> None:
                           f"{objetos} objetos")
 
 
+def prueba_particulas_en_perspectiva(fallos: list[str]) -> None:
+    """Un sistema con el bit 0x4 de su `flags` («Perspective rendering»).
+
+    WE lo dibuja con una camara en perspectiva que rehace a partir de la
+    ortografica (0x1401e5b60): ojo a `d = alto / (2 tan(fov/2))` del lienzo,
+    centrado en el, y `XMMatrixPerspectiveFovRH` con 5 y max(15000, d + 1000).
+    Lo que tiene que cumplirse, con las cuentas hechas aqui a mano:
+
+    * En z = 0 la particula cae en el MISMO pixel que con la ortografica: el
+      ojo esta justo a la distancia a la que el lienzo llena el fov.
+    * A otra z, su posicion respecto al centro del lienzo y su tamano se
+      multiplican por `d / (d - z)`, con z en pixeles de lienzo; detras del
+      ojo (z > d) el recorte la tira.
+    * El fov es `perspectiveoverridefov`, 95 si no esta, acotado a
+      [0,1, 179,9].
+    * El plan del starfield de `1927028828` ---estrellas que solo se mueven en
+      z--- lleva `perspectiva 1` en su `.psys` y una MVP proyectiva en su
+      pase; el de una escena sin el bit no lleva ninguna de las dos cosas.
+    """
+    if werender.fov_de_perspectiva({}) != 95.0:
+        fallos.append("perspectiva: sin `perspectiveoverridefov` el fov es 95")
+    if werender.fov_de_perspectiva({"perspectiveoverridefov": 30.0}) != 30.0:
+        fallos.append("perspectiva: el fov es `perspectiveoverridefov`")
+    if werender.fov_de_perspectiva({"perspectiveoverridefov": 200}) != 179.9:
+        fallos.append("perspectiva: el fov se acota a 179,9")
+
+    w, h = CANVAS
+    obj = _objeto(origin="1500 700 40", scale="2 1.5 3", angles="0 0 0.4",
+                  particle="p.json")
+    orto = np.array(werender.particle_mvp(obj, CANVAS)).reshape(4, 4)
+    for fov in (95.0, 30.0):
+        m = np.array(werender.particle_mvp_perspectiva(obj, CANVAS, fov)
+                     ).reshape(4, 4)
+        d = h / (2.0 * math.tan(math.radians(fov) / 2.0))
+
+        def pixel(mat, p):
+            c = mat @ np.array([p[0], p[1], p[2], 1.0])
+            return np.array([(c[0] / c[3] + 1) * w / 2,
+                             (c[1] / c[3] + 1) * h / 2]), c[3]
+
+        # El origin del objeto tiene z = 40 y su escala en z es 3: el plano
+        # z = 0 del LIENZO es la z del sistema -40/3.
+        z0 = -40.0 / 3.0
+        for x, y in ((0.0, 0.0), (300.0, -200.0), (-900.0, 450.0)):
+            a, _ = pixel(orto, (x, y, z0))
+            b, _ = pixel(m, (x, y, z0))
+            if np.abs(a - b).max() > 1e-6:
+                fallos.append(f"perspectiva (fov {fov}): en z = 0 la particula "
+                              f"({x}, {y}) cae en {b}, no en {a} como en "
+                              f"ortografico")
+        centro = np.array([w / 2, h / 2])
+        for zs in (60.0, -150.0):
+            zl = 3.0 * zs + 40.0
+            k = d / (d - zl)
+            p0, _ = pixel(orto, (300.0, -200.0, zs))
+            p1, _ = pixel(orto, (310.0, -200.0, zs))
+            q0, _ = pixel(m, (300.0, -200.0, zs))
+            q1, _ = pixel(m, (310.0, -200.0, zs))
+            if np.abs((q0 - centro) - k * (p0 - centro)).max() > 1e-6:
+                fallos.append(f"perspectiva (fov {fov}): a z = {zl} la "
+                              f"posicion no se aleja del centro por "
+                              f"d/(d-z) = {k:.4f}")
+            tam_o, tam_p = np.linalg.norm(p1 - p0), np.linalg.norm(q1 - q0)
+            if abs(tam_p - k * tam_o) > 1e-6:
+                fallos.append(f"perspectiva (fov {fov}): a z = {zl} el tamano "
+                              f"es {tam_p:.4f} px y no {k * tam_o:.4f}")
+        _, wc = pixel(m, (0.0, 0.0, (d + 10.0 - 40.0) / 3.0))
+        if wc >= 0:
+            fallos.append(f"perspectiva (fov {fov}): detras del ojo w tiene "
+                          f"que ser negativa y es {wc}")
+
+    import wepaths
+    taller = wepaths.we_workshop()
+    for escena, con_bit in (("1927028828", True), ("1828218519", False)):
+        d = taller / escena
+        if not d.is_dir():
+            fallos.append(f"perspectiva: falta la escena {escena} del corpus")
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            werender.emit_plan(d, Path(tmp))
+            plan = (Path(tmp) / "plan.txt").read_text().splitlines()
+            marcados = {p.name for p in Path(tmp).glob("*.psys")
+                        if "perspectiva 1" in p.read_text().splitlines()}
+        # La MVP de cada pase que dibuja un `psys`, por su indice.
+        mvps, actual = {}, None
+        for l in plan:
+            if l.startswith("psys ") and len(l.split()) == 2:
+                actual = int(l.split()[1])
+            elif l.startswith("umat4 g_ModelViewProjectionMatrix ") and \
+                    actual is not None:
+                mvps[actual] = [float(x) for x in l.split()[2:]]
+                actual = None
+        proyectivas = {i for i, v in mvps.items() if v[12:16] != [0, 0, 0, 1]}
+        nombres = {f"s{i:03d}.psys" for i in proyectivas}
+        if con_bit and (not marcados or nombres != marcados):
+            fallos.append(f"perspectiva: en {escena} los .psys con "
+                          f"`perspectiva 1` son {sorted(marcados)} y los "
+                          f"pases con MVP proyectiva {sorted(nombres)}")
+        if not con_bit and (marcados or proyectivas):
+            fallos.append(f"perspectiva: {escena} no tiene el bit y lleva "
+                          f"{sorted(marcados)} / {sorted(proyectivas)}")
+
+
 def main() -> int:
     fallos: list[str] = []
     for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
@@ -605,7 +783,9 @@ def main() -> int:
                    prueba_sampler_por_defecto, prueba_niveles_mipmap,
                    prueba_valor_de_usuario, prueba_curva_de_animacion,
                    prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
-                   prueba_parallax_de_camara, prueba_temblor_de_camara,
+                   prueba_parallax_de_camara, prueba_posicion_de_parallax,
+                   prueba_temblor_de_camara,
+                   prueba_particulas_en_perspectiva,
                    prueba_visibilidad_heredada,
                    prueba_opacidad_del_objeto,
                    prueba_color_del_shader_plano):

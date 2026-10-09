@@ -81,7 +81,8 @@ class SceneView : public QQuickRhiItem
     Q_PROPERTY(QColor colorBarras READ colorBarras WRITE setColorBarras
                NOTIFY encajeChanged)
     // Donde esta el raton DENTRO del item, en 0..1 con la y hacia abajo, y si
-    // esta encima siquiera. Lo alimenta un HoverHandler del QML: hace falta uno
+    // esta encima siquiera. Lo alimenta el cursor global de KWin (CursorKWin)
+    // y, mientras KWin no haya mandado nada, un HoverHandler del QML: hace falta uno
     // que solo mire, porque un MouseArea con hover se quedaria los clics del
     // escritorio. Fuera del fondo el motor conserva la ultima posicion ---no
     // inventa un movimiento--- pero deja de haber raton para los sistemas de
@@ -140,6 +141,7 @@ private Q_SLOTS:
     void setStatusFromRenderer(const QString &s);
     void setSceneTitleFromRenderer(const QString &t);
     void setMsGpuFromRenderer(qreal ms);
+    void alMoverCursorGlobal(QPointF global);
 
 private:
     // El renderizador lee estos campos solo desde synchronize(), que es el
@@ -158,4 +160,7 @@ private:
     QColor m_colorBarras = QColor(0, 0, 0);
     QPointF m_puntero = QPointF(0.5, 0.5);
     bool m_punteroPresente = false;
+    // Si ya llega el cursor de KWin: entonces lo que mande el QML se ignora.
+    bool m_cursorKWin = false;
+    void ponPuntero(const QPointF &p, bool presente);
 };

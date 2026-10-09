@@ -291,8 +291,10 @@ Limitaciones conocidas:
   audio no suena.
 - El **puntero llega a la escena**: los efectos que lo leen —el parallax por
   mapa de profundidad, la ondulación del cursor— y las partículas que lo
-  persiguen se mueven con el ratón mientras está sobre el fondo. Cuando pasa a
-  una ventana el fondo deja de verlo y se queda en la última posición conocida.
+  persiguen se mueven con el ratón, en tiempo real. La posición la da **KWin**
+  (el cursor global, como en Wallpaper Engine), así que el fondo la sigue
+  también por debajo de las ventanas y del panel; sin KWin, solo mientras el
+  ratón está sobre el fondo.
   La **cámara** también: `cameraparallax` desplaza cada capa según la
   profundidad de su grupo, en 29 escenas de 129, como lo hace Wallpaper Engine
   —incluido el desplazamiento que ya tiene con el ratón en el centro—. Y el

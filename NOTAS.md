@@ -1742,13 +1742,22 @@ corpus con turbulencia, 0,05 reparte así: **57 en chorro (>0,7), 38 en penacho
 (0,3–0,7) y 41 esparciéndose (<0,3)**, que es lo que dicta el `scale` y el tamaño
 de cada emisor.
 
-**La dirección concreta la pone nuestro ruido, no el wallpaper**, y eso no tiene
-arreglo: el formato no trae ningún campo de dirección ---solo `scale`,
-`speedmin`/`speedmax` y un `offset` que desplaza el punto de muestreo--- y WE no
-publica su función de ruido. Lo que sí vuelve a depender del wallpaper es el
-carácter del efecto. Si hiciera falta apuntar un penacho concreto, la palanca
-del propio formato es ese `offset`: medido sobre este humo, (0,0,0) da −12,6°,
-(5,0,0) da −48,5° y (10,10,0) da +120,5°.
+**La dirección concreta la pone nuestro ruido, no el wallpaper.** Aquí se
+escribió que eso no tenía arreglo porque el formato no traía ningún campo de
+dirección. **Corregido después:** sí lo trae. WE lee `forward` (defecto
+`0 1 0`) y `right` (`0 0 1`), y no saca la dirección de un campo de ruido en el
+espacio. Gira `forward` alrededor de `right` un ángulo que sale de un ruido en
+el **tiempo**, y su `offset` es ese ángulo, no un desplazamiento del punto de
+muestreo. `up` no lo lee. Está en [Los ejes de la
+turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee),
+leído en `wallpaper64.exe`, y desde [La turbulencia con la regla de
+WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido) es lo que se
+aplica. Lo de abajo era la regla de aquí hasta entonces: el
+rotacional de un ruido 3D, con `scale`, `speedmin`/`speedmax` y un `offset`
+que desplaza el punto de muestreo. Con ella, lo que sí vuelve a depender del
+wallpaper es el carácter del efecto. Si hiciera falta apuntar un penacho
+concreto, la palanca del propio formato es ese `offset`: medido sobre este
+humo, (0,0,0) da −12,6°, (5,0,0) da −48,5° y (10,10,0) da +120,5°.
 
 El factor vive en `weparticles.py` y no en el `.c` por dos razones. La primera
 es de reparto: convertir las unidades del formato es interpretar el formato, y
@@ -2176,7 +2185,9 @@ falta son campos de piezas que sí leemos:
 |---|---|---|
 | `exponent` en los seis inicializadores aleatorios | **96** | la forma de la distribución: el autor pide un sesgo y repartimos uniforme |
 | `audioprocessing*` en 6 piezas | ~50 | reactividad al sonido |
-| `right`/`up`/`forward` en `turbulentvelocityrandom` | 4 c/u | los ejes de la turbulencia |
+| ~~`turbulentvelocityrandom` según la regla de WE (`forward`/`right`, `offset` como ángulo, fase, rapidez por defecto)~~ | 152 piezas en 66 escenas | **aplicado**: el inicializador entero se sustituyó por la regla leída, y la rapidez por defecto es 100–250 porque las 129 escenas son ortográficas. El aspecto solo lo respalda la lectura. Ver [La turbulencia con la regla de WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido) |
+| ~~`flags` del SISTEMA, bit 0x4 («Perspective rendering»)~~ | 153 sistemas en 58 escenas | **aplicado**: la cámara en perspectiva que WE les pone en una escena ortográfica, leída en `wallpaper64.exe`, va en la MVP del pase. Ver [Partículas con perspectiva](#partículas-con-perspectiva-el-bit-0x4-del-flags-del-sistema-es-otra-cámara-no-otra-simulación) |
+| `flags` del SISTEMA, bits 0x1 («worldspace») y 0x2 | 93 sistemas en 28 escenas / 89 en 32 | el 0x1 solo se nota si el objeto se mueve con el tiempo; el 0x2 no tiene casilla en el editor. Mismo sitio |
 | `operation` en `remapvalue` | 2 | el modo del remapeo |
 | `blendin/out` en `oscillatealpha` | 1 c/u | las ventanas de entrada y salida |
 
@@ -5370,6 +5381,13 @@ dos habrían puesto un efecto marcado como *expensive* sobre una entrada muerta.
 El efecto ya trae sus propios mandos —`g_Scale`, `g_Sensitivity`, `g_Center`—:
 la fuerza es cosa suya, no de la cámara.
 
+**Corregido después**, leyendo el motor: no es el puntero con retardo sino el
+punto P de la cámara partido por el lienzo, y sí lleva
+`cameraparallaxmouseinfluence` —lo que no lleva es el amount—. Las dos escenas
+de amount 0 son justo las de influencia negativa. Ver [`g_ParallaxPosition` es
+el punto P de la
+cámara](#g_parallaxposition-es-el-punto-p-de-la-cámara-no-el-puntero-con-retardo).
+
 ### Lo que queda, medido
 
 - **La cámara**. `cameraparallax` está en 29 escenas de 129 y mueve cada capa
@@ -5950,17 +5968,22 @@ mucho unos 240 px a 1920 con el ratón en una esquina.
 
 ### Lo que queda
 
-- **`g_ParallaxPosition`**. Lo más probable es que WE suba el P normalizado de
+- ~~**`g_ParallaxPosition`**. Lo más probable es que WE suba el P normalizado de
   arriba —con la influencia y la y hacia arriba—, y aquí se sube el ratón con
   retardo y la y hacia abajo. El nombre del uniform es el `0x6b` de su tabla,
   pero el `switch` que lo sube va por tabla de saltos y no se ha encontrado. No
-  se toca sin eso: lo usan 6 escenas con `depthparallax`.
+  se toca sin eso: lo usan 6 escenas con `depthparallax`.~~ **Hecho**: era eso,
+  y con `cameraparallax` apagado se queda en el centro; ver
+  [`g_ParallaxPosition` es el punto P de la
+  cámara](#g_parallaxposition-es-el-punto-p-de-la-cámara-no-el-puntero-con-retardo).
 - **`escena[+0xf0/+0xf4]`**, un término que WE suma al objetivo y que aquí se
   toma como cero; y una marca de la escena que invierte la x.
 - ~~**`camerashake`**, 6 escenas~~ **hecho**: [El temblor de
   cámara](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido). Y
   `escena[+0xf0/+0xf4]` resultó ser el ojo de la cámara: ahora lleva el
-  temblor, pero no el `eye` que algunas escenas declaran fuera del origen.
+  temblor. El `eye` que algunas escenas declaran fuera del origen no llega:
+  [WE lo pone a
+  cero](#el-eye-de-la-cámara-no-llega-al-parallax-we-lo-pone-a-cero-en-las-escenas-ortográficas).
 
 ## `upright` en una cinta: WE la orienta como a un sprite, y da la base de siempre
 
@@ -6268,10 +6291,13 @@ parallax sin su parte del temblor.
   mucho en la amplitud. La de `3238423642` es de 2000×2000.
 - **Una escena en perspectiva que tiemble** no se emite. No hay ninguna en el
   corpus.
-- **El `eye` declarado fuera del origen** —`2311315748` lo tiene en
-  (57,1, −80,6)— también entra en el objetivo del parallax y aquí no se suma.
-  El temblor sí, porque el ejecutor lo conoce; el `eye` de la escena no se ha
-  tocado.
+- ~~**El `eye` declarado fuera del origen** —`2311315748` lo tiene en
+  (57,1, −80,6)— también entra en el objetivo del parallax y aquí no se suma.~~
+  **Cerrado sin cambiar el render**: [El `eye` de la cámara no llega al
+  parallax](#el-eye-de-la-cámara-no-llega-al-parallax-we-lo-pone-a-cero-en-las-escenas-ortográficas).
+  El cargador lo pone a cero en las escenas ortográficas sin `paths`
+  (`0x14018866b`), que son las 47 que lo declaran; al objetivo solo llega el
+  temblor, que ya se suma.
 
 ## Varios emisores: emiten todos, al mismo depósito
 
@@ -6438,9 +6464,13 @@ Así que, en WE:
   sorteado se multiplica por las filas `+0x00`, `+0x10`, `+0x20` del registro
   del punto antes de sumarle el centro (`0x140237cc6..0x140237ce3`,
   `0x140237f24..0x140237f60`). Su cuarta componente multiplica además la fila
-  `+0x30`, la posición; no se ha leído si vale 0. Para qué sirve el bit de
-  `+0x20` del sistema, qué campo del JSON lo enciende, no se ha leído: es el
-  mismo que decide si el ratón pasa por la matriz del sistema
+  `+0x30`, la posición; no se ha leído si vale 0. ~~Para qué sirve el bit de
+  `+0x20` del sistema, qué campo del JSON lo enciende, no se ha leído~~: es
+  el bit 0x1 del `flags` del SISTEMA, la casilla «worldspace» del editor
+  (leído después: el `flags` va al descriptor+0x8 y de ahí a sistema+0x20;
+  ver [Partículas con
+  perspectiva](#partículas-con-perspectiva-el-bit-0x4-del-flags-del-sistema-es-otra-cámara-no-otra-simulación)).
+  Es el mismo que decide si el ratón pasa por la matriz del sistema
   (`0x14022e4e5`). En el corpus solo un emisor tiene `controlpoint ≠ 0`,
   `shurikencursor_1`, y con `distancemax: 0`.
 - Al punto atado al cursor, WE le escribe **el ratón tal cual**: el `offset`
@@ -6569,7 +6599,7 @@ quedan fuera, y están abajo.
     puesto y el punto se suman o se pisan **no se ha leído**.
 - `tools/psysprobe.c` imprime también el «centro de la nube» de las cintas:
   la media del extremo más nuevo de cada segmento.
-- `tools/test_weparticles.py`, prueba 9 (`prueba_punto_del_emisor`): un
+- `tools/test_weparticles.py`, prueba 10 (`prueba_punto_del_emisor`): un
   emisor de radio 0 sin velocidad, con `origin` (10, 20, 0) y el puntero en
   (300, −200, 0), suelta todas sus partículas en (310, −180, 0) ± 1e-3. Pasa
   con el cursor en el punto 0 y sin `controlpoint`, y con el cursor en el 1 y
@@ -6650,3 +6680,929 @@ simulador y no la sonda.
   como hasta ahora; lo que pone WE no se ha leído.
 - **`mapsequence*` con un punto distinto del origen**: si el puesto se suma al
   centro o lo pisa (arriba).
+
+## Los ejes de la turbulencia: `forward` gira alrededor de `right`, y `up` no se lee
+
+**De dónde se partía.** `weparticles.py` lee de `turbulentvelocityrandom` solo
+`scale`, `timescale`, `speedmin`/`speedmax`, `phasemax` y `offset`, y tira
+`forward`, `right`, `up` y `phasemin`. Cinco ficheros del corpus declaran algún
+eje, en tres escenas: `smoke2` (1877658892, tres objetos), `smoke1`
+(2250845956) y `Flare_Flame`, `Flare_Sparks` y `Flare_Smoke` (2937370591).
+[La turbulencia no turbulaba](#la-turbulencia-no-turbulaba) decía que el
+formato no traía ningún campo de dirección, y la tabla de cadenas del motor
+decía lo contrario. La tarea era leer qué hace WE con ellos y aplicarlo a
+nuestro ruido. **La lectura da la regla entera, pero no se aplica**, porque
+WE no tiene nuestro ruido: su regla no se monta encima del simulador de hoy,
+lo sustituye, y con eso cambiarían también las 147 piezas que no declaran
+ningún eje. De la regla quedan fuera una rama de audio, que aquí no tiene
+soporte, y dos preguntas abiertas: de dónde sale el booleano de la rapidez
+por defecto y qué es `[obj+0x130]`.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). La fábrica
+compara el nombre (`0x1401c8748`) y reserva un bloque de **tipo 9** y `0x64`
+bytes (`0x1401d8847`), con los datos desde el byte 4. Antes de leer nada,
+inserta los defectos que falten (`0x1401c8782` → `0x1401bb030`):
+
+| campo | defecto | dónde se inserta | dónde se guarda (datos / bloque) |
+|---|---|---|---|
+| `speedmin` | **0,5**, o **100** con un booleano de la fábrica | `0x1401bb060` / `0x1401bb056` | `+0x0` / `+0x4` |
+| `speedmax` | **1**, o **250** con el booleano | `0x1401bb134` / `0x1401bb12a` | `speedmax − speedmin` en `+0x4` / `+0x8` (`0x1401c8b19`) |
+| `phasemin` | 0 | `0x1401bb240` | `+0x8` / `+0xc` |
+| `phasemax` | **0,1** | `0x1401bb2e4` | `phasemax − phasemin` en `+0xc` / `+0x10` (`0x1401c8899`) |
+| `timescale` | 1 | `0x1401bb30f` | `+0x10` / `+0x14` |
+| `scale` | **1** | `0x1401bb326` | `+0x14` / `+0x18` |
+| `offset` | 0, **escalar** | `0x1401bb33d` | `+0x18` / `+0x1c` |
+| `forward` | **`0 1 0`** (`0x14048f6d0`) | `0x1401bb34f` | `+0x1c..+0x24` / `+0x20` (`0x1401c88f4`, `0x1401c8a05`, `0x1401c8a17`) |
+| `right` | **`0 0 1`** (`0x14048f6e0`) | `0x1401bb365` | `+0x28..+0x30` / `+0x2c` (`0x1401c89fe`, `0x1401c8b1e`, `0x1401c8b30`) |
+| `up` | — | — | **no se lee**: ni el lector (`0x1401c873d..0x1401c8b60`) ni los defectos (`0x1401bb030..0x1401bb38c`) citan la cadena `up` (`0x14048e5ec`) |
+
+El booleano llega a la fábrica desde la pila (`0x1401c701b`, `[rbp+0x2238]`),
+y de dónde sale no se ha leído.
+
+### La regla
+
+La aplica el inicializador `0x14023b340`. Despacha por el tipo del bloque
+(`0x14023b5c0`, tabla en `0x14023fa78`) y el tipo 9 cae en `0x14023bdbc`:
+
+```
+a     = phasemax − phasemin                           0x14023bdc0
+a    *= audio(bloque + 0x44)     si su modo no es 0   0x14023bdcc..0x14023bddc
+u     = sorteo uniforme                               0x14023bdf3
+fase  = phasemin + u · a                              0x14023bdfb, 0x14023bdff
+θ     = π · scale · snoise1((fase + [obj+0x130]) · timescale) + offset
+                                                      0x14023be04..0x14023be42
+G     = rotate(I, θ, right / |right|)                 0x14023be5e
+v     = M · (G · forward) · (speedmin + u' · ancho)   0x14023be84, 0x14023bed8,
+                                                      0x14023bef9
+vel  += v                                             0x14023bf0d
+```
+
+- **La rama de audio.** El caso 9 empieza mirando el dword de bloque+0x44
+  (`cmp DWORD PTR [rdx],r13d` en `0x14023bdcc`, con `rdx = r14+0x44` y
+  `r13d = 0` desde `0x14023b37e`). Si no es 0, llama a `0x14022a8a0`
+  (`0x14023bdd4`) y multiplica el ancho de la fase por lo que devuelve
+  (`mulss xmm6,xmm7` en `0x14023bddc`). Ese bloque+0x44, datos+0x40, lo
+  rellena el lector común de los `audioprocessing*` (`0x1401c1e20`): el de la
+  turbulencia lo llama en `0x1401c8b5b` con `rcx = datos+0x40` (`0x1401c8b23`).
+  Guarda el `audioprocessingmode` en +0 (`0x1401c2168`), el exponente en +4
+  (`0x1401c2222`), los `audioprocessingbounds` en +8/+0xc (`0x1401c21f8`,
+  `0x1401c2205`) y la banda de frecuencias en +0x10/+0x14 (`0x1401c2246`).
+  Si el modo falta, el lector inserta un 0 (`0x1401c1e83`, con `r15 = 0`
+  desde `0x1401c1e4c`), y la pieza no pasa por esta rama.
+- `0x14022a8a0` despacha por el modo (`0x14022a8b5`) y saca el máximo de las
+  bandas, entre esas dos frecuencias, del array de floats de `[obj+0x2d0]`. El
+  modo 1 lo saca de la primera mitad (`0x14022aa36`); el 2, de la segunda, 16
+  floats después (`0x14022a9b7`); y el 3, de la suma de las dos
+  (`0x14022a903`, `0x14022a909`), multiplicada por 0,5 (`0x14022a97c`).
+  Después lo lleva a [0, 1] entre los dos `bounds` (`0x14022aaa5`), lo suaviza
+  con x²·(3 − 2x) (el 3, de `0x140492830`, en `0x14022aaca`) y lo eleva al
+  exponente (`0x14022aaf2`, la llamada a `0x14041e350`). El resultado vuelve a
+  quedar en [0, 1]. Dos cosas son inferencia y no lectura. Que `[obj+0x2d0]`
+  sea el espectro de audio lo dicen los nombres de los campos, no quién
+  escribe el array. Y que `0x14041e350` sea `powf` lo dicen sus argumentos.
+- **La reactividad al audio no está soportada**, porque el motor no tiene
+  audio (CLAUDE.md, «Qué no soporta»). La regla de aquí **omite esta rama** y
+  equivale al modo 0. En el corpus la usan 2 piezas, las dos con
+  `audioprocessingmode: 3`: `wildfire.json` (1444777554) y `Stars_copy1.json`
+  (3238423642). Ninguna de las 5 con ejes la usa (`censo_turbvel.py`).
+- `snoise1` (`0x14027b090`) es el ruido simplex 1D de siempre: la tabla de
+  Perlin en `0x140484f40` y el factor 0,395. Se muestrea en el **tiempo**,
+  no en la posición. Las partículas que nacen a la vez salen casi paralelas,
+  y el chorro serpentea al pasar los segundos. Que `[obj+0x130]` sea el reloj
+  del sistema lo dice el uso, no una lectura: es también una de las entradas
+  de `remapvalue` (`0x14023d219`).
+- `right` se **normaliza** (`glm::rotate`, con la raíz y la división en
+  `0x1401e25b0`) y `forward` **no**. La norma de `forward` escala la
+  velocidad: `smoke1`, con `0 0.25 0`, sale a la cuarta parte de su
+  `speedmin`/`speedmax`, y `Flare_Sparks`, con `0 0 0`, no recibe ninguna
+  velocidad de esta pieza. Su `up 0 100 0` no multiplica nada porque no se
+  lee, y el `right 10 0 1` de `Flare_Smoke` es solo una dirección.
+- `offset` es un **ángulo** que se suma a θ, no un desplazamiento del punto de
+  muestreo.
+- `M` (`r15`, el tercer argumento: `0x14023b364`) es la misma matriz por la que
+  pasa `velocityrandom` (tipo 7, `0x14023bbaf`): el giro del objeto lo trata
+  igual en las dos piezas.
+
+`verifica_exe.sh` comprueba las 18 cadenas, las 9 constantes, la tabla de
+permutación, la entrada de la tabla de saltos, los dos tramos sin `up`, el
+tramo en el que `r13` sigue valiendo 0 y 122 instrucciones, cada una en su
+dirección.
+
+### Por qué no se aplica
+
+**Aplicado después**, con los dos cabos leídos: el booleano es «la escena es
+ortográfica» y `[obj+0x130]` son los segundos de la escena. Ver [La turbulencia
+con la regla de WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido).
+
+La identidad implícita de hoy no es el defecto de WE. Hoy, sin ejes, cada
+partícula sale por el rotacional de un ruido 3D evaluado en su posición,
+desplazado por el sitio del objeto (`desplazar_ruido`). En WE, sin ejes, todas
+salen por `forward = (0, 1, 0)` girado ±π·`scale` alrededor de z. Además, hay
+otras cuatro diferencias que solo se ven al leer la pieza entera
+(`censo_turbvel.py`, 152 piezas en 66 escenas):
+
+- `offset`: 97 piezas lo declaran (−0,5 ×45, 3 ×34, −0,1 ×14, 0 ×3 y 0,5 ×1),
+  todas como escalar. Hoy se reparte a los tres ejes del punto de muestreo y
+  en WE es un giro en radianes.
+- `speedmin`/`speedmax`: 53 piezas no declaran el primero y 50 el segundo, y
+  esas 50 no declaran ninguno de los dos. Hoy faltan como 0, así que esas 50
+  no dan velocidad; en WE valen 0,5–1 o 100–250, según el booleano.
+- `phasemax`: 117 no lo declaran (WE, 0,1). `timescale` y la fase no se usan
+  hoy en el inicializador.
+- `scale`: solo 1 pieza no lo declara (WE, 1; aquí, 0,01).
+
+Aplicar los ejes solo a los cinco que los declaran daría dos semánticas para
+la misma pieza: un `forward: "0 1 0"` escrito se comportaría distinto que uno
+omitido, que vale lo mismo. Sería un caso especial por campo presente, que
+tapa la causa en vez de arreglarla. Hacerlo bien es **sustituir el
+inicializador** por la regla de arriba en las 152 piezas, y eso es otra tarea,
+con otro criterio: cambian las 66 escenas, no tres. Lo que haría falta:
+
+1. Python lleva al `.psys` todo lo leído (`forward`, `right`, la fase, la
+   rapidez con sus defectos y el `offset` como ángulo) y deja de desplazar el
+   punto de muestreo. El simulador hace el giro con el ruido 1D, sembrado como
+   el resto.
+2. Decidir qué hacer con `ESCALA_RUIDO` y `desplazar_ruido`, que con la regla
+   de WE no tienen sentido.
+3. Leer el booleano de la rapidez por defecto y confirmar `[obj+0x130]`. La
+   rama de audio se queda fuera, como el modo 0, mientras no haya audio.
+4. Un oráculo: con 66 escenas, la regla leída sola no basta para validar el
+   aspecto del humo.
+
+### Lo medido
+
+`rumbo_turbvel.py` aísla la pieza: deja en cada `.psys` solo
+`lifetimerandom` y `turbulentvelocityrandom`, sin operadores, y le pasa
+`psysprobe` en t = 1, 2 y 3. Al lado pone la regla de arriba por Monte Carlo,
+con el ruido del exe y suponiendo que `[obj+0x130]` es el instante de
+nacimiento. El rumbo está en grados, en el marco del sistema (y hacia arriba),
+y `c` es la coherencia, |media| / rapidez media. La rama no toca el render,
+así que la columna de la rama es la de la base:
+
+| fichero | `.psys` | base = rama, rumbo (c), t = 1 / 2 / 3 | regla de WE, rumbo (c), t = 1 / 2 / 3 |
+|---|---|---|---|
+| `smoke2` | 1877658892/s000 | −163,2 (0,86) / −163,2 (0,86) / −163,2 (0,86) | 97,6 (1,00) / 94,1 (1,00) / 93,5 (1,00) |
+| `smoke2` | 1877658892/s001 | 105,7 (0,97) / 105,5 (0,97) / 105,4 (0,97) | 97,6 (1,00) / 94,0 (1,00) / 93,4 (1,00) |
+| `smoke2` | 1877658892/s002 | 45,7 (0,51) / 46,1 (0,50) / 45,8 (0,50) | 97,6 (1,00) / 94,0 (1,00) / 93,4 (1,00) |
+| `smoke1` | 2250845956/s002 | 60,4 (0,88) / 60,2 (0,88) / 60,5 (0,88) | 94,9 (1,00) / 93,5 (1,00) / 92,8 (1,00) |
+| `Flare_Flame` | 2937370591/s003 | 64,3 (0,34) / 64,2 (0,34) / 65,3 (0,35) | 1,3 (0,13) / 82,4 (1,00) / 81,1 (0,85) |
+| `Flare_Sparks` | 2937370591/s002 | 175,6 (0,75) / −178,6 (0,55) / 161,7 (0,75) | sin velocidad: `forward 0 0 0` |
+| `Flare_Smoke` | 2937370591/s004 | 59,0 (0,56) / 58,7 (0,55) / 58,9 (0,55) | 57,1 (0,74) / 62,9 (0,93) / 63,0 (0,95) |
+
+De las 18 medidas con rumbo en la regla, **12 caen hoy a más de ±15°**. Los
+tres objetos que comparten `smoke2` salen hoy en tres direcciones, porque cada
+uno muestrea otro trozo del ruido, y en WE salen los tres hacia arriba.
+
+- `verifica_exe.sh`: **154 ok, 0 fallos**.
+- `planes_iguales.sh`, contra la base 78e0665 sobre las 129: **1131 de 1131
+  idénticos** (`plan.txt` y `.psys`), y `psysprobe` en t = 2 y 5 da lo mismo en
+  **2004 de 2004**. El único diff de código es el comentario de
+  `ESCALA_RUIDO` en `weparticles.py`, que repetía la frase equivocada, y su
+  AST es idéntico al de la base (`sin_cambio_render.sh`).
+- `censo_turbvel.py`: las cifras de arriba. `censo_campos_psys.py` del triador
+  sigue dando los 5 ficheros.
+- Los scripts están en
+  `~/.local/state/wallpaperengine-bucle/ejecuciones/20261006-134236/medidas/`,
+  con su `repetir.sh`.
+
+## El `eye` de la cámara no llega al parallax: WE lo pone a cero en las escenas ortográficas
+
+Quedaba al final de [El temblor de
+cámara](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido): WE
+suma al objetivo P del parallax el ojo de la cámara (`escena+0xf0`,
+`0x140189c18`), y aquí no se sumaba el `eye` que 47 escenas declaran fuera del
+origen. Once de ellas tienen
+`cameraparallax`, y el término que faltaría, `−amount·parallaxDepth·eye`,
+llegaba a 105 px de lienzo en `2109934461`, 75 en `3521337568`, 66 en
+`3082427731` y 56 en `2262142032`. El orden era leer primero y aplicar después.
+**La lectura dice que no hay nada que aplicar:** el cargador de la escena lee
+el `eye` y, unas instrucciones más abajo, lo pone a cero si la escena es
+ortográfica y no tiene `paths`. Las 47 lo son y ninguna los tiene. El ojo que
+llega a P es (0, 0) más el temblor, que es justo lo que ya se hacía. No cambia
+el render; cambian un comentario y una prueba.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). La escena
+guarda **dos** cámaras: la **declarada** (`+0x118` ojo, `+0x124` centro,
+`+0x130` up), que sale del json, y la **vigente** (`+0xf0`, `+0xfc`, `+0x108`),
+que se rehace cada fotograma y es la que lee el parallax.
+
+- **Las cadenas**, en `.rdata`: `camera` en `0x14048e4d0`, `eye` en
+  `0x14048e59c`, `center` en `0x14048e594`, `up` en `0x14048e5ec`, `paths` en
+  `0x14048e5e4` y `orthogonalprojection` en `0x1404890c0`.
+- **El constructor** (`0x140186c90`) pone las dos cámaras en (2, 2, 2): la
+  vigente en `0x140186db3`, la declarada en `0x140186ded`.
+- **El cargador** es la misma función, partida en cuatro fragmentos
+  encadenados de `.pdata` (`0x140186c90..0x140188816`). Guarda el nodo
+  `camera` en la pila (`0x140187440`; ese `[rbp+0xf0]` es un local, no la
+  escena). Con `orthogonalprojection` —`auto`, o un ancho y un alto que no sean
+  los dos cero— enciende el bit 3 de `+0xe0` (`0x140187565`, `0x1401875df`).
+  Después lee `eye` como cadena de tres números a `+0x118/+0x11c/+0x120`
+  (`0x1401882fe`, `0x140188307`, `0x140188310`), `center` a `+0x124`
+  (`0x1401883f9`), `up` a `+0x130` (`0x1401884f3`) y `paths`, si es un array,
+  al vector `+0x310` (`0x140188597`).
+- **Y lo borra.** En `0x140188648..0x140188692`: si el bit 3 está encendido y
+  `+0x310` está vacío, ojo (0, 0, 0), centro (0, 0, −1) y up (0, 1, 0)
+  (`0x14018866b` es el `mov QWORD PTR [r14+0x118],r15` con `r15` a cero). En
+  todo el cargador `escena+0x118` se escribe tres veces: el defecto, el json y
+  este cero.
+- **Cada fotograma** (`0x1401891a0`) la cámara vigente sale de uno de tres
+  sitios. Si hay un **objeto cámara** visible (más abajo), de su matriz
+  (`0x1401892df`). Si no, y no hay `paths`, se copia la declarada
+  (`0x14018942e..0x14018944a`: `+0xf0 ← +0x118`, `+0xfc ← +0x124`) y le suma el
+  temblor (`0x14018949f`). Con `paths`, se interpolan.
+- **El objetivo**: `x += [+0xf0]` en `0x140189c18` e `y += [+0xf4]` en
+  `0x140189c24`, los dos con signo más y la y hacia arriba como el resto de la
+  fórmula (`1 − raton.y`, `0x140189b95`); P queda en `+0x340/+0x344`. Con un ojo
+  vigente no nulo, el término sería `−a·d·ojo` en el lienzo, con la y hacia
+  arriba, que es lo que suponía la tarea. Pero ese ojo es cero.
+
+El mismo cero contesta lo que la tarea dejaba fuera: el `eye` declarado
+tampoco traslada la vista en una escena ortográfica. Cuadra con el preview de
+`2821288001`, ojo en (841, 277), que sale centrado en el lienzo ([Pendiente:
+tres cabos de las
+partículas](#pendiente-tres-cabos-de-las-partículas-medidos-y-sin-cerrar)).
+
+### Lo que dicen los previews
+
+Se comprobó la hipótesis contra el preview de las once antes de descartarla:
+`ncc_preview.py` busca el mejor encaje de cada preview (o del primer fotograma
+del GIF) en el render a 1280 de ancho, barriendo escala y posición, y lo hace
+con la base, con la rama y con el `eye` sumado en memoria. La rama da el mismo
+PNG que la base en las once. Con el `eye`:
+
+| escena | base = rama | con el `eye` | escena | base = rama | con el `eye` |
+|---|---|---|---|---|---|
+| `2109934461` | 0,9906 | 0,9858 | `2250845956` | 0,9549 | 0,9547 |
+| `3521337568` | 0,8602 | 0,8522 | `2317494988` | 0,9018 | 0,9057 |
+| `3082427731` | 0,8044 | 0,8042 | `2319253136` | 0,9338 | 0,9282 |
+| `2262142032` | 0,8066 | 0,8208 | `2557734973` | 0,9619 | 0,9595 |
+| `2810252468` | 0,8351 | 0,8174 | `1173201544` | 0,9533 | 0,9417 |
+| `2311315748` | 0,8124 | 0,8124 | **media** | **0,8923** | **0,8893** |
+
+Empeora en siete y mejora en `2262142032` (+0,014) y `2317494988` (+0,004);
+en `2311315748` la diferencia está en la quinta cifra. La que más discrimina
+es `2109934461`, con profundidades de 1 a 0,32 entre sus capas y hasta 71 px
+de desplazamiento relativo: empeora. Es una medida ruidosa —`1173201544`
+baja 0,012 con 2 px de diferencia—, de apoyo; manda el código.
+
+La pista que traía la tarea, el reloj de `2262142032`, tampoco decide.
+`reloj_2262.py`, con la hora congelada a la del preview (17:38), encaja el
+preview y busca después el reloj alrededor de donde ese encaje lo pone: queda
+a (+22,8, +11,7) px de lienzo en la base, |d| = 25,7, y a (+15,4, +1,1), |d| =
+15,5, con el `eye`. Pero el reloj y el fondo tienen la misma profundidad, 1, y
+el `eye` los mueve juntos: la mejora sale del encaje global (escala 0,970 →
+0,980), no del reloj. Que el preview de esta escena encaje mejor movido no se
+ha explicado; un preview es una captura del autor, quizá desde el editor, y
+nada dice que el editor cargue la escena igual.
+
+### Cómo queda aquí
+
+- `parallax_de_camara` (`werender.py`) dice por qué no suma el `eye`, con las
+  dos direcciones.
+- `prueba_parallax_de_camara` (`test_werender.py`) declara ahora la escena
+  ortográfica y con el `eye` en (200, 40): si alguien lo suma, la raíz se va a
+  (700, 80) en vez de (900, 100) y la prueba falla.
+
+### Lo medido
+
+Contra la base `d01ed59`, con los scripts de
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261007-171029/medidas/`:
+
+- `verifica_ojo.sh`: **86 ok, 0 fallos**: las cadenas, los fragmentos de
+  `.pdata`, cada instrucción citada arriba y el recuento de escrituras.
+- `censo_orto.py`: de las **47** escenas con `eye` fuera del origen, **47**
+  ortográficas, **0** con `paths` y **1** con objeto cámara, `3521337568`.
+- `planes_ojo.py`, las 129 con la hora congelada (`hora.py`, porque los
+  relojes de texto se resuelven al emitir): **129 de 129 planes idénticos** y
+  ninguna línea cambiada en las once. Con el `eye` sumado cambiarían entre 6
+  (`2311315748`) y 348 (`2262142032`) líneas en cada una, así que la
+  comparación lo habría visto.
+- `paralaje_ojo.py`: las **137 raíces** con profundidad de las once dan
+  `_paralaje(rama) − _paralaje(base)` = −a·d·ojo vigente con error 0, y el ojo
+  vigente es (0, 0) en diez; en `3521337568` es el del objeto cámara, que no se
+  emula, y la diferencia también es 0.
+- `luz_11.py`: `test_luminancia` (`mide`, `preview` e `informe` del test) sobre
+  las once, la rama contra la base: la misma media en las once, 0 apagadas, 0
+  regresiones. Las 118 restantes tienen el plan idéntico.
+- `guarda_test.sh`: `test_werender` pasa, y con el `eye` sumado falla con la
+  raíz en (700, 80).
+
+### Lo que queda
+
+- **Los objetos cámara.** Un objeto con `camera` de texto —`3521337568` y
+  `3462491575` lo tienen, `"default"`, con `path` a un
+  `scripts/camera_paths_*.json` vacío y `origin` o `zoom` animados— es un objeto
+  cámara: el cargador de objetos lo crea (`0x140190693`, `0x360` bytes) y lo
+  mete en `escena+0x1f8` (`0x140190722`). Si está visible, con sus padres, la
+  cámara vigente sale de su matriz (`0x1401892df..0x140189361`) y no de la
+  declarada: mueve la vista y el P del parallax. Aquí no se lee. `3521337568`
+  es una de las once, y en ella el ojo que llega a P no es cero; no se sabe
+  cuánto vale.
+- **Las escenas con `paths`** conservan el `eye` y lo interpolan. No hay
+  ninguna en el corpus.
+
+## La turbulencia con la regla de WE: `turbulentvelocityrandom` deja de muestrear nuestro ruido
+
+[Los ejes de la
+turbulencia](#los-ejes-de-la-turbulencia-forward-gira-alrededor-de-right-y-up-no-se-lee)
+leyó la regla entera del inicializador y no la aplicó. La razón era que no se
+monta encima del ruido 3D de aquí: lo sustituye, en las 152 piezas de 66
+escenas. El síntoma seguía ahí. Los tres objetos que comparten `smoke2`
+(1877658892) salían en tres direcciones (−163°, 105° y 46°) y la regla los manda
+a los tres hacia arriba. Además, 12 de las 18 medidas de rumbo caían a más de
+±15°. Para aplicarla faltaban dos lecturas: de dónde sale el booleano de la
+rapidez por defecto y qué es `[obj+0x130]`. De la primera dependían las 50 piezas
+sin `speedmin` ni `speedmax`, que hoy no dan velocidad y con la regla dan
+0,5–1 o 100–250. Si el booleano no se dejaba leer, no se aplicaba nada.
+
+### El booleano es «la escena es ortográfica»
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen):
+
+- **En la fábrica.** La fábrica de partículas (`0x1401c5490`) guarda su primer
+  argumento en `[rsp+8]`. Con `rbp = rsp − 0x2210` tras el `push`
+  (`0x1401c54a0`), ese hueco es `[rbp+0x2220]`, y de ahí sale `r14`
+  (`0x1401c579b`). `[r14]` es el **contexto** del renderizador. En `0x1401c5b75`
+  la fábrica llama a `0x14010daa0` con él, y lo que devuelve va a `[rbp+0x2238]`
+  (`0x1401c5b7e`). Nada más escribe ahí antes de `0x1401c701b`.
+- **El bit.** `0x14010daa0` es `([contexto+0x118] >> 10) & 1`.
+- **Quién lo pone.** Ese bit lo apaga (`0x1401872ca`) y lo enciende
+  (`0x14018768a`) el cargador de la escena, y son las dos únicas instrucciones
+  del binario que lo tocan. Lo enciende si está encendido el bit 3 de
+  `escena+0xe0`, el de la proyección ortográfica. El contexto es el cuarto
+  argumento del cargador: `[rsp+0x20]`, que es `[rbp+0x1e8]` y pasa a `r13`
+  (`0x1401872ad`) y a `escena+0xd8` (`0x140186d13`).
+- **Cuándo es ortográfica** (`0x1401874ec..0x1401875df`).
+  `orthogonalprojection` tiene que ser un objeto. Con `auto` a true lo es
+  (`0x140187565`). Si no, `width` y `height` tienen que ser números y **los
+  dos** distintos de cero: con el ancho a cero apaga el bit (`0x1401875cb`), y
+  con el alto a cero también. Lo que se dijo en [el `eye` de la
+  cámara](#el-eye-de-la-cámara-no-llega-al-parallax-we-lo-pone-a-cero-en-las-escenas-ortográficas),
+  «que no sean los dos cero», era impreciso, aunque no cambiaba nada allí. Sin
+  el campo, el constructor deja `+0xe0 = 0x26`, sin el bit (`0x140186d1f`).
+- **Las 129 escenas del corpus son ortográficas**: 128 con ancho y alto
+  distintos de cero y una con `auto`. El defecto es **100–250** en todas.
+
+### `[obj+0x130]` son los segundos de la escena
+
+- **Es el mismo contexto.** El `obj` del inicializador es `[instancia]`
+  (`0x14023b361`, `0x14023bdf8`), y el sorteo lo usa con `+0x20` y `+0x1cd0`
+  (`0x14023b367`). Esos dos campos los rellena el constructor `0x14017c6d0`:
+  `+0x20 = 0` y `+0x24 = 1`, el rango del sorteo, y `+0x1cd0 = 624`, el índice
+  del generador (`0x14017d523`). Lo llaman los dos sitios que crean el
+  renderizador, con `renderizador+0x10` (`0x140110ae1`, `0x14012b8b8`). Es el
+  mismo puntero que el renderizador le pasa al cargador de la escena
+  (`0x140181b82`). El contexto de la fábrica tiene el `+0x1510` que escriben ese
+  constructor (`0x14017d014`) y el cargador (`0x1401872e8`). Las tres funciones
+  ven el mismo objeto.
+- **El reloj.** `contexto+0x130` es `renderizador+0x140`. Cada fotograma el
+  renderizador suma el dt a un doble en `+0x148` (`0x14017fcca`) y deja su float
+  en `+0x140` (`0x14017fce5`). Pasados 432 000 s lo vuelve a 0 (`0x14017fcef`),
+  y al cargar la escena también (`0x140181b2a`, `0x140181b31`). Es el reloj que
+  [el temblor](#el-temblor-de-cámara-también-estaba-en-el-motor-y-no-es-ruido)
+  ya había leído como `[[escena+0xd8]+0x130]`.
+- **Y WE le da nombre.** `remapinitialvalue` busca su `input` en una tabla de
+  20 nombres (`0x140484e80`, `0x140260f50`) y despacha por el índice
+  (`0x14023ce53`, saltos en `0x14023fab8`). El 9 es `runtime`, y su caso lee
+  `[contexto+0x130]` (`0x14023d219`). El 11, `particlesystemtime`, lee
+  `[instancia+0x3f0]` (`0x14023d230`): el reloj **del sistema** es otro campo.
+
+Aquí el reloj de la escena es el `t` que recibe `we_psys_update`. Mientras el
+arranque recupera `starttime`, vale de −`starttime` a 0. Qué reloj ven en WE
+las partículas de esos segundos no está leído. Es la única suposición del port,
+y solo toca a los sistemas con `starttime`.
+
+### Cómo queda aquí
+
+- **`weparticles.py`.** `_init_turbvel` escribe 13 floats: rapidez mínima y
+  máxima, fase mínima y máxima, `timescale`, `scale`, `offset` (un ángulo),
+  `forward[3]` y `right[3]`, con los defectos leídos. La rapidez por defecto la
+  decide `wescene.ortografica(general)`, que `werender` le pasa a `cargar`. `up`
+  y la rama de audio se ignoran: las 2 piezas con `audioprocessingmode: 3` se
+  tratan como modo 0.
+- **`src/weparticles.c`.** `gira_turbulenta` usa `snoise1`, portado de
+  `0x14027b090` con la tabla de Perlin y el 0,395, y gira con Rodrigues:
+  `right` normalizado y `forward` sin normalizar. Lo de `glm::rotate` está
+  comprobado. El giro es el positivo, porque la fila 1 de la columna 0 es
+  `x·y·(1 − c) + z·sen` (`0x1401e2653`). Y `0x140184440` es `M·v`, no `v·M`. La
+  matriz del emisor no se aplica, igual que en `velocityrandom`: la velocidad
+  vive en el espacio del sistema. El reloj de la escena viaja en `s->reloj`, y
+  los hijos de evento lo heredan del padre. Con un `right` nulo WE dividiría por
+  cero; aquí no gira, y el corpus no tiene ninguno. Lo enlazan `glexec.c` y
+  `glexecutor.cpp`.
+- **`desplazar_ruido` desaparece**, porque con la regla no hay punto de
+  muestreo que desplazar. **`ESCALA_RUIDO` se queda solo para el operador
+  `turbulence`**, que no se toca. El factor se calibró para esta pieza con
+  nuestro ruido, cuando la coherencia del humo de Sniper Girl pasó de 0,08 a
+  0,72. El operador lo comparte desde entonces, y su número se queda como está.
+
+### Lo que cambia en el aspecto
+
+Con la regla, las partículas que nacen a la vez salen paralelas y el chorro
+serpentea con los segundos. El penacho que se abría era de nuestro ruido 3D.
+`coherencia_turbvel.py` pasa `psysprobe` en t = 2 por los 271 `.psys` con la
+pieza, enteros, con todas sus piezas, y los reparte como [La turbulencia no
+turbulaba](#la-turbulencia-no-turbulaba):
+
+| | chorro (c > 0,7) | penacho (0,3–0,7) | esparcido (< 0,3) | quietos (rapidez < 1) |
+|---|---|---|---|---|
+| base `a81d43a` | 114 | 73 | 80 | 4 |
+| rama | **269** | 0 | 1 | 1 |
+
+En el humo de Sniper Girl (1160677675), `s002` pasa de c = 0,27 a 0,98 y de 27,1
+a 175,2 de rapidez. Es una de las 50 piezas sin rapidez declarada. El único
+oráculo del aspecto es la lectura: ningún preview de humo se ha comparado, y la
+regresión de luz solo caza apagados.
+
+### Lo medido
+
+Contra la base `a81d43a` y con Mesa, con los scripts de
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261007-182522/medidas/`
+(`repetir.sh`):
+
+- **`verifica_exe.sh`**: **254 ok, 0 fallos**, los 154 de antes y 100 nuevos.
+  Los nuevos cubren las direcciones de las dos secciones de arriba, el recuento
+  de quién toca el bit 10, los 256 bytes de la tabla de permutación, que son los
+  de Perlin, y el signo del giro.
+- **`rumbo_turbvel.py --ejes`**: aísla la pieza con solo `lifetimerandom`, sin
+  operadores y con la rapidez de salida del emisor a 0, y compara su rumbo con
+  la regla por Monte Carlo. psysprobe se promedia sobre 32 semillas. Hace falta:
+  `Flare_Flame` en t = 1 tiene unas 8 partículas vivas con c = 0,13, y ahí el
+  rumbo de una sola siembra es ruido. **18 de 18** quedan a ≤ 15°, y la que más
+  se aparta lo hace por 1,6°. Con la semilla del plan son 17 de 18, porque
+  `Flare_Flame` en t = 1 da 22,2° contra 1,0°. Con el mismo script, la base da
+  **6 de 18**.
+
+  | fichero | `.psys` | rama, t = 1 / 2 / 3 | regla, t = 1 / 2 / 3 |
+  |---|---|---|---|
+  | `smoke2` | 1877658892/s000, s001, s002 | 97,5 / 94,0 / 93,4 | 97,6 / 94,0–94,1 / 93,4–93,5 |
+  | `smoke1` | 2250845956/s002 | 91,5 / 91,7 / 91,8 | 91,5 / 91,6 / 91,8 |
+  | `Flare_Flame` | 2937370591/s003 | −0,6 / 82,4 / 81,1 | 1,0 / 82,4 / 81,1 |
+  | `Flare_Smoke` | 2937370591/s004 | 57,2 / 63,0 / 63,0 | 57,2 / 63,0 / 63,0 |
+
+- **`rumbo_turbvel.py --sparks`**: `Flare_Sparks` (`forward 0 0 0`) da rapidez
+  media **0 / 0 / 0**. En la base daba 73,5 / 75,4 / 75,2.
+- **`rumbo_turbvel.py --sin-rapidez`**: las **50** piezas sin `speedmin` ni
+  `speedmax`, aisladas igual, en t = 2. De los 98 `.psys` que las llevan,
+  **95** quedan a ±10 % de 175.
+- **`planes_iguales.py`**, las 129 con la hora congelada. Las **63** sin la
+  pieza salen idénticas byte a byte. En las **66** con ella, el `plan.txt` es
+  idéntico y las únicas líneas distintas son las 295
+  `init turbulentvelocityrandom`. Los otros 513 `.psys` de esas escenas no
+  cambian.
+- **`test_weparticles.py`**: la prueba 9 nueva pasa, también con
+  `LC_ALL=es_ES.UTF-8`. Cubre los defectos y `ortografica`, y pasa por el
+  simulador cinco ráfagas con la fase y la rapidez fijas: los ejes por defecto,
+  el `offset` como ángulo, el `right` sin normalizar, el reloj con `starttime`
+  y el `forward` nulo. `mutacion_giro.sh` comprueba que la prueba falla sin el
+  giro (8 discrepancias), sin el `offset` en el ángulo (2) y con el reloj del
+  sistema (2).
+- **`luz_turbvel.py`**: las 66 con la pieza, rama contra base: **66 de 66**
+  renderizadas, 0 apagadas y 0 regresiones. La media se mueve entre −0,7 %
+  (2658583633) y +9,7 % (3050043876); 3097749052 da entre −0,6 % y −0,9 %
+  según la pasada, porque su base no es estable. La pasada de las 129 de
+  `test_luminancia.py` contra una referencia de main da 129 renderizadas, 0
+  apagadas y 0 regresiones.
+- **`compila.sh`**: `make glexec psysprobe build` sin errores ni avisos en
+  `src/weparticles.c`, y la tabla de `snoise1` está en `obj/glexec`, en
+  `obj/psysprobe` y en la `.so`.
+
+## `g_ParallaxPosition` es el punto P de la cámara, no el puntero con retardo
+
+Quedaba en [Lo que queda](#lo-que-queda-1) del parallax de cámara: «lo más
+probable es que WE suba el P normalizado —con la influencia y la y hacia
+arriba—, y aquí se sube el ratón con retardo y la y hacia abajo», sin tocar
+porque el `switch` que sube el uniform `0x6b` iba por una tabla de saltos que
+nadie había encontrado. El corpus ya apuntaba a eso: de las 6 escenas con
+`depthparallax`, `3077334064` y `3624164256` declaran
+`cameraparallaxamount: 0` y aun así ajustan `cameraparallaxmouseinfluence`
+(−0,2 y −0,27). Con amount 0 la cámara no se mueve; esa influencia solo pinta
+algo si llega a `g_ParallaxPosition`. Es justo el argumento que [la sección
+del puntero](#g_parallaxposition-es-el-puntero-con-retardo-y-nada-más) usaba
+al revés —«si el amount lo escalara, esas dos habrían puesto un efecto caro
+sobre una entrada muerta»—: lo que llega no es el amount, es la influencia.
+
+La lectura lo confirma y además dice algo que la hipótesis no traía: con
+`cameraparallax` apagado el uniform se queda en el centro, no sigue al ratón.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). Las comprueba
+todas `verifica_exe.sh`.
+
+- **El nombre y su índice.** La cadena está en `.rdata`, `0x14048dad0`. Un
+  inicializador estático arma la tabla nombre → índice de los uniforms del
+  motor: `0x140003f0f` pone `0x6b` y `0x140003f17` carga la cadena
+  (`g_PointerPosition` es el `0x69`, `0x140003ecf`). Al enlazar un shader, el
+  nombre se busca en esa tabla (`0x1400db7c7`; `0x8c` es «no es del motor»,
+  `0x1400db7d0`) y el índice se guarda como WORD en la lista de uniforms del
+  pase (`0x1400dbc9b`).
+- **El `switch`.** Cada pase recorre esa lista en `0x1400d83b3`: índice ≤ `0x8f`
+  (`0x1400d8355`, `0x1400d83b8`) y salto de dos niveles, una tabla de bytes en
+  `0x1400daaac` y otra de destinos en `0x1400da984` (`0x1400d83c1`,
+  `0x1400d83ca`, `jmp rcx` en `0x1400d83d5`). Para `0x6b` el byte es `0x34` y
+  el destino `0x1400d9e90`; para `0x69`, `0x32` y `0x1400d9df8`. Por eso no
+  aparecía buscando un `cmp eax, 0x6b`: el `switch` compara con el tope y
+  salta por la tabla.
+- **El caso.** `0x1400d9e90..0x1400d9ea1`: toma el contexto de render
+  (`[r14+0x8]`) y copia **ocho bytes de `contexto+0x9c`** al buffer de
+  uniforms. El de `g_PointerPosition` copia `contexto+0x8c`, el ratón
+  (`0x1400d9e02`).
+- **Quién escribe `contexto+0x9c`.** El constructor del contexto lo pone a
+  cero (`0x14017c78b`). El cargador de la escena, a **(0,5, 0,5)** al terminar
+  de cargar, haya parallax o no (`0x1401886e3..0x1401886f4`). Y la
+  actualización de la cámara (`0x1401891a0`), cada fotograma, pero **solo si
+  `cameraparallax` está encendido**: `test [escena+0xe0], 0x100` en
+  `0x140189b42`, y con el bit apagado salta a `0x140189cf3` sin tocarlo. Que
+  el bit 8 de `+0xe0` es `cameraparallax` lo dice el lector de `general`: la
+  cadena (`0x140488ae0`, cargada en `0x14019b0c8`) se registra en `+0xe0`
+  (`0x14019b0e5`) con un accesor (`0x14019c850`) que hace `bts ecx, 8`
+  (`0x14019c889`). No hay más escrituras de `+0x9c` en ese contexto.
+- **Lo que escribe la cámara.** Es la P de [Lo que hace
+  WE](#lo-que-hace-we): el objetivo con `m = mouseinfluence`
+  (`0x140189b6f`), el ratón acotado a [0, 1] (`0x140189b8d`), la y como
+  `1 − ratón.y` (`0x140189b95`), más el ojo (`0x140189c18`, `0x140189c24`),
+  suavizada con `min(1, (1 − delay/3)·10·dt)` (`0x140189c3b`) y guardada en
+  `escena+0x340/0x344` (`0x140189c79`, `0x140189c84`). Justo después la parte
+  por el alto y el ancho del lienzo (`0x140189c98`, `0x140189ca9`), la acota a
+  [0, 1] (`0x140189cba`) y la escribe en `contexto+0x9c` y `+0xa0`
+  (`0x140189cbe`, `0x140189cc6`).
+
+Queda así:
+
+```
+cameraparallax apagado:   g_ParallaxPosition = (0,5, 0,5), siempre
+encendido:                g_ParallaxPosition = clamp(P / lienzo, 0, 1)
+    P/lienzo = (0,5·(1 − m) + ratón.x·m,  0,5·(1 − m) + (1 − ratón.y)·m) + ojo/lienzo
+```
+
+con la y hacia **arriba**, la influencia, el suavizado de la cámara y, en
+reposo, el centro. Sin `amount`, que no entra en P.
+
+Dos marcas de `contexto+0x118` tocan el cálculo y no se sabe quién las pone:
+con `0x200200` la influencia vale 0 (`0x140189b67`, `0x140189b7a`); con
+`0x800` la x del ratón se voltea para P (`0x140189bac`) y la del uniform se
+vuelve a voltear al escribirla (`0x140189cd5..0x140189cea`). Esa segunda es la
+«marca que invierte la x» que quedaba apuntada, y para este uniform se anula:
+`1 − (0,5·(1 − m) + (1 − x)·m)` es otra vez `0,5·(1 − m) + x·m`, sin el ojo.
+Ninguna se modela.
+
+### Lo que cambia en el corpus
+
+Las 6 escenas con `depthparallax` tienen `cameraparallax` encendido —en
+`2810252468` y `3624164256` por una propiedad del usuario que vale `true`—, así
+que en las 6 pasa a valer la regla. Con el ratón en (0,2, 0,3) de la pantalla:
+
+| escena | m | antes | ahora |
+|---|---|---|---|
+| `2349856302`, `3053927686` | 1 | (0,2, 0,3) | (0,2, 0,7) |
+| `2810252468` | 0,7 | (0,2, 0,3) | (0,29, 0,64) |
+| `3775394622` | 0,5 | (0,2, 0,3) | (0,35, 0,6) |
+| `3077334064` | −0,2 | (0,2, 0,3) | (0,56, 0,46) |
+| `3624164256` | −0,27 | (0,2, 0,3) | (0,581, 0,446) |
+
+En las dos de influencia negativa el efecto iba en x al revés y, en las dos
+direcciones, más fuerte de lo que pidió el autor: cinco veces en
+`3077334064` (1/0,2) y 3,7 en `3624164256` (1/0,27). En las de influencia 1
+la x ya estaba bien y la y iba al revés.
+Con el ratón en el centro las seis dan (0,5, 0,5), antes y ahora.
+
+### Cómo está hecho aquí
+
+- **`posicion_de_parallax`** (`werender.py`) es la regla sin suavizar y sin el
+  ojo. La usa `_fotograma` para poner `@PARALLAX_X/Y@` con el `--puntero`, y
+  la influencia sale de la línea `parallax` del plan, redondeada igual que la
+  lee el ejecutor.
+- **`emit_pass`** decide el caso apagado: si la escena no tiene
+  `cameraparallax` y el shader del pase lee `g_ParallaxPosition`, escribe
+  `u2f g_ParallaxPosition 0.5 0.5` sin marcadores. En los pases que no lo leen
+  se deja la línea como estaba; el valor ahí no pinta nada y así los planes de
+  las escenas sin el efecto no cambian. En el corpus ningún pase cae en ese
+  caso.
+- **En vivo** (`glexecutor.cpp`), `@PARALLAX_X/Y@` es `m_camara` acotado a
+  [0, 1]: el mismo P que ya movía las capas con `paralaje`, con su suavizado y
+  el temblor. La exponencial propia `1 − exp(−dt/retardo)` y `m_parallax`
+  desaparecen. Con el retardo de 2 s de cuatro de las seis escenas el efecto
+  llega ahora 6,7 veces antes (3,33 por segundo contra 0,50); en
+  `3053927686`, con 0,55 s, 4,5 veces (8,17 contra 1,82), y en `3624164256`,
+  con 0,11 s, casi igual (9,63 contra 9,09).
+- `glexec.c` no cambia: offline los marcadores los pone Python.
+
+### Lo medido
+
+Contra la base `afd62c6` y con Mesa, con los scripts de
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261007-231823/medidas/`
+(`repetir.sh`):
+
+- **`verifica_exe.sh`**: **57 ok, 0 fallos**: la cadena, el índice `0x6b`, el
+  enlace, el `switch` con sus dos tablas leídas byte a byte, el caso, el
+  constructor, el cargador, el bit de `cameraparallax` y la actualización de
+  la cámara hasta las dos escrituras.
+- **`parallax_plan.py`**: arma el plan de fotograma de las 6 escenas con
+  cuatro posiciones del ratón —sin puntero, (0,2, 0,3), (0,8, 0,9) y
+  (0,1, 0,75)— y compara el `u2f g_ParallaxPosition` de los pases que lo leen
+  con la regla calculada aparte desde el `scene.json` y el `project.json`:
+  **24 de 24** a 1e-4, las dos de influencia negativa incluidas. Imprime
+  también, por escena, la influencia, el ritmo del suavizado de WE contra el
+  de la exponencial que había y la amplitud del temblor.
+- **`test_werender.py`**: `prueba_posicion_de_parallax`, nueva, mira la
+  función, el plan de `3077334064` y `3624164256` y `3624164256` con la
+  propiedad que enciende su parallax a `false`, que tiene que dar el centro.
+  `mutaciones_e.sh` la pasa sin tocar (pasa), quitando la influencia (falla,
+  4 quejas) y con la y al revés (falla, 6 quejas).
+- **`planes_iguales.py`**: las 129 con `--emit-plan`, sin puntero y con la
+  hora congelada: **1131 de 1131** ficheros idénticos (129 `plan.txt` y
+  1002 `.psys`), también en las seis del efecto: sin ratón el valor es el
+  centro, como antes.
+- **`test_luminancia.py obj/glexec --referencia`** con una referencia de main
+  (`luz_main.json`), Mesa en las dos pasadas: **129/129** renderizadas,
+  **0 apagadas, 0 regresiones**. 118 dan la misma media; las 11 que cambian
+  son todas escenas con reloj (`reloj` en el plan), y la pasada no congela la
+  hora. Las seis del efecto, idénticas: sin ratón el plan no cambia.
+  `luz_f.sh` reanaliza las dos pasadas y renderiza además las seis con el
+  ratón en (0,2, 0,3), base contra rama: ninguna apagada; la media se mueve
+  entre −2,5 (`2349856302`, de 90,05 a 87,54) y +0,97 (`3624164256`).
+- `make build` y `make glexec` sin errores ni avisos nuevos.
+
+### Lo que queda
+
+- **El ojo, offline.** WE suma a P el ojo de la cámara, que en estas escenas
+  solo lleva el temblor. En vivo entra, porque `m_camara` ya lo lleva; offline
+  no, porque `_fotograma` lo pone Python y la curva vive en `src/wetemblor.c`.
+  De las seis solo `3053927686` tiembla, con 10,8 px de amplitud: hasta
+  0,0028 del ancho y 0,005 del alto en el uniform.
+- **Las marcas `0x200200` y `0x800` de `contexto+0x118`**, de origen sin leer.
+- **Que se vea en el escritorio**: el efecto se mueve ahora con la influencia
+  y la y del autor, y en las de 2 s llega mucho antes. Ningún oráculo offline
+  lo dice; hay que mirarlo en vivo.
+
+## El parallax sigue al ratón en tiempo real: el cursor lo da KWin, y el retardo de WE se queda para el temblor
+
+Visto en el escritorio con `2220826239` (parallax de cámara, retardo 1,8,
+influencia −0,69): la escena no seguía al ratón; había que esperar segundos y
+luego saltaba de golpe. Dos causas, y la que importaba no era la primera que
+se arregló.
+
+### La que importaba: al fondo no le llegaba el ratón
+
+Medido con un registro temporal en `synchronize()` (sincronías y posiciones
+nuevas por segundo): el motor dibujaba a ~42 fps con 23,5 ms de GPU, pero le
+llegaban **de 1 a 5 posiciones por segundo**, con huecos de hasta 576 ms, todas
+con y ≈ 0,96 —pegadas al panel— y con `hovered` siempre a false. Moviendo el
+ratón por el centro de la pantalla no llegaba nada.
+
+- Primero se colgó el `HoverHandler` de la raíz de la ventana en vez de la
+  escena: la capa de iconos de Plasma es hermana de encima y acepta el hover,
+  y en Qt 6 el hover aceptado no baja a los hermanos, solo sube a los
+  ancestros (comprobado con `qmltestrunner`: el handler de la escena, 0
+  eventos; el de la raíz, 20 de 20). **No cambió nada en el escritorio**: la
+  misma medida, 1 a 5 por segundo y `hovered` a false.
+- La pila de KWin lo explica: cuatro ventanas maximizadas (1920×1168) encima
+  del escritorio. Con «Mostrar el escritorio» KWin las aparta, pero a la
+  ventana del escritorio el puntero casi no le llega. Ningún arreglo dentro de
+  plasmashell puede con eso: en Wayland una ventana ve el ratón cuando el
+  compositor se lo da.
+
+Wallpaper Engine en Windows lee el cursor **global**. Aquí lo tiene KWin:
+`CursorKWin` (`src/escritorio.cpp`) carga al arrancar un script de KWin
+(`wallpaperengine-cursor`, escrito en `$XDG_RUNTIME_DIR`) que escucha
+`workspace.cursorPosChanged` y llama por D-Bus a `posicion(x, y)` del objeto
+`/WallpaperEngine/Cursor` de esta conexión —como mucho cada 8 ms y siempre con
+la última—. `SceneView` lo pasa a su pantalla y, desde la primera posición,
+ignora el `HoverHandler`, que queda de respaldo si KWin no responde. Ojo: KWin
+manda **enteros** (`cursorPos` es un `QPoint`); con solo la firma `(dd)` D-Bus
+no casaba ningún slot. Están las dos.
+
+Medido después, en el escritorio y con la misma escena: **18 a 40 posiciones
+nuevas por segundo** moviendo el ratón —el ritmo de los fotogramas, ~41—, por
+toda la pantalla y con `presente=1`. Y el fondo sigue al ratón también por
+debajo de las ventanas, como en WE: para los 123 sistemas de partículas que lo
+persiguen, «presente» es ahora «en esta pantalla».
+
+### La otra: el retardo de WE
+
+Con el ratón llegando, la cámara seguía yendo **detrás** de él por el
+suavizado que se copió de WE (`(1 − delay/3)·10·dt`, sección de
+`cameraparallax`), y su respuesta a un salto del ratón es esta:
+
+| | 95 % del camino, a 60 fps |
+|---|---|
+| WE, `cameraparallaxdelay` 0,1 (108 de las 129) | 300 ms |
+| WE, `cameraparallaxdelay` 2 (4 de las 6 con `depthparallax`) | 883 ms |
+| ahora: exponencial de 25 ms | 83 ms (63 % en 25 ms) |
+
+Es una **decisión del usuario, no una lectura del motor** (2026-10-08): el
+parallax tiene que seguir al ratón en tiempo real y suave, aunque WE lo
+retrase. Así que en vivo el punto de la cámara se parte en dos:
+
+- **la parte del ratón** (centro y ratón según la influencia) lleva solo
+  `1 − exp(−dt/0,025)`, independiente de los FPS. Lo justo para que los
+  eventos del ratón, que no llegan al ritmo del refresco, no hagan temblar la
+  escena;
+- **la parte del temblor** (`camerashake`) sigue con el suavizado de WE y el
+  retardo de la escena. El filtro es lineal: suavizar las dos por separado y
+  sumarlas deja el temblor de las 6 escenas exactamente como estaba.
+
+`g_ParallaxPosition` sale del mismo punto, así que el `depthparallax` también
+deja de ir retrasado. Offline no cambia nada: allí el punto es el `--puntero`,
+sin suavizar, y `glexec.c` ya ignoraba el retardo. Está en `avanzaPuntero`
+(`src/glexecutor.cpp`), con `RATON_TAU`. Lo que no se mide offline: cómo se
+siente en el escritorio.
+
+## Partículas con perspectiva: el bit 0x4 del `flags` del sistema es otra cámara, no otra simulación
+
+**De dónde se partía.** El JSON de cada sistema de partículas trae un `flags`
+de nivel de SISTEMA que se descartaba entero: `weparticles.py` solo leía el de
+los puntos de control y el del renderer. Lo encienden presets como
+`snowperspective`, `rainperspective`, `snowstorm`, `ash`, `leaves1..5` o
+`starfield`, y **todos** se mueven en z —por el emisor (`distancemax` ×
+`directions` con componente z), por la velocidad o por la gravedad—. Con la
+proyección ortográfica de siempre esa z no contaba: la nieve salía plana y el
+`starfield` de `1927028828`, cuyas estrellas solo avanzan en z, no se veía.
+
+### Qué bit es cuál: la tabla del editor
+
+El editor registra cada casilla del sistema con su máscara y su cadena de
+locale (`bin/wallpaperui.exe`, `0x1401b6cb5..0x1401b6e10`):
+
+| máscara | dirección | cadena (`.rdata`) | en el corpus |
+|---|---|---|---|
+| `0x1` | `0x1401b6cb5` | `ui_editor_properties_worldspace` (`0x140ada440`) | 93 sistemas en 28 escenas |
+| `0x2` | — | no tiene casilla | 89 sistemas en 32 escenas |
+| `0x4` | `0x1401b6cff` | `ui_editor_properties_perspective`, «Perspective rendering» (`0x140ad8488`) | **153 sistemas en 58 escenas** |
+| `0x8` | `0x1401b6d32` | `ui_editor_properties_disable_color_overrides` (`0x140ada410`) | 0 |
+| `0x10` | `0x1401b6dfe` | `..._disable_speed_overrides` (`0x140ada4c0`) | 0 |
+| `0x20` | `0x1401b6d65` | `..._disable_count_overrides` (`0x140ada490`) | 0 |
+| `0x40` | `0x1401b6d98` | `..._disable_lifetime_overrides` (`0x140ada460`) | 0 |
+| `0x80` | `0x1401b6dcb` | `..._disable_size_overrides` (`0x140ada4f0`) | 0 |
+
+La casilla de perspectiva solo se ofrece si la escena es ortográfica (el bit 3
+de `[[rsi+0x10]+0x140]`, `0x1401b6cdb..0x1401b6cde`). En el corpus el `flags`
+del sistema vale 0, 1, 2, 3, 4, 6 o 7: ningún bit de los «overrides».
+
+### Lo que hace WE, con direcciones
+
+Se lee con el método de [los valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen) sobre el
+`wallpaper64.exe` instalado. `verifica_perspectiva.sh` comprueba cada fila,
+instrucción a instrucción —121 comprobaciones en el motor y 28 en el editor—;
+vive con las medidas de la tarea, en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261008-135219/medidas/`,
+y se ejecuta desde la raíz del repositorio (`sh …/verifica_perspectiva.sh
+[a|b]`). `repetir.sh`, al lado, pasa todas las medidas.
+
+| qué | dónde | lo que hace |
+|---|---|---|
+| lector del sistema | `0x1401c5490` | `r13` es el descriptor (`0x1401c54eb`). Lee `flags` (`.rdata 0x14048f4cc`, `0x1401c55e4`) como entero (`0x1401c56e4`), se queda con el **byte bajo** (`movzx`, `0x1401c56e9`), 0 si falta, y lo guarda en **descriptor+0x8** (`0x1401c56f0`) |
+| creación | `0x14022cc5a..0x14022cc8f` | descriptor de 0x1e0 bytes, lo rellena el lector y `0x1401c4220` lo copia a **sistema+0x18**: el `+0x8` pasa a **sistema+0x20** (`0x1401c423d`/`0x1401c4240`) |
+| dibujo del sistema | `0x1402366f0` | `[sistema+0x20] & 1` («worldspace», `0x14023670c`) cambia la matriz de modelo por la del contexto `+0xaf0`. Y **`([sistema+0x20] >> 2) & 1`** (`0x140236761..0x140236767`): con el bit apila la vista (`[ctx+0x38]`, `0x14023677f`) y la proyección (`[ctx+0x40]`, `0x1402367b3`), llama a `0x1401e5b60` (`0x1402367d8`) y al acabar las desapila (`0x140236ac6..0x140236add`). Los hijos se dibujan después, cada uno con su bit (`0x140236bb7`) |
+| la cámara nueva | `0x1401e5b60` | fov = `[ctx+0x110]`, en radianes. **`d = 1 / (tan(fov/2) · P[1][1])`** con P la proyección vigente, la ortográfica de la escena (`0x1401e5b93..0x1401e5bb4`). Lejano **max(15000, d + 1000)** (`0x1401e5ba0..0x1401e5bc8`), cercano **5** (`0x1401e5c20`). La vista pierde el centro de la ventana ortográfica —`[ctx+0x84] · [ctx+0xf8]` en x, `[ctx+0x88] · [ctx+0xfc]` en y (`0x1401e5bd3..0x1401e5c1b`)— y su z pasa a ser **−d** (`0x1401e5c28`). Aspecto `[ctx+0x74] / [ctx+0x78]` (`0x1401e5c2d..0x1401e5c39`), y la proyección la hace la entrada **+0x10 del dispositivo** (`0x1401e5c47`). Con `[ctx+0x118] & 0x800` niega la fila x (espejo global; no se emite) |
+| el dispositivo | vtable `0x140485b90` | `+0x10` es `0x14009a360`: `XMMatrixPerspectiveFovRH` de DirectXMath (sus `assert`, `0x14009a3b8`; la fila de w `(0, 0, 0, −1)`, `0x14009a5db`) con la **z invertida**: `cerca / (lejos − cerca)` (`0x14009a513..0x14009a527`) y `· lejos` (`0x14009a57b`), el cercano a 1 y el lejano a 0. `+0x18` es la ortográfica, `0x14009a630` |
+| el contexto | `0x14017c6d0` | pilas de modelo, vista y proyección en `+0x30`, `+0x38`, `+0x40` (`0x14017c723..0x14017c739`). Su tamaño de destino, en float, en `+0x74`/`+0x78` (`0x14017f222`/`0x14017f22d`, vistos desde 0x10 bytes antes: allí su dispositivo `+0x1518` es `+0x1528`) |
+| ancho y alto | `0x1401875df..0x1401875fb` | el cargador marca la escena como ortográfica (bit 3 de `+0xe0`, ver `wescene.ortografica`) y pone el ancho y el alto de `orthogonalprojection`, enteros, en `[ctx+0x84]`/`[ctx+0x88]` |
+| la cámara ortográfica | `0x140183d57..0x140183e95` | cada fotograma: el centro de la ventana, en fracción del lienzo, a `[ctx+0xf8]`/`[ctx+0xfc]` (`0x140183d96`, `0x140183dc1`) —0,5 sin márgenes—, **el fov efectivo de la escena en radianes a `[ctx+0x110]`** (`0x140183dc9..0x140183dd9`) y `OffCenter(izq, der, abajo, arriba, nearz, farz)` del dispositivo `+0x18` (`0x140183e95`) |
+| qué fov | `0x140189271..0x1401892c4` | el fov efectivo (`escena+0x148`) es **`perspectiveoverridefov` (`+0x144`) si la escena es ortográfica** y `fov` (`+0x140`) si no. En una ortográfica el nodo de cámara no lo pisa (`0x1401893b9`). Se acota a **[0,1, 179,9]** (`0x140189b12..0x140189b4c`) |
+| sus defectos | `0x140186d5c..0x140186d72` | el constructor de la escena: `fov` 50, **`perspectiveoverridefov` 95**. Los campos de `general`: `fov` → `+0x140` (`0x14019aa21`), `perspectiveoverridefov` → `+0x144` (`0x14019aaa5`), `nearz` → `+0x14c`, `farz` → `+0x150` |
+| en el editor | `0x1401aa34d..0x1401aa4a8` | el «FOV» de las opciones de cámara edita `perspectiveoverridefov` en una escena ortográfica y `fov` en una en perspectiva |
+
+Así que, para un sistema con el bit en una escena ortográfica de alto `h`:
+
+- el ojo está a **`d = h / (2 tan(fov/2))`** del lienzo, la distancia a la que
+  el alto del lienzo llena el fov, y mira a su centro;
+- `fov` es `perspectiveoverridefov`, 95° si no se declara (46 de las 58
+  escenas; de las demás, 6 declaran 95, 4 90 y 2 30:
+  `censo_perspectiva_escena.py`, abajo);
+- **el plano z = 0 cae en el mismo píxel que en ortográfico**, y lo que tiene
+  z positiva **se acerca al ojo**: posición respecto al centro y tamaño se
+  multiplican por `d / (d − z)`. Con `z ≥ d − 5` queda detrás del plano
+  cercano y el recorte lo tira. La z crece hacia el espectador porque la
+  cámara de estas escenas mira hacia −z: en las 129, `center` está una unidad
+  por debajo de `eye` en z (`censo_perspectiva_escena.py`).
+
+### Cómo está hecho aquí
+
+No hay que tocar C. El vértice de partícula de WE (`genericparticle.vert`)
+arma el quad en el espacio del sistema y lo proyecta con
+`g_ModelViewProjectionMatrix`, así que una matriz proyectiva completa basta
+para que lo cercano salga más grande y apartado; los dos ejecutores la
+heredan del plan.
+
+- `weparticles.py` lee el bit en `Sistema.perspectiva` y escribe
+  `perspectiva 1` al final del `.psys`, solo cuando está. El simulador no la
+  usa, y `we_psys_load` se salta en silencio las palabras que no conoce: un
+  `.so` anterior lee el fichero igual.
+- `werender.py`: `fov_de_perspectiva(general)` y
+  `particle_mvp_perspectiva`, que es `proyección · vista · particle_world` con
+  las cuentas de arriba; `emit_pass` la usa en vez de `particle_mvp` para esos
+  pases si la escena es ortográfica. La z de recorte va con la convención de
+  GL y no con la z invertida de WE: cambia la profundidad, que aquí no se
+  prueba; x, y, w y los planos de recorte son los mismos.
+- `obj/psysprobe` da ahora también el rango en z.
+
+La nieve de `1237434258` (`snowperspective`: `distancemax 900`, `directions
+0.6 0.03 1`, `sign 0 0 1`) tiene a los 10 s 299 copos con z de 1 a 717, y con
+un lienzo de 992 de alto y 95° (no declara `perspectiveoverridefov`) el ojo
+está a 454,5: 48 de los 299 quedan detrás del plano cercano, y los que se le
+acercan crecen hasta 6,4 veces (`tamano_copos.py`, abajo). Que en WE se vea
+igual lo respalda solo la lectura: no se ha comparado con WE corriendo.
+
+### Lo medido
+
+Todo con las medidas de la tarea (`repetir.sh` las pasa todas):
+
+- **Direcciones**: `verifica_perspectiva.sh`, 149 comprobaciones —121 en
+  `wallpaper64.exe`, 28 en `wallpaperui.exe`—, 0 fallos. Y caza los fallos:
+  `verifica_mutado.sh` le cambia tres expectativas (la instrucción de
+  `0x140236764`, la constante de `0x140492944` y la cadena de `0x140ada440`)
+  y salen exactamente tres `FALLA`, en esas tres direcciones.
+- **El bit llega donde debe** (`planes_perspectiva.py <repo> c`): el censo
+  cuenta 153 sistemas con el bit en 58 escenas, y los planes de la rama
+  llevan 140 `.psys` con `perspectiva 1`. Los 13 que faltan son los que
+  `werender` no dibuja por visibilidad: 6 con `visible: false` (`ash` en
+  `2128224409` y dos en `2527248676`, tres `leaves5` en `2870014907`), 2
+  `rainperspective` de `2658583633` atados a `rainatmosphereonoff`, apagado,
+  y en `3238423642` el `star trail-W` atado a una propiedad apagada, sus dos
+  hijos `star trail-R`/`-G` que heredan su invisibilidad, y los dos presets
+  del «Getsuga Tenshou Mouse Trail», cuyo `visible` es una condición sobre
+  `cursortrail` con la copia a false.
+  Ningún `.psys` de main lleva la línea.
+- **Sin el bit no cambia nada** (`planes_perspectiva.py <repo> d`): las 71
+  escenas sin ningún sistema con el bit dan planes, `.psys`, texturas y
+  shaders **idénticos byte a byte** a los de main, y en las 58 solo cambian
+  los `.psys` marcados (una línea más al final) y las matrices de los pases
+  que los dibujan —la MVP y la `g_ModelMatrix`, la `g_ViewProjectionMatrix`
+  y la inversa que salen de ella—. Ojo al repetirlo: los relojes hornean en
+  el plan la hora a la que se emite, y sin fijarla un minuto que cambia entre
+  main y la rama daba `text*.bin` distintos; la medida emite con
+  `datetime.now()` fijo.
+- **El contrato** (`prueba_particulas_en_perspectiva` en
+  `test_werender.py`): en z = 0 la partícula cae en el mismo píxel que en
+  ortográfico (tres puntos, fov 95 y 30, objeto girado, escalado y con
+  `origin` en z), a z ≠ 0 posición y tamaño van por `d / (d − z)`, detrás del
+  ojo w < 0, el fov por defecto y su cota, y el plan del `starfield` lleva
+  `perspectiva 1` y MVP proyectiva justo en el mismo `.psys`, y el de
+  `1828218519`, sin el bit, ninguna de las dos. Con
+  `particle_mvp_perspectiva` devolviendo la ortográfica falla con 11
+  problemas.
+- **La cámara del corpus** (`censo_perspectiva_escena.py <repo>/tools`): 58
+  escenas y 153 sistemas con el bit; `perspectiveoverridefov` sin declarar en
+  46 escenas, 95 en 6, 90 en 4 y 30 en 2; renderers: 117 `sprite`, 30
+  `spritetrail`, 3 `rope` y 3 `ropetrail`; y en las 129 escenas `center`
+  menos `eye` en z vale −1.
+- **Los copos** (`tamano_copos.py <repo> 10`): la escena tiene un lienzo de
+  992 de alto y 95°, así que el ojo está a 454,5; a los 10 s hay 299 copos con
+  z de 1 a 717, 48 de ellos detrás del plano cercano. Simulados con el
+  simulador de los ejecutores y proyectados con la MVP del plan, en main 226
+  copos en el lienzo, todos a 1,000 px por unidad de tamaño, coeficiente de
+  variación del tamaño proyectado 0,514; en la rama 132 delante del ojo, de
+  1,001 a 6,410 px por unidad (Spearman con z 1,000) y coeficiente de
+  variación 0,642.
+- **La luz** (`luz_g.py`, sobre `luz_main.json` y `luz_rama.json`, las dos
+  pasadas de `test_luminancia.py` con Mesa): 129/129 renderizan, 0 apagadas, 0
+  regresiones. Dentro de las 58 cambian 27, entre −1,3 % (`3362719513`) y
+  +1,2 % (`1927028828`, las estelas del `starfield`). Fuera de las 58 cambian
+  seis, como mucho 0,18 de media (una solo en el p99), y las seis son
+  escenas con reloj; repetidas con la hora fija —`datetime.now()` en Python
+  y `time()` en `glexec` con un `LD_PRELOAD`—, main y la rama dan la misma
+  luz en las seis.
+- `test_weparticles.py` y `test_werender.py` pasan enteros; `make build` y
+  `make glexec` compilan.
+
+Las tres escenas de muestra a `--time 10`: en `1237434258` los pétalos y los
+copos cercanos salen más grandes y variados; en `2114511766` (hojas) apenas
+cambia; en `1927028828` aparecen las estelas radiales que salen del centro,
+que en main no se veían.
+
+### Lo que queda
+
+- **El bit 0x1, «worldspace»** (93 sistemas en 28 escenas): es el
+  `[sistema+0x20] & 1` que [`flags: 2` no coloca el
+  emisor](#flags-2-no-coloca-el-emisor-es-una-partícula-por-fotograma-y-al-cursor-lo-lleva-el-punto-de-control)
+  dejó sin saber qué campo lo encendía. Al dibujar cambia la matriz de modelo
+  por la del contexto `+0xaf0` (`0x14023670c..0x140236748`); al emitir gira
+  el sorteo con el punto de control, y al mover el punto del cursor lo pasa
+  por la matriz del sistema. Solo se nota si el objeto se mueve con el
+  tiempo, y offline eso pasa en 2 objetos con `origin`/`angles` por script.
+  No se ha tocado.
+- **El bit 0x2** (89 sistemas en 32 escenas): no tiene casilla en el editor
+  y no se ha buscado dónde lo prueba el motor.
+- **Lo que esta cámara no lleva**: los márgenes de la ventana ortográfica
+  (`[ctx+0xf8]` es 0,5 sin ellos; salen del zoom y del parallax, que aquí se
+  aplican al componer), el espejo `[ctx+0x118] & 0x800`, y el aspecto, que en
+  WE es el del destino (`[ctx+0x74]/[ctx+0x78]`) y aquí el del lienzo: son el
+  mismo si WE dibuja la escena a su tamaño, y eso no se ha leído.
+- **Las estelas y las cintas** (30 `spritetrail` y 6 `rope`/`ropetrail` de los
+  153, según `censo_perspectiva_escena.py`) orientan su anchura con
+  `g_EyePosition`, que sigue siendo el ojo ortográfico: si WE les da el de
+  esta cámara no se ha leído. Los pases iluminados tampoco cambian el ojo.
+- La turbulencia (`turbulentvelocityrandom`) ya distingue ortográfica de
+  perspectiva por ESCENA (el bit 3 de `+0xe0`), no por este bit, y no se ha
+  tocado.
