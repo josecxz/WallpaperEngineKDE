@@ -7391,9 +7391,10 @@ igual lo respalda solo la lectura: no se ha comparado con WE corriendo.
 Todo con las medidas de la tarea (`repetir.sh` las pasa todas):
 
 - **Direcciones**: `verifica_perspectiva.sh`, 149 comprobaciones —121 en
-  `wallpaper64.exe`, 28 en `wallpaperui.exe`—, 0 fallos. Con tres
-  expectativas cambiadas a propósito (una instrucción, una constante y una
-  cadena), falla en esas tres y solo en esas.
+  `wallpaper64.exe`, 28 en `wallpaperui.exe`—, 0 fallos. Y caza los fallos:
+  `verifica_mutado.sh` le cambia tres expectativas (la instrucción de
+  `0x140236764`, la constante de `0x140492944` y la cadena de `0x140ada440`)
+  y salen exactamente tres `FALLA`, en esas tres direcciones.
 - **El bit llega donde debe** (`planes_perspectiva.py <repo> c`): el censo
   cuenta 153 sistemas con el bit en 58 escenas, y los planes de la rama
   llevan 140 `.psys` con `perspectiva 1`. Los 13 que faltan son los que
