@@ -6543,10 +6543,12 @@ atado al cursor»:
 3. `flags & 2`, una por fotograma, por separado. En el simulador, el paso es
    fijo (`1/60`) y no el fotograma, así que hay que decidir a qué se ata el
    tope.
-4. Cómo une WE las partículas de un `rope` (si es una cinta por partícula, como
+4. ~~Cómo une WE las partículas de un `rope` (si es una cinta por partícula, como
    aquí, o una que cose las partículas sucesivas) **no se ha leído**. Con
    `trail_1` importa: sus partículas nacen quietas, y una cinta por partícula
-   quieta no dibuja nada aunque nazca en el cursor.
+   quieta no dibuja nada aunque nazca en el cursor.~~ **Cerrado**: es UNA
+   cinta que une las vivas de la más vieja a la más nueva; ver [Cómo cose WE
+   un `rope`](#cómo-cose-we-un-rope-una-sola-cinta-que-une-las-partículas-vivas-de-la-más-vieja-a-la-más-nueva).
 
 ### Lo medido
 
@@ -6679,9 +6681,11 @@ simulador y no la sonda.
   Su dirección de salida puede seguir sin coincidir.
 - **El tope de `flags & 2`**, una partícula por fotograma, con el paso fijo
   de 1/60 frente a los fps de WE.
-- **Cómo cose WE un `rope`**. Aquí es una cinta por partícula, y las de
+- ~~**Cómo cose WE un `rope`**. Aquí es una cinta por partícula, y las de
   `trail_1` nacen quietas, así que puede que en pantalla no se dibuje nada
-  aunque nazcan en el ratón. Lo medido es dónde nacen, no la luz.
+  aunque nazcan en el ratón. Lo medido es dónde nacen, no la luz.~~
+  **Cerrado** en [Cómo cose WE un `rope`](#cómo-cose-we-un-rope-una-sola-cinta-que-une-las-partículas-vivas-de-la-más-vieja-a-la-más-nueva): una sola cinta por las
+  partículas vivas, en el orden en que nacieron.
 - **El punto del cursor antes del primer movimiento**: sigue en su `offset`,
   como hasta ahora; lo que pone WE no se ha leído.
 - **`mapsequence*` con un punto distinto del origen**: si el puesto se suma al
@@ -7612,3 +7616,132 @@ que en main no se veían.
 - La turbulencia (`turbulentvelocityrandom`) ya distingue ortográfica de
   perspectiva por ESCENA (el bit 3 de `+0xe0`), no por este bit, y no se ha
   tocado.
+
+## Cómo cose WE un `rope`: una sola cinta que une las partículas vivas, de la más vieja a la más nueva
+
+**De dónde se partía.** Desde [`rope` y `ropetrail`: la cinta sí pide
+historial](#rope-y-ropetrail-la-cinta-sí-pide-historial), los dos renderers se
+dibujaban igual: `construye_cinta` (`src/weparticles.c`) cosía una cinta POR
+PARTÍCULA con su historial, y `_cinta` solo distinguía el modo. El corpus ya
+decía que no podían ser lo mismo: de los 42 `rope` de las 129 escenas
+**ninguno declara `length` ni `segments`** (`censo_rope.py`), y casi todos
+los `ropetrail` declaran `length`.
+Y la estela del ratón `trail_1` no podía dibujar nada: sus partículas nacen
+quietas, y una cinta por partícula quieta tiene largo cero.
+
+### Lo que hace WE, con direcciones
+
+Se lee con el [método de siempre](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen)
+sobre el `wallpaper64.exe` instalado, partiendo de las fábricas que dejó
+localizadas [El lector: tres modos y una base](#el-lector-tres-modos-y-una-base).
+`verifica_rope.py` comprueba cada fila, instrucción a instrucción, con las
+cadenas de `.rdata` que nombra; vive con las medidas de la tarea, en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261009-090842/medidas/`, y se ejecuta con la raíz del repositorio como argumento.
+
+| qué | dónde | lo que hace |
+|---|---|---|
+| fábrica de `rope` | `0x1401cff33`..`0x1401d006b` | reserva el bloque de **tipo 3** (`0x1401d8db0`, `mov byte [rdx], 3` en `0x1401d8db7`), lee `orientation` (`0x1401cff73`) y después SOLO `subdivision` (`+0x38`, de 0 a 32), `uvscale`, `uvscrolling` (bit `0x20000` del sistema) y `uvsmoothing` (`0x40000`). **Ni `length` ni `segments`** |
+| fábrica de `ropetrail` | `0x1401d00bf`..`0x1401d02d1` | reserva el bloque de **tipo 4** (`0x1401d8dd0`, `0x1401d8dd7`), lee `orientation` (`0x1401d00ff`), `length` (`+0x38`), `segments` (`+0x3c`, hasta 32), `subdivision` (`+0x40`), `fadealpha`, `fadesize`, `uvscale` y `uvscrolling` |
+| el bucle de dibujo los separa | `0x140236931`, `0x140236949` | lee el tipo del bloque; el 3 salta a `0x1402369ed`, el 4 sigue en `0x14023694f` |
+| dibujo de `rope` | `0x1402369ed`..`0x140236a32` | **con una viva o ninguna no dibuja** (`cmp [rdi+0x344], 1; jbe`); pone `g_RenderVar0.z` = 0 y `.w` = vivas, y dibuja la malla `sistema+0x208` |
+| dibujo de `ropetrail` | `0x14023694f`..`0x1402369e1` | la malla `sistema+0x200`, con `.z` del reloj del historial |
+| **constructor de `rope`** | `0x140230919`..`0x14023107c` (dentro de `0x1402308a0`) | sobre la malla `+0x208`, solo con más de una viva (`0x140230963`): `vivas − 1` elementos con geometry shader, `4·(vivas − 1)` vértices sin él (`0x14023097d`, `0x140230981`). Recorre la lista `sistema+0x218` (`0x1402309a2`): el segmento `k` va de `lista[k]` a `lista[k+1]` (`0x140230ca1`), con `lista[k−1]` y `lista[k+2]` de control (`0x140230c80`, `0x140230cb6`); en el primero el control de atrás es el propio inicio (`0x140230b5f`) y en el último el de delante es el propio fin (`0x14023107c`). 24 floats por segmento (`0x140230c64`): el formato grueso de `genericropeparticle` |
+| la lista, al nacer | `0x1402382e0`/`0x140238301`, `0x14023aca3`/`0x14023acc4`, `0x140238c21` | los tres caminos de emisión, si hay malla de `rope`, **añaden el hueco nuevo al final** |
+| la lista, al morir | `0x140237082`..`0x1402370ec` | busca el hueco de cada muerta (`0x1402370d3`) y **desplaza el resto** con `memmove` (`0x1402370e7`): el orden de las demás no cambia y no quedan huecos |
+| constructor de `ropetrail` | `0x140232c9f`..`0x140232dff` | corre el historial de cada partícula (`memmove`, `0x140232d3e`) y dibuja `vivas × segmentos` (`0x140232dff`) sobre la malla `+0x200` |
+
+O sea: **`rope` une partículas sucesivas.** Es UNA cinta por sistema, sin
+historial, cuyos puntos son las partículas vivas en el **orden en que
+nacieron** —no el del hueco del depósito, que se recicla— y en la que una
+muerta simplemente desaparece y une a su vecina de atrás con la de delante.
+`ropetrail` es la cinta por partícula de antes, y no cambia.
+
+Lo que va en cada segmento, por orden: inicio y su tamaño, fin y
+`trailLength`, control de atrás y `trailPosition`, control de delante y el
+tamaño del fin, el color del fin y el del inicio. `trailPosition` es `k` (más
+un desfase solo con `uvscrolling`/`uvsmoothing`), así que con
+`genericropeparticle.vert` sin `TRAILRENDERER` la UV va de 1 en la más vieja a
+0 en la más nueva —el shader lo dice: «New particles are at the end of the
+array»—. `trailLength` es el número de vivas mientras no pasen de un tope, y a
+partir de ahí el tope; todo por un factor del sistema (`[sistema+0x30]`)
+(`0x1402309b5`..`0x140230a84`). El tope es el producto de dos campos del
+sistema (`+0x1bc`, `+0x1c0`), cada uno por otro de la instancia, menos 1:
+tiene la forma de `ritmo × vida − 1`, las vivas que caben en régimen, pero
+qué campos son no se ha confirmado.
+
+### Lo hecho
+
+- `src/weparticles.c`, el único sitio (lo enlazan glexec y glexecutor): para
+  `cinta == 1` no hay historial; hay una lista `orden` con los huecos de las
+  vivas, a la que `emite` añade el que nace —todo nacimiento pasa por ahí:
+  emisor, estallido inicial, hijo de evento— y de la que `paso` quita las
+  muertas sin reordenar, en el mismo paso en que mueren, para que un hueco
+  reciclado no aparezca dos veces. `construye_cuerda` saca `6·(N−1)` vértices
+  con los controles y la UV de WE, y con menos de dos vivas no dibuja nada.
+  `ropetrail` (`cinta == 2`) no cambia: el quad de un segmento se ha sacado a
+  `segmento()` y el estado de un punto a `estado()`, que comparten los dos.
+- `tools/weparticles.py`: `_cinta` devuelve `(1, 0, 0.0)` para `rope`, y el
+  `.psys` lleva `cinta 1 0 0`. Un `.so` anterior lo sigue leyendo (sube los
+  puntos a 2 y dibuja la cinta por partícula de antes).
+- Ni el plan, ni el formato del vértice, ni los ejecutores cambian; en
+  `werender.py` solo un comentario: el `g_RenderVar0` del plan no lo lee
+  `rope` sin `TRAILRENDERER`.
+- `tools/test_weparticles.py`, prueba 11 (`prueba_cuerda`): un `rope`
+  sintético de `maxcount` 7, que recorre el depósito en rueda.
+
+### Lo medido
+
+Las medidas viven en `~/.local/state/wallpaperengine-bucle/ejecuciones/20261009-090842/medidas/`, con la raíz del repositorio como argumento,
+y sacan ellas mismas la base (`git archive` del merge-base con main,
+`231c037`):
+
+- **La lectura** (`verifica_rope.py`): las 11 cadenas y las 60 instrucciones de
+  la tabla, cada una en su dirección. **71 ok, 0 fallos.**
+- **La cuerda** (`cuerda_contra_main.py`): la prueba 11 da en la rama 6 vivas
+  y 30 vértices a los 2 s, y 5 vivas y 24 vértices a los 2,37 s, con la `x`
+  bajando a lo largo de la cuerda (52 42 32 22 12 2) en `C` y en `es_ES`. Con
+  el `src/weparticles.c` de la base falla —los segmentos no se cosen: «el
+  segmento 0 acaba en 50 y el 1 empieza en 41,67»—, y con la cuerda cosida
+  por hueco en vez de por nacimiento, también: a los 2,37 s sale 19 9 49 39
+  29.
+- **Los planes** (`compara_planes.py`, `werender.py --emit-plan` de los dos
+  árboles sobre las 129): las **113 escenas sin `rope`, idénticas byte a
+  byte** —plan y todos sus ficheros; los `text*.bin` de los relojes llevan la
+  hora, y si difieren se emiten los dos árboles a la vez—; **964 `.psys` de
+  `sprite`, `spritetrail` y `ropetrail`, idénticos**; los 38 de `rope` solo
+  cambian la línea `cinta`.
+- **La luz de las 16** (`luz_rope.py <repo> --criterio d`, `--time 4 --frames
+  6` con Mesa en los dos): ninguna apagada, ninguna regresión, todas
+  renderizan. Cambian de verdad *Vapor* (`1877658892`, 87,47 → 86,85 de
+  media, 1,878 % de los píxeles), las descargas de `1927028828` (39,18 →
+  39,38, 1,246 %) y de `2658583633` (58,69 → 58,74, 0,261 %); las otras
+  *Vapor* menos de un 0,1 %; y las ocho con `trail_1` o `getsuga`, nada
+  (0,000 %): sin ratón sus partículas están todas en el mismo punto. Las 113
+  restantes no se renderizan: su plan es idéntico.
+- **Avisos** (`luz_rope.py <repo> --criterio e`): las 16 renderizan sin
+  error, sin pases omitidos, con las mismas estadísticas que la base, y el
+  `sin_soporte` de sus cintas, vacío en las dos.
+- `test_weparticles.py` y `test_wereloj.py` pasan enteros; `make build` y
+  `make glexec` compilan.
+
+*Vapor* era lo que más cambia, y es lo que mejor cuadra con su preview: donde
+antes había trazos cortos, rectos y brillantes, ahora salen las líneas largas
+y onduladas que cruzan el mecha en el preview del autor.
+
+### Lo que queda fuera
+
+- **`trailLength` en régimen**: aquí es siempre el número de vivas; WE lo topa
+  en algo con forma de `ritmo × vida − 1` y lo multiplica por
+  `[sistema+0x30]`, y ninguno de los campos se ha confirmado. Solo mueve la
+  UV a lo largo de la cuerda.
+- **`uvscrolling` y `uvsmoothing`**, el desfase de `trailPosition`: ningún
+  `rope` del corpus los declara.
+- **La cuerda con dos puntos en el mismo sitio**: si dos vivas seguidas
+  coinciden, `trailDelta` es nulo y el shader normaliza un vector cero, aquí y
+  en WE. Es el caso de `trail_1` sin ratón (no dibuja nada en ninguna de las
+  dos ramas); con el ratón en movimiento la cuerda ya tiene largo.
+- **El tope de `flags & 2`**, una partícula por fotograma, sigue sin hacerse:
+  con el paso fijo de 1/60, la estela del cursor puede tener más puntos que
+  en WE.
+- **La curva** (`subdivision`) sigue siendo la del geometry shader, que no se
+  usa: los segmentos salen rectos, ahora entre partícula y partícula.

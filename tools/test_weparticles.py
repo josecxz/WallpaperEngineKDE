@@ -34,6 +34,8 @@ Se comprueban diez cosas:
  10. El emisor nace alrededor de su punto de control mas su `origin`, y el
      `controlpoint` viaja al final de la linea `emit`; ver
      `prueba_punto_del_emisor`.
+ 11. Un `rope` es UNA cinta que une las particulas vivas de la mas vieja a la
+     mas nueva, como la cose `wallpaper64.exe`; ver `prueba_cuerda`.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -769,6 +771,156 @@ def prueba_punto_del_emisor(tmp: Path) -> list[str]:
     return fallos
 
 
+ARNES_CUERDA_C = r"""
+#include <locale.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "weparticles.h"
+/* <psys> <segundos>: simula con la locale del entorno y escribe las piezas sin
+ * reconocer, cuantas particulas hay vivas, cuantos vertices salen, y por cada
+ * quad de seis el inicio, el fin, los dos controles, `trailLength` y
+ * `trailPosition`; ver el layout en `weparticles.h`. Si los seis vertices de
+ * un quad no llevan los mismos extremos, lo dice. */
+int main(int argc, char **argv)
+{
+    /* Los segundos se leen ANTES de poner la locale: son de la prueba, no del
+     * lector, y con la coma `atof("2.37")` daria 2. */
+    float segundos = (float)atof(argv[2]);
+    setlocale(LC_ALL, "");
+    int desconocidas = -1;
+    WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
+    if (!s) { printf("-1\n"); return 0; }
+    int nv = we_psys_update(s, segundos);
+    const float *v = we_psys_vertices(s);
+    int paso = we_psys_floats_por_vertice(s);
+    setlocale(LC_NUMERIC, "C");
+    printf("%d %d %d %d\n", desconocidas, we_psys_cinta(s), we_psys_vivas(s, 0), nv);
+    for (int i = 0; i + 6 <= nv; i += 6) {
+        const float *w = v + (size_t)i * paso;
+        for (int k = 1; k < 6; k++)
+            for (int c = 0; c < 24; c++)
+                if (w[(size_t)k * paso + c] != w[c])
+                    printf("quad %d: el vertice %d no lleva el mismo dato %d\n",
+                           i / 6, k, c);
+        printf("%.4f %.4f %.4f  %.4f %.4f %.4f  %.4f %.4f %.4f  "
+               "%.4f %.4f %.4f  %.1f %.1f\n",
+               w[0], w[1], w[2], w[4], w[5], w[6], w[12], w[13], w[14],
+               w[16], w[17], w[18], w[7], w[15]);
+    }
+    return 0;
+}
+"""
+
+
+def preset_cuerda(renderer: str) -> dict:
+    """Particulas que nacen en el origen a 10/s y se van a 100 px/s hacia +x
+    durante 0,55 s: la `x` de cada una es su edad por 100, asi que el orden de
+    nacimiento se lee en la posicion. Con `maxcount` 7 el deposito se recorre
+    en rueda y los huecos dejan de ir en el orden en que nacieron."""
+    return {
+        "maxcount": 7,
+        "emitter": [{"name": "sphererandom", "rate": 10, "distancemin": 0,
+                     "distancemax": 0, "speedmin": 0, "speedmax": 0}],
+        "initializer": [{"name": "lifetimerandom", "min": 0.55, "max": 0.55},
+                        {"name": "velocityrandom", "min": "100 0 0",
+                         "max": "100 0 0"}],
+        "renderer": [{"name": renderer}],
+        "material": "x.json",
+    }
+
+
+def prueba_cuerda(tmp: Path) -> list[str]:
+    """`rope` une las particulas vivas en el orden en que nacieron.
+
+    Es lo que lee `wallpaper64.exe` (NOTAS, «Como cose WE un `rope`»): la lista
+    de vivas se anade al nacer y se borra al morir, y el constructor de
+    vertices une la `k` con la `k+1`, con la `k-1` y la `k+2` de control y el
+    propio extremo de control en las puntas. Con `N` vivas:
+
+    - salen exactamente `6·(N−1)` vertices, uno por quad y segmento;
+    - el fin de cada segmento es el inicio del siguiente;
+    - el primero empieza en la mas vieja ---la de `x` mayor--- y la `x` baja a
+      lo largo de la cuerda aunque los huecos del deposito vayan en rueda;
+    - `trailPosition` es `k`, `trailLength` es `N`, y los controles son los
+      vecinos, o el propio extremo en las dos puntas.
+
+    Python no guarda cola para el `rope` (`cinta 1 0`), y el `ropetrail` del
+    mismo preset la sigue guardando. En la locale C y en una de coma.
+    """
+    fallos = []
+    s = weparticles.cargar(_Resolver(preset_cuerda("rope")), "p.json")
+    t = weparticles.cargar(_Resolver(preset_cuerda("ropetrail")), "p.json")
+    if s.cinta != (1, 0, 0.0) or not t.cinta or t.cinta[0] != 2 or t.cinta[1] < 2:
+        fallos.append(f"Python: `rope` da {s.cinta} y `ropetrail` {t.cinta}; "
+                      f"se esperaba (1, 0, 0.0) y un historial de 2 o mas")
+    psys = tmp / "cuerda.psys"
+    weparticles.escribir(s, psys, 5)
+
+    fuente, binario = tmp / "arnes_cuerda.c", tmp / "arnes_cuerda"
+    fuente.write_text(ARNES_CUERDA_C)
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{FUENTE_C.parent}",
+                        "-o", str(binario), str(fuente), str(FUENTE_C), "-lm"],
+                       check=True, capture_output=True)
+    except Exception as e:
+        if shutil.which("cc") is None:
+            print(f"  (sin compilador de C: {e}, prueba omitida)")
+            return fallos
+        return fallos + [f"el arnes de la cuerda no compila: {e}"]
+
+    loc = locale_con_coma()
+    locales = [("C", "C")] + ([(loc, loc)] if loc else [])
+    for segundos in ("2", "2.37"):
+        for etq, entorno in locales:
+            donde = f"{segundos} s, LC_ALL={etq}"
+            r = subprocess.run([str(binario), str(psys), segundos],
+                               capture_output=True, text=True,
+                               env=dict(os.environ, LC_ALL=entorno))
+            lineas = r.stdout.splitlines()
+            cab = lineas[0].split() if lineas else []
+            if len(cab) != 4:
+                fallos.append(f"{donde}: el arnes no devolvio nada")
+                continue
+            desc, cinta, vivas, nv = (int(x) for x in cab)
+            quads = [[float(x) for x in l.split()] for l in lineas[1:]
+                     if not l.startswith("quad")]
+            raros = [l for l in lineas[1:] if l.startswith("quad")]
+            xs = [q[0] for q in quads] + ([quads[-1][3]] if quads else [])
+            print(f"  {donde:<26} {vivas} vivas, {nv} vertices, x a lo largo: "
+                  + " ".join(f"{x:.0f}" for x in xs))
+            if desc or cinta != 1 or vivas < 3:
+                fallos.append(f"{donde}: cinta {cinta}, {vivas} vivas, {desc} "
+                              f"piezas sin reconocer")
+                continue
+            if nv != 6 * (vivas - 1) or len(quads) != vivas - 1 or raros:
+                fallos.append(f"{donde}: {nv} vertices con {vivas} vivas; una "
+                              f"cuerda da {6 * (vivas - 1)}"
+                              + (f" ({raros[0]})" if raros else ""))
+                continue
+            for k, q in enumerate(quads):
+                ini, fin, c0, c1 = q[0:3], q[3:6], q[6:9], q[9:12]
+                ant = quads[k - 1][0:3] if k else ini
+                sig = quads[k + 1][3:6] if k + 1 < len(quads) else fin
+                if k + 1 < len(quads) and fin != quads[k + 1][0:3]:
+                    fallos.append(f"{donde}: el segmento {k} acaba en {fin} y el "
+                                  f"{k + 1} empieza en {quads[k + 1][0:3]}")
+                if not ini[0] > fin[0]:
+                    fallos.append(f"{donde}: el segmento {k} va de x={ini[0]} a "
+                                  f"x={fin[0]}; la cuerda tiene que ir de la mas "
+                                  f"vieja a la mas nueva")
+                if c0 != ant or c1 != sig:
+                    fallos.append(f"{donde}: controles del segmento {k} {c0} "
+                                  f"{c1}, se esperaba {ant} {sig}")
+                if q[12] != vivas or q[13] != k:
+                    fallos.append(f"{donde}: segmento {k} con trailLength "
+                                  f"{q[12]} y trailPosition {q[13]}")
+            # La mas vieja tiene 0,55 s como mucho; la mas nueva, 0,1.
+            if not (45 <= xs[0] <= 55 and xs[-1] <= 10):
+                fallos.append(f"{donde}: la cuerda va de x={xs[0]} a x={xs[-1]}; "
+                              f"se esperaba de unos 50 a menos de 10")
+    return fallos
+
+
 def locale_con_coma() -> str | None:
     """Primera locale instalada cuyo separador decimal NO sea el punto."""
     try:
@@ -1017,6 +1169,10 @@ def main() -> int:
     # ── 10. el emisor nace en su punto de control ──
     print("\n── el punto de control del emisor ──")
     fallos += prueba_punto_del_emisor(tmp)
+
+    # ── 11. `rope` une las particulas vivas ──
+    print("\n── la cuerda de `rope` ──")
+    fallos += prueba_cuerda(tmp)
 
     st = Counter()
     fuera = Counter()

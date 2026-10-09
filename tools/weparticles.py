@@ -41,9 +41,11 @@ Los tres renderers de estela SI se dibujan, por dos caminos distintos:
     a lo largo de su propia velocidad, y eso lo hace el vertex shader entero.
     Solo hay que darle los tres numeros de `ComputeParticleTrailTangents`; ver
     `_estela`.
-  * `rope` y `ropetrail` (66) son otro shader --- `genericropeparticle` --- y
-    una cinta cosida por donde ha pasado la particula: ahi si hace falta
-    guardar el historial, que lleva `src/weparticles.c`. Ver `_cinta`.
+  * `rope` y `ropetrail` (66) son otro shader --- `genericropeparticle` ---.
+    `ropetrail` es una cinta cosida por donde ha pasado cada particula: ahi si
+    hace falta guardar el historial, que lleva `src/weparticles.c`. `rope` es
+    UNA cinta que une las particulas vivas, de la mas vieja a la mas nueva, y
+    no guarda nada. Ver `_cinta`.
 
 De `rope` y `ropetrail` se pierde la curva: el geometry shader subdivide cada
 segmento con una Bezier (`subdivision`), y la ruta sin geometry shader ---la que
@@ -505,7 +507,8 @@ OPERADORES = {
 }
 
 # `rope` y `ropetrail` se dibujan como cinta, con otro shader y otro vertice;
-# ver el encabezado del modulo y `_cinta`.
+# `rope` une las particulas y `ropetrail` cose la cola de cada una. Ver el
+# encabezado del modulo y `_cinta`.
 RENDERERS = ("sprite", "spritetrail", "rope", "ropetrail")
 
 # `maxlength` por defecto. El valor que sale de `ComputeParticleTrailTangents`
@@ -533,8 +536,14 @@ def _cinta(e: dict) -> tuple[int, int, float]:
     son cuanta cola guarda cada particula. `subdivision` NO entra aqui: es la
     suavidad de la curva Bezier y la evalua el geometry shader, que en esta ruta
     no se usa --- los segmentos salen rectos.
+
+    `rope` no guarda cola: es UNA cinta que une las particulas vivas en el
+    orden en que nacieron, y su fabrica en `wallpaper64.exe` no lee ni
+    `length` ni `segments` (NOTAS, «Como cose WE un `rope`»). Va con 0 puntos.
     """
-    modo = 1 if e.get("name") == "rope" else 2
+    if e.get("name") == "rope":
+        return (1, 0, 0.0)
+    modo = 2
     largo = e.get("length")
     largo = float(largo) if isinstance(largo, (int, float)) else CINTA_SEGUNDOS
     puntos = e.get("segments")
