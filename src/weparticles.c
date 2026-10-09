@@ -172,12 +172,19 @@ struct WeParticleSystem {
     int anim_modo;
     float anim_mult;
 
-    /* Cinta: 0 sprite suelto, 1 `rope`, 2 `ropetrail`. Los dos ultimos comparten
-     * geometria y solo cambian el reparto de UV, que decide un combo. */
+    /* Cinta: 0 sprite suelto, 1 `rope`, 2 `ropetrail`. Comparten vertice y
+     * shader, pero NO geometria: `ropetrail` cose una cinta por particula con
+     * su historial, y `rope` una sola que une las particulas vivas en el orden
+     * en que nacieron. Ver «Como cose WE un `rope`» en NOTAS. */
     int cinta;
     int puntos;                     /* longitud del historial de cada cinta */
     float intervalo;                /* segundos entre puntos del historial */
-    float *hist;
+    float *hist;                    /* solo `ropetrail` */
+    /* Solo `rope`: los huecos de las particulas vivas, de la mas vieja a la mas
+     * nueva. Es la lista de `wallpaper64.exe` (sistema+0x218): se anade al
+     * nacer y se borra al morir sin reordenar, asi que no tiene huecos. */
+    int *orden;
+    int n_orden;
 
     Particula *p;
     float *verts;
@@ -596,7 +603,15 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
 
     size_t v_por_particula = WE_PSYS_VERTICES_POR_PARTICULA;
     size_t floats = WE_PSYS_FLOATS_POR_VERTICE;
-    if (s->cinta) {
+    if (s->cinta == 1) {
+        /* `rope` no guarda historial: une las particulas vivas, asi que da a
+         * lo sumo `maxcount - 1` segmentos y le basta el mismo numero de
+         * vertices por particula que a un sprite. */
+        if (s->maxcount > 1024) s->maxcount = 1024;
+        floats = WE_PSYS_FLOATS_CINTA;
+        s->orden = calloc((size_t)s->maxcount, sizeof *s->orden);
+        if (!s->orden) { we_psys_free(s); return NULL; }
+    } else if (s->cinta) {
         if (s->puntos < 2) s->puntos = 2;
         if (s->puntos > 32) s->puntos = 32;
         if (s->intervalo < PASO) s->intervalo = PASO;
@@ -626,6 +641,7 @@ void we_psys_free(WeParticleSystem *s)
     free(s->p);
     free(s->verts);
     free(s->hist);
+    free(s->orden);
     free(s->sigue);
     free(s);
 }
@@ -650,6 +666,10 @@ static int puesto(int n, int puestos, int rebota)
 
 static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
 {
+    /* El estallido de `instantaneous` escribe en sus huecos sin mirar si
+     * siguen vivos: si el primer `update` no avanza el reloj, el segundo
+     * vuelve a estallar encima. Esa ya estaba en la cuerda. */
+    int ya_en_cuerda = q->viva;
     memset(q, 0, sizeof *q);
     q->viva = 1;
     q->emisor = (int)(e - s->em);
@@ -658,6 +678,11 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
     q->tam_base = 32.0f;
     q->alfa_base = 1.0f;
     q->color_base[0] = q->color_base[1] = q->color_base[2] = 1.0f;
+    /* La que nace va al final de la cuerda. Todo nacimiento pasa por aqui
+     * ---emisor, estallido inicial, hijo de evento---, y las muertes las quita
+     * `paso` en el mismo paso, asi que la lista no pasa de `maxcount`. */
+    if (s->orden && !ya_en_cuerda && s->n_orden < s->maxcount)
+        s->orden[s->n_orden++] = (int)(q - s->p);
 
     /* Posicion. `directions` da la FORMA del volumen de emision: en la esfera
      * deforma la direccion unitaria a un elipsoide, en la caja escala cada
@@ -1064,7 +1089,7 @@ static void paso(WeParticleSystem *s, float dt)
             q->rot[k] += q->angvel[k] * dt;
         }
 
-        if (s->cinta) {
+        if (s->hist) {
             /* El primer punto se guarda al nacer, para que una particula
              * recien emitida tenga ya cinta --- corta, pero cinta. */
             q->t_hist -= dt;
@@ -1073,6 +1098,18 @@ static void paso(WeParticleSystem *s, float dt)
                 guarda_punto(s, (int)(q - s->p), q);
             }
         }
+    }
+
+    /* Las que han muerto salen de la cuerda sin mover a las demas, como en
+     * WE (`0x140237082`: busca el hueco y desplaza el resto). Se hace aqui y
+     * no al dibujar porque un hueco libre puede volver a ocuparse en el paso
+     * siguiente, y entonces apareceria dos veces. */
+    if (s->orden) {
+        int m = 0;
+        for (int j = 0; j < s->n_orden; j++)
+            if (s->p[s->orden[j]].viva)
+                s->orden[m++] = s->orden[j];
+        s->n_orden = m;
     }
 }
 
@@ -1164,24 +1201,36 @@ static void modula(const WeParticleSystem *s, const Particula *q, Modulado *m)
 
 /* ── estelas de cinta ──────────────────────────────────────────────────────
  *
- * `rope` y `ropetrail` no dibujan un sprite por particula sino una CINTA por
- * particula, cosida por donde ha pasado. Cada segmento de la cinta es un
- * elemento con sus dos extremos y dos puntos de control --- asi lo pide
- * `genericropeparticle.vert`, que en la ruta sin geometry shader los une con un
- * quad recto (la curva Bezier solo la evalua el geometry shader, con
- * `subdivision`, y esa ruta no la usamos).
+ * `rope` y `ropetrail` no dibujan un sprite por particula sino una CINTA. Cada
+ * segmento de la cinta es un elemento con sus dos extremos y dos puntos de
+ * control --- asi lo pide `genericropeparticle.vert`, que en la ruta sin
+ * geometry shader los une con un quad recto (la curva Bezier solo la evalua el
+ * geometry shader, con `subdivision`, y esa ruta no la usamos).
  *
- * De ahi que haga falta guardar el historial: un punto cada `intervalo`
- * segundos, hasta `puntos`. El indice 0 es el mas reciente. */
+ * Lo que cambia es que puntos cose cada una. `ropetrail` cose una cinta por
+ * particula, por donde ha pasado, y para eso guarda el historial: un punto
+ * cada `intervalo` segundos, hasta `puntos`. El indice 0 es el mas reciente.
+ * `rope` cose una sola, con las particulas vivas como puntos; ver
+ * `construye_cuerda`. */
 static float *punto(WeParticleSystem *s, int particula, int i)
 {
     return s->hist + ((size_t)particula * s->puntos + i) * WE_HIST_FLOATS;
 }
 
-static void guarda_punto(WeParticleSystem *s, int i, const Particula *q)
+/* Un punto de cinta con el estado de la particula AHORA, en el formato del
+ * historial. */
+static void estado(const WeParticleSystem *s, const Particula *q, float *h)
 {
     Modulado m;
     modula(s, q, &m);
+    for (int k = 0; k < 3; k++)
+        h[k] = q->pos[k] + m.desp[k];
+    h[3] = m.tam;
+    h[4] = m.col[0]; h[5] = m.col[1]; h[6] = m.col[2]; h[7] = m.alfa;
+}
+
+static void guarda_punto(WeParticleSystem *s, int i, const Particula *q)
+{
     float *h = punto(s, i, 0);
     /* El mas reciente entra por delante; los demas corren un puesto. Con 8
      * puntos de 8 floats el desplazamiento es mas barato que llevar un anillo
@@ -1189,18 +1238,17 @@ static void guarda_punto(WeParticleSystem *s, int i, const Particula *q)
     if (s->p[i].n_hist > 0)
         memmove(h + WE_HIST_FLOATS, h,
                 (size_t)(s->puntos - 1) * WE_HIST_FLOATS * sizeof *h);
-    for (int k = 0; k < 3; k++)
-        h[k] = q->pos[k] + m.desp[k];
-    h[3] = m.tam;
-    h[4] = m.col[0]; h[5] = m.col[1]; h[6] = m.col[2]; h[7] = m.alfa;
+    estado(s, q, h);
     if (s->p[i].n_hist < s->puntos)
         s->p[i].n_hist++;
 }
 
-static int construye_cinta(WeParticleSystem *s)
+/* Un segmento de cinta, sus seis vertices: `a` y `b` los extremos, `ca` y `cb`
+ * los puntos de control (el shader hace `CP = extremo - control`), `largo` y
+ * `pos` lo que lee como `trailLength` y `trailPosition`. */
+static float *segmento(float *w, const float *a, const float *b,
+                       const float *ca, const float *cb, float largo, float pos)
 {
-    float *w = s->verts;
-    int n = 0;
     /* Las cuatro esquinas del quad del segmento. `u` cruza la cinta y `v` la
      * recorre; el shader las usa para las dos cosas a la vez --- posicion y
      * coordenada de textura --- asi que tienen que ir en [0, 1]. */
@@ -1208,6 +1256,61 @@ static int construye_cinta(WeParticleSystem *s)
         {0, 0}, {1, 0}, {0, 1},
         {0, 1}, {1, 0}, {1, 1},
     };
+    for (int k = 0; k < 6; k++) {
+        w[0] = a[0]; w[1] = a[1]; w[2] = a[2];
+        w[3] = a[3];                                  /* tamano inicio */
+        w[4] = b[0]; w[5] = b[1]; w[6] = b[2];
+        w[7] = largo;                                 /* trailLength */
+        w[8] = a[4]; w[9] = a[5]; w[10] = a[6]; w[11] = a[7];
+        w[12] = ca[0]; w[13] = ca[1]; w[14] = ca[2];
+        w[15] = pos;                                  /* trailPosition */
+        w[16] = cb[0]; w[17] = cb[1]; w[18] = cb[2];
+        w[19] = b[3];                                 /* tamano fin */
+        w[20] = b[4]; w[21] = b[5]; w[22] = b[6]; w[23] = b[7];
+        w[24] = esq[k][0];
+        w[25] = esq[k][1];
+        w += WE_PSYS_FLOATS_CINTA;
+    }
+    return w;
+}
+
+/* `rope`: UNA cinta por sistema, de la particula viva mas vieja a la mas nueva
+ * (`wallpaper64.exe`, `0x1402308a0`). El segmento `k` va de la `k` a la `k+1`
+ * de `orden`, con la `k-1` y la `k+2` de control; en los dos extremos de la
+ * cuerda el control es el propio extremo, que es lo que escribe WE, y el
+ * shader toma entonces la tangente del segmento. `trailPosition` es `k`, asi
+ * que la UV va de 1 en la mas vieja a 0 en la mas nueva. Con menos de dos
+ * vivas no hay nada que dibujar, y WE tampoco lo dibuja (`0x1402369ed`). */
+static int construye_cuerda(WeParticleSystem *s)
+{
+    float *w = s->verts;
+    int n = s->n_orden;
+    if (n < 2) {
+        s->n_verts = 0;
+        return 0;
+    }
+    /* Cuatro puntos seguidos de la cuerda: el control de atras, los dos
+     * extremos y el control de delante. Se corren uno por segmento. */
+    float pt[4][WE_HIST_FLOATS];
+    estado(s, &s->p[s->orden[0]], pt[1]);
+    estado(s, &s->p[s->orden[1]], pt[2]);
+    memcpy(pt[0], pt[1], sizeof pt[0]);
+    for (int k = 0; k + 1 < n; k++) {
+        if (k + 2 < n)
+            estado(s, &s->p[s->orden[k + 2]], pt[3]);
+        else
+            memcpy(pt[3], pt[2], sizeof pt[3]);
+        w = segmento(w, pt[1], pt[2], pt[0], pt[3], (float)n, (float)k);
+        memmove(pt[0], pt[1], 3 * sizeof pt[0]);
+    }
+    s->n_verts = (n - 1) * 6;
+    return s->n_verts;
+}
+
+static int construye_cinta(WeParticleSystem *s)
+{
+    float *w = s->verts;
+    int n = 0;
 
     for (int i = 0; i < s->maxcount; i++) {
         Particula *q = &s->p[i];
@@ -1229,22 +1332,8 @@ static int construye_cinta(WeParticleSystem *s)
                 cp1[k] = cb ? cb[k] : 2.0f * b[k] - a[k];
             }
 
-            for (int k = 0; k < 6; k++) {
-                w[0] = a[0]; w[1] = a[1]; w[2] = a[2];
-                w[3] = a[3];                                  /* tamano inicio */
-                w[4] = b[0]; w[5] = b[1]; w[6] = b[2];
-                w[7] = (float)q->n_hist;                      /* trailLength */
-                w[8] = a[4]; w[9] = a[5]; w[10] = a[6]; w[11] = a[7];
-                w[12] = cp0[0]; w[13] = cp0[1]; w[14] = cp0[2];
-                w[15] = (float)seg;                           /* trailPosition */
-                w[16] = cp1[0]; w[17] = cp1[1]; w[18] = cp1[2];
-                w[19] = b[3];                                 /* tamano fin */
-                w[20] = b[4]; w[21] = b[5]; w[22] = b[6]; w[23] = b[7];
-                w[24] = esq[k][0];
-                w[25] = esq[k][1];
-                w += WE_PSYS_FLOATS_CINTA;
-                n++;
-            }
+            w = segmento(w, a, b, cp0, cp1, (float)q->n_hist, (float)seg);
+            n += 6;
         }
     }
     s->n_verts = n;
@@ -1253,6 +1342,8 @@ static int construye_cinta(WeParticleSystem *s)
 
 static int construye(WeParticleSystem *s)
 {
+    if (s->cinta == 1)
+        return construye_cuerda(s);
     if (s->cinta)
         return construye_cinta(s);
 

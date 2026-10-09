@@ -2645,6 +2645,10 @@ class Renderer:
                 # es un reparto de UV estable. Lo que se pierde es el
                 # deslizamiento suave de la textura mientras nace un segmento:
                 # la cinta avanza a saltos de un segmento.
+                #
+                # `rope` no lo lee: sin `TRAILRENDERER` el shader solo mira lo
+                # que va en el vertice. WE le pone `.z` 0 y `.w` las vivas
+                # (`0x1402369ed`), que aqui cambian en cada fotograma.
                 self.body.append(f"u4f g_RenderVar0 {cinta[1]} 0 1 {cinta[1]}")
             elif estela:
                 # length, maxlength, minlength: ver `weparticles._estela`. El
