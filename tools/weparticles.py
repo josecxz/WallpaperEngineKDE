@@ -831,7 +831,8 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None,
                   # descolocarse. Importa porque plasmashell conserva mapeada
                   # la `.so` con la que arranco y puede leer un plan nuevo.
                   + [_f1(e.get("speedmin"), 0.0),
-                     _f1(e.get("speedmax"), 0.0)]))
+                     _f1(e.get("speedmax"), 0.0)]
+                  + _punto_del_emisor(e)))
 
     # Una pieza que esta en la tabla pero devuelve None es una VARIANTE que no
     # sabemos traducir --- otro canal de `remapvalue`, otra funcion de ruido ---
@@ -879,6 +880,30 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None,
 
     _aplicar_override(s, ov)
     return s
+
+
+def _punto_del_emisor(e: dict) -> list[float]:
+    """El punto de control alrededor del que emite, si no es el 0.
+
+    En WE TODO emisor nace alrededor de un punto de control mas su `origin`,
+    no del origen del sistema: el centro es el `+0x30` del registro del punto
+    `controlpoint` mas el `origin` (`wallpaper64.exe`, esfera en
+    `0x140237c18..0x140237c82`, caja en `0x14023847f..0x1402384ea`). Es lo que
+    hace que un emisor cuyo punto esta atado al cursor siga al raton. Ver
+    NOTAS.
+
+    El lector lo toma como entero, con 0 si falta, y lo topa a 7 con
+    `cmp eax, 7` + `cmovb` (`0x1401c6008`), que compara SIN signo: un negativo
+    acaba en el 7, como uno demasiado alto.
+
+    Va al final de la linea `emit` y solo si es distinto de 0, que es lo que
+    declaran todos los emisores del corpus menos uno. Asi los demas `.psys` no
+    cambian ni un byte, y un ejecutor anterior lee sus 20 floats y se salta
+    este, en vez de descolocarse.
+    """
+    i = int(_f1(e.get("controlpoint"), 0.0))
+    i = 7 if i < 0 or i > 7 else i
+    return [float(i)] if i else []
 
 
 # Ritmo de un emisor que no declara `rate`, en particulas por segundo.

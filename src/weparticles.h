@@ -101,9 +101,10 @@ void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int modo,
  * afin ya resuelta--- porque quien sabe donde cae el sistema en el lienzo es
  * Python, no esto.
  *
- * Solo mueve los puntos de control marcados con el flag del cursor. Hay que
- * llamarla ANTES de `we_psys_update` o el paso de este fotograma usara la
- * posicion del anterior.
+ * Solo mueve los puntos de control marcados con el flag del cursor, y con ellos
+ * los emisores que nacen en esos puntos (`controlpoint` en la linea `emit`).
+ * Hay que llamarla ANTES de `we_psys_update` o el paso de este fotograma usara
+ * la posicion del anterior.
  *
  * No alcanza a los hijos de evento: cada uno es un sistema con su propia
  * colocacion, asi que el puntero en coordenadas del padre no le sirve y hay

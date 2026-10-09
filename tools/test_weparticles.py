@@ -13,7 +13,7 @@ que el .py emite, para cada sistema del corpus. Es la misma leccion que la
 inferencia de anchos --- validar contra un oraculo antes de conectar --- con el
 oraculo siendo esta vez la otra mitad de la implementacion.
 
-Se comprueban nueve cosas:
+Se comprueban diez cosas:
 
   1. Los dos lados conocen exactamente los mismos nombres.
   2. Cada pieza emitida trae los floats que el lector espera.
@@ -31,6 +31,9 @@ Se comprueban nueve cosas:
      su ritmo, al mismo deposito; ver `prueba_emisores`.
   9. `turbulentvelocityrandom` sigue la regla leida en `wallpaper64.exe`, con
      sus defectos; ver `prueba_turbvel`.
+ 10. El emisor nace alrededor de su punto de control mas su `origin`, y el
+     `controlpoint` viaja al final de la linea `emit`; ver
+     `prueba_punto_del_emisor`.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -212,6 +215,11 @@ emit sphererandom 20 0 0 0 0 0 0 1 1 0 0 0 0 0 0 0 0 0 0 0
 init lifetimerandom 0.2 0.2 1
 """
 
+"""El mismo hijo con su punto 0 lejos. Suelto, emitiria alrededor de el; colgado
+de un padre lo coloca el evento, y sumarle ademas el punto lo llevaria a 7 km
+de la particula que sigue."""
+PSYS_HIJO_CON_PUNTO = PSYS_HIJO + "cp 0 5000 -5000 0 0\n"
+
 
 def compila_arnes_hijos(tmp: Path) -> Path | None:
     fuente, binario = tmp / "arnes_hijos.c", tmp / "arnes_hijos"
@@ -241,6 +249,8 @@ def prueba_hijos(tmp: Path) -> list[str]:
       y a los 9 s si.
     - Ninguno emite por su cuenta: un `eventspawn` con rafaga 0 no saca nada,
       aunque su `.psys` traiga `rate 20`.
+    - El punto de control del hijo no lo mueve: lo coloca el evento, asi que
+      un `eventfollow` con su punto 0 lejos sigue pegado a su particula.
     """
     binario = compila_arnes_hijos(tmp)
     if binario is None:
@@ -248,9 +258,11 @@ def prueba_hijos(tmp: Path) -> list[str]:
     padre, hijo = tmp / "padre.psys", tmp / "hijo.psys"
     padre.write_text(PSYS_PADRE)
     hijo.write_text(PSYS_HIJO)
+    hijo_punto = tmp / "hijo_punto.psys"
+    hijo_punto.write_text(PSYS_HIJO_CON_PUNTO)
 
-    def mide(modo: int, rafaga: int, escala: float, t: float):
-        r = subprocess.run([str(binario), str(padre), str(hijo), str(modo),
+    def mide(modo: int, rafaga: int, escala: float, t: float, h: Path = hijo):
+        r = subprocess.run([str(binario), str(padre), str(h), str(modo),
                             str(rafaga), "4", str(escala), str(t)],
                            capture_output=True, text=True)
         campos = r.stdout.split()
@@ -284,6 +296,13 @@ def prueba_hijos(tmp: Path) -> list[str]:
         fallos.append("eventdeath estalla antes de que muera ningun padre")
     if not muere9[1]:
         fallos.append("eventdeath no estalla cuando muere el padre")
+    m = mide(SIGUE, 0, 1.0, 4.0, hijo_punto)
+    print(f"  eventfollow  con el punto 0 del hijo en (5000, -5000): "
+          f"a {m[2]:.1f} px de su particula")
+    if m[1] < 10 or m[2] > 15.0:
+        fallos.append(f"eventfollow con el punto 0 del hijo lejos: {m[1]} "
+                      f"particulas a {m[2]:.0f} px de la suya; el punto del "
+                      f"hijo no debe moverlo")
     sin_rafaga = mide(NACE, 0, 1.0, 3.0)
     if sin_rafaga[1]:
         fallos.append(f"un hijo de evento emite por su cuenta: {sin_rafaga[1]} "
@@ -618,6 +637,138 @@ def prueba_turbvel(tmp: Path) -> list[str]:
     return fallos
 
 
+ARNES_PUNTO_C = r"""
+#include <locale.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "weparticles.h"
+/* <psys> <segundos> <x> <y> <z> del puntero <x> <y> <z> esperados: simula con
+ * la locale del entorno y el puntero puesto desde el primer paso, y escribe
+ * las piezas sin reconocer, cuantas particulas hay y la mayor distancia de
+ * una de ellas al sitio esperado. Todo entero en la linea de ordenes, para
+ * que `atof` no dependa de la locale que se esta probando. */
+int main(int argc, char **argv)
+{
+    setlocale(LC_ALL, "");
+    if (argc < 9) return 2;
+    int desconocidas = -1;
+    WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
+    if (!s) { printf("-1\n"); return 0; }
+    const float p[3] = {(float)atof(argv[3]), (float)atof(argv[4]),
+                        (float)atof(argv[5])};
+    const double e[3] = {atof(argv[6]), atof(argv[7]), atof(argv[8])};
+    we_psys_puntero(s, p);
+    int nv = we_psys_update(s, (float)atof(argv[2]));
+    const float *v = we_psys_vertices(s);
+    int paso = we_psys_floats_por_vertice(s);
+    int n = 0;
+    double peor = 0.0;
+    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+        const float *w = v + (size_t)i * paso;
+        double d = sqrt((w[0] - e[0]) * (w[0] - e[0]) + (w[1] - e[1]) * (w[1] - e[1])
+                        + (w[2] - e[2]) * (w[2] - e[2]));
+        if (d > peor) peor = d;
+        n++;
+    }
+    setlocale(LC_NUMERIC, "C");
+    printf("%d %d %.6f\n", desconocidas, n, peor);
+    return 0;
+}
+"""
+
+
+def preset_punto(cursor: int, controlpoint: int | None) -> dict:
+    """Una esfera de radio 0 y sin velocidad en `origin` (10, 20, 0), con el
+    punto `cursor` atado al raton y el otro quieto en (0, 0, 0). Cada particula
+    nace exactamente en el centro del emisor y se queda ahi 100 s."""
+    em = {"name": "sphererandom", "rate": 30, "distancemin": 0,
+          "distancemax": 0, "speedmin": 0, "speedmax": 0, "origin": "10 20 0"}
+    if controlpoint is not None:
+        em["controlpoint"] = controlpoint
+    return {
+        "maxcount": 200,
+        "emitter": [em],
+        "controlpoint": [{"id": i, "flags": 1 if i == cursor else 0,
+                          "offset": "0 0 0"} for i in (0, 1)],
+        "initializer": [{"name": "lifetimerandom", "min": 100, "max": 100}],
+        "renderer": [{"name": "sprite"}],
+        "material": "x.json",
+    }
+
+
+def prueba_punto_del_emisor(tmp: Path) -> list[str]:
+    """El emisor nace en su punto de control mas su `origin`.
+
+    Es la regla que lee `wallpaper64.exe` para la esfera y la caja, lleve el
+    emisor `flags: 2` o no; ver NOTAS. Con el puntero en (300, -200, 0), un
+    emisor de radio 0 en `origin` (10, 20, 0) tiene que soltar todas sus
+    particulas en (310, -180, 0):
+
+    - con el cursor en el punto 0 y sin `controlpoint`, que es el 0;
+    - con el cursor en el punto 1 y `controlpoint: 1`, que Python escribe como
+      un campo mas al FINAL de la linea `emit`, y solo entonces;
+    - y si a ese `.psys` se le quita el campo ---un plan escrito antes---, el
+      emisor vuelve al punto 0, que esta quieto, y nacen en (10, 20, 0).
+
+    Las tres con la locale C y con una de coma.
+    """
+    fallos = []
+    casos = []
+    for etq, cursor, cp, esperado in (
+            ("cursor en el 0, sin controlpoint", 0, None, (310, -180, 0)),
+            ("cursor en el 1, controlpoint 1", 1, 1, (310, -180, 0))):
+        s = weparticles.cargar(_Resolver(preset_punto(cursor, cp)), "p.json")
+        emit = s.emisores[0][1]
+        largo = 21 if cp else 20
+        if len(emit) != largo or (cp and emit[20] != float(cp)):
+            fallos.append(f"{etq}: Python escribe {len(emit)} floats en `emit` "
+                          f"({emit[20:]}), se esperaban {largo}")
+        psys = tmp / f"punto{cursor}.psys"
+        weparticles.escribir(s, psys, 7)
+        casos.append((etq, psys, esperado))
+    # El mismo `.psys` del punto 1 sin el ultimo campo de `emit`.
+    lineas = []
+    for l in casos[1][1].read_text().splitlines():
+        lineas.append(l.rsplit(" ", 1)[0] if l.startswith("emit ") else l)
+    viejo = tmp / "punto1_sin_campo.psys"
+    viejo.write_text("\n".join(lineas) + "\n")
+    casos.append(("cursor en el 1, sin el campo", viejo, (10, 20, 0)))
+
+    fuente, binario = tmp / "arnes_punto.c", tmp / "arnes_punto"
+    fuente.write_text(ARNES_PUNTO_C)
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{FUENTE_C.parent}",
+                        "-o", str(binario), str(fuente), str(FUENTE_C), "-lm"],
+                       check=True, capture_output=True)
+    except Exception as e:
+        if shutil.which("cc") is None:
+            print(f"  (sin compilador de C: {e}, prueba omitida)")
+            return fallos
+        return fallos + [f"el arnes del punto del emisor no compila: {e}"]
+
+    loc = locale_con_coma()
+    locales = [("C", "C")] + ([(loc, loc)] if loc else [])
+    for etq, psys, esperado in casos:
+        for etq_loc, entorno in locales:
+            r = subprocess.run([str(binario), str(psys), "2", "300", "-200", "0",
+                                *(str(x) for x in esperado)],
+                               capture_output=True, text=True,
+                               env=dict(os.environ, LC_ALL=entorno))
+            c = r.stdout.split()
+            if len(c) != 3:
+                fallos.append(f"{etq}, LC_ALL={etq_loc}: el arnes no devolvio nada")
+                continue
+            desc, n, peor = int(c[0]), int(c[1]), float(c[2])
+            print(f"  {etq:<34} LC_ALL={etq_loc:<12} {n:3} particulas, "
+                  f"a {peor:.6f} como mucho de {esperado}")
+            if desc or n < 30 or peor > 1e-3:
+                fallos.append(f"{etq}, LC_ALL={etq_loc}: {n} particulas, la mas "
+                              f"lejana a {peor:g} de {esperado} ({desc} piezas "
+                              f"sin reconocer)")
+    return fallos
+
+
 def locale_con_coma() -> str | None:
     """Primera locale instalada cuyo separador decimal NO sea el punto."""
     try:
@@ -863,6 +1014,10 @@ def main() -> int:
     print("\n── turbulentvelocityrandom ──")
     fallos += prueba_turbvel(tmp)
 
+    # ── 10. el emisor nace en su punto de control ──
+    print("\n── el punto de control del emisor ──")
+    fallos += prueba_punto_del_emisor(tmp)
+
     st = Counter()
     fuera = Counter()
     largos: list[tuple[float, str]] = []
@@ -897,11 +1052,14 @@ def main() -> int:
                 if len(vals) != oper_c.get(nombre, -1):
                     fallos.append(f"{d.name}: oper {nombre} emite {len(vals)} "
                                   f"floats, el C espera {oper_c.get(nombre)}")
-            # Cada emisor son 20 floats fijos; ver `we_psys_load`.
+            # Cada emisor son 20 floats fijos, y un 21 con el punto de
+            # control solo si no es el 0; ver `we_psys_load`.
             for _, emit in s.emisores:
-                if len(emit) != 20:
-                    fallos.append(f"{d.name}: emit emite {len(emit)} floats, "
-                                  f"el C espera 20")
+                if len(emit) != 20 and not (len(emit) == 21
+                                            and emit[20] in range(1, 8)):
+                    fallos.append(f"{d.name}: emit emite {len(emit)} floats "
+                                  f"({emit[20:]}), el C espera 20, o 21 con "
+                                  f"un punto de control de 1 a 7")
             if len(s.emisores) > 1:
                 st["varios_emisores"] += 1
 

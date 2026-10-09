@@ -5405,9 +5405,13 @@ cámara](#g_parallaxposition-es-el-punto-p-de-la-cámara-no-el-puntero-con-retar
   no lo explica. Sin una lectura que cubra los 25 no se toca.
   **Leído después en el motor**: `flags: 2` no coloca nada —es una partícula
   por fotograma—, y lo que lleva la estela al cursor es que **todo** emisor
-  emite en su punto de control. Sigue sin hacerse; ver [`flags: 2` no coloca
+  emite en su punto de control; ver [`flags: 2` no coloca
   el
   emisor](#flags-2-no-coloca-el-emisor-es-una-partícula-por-fotograma-y-al-cursor-lo-lleva-el-punto-de-control).
+  **La traslación, hecha después**: los 17 emisores con el punto atado al
+  cursor nacen en el ratón; ver [Todo emisor nace en su punto de
+  control](#todo-emisor-nace-en-su-punto-de-control-primer-trozo-la-traslación). El giro del sorteo con el punto y el tope de una
+  partícula por fotograma siguen pendientes.
 - **El puntero por debajo de las ventanas**, que en Wayland pide otra fuente
   distinta de los eventos del propio fondo.
 
@@ -6514,7 +6518,9 @@ Es una tarea distinta de la que se pidió, y su criterio no es «solo cambian
 los sistemas con `flags & 2`», sino «solo cambian los 17 emisores con su punto
 atado al cursor»:
 
-1. `weparticles.py` lee `controlpoint` (entero, defecto 0, tope 7) y lo lleva
+1. **La traslación, hecha después**; ver [Todo emisor nace en su punto de
+   control](#todo-emisor-nace-en-su-punto-de-control-primer-trozo-la-traslación). El giro y los `mapsequence*` siguen pendientes.
+   `weparticles.py` lee `controlpoint` (entero, defecto 0, tope 7) y lo lleva
    al `.psys`, al final de la línea `emit` para que un `.so` anterior lo
    ignore. `src/weparticles.c` centra `emite` en `cp[controlpoint]` además de
    `origin`. Los puntos quietos del corpus valen 0, así que eso no mueve
@@ -6552,6 +6558,134 @@ atado al cursor»:
 - El render no cambia: ni `tools/*.py`, ni `src/`, ni `tools/*.c` tienen diff
   contra la base. `test_weparticles.py` pasa entero sobre las 129, con la
   lista de piezas fuera de la simulación vacía.
+
+## Todo emisor nace en su punto de control, primer trozo: la traslación
+
+**De dónde se partía.** La lectura de [`flags: 2` no coloca el
+emisor](#flags-2-no-coloca-el-emisor-es-una-partícula-por-fotograma-y-al-cursor-lo-lleva-el-punto-de-control)
+dejó escrito que en WE **todo** emisor `sphererandom`/`boxrandom` nace
+alrededor de un punto de control: centro = punto[`controlpoint`]`.+0x30` +
+`origin`, lleve el bit `flags & 2` o no. Aquí `emite` centraba en `origin` y
+nada más, así que los 17 emisores del corpus con su punto atado al cursor
+—`trail_1` y compañía, en 12 escenas— nacían en el origen del objeto aunque
+el ratón estuviera en otra parte. Este trozo hace **solo la traslación**: el
+giro del sorteo con las filas del punto, el tope de `flags & 2` y el resto se
+quedan fuera, y están abajo.
+
+### Lo hecho
+
+- `tools/weparticles.py` (`_punto_del_emisor`) lee `controlpoint` como entero,
+  0 si falta, y lo topa a 7. El lector de WE lo hace con `cmovb`, que compara
+  sin signo, así que un negativo también acaba en el 7. Va **al final** de la
+  línea `emit`, y solo si no es 0. En el corpus eso es un solo emisor, así que
+  los demás `.psys` no cambian ni un byte, y un `.so` anterior lee sus 20
+  floats y se salta este.
+- `src/weparticles.c`: `Emisor.punto` se lee del campo 21, con 0 si falta.
+  `emite` suma `cp[punto]` al `origin` para calcular el centro. Un punto quieto
+  vale su `offset`, que en el corpus es 0 en todos los puntos que usa un emisor
+  ([el censo](#el-corpus-con-la-regla-leída)), así que sin ratón no se mueve
+  nada. Un punto atado al cursor vale donde está el ratón, y el emisor nace ahí.
+  Como el simulador es compartido, lo heredan los dos ejecutores
+  (`weparticles.h` lo dice en `we_psys_puntero`).
+- Dos casos se dejan **como estaban**, a propósito:
+  - Un **hijo colgado de un padre** (`s->padre`) no suma su punto: lo coloca
+    el evento del padre (`nace`). Si sumara además su punto, un hijo cuyo punto
+    es el cursor se desplazaría dos veces. Los dos hijos de los 17 (`red_fire`
+    y `getsuga`, de `getsuga_tenshou`) siguen naciendo en la partícula del
+    padre, que ahora nace en el ratón.
+  - En los **repartos por puestos** (`mapsequence*`), el puesto sustituye al
+    centro entero, punto y `origin` incluidos, igual que antes sustituía al
+    `origin`. Lo que el emisor sorteó se conserva como sacudida. Si en WE el
+    puesto y el punto se suman o se pisan **no se ha leído**.
+- `tools/psysprobe.c` imprime también el «centro de la nube» de las cintas:
+  la media del extremo más nuevo de cada segmento.
+- `tools/test_weparticles.py`, prueba 10 (`prueba_punto_del_emisor`): un
+  emisor de radio 0 sin velocidad, con `origin` (10, 20, 0) y el puntero en
+  (300, −200, 0), suelta todas sus partículas en (310, −180, 0) ± 1e-3. Pasa
+  con el cursor en el punto 0 y sin `controlpoint`, y con el cursor en el 1 y
+  `controlpoint 1`. Si al `.psys` se le quita ese campo, las suelta en
+  (10, 20, 0). Las tres pasan en `C` y en `es_ES` (60 partículas, a 0,000000
+  como mucho). Contra el simulador de la base, las dos primeras fallan: las
+  partículas quedan a 360,555 (`criterio_c.sh` pasa la prueba con los dos).
+  `prueba_hijos` gana un `eventfollow` cuyo punto 0 está en (5000, −5000):
+  tiene que quedarse a menos de 15 px de su partícula, y se queda a 5.
+
+### Lo medido
+
+Los scripts están en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261006-094833/medidas/`
+y se ejecutan desde la raíz del repositorio. La base la sacan ellos mismos
+con `git archive`, y es `79c67c2ba83c`, el `main` que se mezcló en la rama, y
+no `78e066585321`, de donde salió: entre los dos entraron las partículas con
+perspectiva y la turbulencia de WE, que cambian `.psys` y `plan.txt` de
+muchas escenas (`perspectiva 1`, el formato nuevo de
+`turbulentvelocityrandom`) y no son de esta tarea. Contra `78e066585321`,
+`criterio_a.sh` daba esas diferencias además de la del `Shuriken Cursor`. `planes.py` escribe los `plan.txt` y
+los `.psys` de los planes de las 129 escenas, con `ruta_final=/PLAN` para que
+se comparen sin normalizar nada. `psys_todos.py` escribe un `.psys` por
+sistema, visible o no y con sus hijos, que es el camino de
+`test_weparticles.py`. Hacen falta los dos: el `Shuriken Cursor` está oculto
+tras una propiedad de usuario y su `.psys` no sale en ningún plan. Las dos
+columnas de `psysprobe` usan el **mismo** `tools/psysprobe.c`, el de la rama,
+enlazado contra el simulador de cada lado, para que lo comparado sea el
+simulador y no la sonda.
+
+- **`.psys`** (`criterio_a.sh`): de 2414 (1002 de los planes y 1412 de
+  `psys_todos.py`), solo cambia una línea, la `emit` de `shurikencursor_1` en
+  `3238423642`, que gana el ` 1` final.
+- **Planes** (`criterio_b.sh`): los 129 `plan.txt`, idénticos.
+- **Con ratón, los 17** (`criterio_d.sh`, `<psys> 0.5 600 -400 0`): los 17
+  nacen en el puntero. Todos declaran `origin` 0 y el centro de la rama cae a
+  menos de `distancemax + velocidad_max · 0,5` de (600, −400). Los ocho
+  `trail_1`, `getsuga_tenshou` y `getsuga` caen en (600,0, −400,0) exactos, y
+  el que más se aparta es `red_fire`, a 40,7 de una tolerancia de 60 por la
+  `speedmax` de 120 de su `turbulentvelocityrandom`. En la base,
+  15 de los 17 se quedan junto al `origin`, a entre 0 y 40,7, y a más de 700
+  del puntero. Los otros dos son
+  los `Cherry_Blossoms_2`: su `mapsequencearoundcontrolpoint` ya los ponía en
+  el punto 0 en la base, y ahí siguen. El `Shuriken Cursor` vive 0,0004 s y el
+  `Trails 2` de `3238423642` tiene `maxcount 1`, ritmo 0,32/s y vida 0,01 s:
+  ninguno tiene nada vivo a 0,5 s, ni antes ni ahora. Se miden sobre una copia
+  con vida de 1 s, ritmo de 60/s y `maxcount` 64, tres cosas que `emite` no
+  mira.
+- **Sin ratón** (`criterio_e.sh`, `<psys> 2.0`): las 2414 salidas de la
+  sonda, idénticas en base y rama.
+- **Con ratón, fuera de los 17** (`criterio_f.sh`, `<psys> 2.0 600 -400 0`):
+  2388 salidas idénticas (los 2414 menos los 26 ficheros de los 17 entre los
+  dos árboles).
+- **Luz**: `test_luminancia.py` sobre las 129 con Mesa forzado, guardada con
+  la base `79c67c2ba83c` y pasada con `--referencia` en la rama (la misma
+  pasada que repite el bucle al cerrar la tarea): **0 apagadas, 0
+  regresiones, 0 que no renderizan**, y la misma sospechosa que da la base. La referencia queda en
+  `luz_base_129.json`. `criterio_g.sh` repite eso sobre las 12 escenas del
+  caso, base contra rama: 0 apagadas y 0 que pierden luz. Los píxeles no
+  sirven de oráculo aquí, porque el render offline no es determinista entre
+  dos pasadas del mismo código.
+- `test_weparticles.py` pasa entero sobre las 129 (842 sistemas, 66 cintas),
+  con la lista de piezas fuera de la simulación vacía (`criterio_h.sh`).
+  `make build glexec psysprobe`, recompilando el simulador y
+  `glexecutor.cpp`, da los mismos dos avisos que la base compilada desde cero,
+  los dos de cabeceras de Qt, y ninguno en el simulador, la sonda ni los
+  ejecutores (`criterio_i.sh`). El diff de `src/weparticles.c` y
+  `tools/weparticles.py` no nombra escenas ni presets (`criterio_j.sh`).
+
+### Lo que queda fuera
+
+- **El giro del sorteo** con las filas `+0x00..+0x20` del punto, cuando
+  `controlpoint ≠ 0` o el sistema lleva el bit 0 de `+0x20` ([tabla, «giro con
+  el punto»](#lo-que-hace-we-con-direcciones)). Aquí los puntos no tienen
+  matriz. En `shurikencursor_1` el radio es 0 y el sorteo no se ve, pero su
+  `speedmin`/`speedmax` de 100 puede salir girada en WE, y eso no se ha leído.
+  Su dirección de salida puede seguir sin coincidir.
+- **El tope de `flags & 2`**, una partícula por fotograma, con el paso fijo
+  de 1/60 frente a los fps de WE.
+- **Cómo cose WE un `rope`**. Aquí es una cinta por partícula, y las de
+  `trail_1` nacen quietas, así que puede que en pantalla no se dibuje nada
+  aunque nazcan en el ratón. Lo medido es dónde nacen, no la luz.
+- **El punto del cursor antes del primer movimiento**: sigue en su `offset`,
+  como hasta ahora; lo que pone WE no se ha leído.
+- **`mapsequence*` con un punto distinto del origen**: si el puesto se suma al
+  centro o lo pisa (arriba).
 
 ## Los ejes de la turbulencia: `forward` gira alrededor de `right`, y `up` no se lee
 
