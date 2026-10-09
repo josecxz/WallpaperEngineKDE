@@ -2045,14 +2045,9 @@ class Renderer:
         max_glifos = fmt.max_longitud()
         if not alfabeto or max_glifos <= 0:
             return False
-        # Las cadenas que la plantilla puede escribir, sobre los MISMOS
-        # instantes que `Formato.max_longitud`: con ellas se mide el renglon
-        # mas largo para el tope del atlas y, mas abajo, el margen.
-        cadenas = {fmt.render(t) for t in wescript._instantes_de_prueba()}
         try:
             r = wetext.disponer_reloj(self.res, obj.raw, alfabeto, max_glifos,
-                                      self.pixeles[1] / max(1, self.canvas[1]),
-                                      cadenas)
+                                      self.pixeles[1] / max(1, self.canvas[1]))
         except Exception as e:
             self.notes.append(f"reloj sin disponer ({obj.name}): {e}")
             return False
@@ -2110,6 +2105,7 @@ class Renderer:
         # minutos o segundos--- pero el coste da igual: medido sobre
         # `3299228616` ---la escena a la que le pasaba---, el render tarda
         # 2,42 s con las cadenas y 2,42 s con el corte de 200.
+        cadenas = {fmt.render(t) for t in wescript._instantes_de_prueba()}
         peor = max((wetext.quads_de_reloj(r, s) for s in cadenas),
                    key=lambda v: float(np.abs(v[:, :2]).max()), default=verts)
         ancho = 2.0 * float(np.abs(peor[:, 0]).max())

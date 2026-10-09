@@ -304,9 +304,8 @@ def main() -> int:
             escenas.add(wid)
             etq = f"{wid} {obj.get('name', '')!r}"
             try:
-                r = wetext.disponer_reloj(
-                    res, obj, fmt.alfabeto, fmt.max_longitud(), 0.5,
-                    {fmt.render(t) for t in wescript._instantes_de_prueba()})
+                r = wetext.disponer_reloj(res, obj, fmt.alfabeto,
+                                          fmt.max_longitud(), 0.5)
             except Exception as e:
                 fallos.append(f"{etq}: sin disponer ({e})")
                 continue

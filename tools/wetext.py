@@ -456,14 +456,11 @@ def _metricas_del_alfabeto(font, alfabeto: str) -> tuple[list[Glifo], list[Image
 
 
 def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
-                   max_glifos: int, px_por_unidad: float = 1.0,
-                   cadenas=None) -> Reloj | None:
+                   max_glifos: int, px_por_unidad: float = 1.0) -> Reloj | None:
     """El atlas y las métricas del alfabeto de una capa de reloj.
 
     `alfabeto` sale de `wescript.Formato.alfabeto` y `max_glifos` de lo más
-    largo que la plantilla pueda escribir; `cadenas`, si viene, son las que
-    puede llegar a escribir, y con ellas el tope de ancho se mide sobre el
-    renglón más largo en vez de estimarse. El resto del cálculo ---el tamaño de
+    largo que la plantilla pueda escribir. El resto del cálculo ---el tamaño de
     la em, el tope del atlas, la fuente--- es el mismo que en `disponer`, y
     tiene que serlo: las dos rutas dibujan en el mismo espacio.
     """
@@ -482,19 +479,7 @@ def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
     # plantilla puede escribir, no sobre el atlas: el atlas de un alfabeto se
     # empaqueta en rejilla y no se acerca al tope, pero la línea sí puede
     # pasarse y hay que rebajar el tamaño igual que hace `disponer`.
-    #
-    # Con `cadenas` la línea se mide de verdad, renglón a renglón y con los
-    # avances de la ruta glifo a glifo. Sin ellas se estima con el glifo más
-    # ancho por el número de glifos, que se pasa de largo: en el reloj de
-    # `2946362143` cuenta 18 glifos de `W` y deja la em en 160 px donde su
-    # renglón más largo, `W E D N E S D A Y `, cabe a 409.
-    if cadenas:
-        avances = {c: float(font.getlength(c)) for c in alfabeto}
-        ancho_linea = max(sum(avances.get(c, 0.0) for c in renglon)
-                          for s in cadenas for renglon in s.split("\n"))
-    else:
-        ancho_linea = max_glifos * max((font.getlength(c) for c in alfabeto),
-                                       default=0.0)
+    ancho_linea = max_glifos * max((font.getlength(c) for c in alfabeto), default=0.0)
     if ancho_linea > ANCHO_ATLAS_MAX:
         px = max(PX_MIN, int(px * ANCHO_ATLAS_MAX / ancho_linea))
         font = ImageFont.truetype(io.BytesIO(blob), px)
