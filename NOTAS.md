@@ -7676,18 +7676,25 @@ qué campos son no se ha confirmado.
   vivas, a la que `emite` añade el que nace —todo nacimiento pasa por ahí:
   emisor, estallido inicial, hijo de evento— y de la que `paso` quita las
   muertas sin reordenar, en el mismo paso en que mueren, para que un hueco
-  reciclado no aparezca dos veces. `construye_cuerda` saca `6·(N−1)` vértices
+  reciclado no aparezca dos veces. `emite` no vuelve a añadir un hueco que
+  ya estaba vivo: el estallido de `instantaneous` escribe en sus huecos sin
+  mirarlo, y si el primer `update` llega en el instante 0 —el reloj no
+  avanza, `vivido` sigue a 0— el segundo vuelve a estallar encima. Ningún
+  `rope` del corpus declara `instantaneous`. `construye_cuerda` saca `6·(N−1)` vértices
   con los controles y la UV de WE, y con menos de dos vivas no dibuja nada.
   `ropetrail` (`cinta == 2`) no cambia: el quad de un segmento se ha sacado a
   `segmento()` y el estado de un punto a `estado()`, que comparten los dos.
 - `tools/weparticles.py`: `_cinta` devuelve `(1, 0, 0.0)` para `rope`, y el
   `.psys` lleva `cinta 1 0 0`. Un `.so` anterior lo sigue leyendo (sube los
   puntos a 2 y dibuja la cinta por partícula de antes).
-- Ni el plan, ni el formato del vértice, ni los ejecutores cambian; en
-  `werender.py` solo un comentario: el `g_RenderVar0` del plan no lo lee
-  `rope` sin `TRAILRENDERER`.
+- Ni el formato del vértice ni los ejecutores cambian. El plan solo cambia en
+  el `g_RenderVar0` de los pases de `rope`, que pasa de `24 0 1 24` a `0 0 1
+  0` porque lo escribe `werender.py` con los puntos de `_cinta`; el shader no
+  lo lee sin `TRAILRENDERER`, y en `werender.py` se ha añadido un comentario
+  que lo dice.
 - `tools/test_weparticles.py`, prueba 11 (`prueba_cuerda`): un `rope`
-  sintético de `maxcount` 7, que recorre el depósito en rueda.
+  sintético de `maxcount` 7, que recorre el depósito en rueda, y un estallido
+  `instantaneous` de 5 que se repite.
 
 ### Lo medido
 
@@ -7703,20 +7710,25 @@ y sacan ellas mismas la base (`git archive` del merge-base con main,
   el `src/weparticles.c` de la base falla —los segmentos no se cosen: «el
   segmento 0 acaba en 50 y el 1 empieza en 41,67»—, y con la cuerda cosida
   por hueco en vez de por nacimiento, también: a los 2,37 s sale 19 9 49 39
-  29.
+  29. El estallido repetido da 5 vivas y 24 vértices; sin la guarda de
+  `emite`, 54.
 - **Los planes** (`compara_planes.py`, `werender.py --emit-plan` de los dos
   árboles sobre las 129): las **113 escenas sin `rope`, idénticas byte a
   byte** —plan y todos sus ficheros; los `text*.bin` de los relojes llevan la
   hora, y si difieren se emiten los dos árboles a la vez—; **964 `.psys` de
   `sprite`, `spritetrail` y `ropetrail`, idénticos**; los 38 de `rope` solo
-  cambian la línea `cinta`.
+  cambian la línea `cinta`. Del `plan.txt` de las 16 con `rope`, comparado
+  línea a línea, lo único que cambia son **38 líneas, una por `.psys` de
+  `rope`**: `u4f g_RenderVar0 24 0 1 24` pasa a `u4f g_RenderVar0 0 0 1 0`,
+  en 14 escenas. Las otras dos, `1507488058` y `2864647826`, no llevan ningún
+  `.psys` de `rope` en el plan, y su plan sale idéntico.
 - **La luz de las 16** (`luz_rope.py <repo> --criterio d`, `--time 4 --frames
   6` con Mesa en los dos): ninguna apagada, ninguna regresión, todas
   renderizan. Cambian de verdad *Vapor* (`1877658892`, 87,47 → 86,85 de
   media, 1,878 % de los píxeles), las descargas de `1927028828` (39,18 →
   39,38, 1,246 %) y de `2658583633` (58,69 → 58,74, 0,261 %); las otras
   *Vapor* menos de un 0,1 %; y las ocho con `trail_1` o `getsuga`, nada
-  (0,000 %): sin ratón sus partículas están todas en el mismo punto. Las 113
+  (0,000 %): son estelas del ratón, y la medida es sin ratón. Las 113
   restantes no se renderizan: su plan es idéntico.
 - **Avisos** (`luz_rope.py <repo> --criterio e`): las 16 renderizan sin
   error, sin pases omitidos, con las mismas estadísticas que la base, y el
@@ -7724,9 +7736,8 @@ y sacan ellas mismas la base (`git archive` del merge-base con main,
 - `test_weparticles.py` y `test_wereloj.py` pasan enteros; `make build` y
   `make glexec` compilan.
 
-*Vapor* era lo que más cambia, y es lo que mejor cuadra con su preview: donde
-antes había trazos cortos, rectos y brillantes, ahora salen las líneas largas
-y onduladas que cruzan el mecha en el preview del autor.
+Ninguna medida compara la forma con un preview, y el preview de *Vapor* es una
+imagen quieta: el oráculo del cambio es la lectura del binario, no el aspecto.
 
 ### Lo que queda fuera
 
@@ -7738,8 +7749,8 @@ y onduladas que cruzan el mecha en el preview del autor.
   `rope` del corpus los declara.
 - **La cuerda con dos puntos en el mismo sitio**: si dos vivas seguidas
   coinciden, `trailDelta` es nulo y el shader normaliza un vector cero, aquí y
-  en WE. Es el caso de `trail_1` sin ratón (no dibuja nada en ninguna de las
-  dos ramas); con el ratón en movimiento la cuerda ya tiene largo.
+  en WE. Sin ratón, las partículas de `trail_1` nacen en el `offset` de su
+  punto; lo medido es que su luz no cambia (0,000 %).
 - **El tope de `flags & 2`**, una partícula por fotograma, sigue sin hacerse:
   con el paso fijo de 1/60, la estela del cursor puede tener más puntos que
   en WE.

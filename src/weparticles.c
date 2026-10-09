@@ -666,6 +666,10 @@ static int puesto(int n, int puestos, int rebota)
 
 static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
 {
+    /* El estallido de `instantaneous` escribe en sus huecos sin mirar si
+     * siguen vivos: si el primer `update` no avanza el reloj, el segundo
+     * vuelve a estallar encima. Esa ya estaba en la cuerda. */
+    int ya_en_cuerda = q->viva;
     memset(q, 0, sizeof *q);
     q->viva = 1;
     q->emisor = (int)(e - s->em);
@@ -677,7 +681,7 @@ static void emite(WeParticleSystem *s, const Emisor *e, Particula *q)
     /* La que nace va al final de la cuerda. Todo nacimiento pasa por aqui
      * ---emisor, estallido inicial, hijo de evento---, y las muertes las quita
      * `paso` en el mismo paso, asi que la lista no pasa de `maxcount`. */
-    if (s->orden && s->n_orden < s->maxcount)
+    if (s->orden && !ya_en_cuerda && s->n_orden < s->maxcount)
         s->orden[s->n_orden++] = (int)(q - s->p);
 
     /* Posicion. `directions` da la FORMA del volumen de emision: en la esfera

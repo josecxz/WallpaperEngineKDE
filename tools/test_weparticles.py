@@ -776,11 +776,12 @@ ARNES_CUERDA_C = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include "weparticles.h"
-/* <psys> <segundos>: simula con la locale del entorno y escribe las piezas sin
+/* <psys> <segundos> [0]: simula con la locale del entorno y escribe las piezas sin
  * reconocer, cuantas particulas hay vivas, cuantos vertices salen, y por cada
  * quad de seis el inicio, el fin, los dos controles, `trailLength` y
  * `trailPosition`; ver el layout en `weparticles.h`. Si los seis vertices de
- * un quad no llevan los mismos extremos, lo dice. */
+ * un quad no llevan los mismos extremos, lo dice. Con un tercer argumento,
+ * antes hace un `update` en el instante 0, que no avanza el reloj. */
 int main(int argc, char **argv)
 {
     /* Los segundos se leen ANTES de poner la locale: son de la prueba, no del
@@ -790,6 +791,8 @@ int main(int argc, char **argv)
     int desconocidas = -1;
     WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
     if (!s) { printf("-1\n"); return 0; }
+    if (argc > 3)
+        we_psys_update(s, 0.0f);
     int nv = we_psys_update(s, segundos);
     const float *v = we_psys_vertices(s);
     int paso = we_psys_floats_por_vertice(s);
@@ -846,6 +849,11 @@ def prueba_cuerda(tmp: Path) -> list[str]:
 
     Python no guarda cola para el `rope` (`cinta 1 0`), y el `ropetrail` del
     mismo preset la sigue guardando. En la locale C y en una de coma.
+
+    Y un estallido `instantaneous` de 5 que se repite ---el primer `update`
+    en el instante 0 no avanza el reloj y el segundo vuelve a estallar en los
+    mismos huecos--- no mete dos veces a nadie en la cuerda: 5 vivas, 24
+    vertices.
     """
     fallos = []
     s = weparticles.cargar(_Resolver(preset_cuerda("rope")), "p.json")
@@ -918,6 +926,23 @@ def prueba_cuerda(tmp: Path) -> list[str]:
             if not (45 <= xs[0] <= 55 and xs[-1] <= 10):
                 fallos.append(f"{donde}: la cuerda va de x={xs[0]} a x={xs[-1]}; "
                               f"se esperaba de unos 50 a menos de 10")
+
+    estallido = preset_cuerda("rope")
+    estallido["maxcount"] = 12
+    estallido["emitter"][0].update(rate=0, instantaneous=5)
+    estallido["initializer"][0].update(min=100, max=100)
+    s = weparticles.cargar(_Resolver(estallido), "p.json")
+    psys = tmp / "cuerda_estallido.psys"
+    weparticles.escribir(s, psys, 5)
+    r = subprocess.run([str(binario), str(psys), "0.5", "0"],
+                       capture_output=True, text=True,
+                       env=dict(os.environ, LC_ALL="C"))
+    cab = (r.stdout.splitlines() or [""])[0].split()
+    print(f"  estallido repetido         {cab[2] if len(cab) == 4 else '?'} vivas, "
+          f"{cab[3] if len(cab) == 4 else '?'} vertices")
+    if len(cab) != 4 or (int(cab[2]), int(cab[3])) != (5, 24):
+        fallos.append(f"estallido `instantaneous` repetido: {cab}; una cuerda "
+                      f"de 5 vivas da 24 vertices")
     return fallos
 
 
