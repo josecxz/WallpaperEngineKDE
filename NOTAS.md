@@ -4252,11 +4252,12 @@ que la prueba pruebe algo.
 ### Lo medido sobre las 129
 
 **124 capas de reloj en 21 escenas** dan la hora de verdad (eran 123 en 20
-hasta que entró el reloj de dos líneas de `2946362143`). *Actualizado*: **130
-en 24**, desde «Desestructurar, `Boolean` y `engine.registerAsset`». Las dos
-mitades —`quads_de_reloj` en Python y `we_reloj_vertices` en C— coinciden en las 124,
+hasta que entró el reloj de dos líneas de `2946362143`). Las dos mitades
+—`quads_de_reloj` en Python y `we_reloj_vertices` en C— coinciden en las 124,
 en siete instantes que cruzan la medianoche, el cambio de mes, un 29 de
-febrero y un sábado, y con las locales `C` y `es_ES` las dos.
+febrero y un sábado, y con las locales `C` y `es_ES` las dos. *Actualizado*:
+desde «Desestructurar, `Boolean` y `engine.registerAsset`» son **130 en 24**,
+y `tools/test_wereloj.py` compara las 130, también con `es_ES`.
 
 Las 24 capas con script que se quedan sin reloj están contadas arriba: 19 que
 el intérprete no cubre y cinco que no son un reloj —un contador de fps, un
@@ -8024,15 +8025,15 @@ una escena (`censo_scripts_sin_reloj.py`, del triador, y el barrido de
 `python3 tools/wescript.py`, que en main da 5 «variable sin definir: engine» y
 2 «nombre de variable»):
 
-- **Desestructurar un array al declarar.** `const [day, month, year] = [pad(..),
-  pad(..), time.getFullYear()]` en el reloj de dos renglones de `3521337568`
-  (capa 369) y `3577990983` (capa 203), que llevan el mismo script: el parser
-  esperaba un nombre y lanzaba «nombre de variable».
+- **Desestructurar un array al declarar.** `const [day, month, year] =
+  [pad(..), pad(..), time.getFullYear()]` en el reloj de dos renglones de
+  `3521337568` (capa 369) y `3577990983` (capa 203), que llevan el mismo
+  script: el parser esperaba un nombre y lanzaba «nombre de variable».
 - **`Boolean` como función**, en esos mismos dos: `[...].filter(Boolean)
   .join(delimiter)` quita los segundos cuando valen `null`.
 - **`engine.registerAsset` en el cuerpo del módulo.** Las cuatro capas de
   `2537500835` —«Clock» 27, «Date» 36, «Date2» 51, «Date3» 183— registran
-  siete fuentes con `cachedFonts.push(engine.registerAsset(f))` y solo las
+  sus fuentes con `cachedFonts.push(engine.registerAsset(f))` y solo las
   usan en `applyUserProperties`, que aquí no se ejecuta. `engine` no existía y
   el módulo no llegaba a prepararse.
 
@@ -8055,7 +8056,9 @@ tocan.
   puede pasar a cadena (`js_str` lo rechaza), así que si lo registrado acaba
   en el texto la capa no es un reloj. Cualquier otro miembro —`frametime`,
   `registerAudioBuffers`, …— y cualquier escritura en `engine` siguen siendo
-  ScriptError.
+  ScriptError. Con un matiz: `typeof engine.frametime` da `'undefined'`,
+  porque la rama de `typeof` se traga cualquier ScriptError, como ya hacía
+  con una variable sin definir. Ningún script del corpus lo usa.
 
 ### Lo que se descartó
 
