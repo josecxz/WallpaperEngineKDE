@@ -419,6 +419,10 @@ class Reloj:
     halign: str
     valign: str
     max_glifos: int                    # el peor caso de la plantilla
+    # Lo que se suma entre renglón y renglón, en px del atlas. Es el mismo
+    # `spacing` vertical que suma `disponer`; con un reloj de una línea no
+    # pinta nada.
+    espaciado: float = 0.0
 
 
 def _metricas_del_alfabeto(font, alfabeto: str) -> tuple[list[Glifo], list[Image.Image]]:
@@ -505,7 +509,8 @@ def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
                  pad=tuple(_numeros(obj.get("padding"), 2, 0.0)),
                  halign=str(obj.get("horizontalalign") or "center"),
                  valign=str(obj.get("verticalalign") or "center"),
-                 max_glifos=max_glifos)
+                 max_glifos=max_glifos,
+                 espaciado=_numeros(obj.get("spacing"), 2, 0.0)[1] / u)
 
 
 def quads_de_reloj(r: Reloj, texto: str) -> np.ndarray:
@@ -518,44 +523,55 @@ def quads_de_reloj(r: Reloj, texto: str) -> np.ndarray:
     lados igual que en las partículas.
     """
     tabla = {g.cp: g for g in r.glifos}
-    glifos = [tabla[ord(c)] for c in texto if ord(c) in tabla]
     util_w = max(0.0, r.caja[0] - 2 * r.pad[0])
     util_h = max(0.0, r.caja[1] - 2 * r.pad[1])
-    avance = sum(g.avance for g in glifos)
 
-    if "left" in r.halign:
-        x_linea = 0.0
-    elif "right" in r.halign:
-        x_linea = util_w / r.u - avance
-    else:
-        x_linea = (util_w / r.u - avance) / 2.0
+    # Los renglones se apilan como en `disponer`: el bloque entero se alinea
+    # en vertical ---contando los renglones VACÍOS, que el `SATURDAY` de
+    # `2946362143` empieza por `\n`--- y cada renglón por su lado en
+    # horizontal. El número de renglones cambia con la hora, así que el bloque
+    # se mide con cada cadena.
+    renglones = texto.split("\n")
+    bloque_h = (len(renglones) * r.alto_linea
+                + (len(renglones) - 1) * r.espaciado)
     if "top" in r.valign:
-        y_linea = 0.0
+        y_bloque = 0.0
     elif "bottom" in r.valign:
-        y_linea = util_h / r.u - r.alto_linea
+        y_bloque = util_h / r.u - bloque_h
     else:
-        y_linea = (util_h / r.u - r.alto_linea) / 2.0
+        y_bloque = (util_h / r.u - bloque_h) / 2.0
 
     verts = np.zeros((4 * r.max_glifos, 5), dtype="<f4")
-    pluma = 0.0
     n = 0
-    for g in glifos:
-        if g.ink[2] > g.ink[0] and n < r.max_glifos:
-            x_a = (x_linea + pluma + g.ink[0]) * r.u
-            x_b = (x_linea + pluma + g.ink[2]) * r.u
-            y_a = (y_linea + g.ink[1]) * r.u
-            y_b = (y_linea + g.ink[3]) * r.u
-            X0 = -r.caja[0] / 2.0 + r.pad[0] + x_a
-            X1 = -r.caja[0] / 2.0 + r.pad[0] + x_b
-            Y0 = r.caja[1] / 2.0 - r.pad[1] - y_a
-            Y1 = r.caja[1] / 2.0 - r.pad[1] - y_b
-            u0, v0, u1, v1 = g.uv
-            for j, (x, yv, tu, tv) in enumerate((
-                    (X0, Y0, u0, 1.0 - v0), (X1, Y0, u1, 1.0 - v0),
-                    (X1, Y1, u1, 1.0 - v1), (X0, Y1, u0, 1.0 - v1))):
-                verts[4 * n + j] = (x, yv, 0.0, tu, tv)
-            n += 1
-        pluma += g.avance
+    for i, renglon in enumerate(renglones):
+        glifos = [tabla[ord(c)] for c in renglon if ord(c) in tabla]
+        avance = sum(g.avance for g in glifos)
+        if "left" in r.halign:
+            x_linea = 0.0
+        elif "right" in r.halign:
+            x_linea = util_w / r.u - avance
+        else:
+            x_linea = (util_w / r.u - avance) / 2.0
+        y_linea = y_bloque + i * (r.alto_linea + r.espaciado)
+
+        pluma = 0.0
+        for g in glifos:
+            if g.ink[2] > g.ink[0] and n < r.max_glifos:
+                x_a = (x_linea + pluma + g.ink[0]) * r.u
+                x_b = (x_linea + pluma + g.ink[2]) * r.u
+                y_a = (y_linea + g.ink[1]) * r.u
+                y_b = (y_linea + g.ink[3]) * r.u
+                X0 = -r.caja[0] / 2.0 + r.pad[0] + x_a
+                X1 = -r.caja[0] / 2.0 + r.pad[0] + x_b
+                Y0 = r.caja[1] / 2.0 - r.pad[1] - y_a
+                Y1 = r.caja[1] / 2.0 - r.pad[1] - y_b
+                u0, v0, u1, v1 = g.uv
+                for j, (x, yv, tu, tv) in enumerate((
+                        (X0, Y0, u0, 1.0 - v0), (X1, Y0, u1, 1.0 - v0),
+                        (X1, Y1, u1, 1.0 - v1), (X0, Y1, u0, 1.0 - v1))):
+                    verts[4 * n + j] = (x, yv, 0.0, tu, tv)
+                n += 1
+            pluma += g.avance
     return verts
 
 

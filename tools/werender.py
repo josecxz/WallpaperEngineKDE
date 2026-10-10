@@ -261,11 +261,14 @@ def temblor_de_camara(general: dict, properties: dict,
 def _escapa(s: str) -> str:
     """Una cadena dentro de una linea del plan, que se parte por espacios.
 
-    Solo hay dos caracteres que escapar ---el espacio y la propia barra--- y
-    hacen falta de verdad: los nombres de dia del vietnamita de `3299228616`
-    son `Thu Sau` con espacio. Lo desescapa `desescapa()` en `wereloj.c`.
+    Hay tres caracteres que escapar ---el espacio, el salto de linea y la
+    propia barra--- y hacen falta de verdad: los nombres de dia del vietnamita
+    de `3299228616` son `Thu Sau` con espacio, y el `SATURDAY` de `2946362143`
+    empieza por un salto que partiria la linea del plan. Lo desescapa
+    `desescapa()` en `wereloj.c`.
     """
-    return s.replace("\\", "\\\\").replace(" ", "\\s") or "\\s"
+    return (s.replace("\\", "\\\\").replace(" ", "\\s")
+            .replace("\n", "\\n") or "\\s")
 
 
 def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
@@ -2070,7 +2073,9 @@ class Renderer:
             f"reloj {mid} {fmt.periodo:g} {r.caja[0]:g} {r.caja[1]:g} "
             f"{r.pad[0]:g} {r.pad[1]:g} "
             f"{alin.get(r.halign, 1)} {alin.get(r.valign, 1)} "
-            f"{r.u:.9g} {r.alto_linea:.9g} {max_glifos}")
+            f"{r.u:.9g} {r.alto_linea:.9g} {max_glifos} {r.espaciado:.9g}")
+        # El espaciado va el ULTIMO: solo pinta en un reloj de varias lineas, y
+        # un ejecutor anterior lee los diez primeros y no ve el resto.
         self.lines.append(f"relojfmt {mid} {_escapa(fmt.plantilla)}")
         for codigo, tabla in fmt.tablas.items():
             palabras = " ".join(_escapa(x) for x in tabla)

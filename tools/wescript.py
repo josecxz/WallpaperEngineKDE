@@ -1320,6 +1320,8 @@ class Formato:
                 letras.update("AMPamp")
             elif codigo in CAMPOS:
                 letras.update("0123456789")
+        # El salto de línea no es un glifo: parte la cadena en renglones.
+        letras.discard("\n")
         return "".join(sorted(letras))
 
     def max_longitud(self) -> int:
@@ -1328,8 +1330,10 @@ class Formato:
         Es lo que decide cuántos quads reserva la malla: el búfer se pide una
         vez y la cadena cambia, así que tiene que caber el peor caso. Se mide
         recorriendo los mismos instantes con los que se comprobó el formato.
+        Los saltos de línea no cuentan: no llevan quad.
         """
-        return max(len(self.render(t)) for t in _instantes_de_prueba())
+        return max(len(s) - s.count("\n")
+                   for s in map(self.render, _instantes_de_prueba()))
 
     def render(self, cuando: dt.datetime) -> str:
         salida = []
@@ -1561,16 +1565,11 @@ def formato_de(ip: Interprete, valor: str = "") -> Formato | None:
         usadas = {c: t for c, t in tablas.items() if c in piezas}
         fmt = Formato("".join(piezas), usadas, 1.0 if "%S" in piezas else 60.0)
         try:
+            # Un salto de línea en la plantilla o en una tabla ---el `SATURDAY`
+            # de `2946362143` empieza por `\n`--- es un reloj de VARIAS líneas,
+            # y la ruta del reloj las apila igual que `wetext.disponer`.
             if all(fmt.render(t) == ip.texto(t, valor)
                    for t in _instantes_de_prueba()):
-                # Una plantilla con salto de linea es un reloj de VARIAS
-                # lineas, y la disposicion del ejecutor es de una sola: el
-                # `SATURDAY` de `2946362143` empieza por `\n`. Mejor dejarla
-                # con su cadena congelada que dibujarla en el renglon que no
-                # es.
-                if "\n" in fmt.plantilla or any(
-                        "\n" in p for tab in usadas.values() for p in tab):
-                    return None
                 return fmt
         except Exception:
             continue

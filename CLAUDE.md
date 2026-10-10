@@ -154,8 +154,8 @@ modelos 3D, focos y luces direccionales. El **bloom** sí, con la cadena LDR de
 WE (`werender.py`, `_emit_bloom`); el camino HDR de nueve escenas usa esa misma
 cadena porque no hay buffers en coma flotante. El vídeo se reproduce, pero
 **solo por CPU**: no hay VAAPI ni NVDEC. De las 148 capas de texto con
-JavaScript, 123 dan la hora en vivo (`tools/wescript.py` interpreta el script
-y deduce la plantilla) y 25 se quedan con el texto literal: las que usan
+JavaScript, 124 dan la hora en vivo (`tools/wescript.py` interpreta el script
+y deduce la plantilla) y 24 se quedan con el texto literal: las que usan
 `engine`, `import` o expresiones regulares, y las que no son un reloj.
 
 El **puntero sí llega** —los uniforms del ratón y los 123 sistemas de
