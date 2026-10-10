@@ -7790,15 +7790,13 @@ cadena, en `quads_de_reloj` y en `we_reloj_vertices` igual.
 - `src/wereloj.c` es el que comparten los dos ejecutores, así que `glexec.c` y
   `glexecutor.cpp` no se tocan: los dos le pasan la línea tal cual.
 
-Y una cosa más, que salió al medir. El tope de ancho del atlas se **estimaba**
-con el glifo más ancho por el número de glifos; para esta capa son 18 `W`, y
-dejaba la em en 160 px donde su renglón más largo, `W E D N E S D A Y `, cabe
-a 409. La tinta caía en el mismo sitio, pero rasterizada a menos de la mitad
-que el texto congelado al que sustituye. `disponer_reloj` acepta ahora las
-cadenas que la plantilla puede escribir —las mismas con las que `werender` ya
-medía el margen— y con ellas mide el renglón más largo de verdad. Cambia el
-tamaño de 11 capas en 2 escenas, todas hacia arriba: esta y diez de
-`3462491575` (de 170–476 px a 409 o 512), `px_de_reloj.py`.
+Lo que **no** cambia es cómo se rasteriza un reloj: el tope de ancho del atlas
+se sigue estimando como antes, con el glifo más ancho por el número de glifos
+(sin contar el `\n`). Los 123 relojes que ya había tienen el mismo atlas y la
+misma em que en main (`atlas_de_reloj.py`). Medir el renglón de verdad
+subía la resolución de esta capa, pero también la de diez de `3462491575` que
+la tarea no pedía, y con ella la memoria de textura, que no se había medido:
+queda como pendiente, abajo.
 
 ### Lo que se descartó
 
@@ -7806,7 +7804,8 @@ tamaño de 11 capas en 2 escenas, todas hacia arriba: esta y diez de
   mete en la caja de una línea el avance de un espacio final, y esta cadena
   acaba en uno, así que el quad
   estático lleva un espacio de píxeles en blanco a la derecha que el del
-  reloj no lleva: 33 unidades de ancho de diferencia que no son tinta. Lo que
+  reloj no lleva: unas 32–33 unidades de ancho de diferencia que no son tinta
+  (`cajas_reloj_vs_estatico.py` imprime las dos cajas de quad). Lo que
   se compara es la **tinta**, los píxeles con cobertura del atlas llevados al
   lienzo por la uv de cada quad.
 - **`dayFormat: '1'`**: la escena lo declara en `scriptproperties` y el
@@ -7827,32 +7826,35 @@ y se ejecutan desde la raíz del repositorio.
   también con `es_ES`, una con varios renglones —la de los sábados: la prueba
   lleva ahora un sábado entre sus siete instantes—, y un caso sintético nuevo
   de cinco plantillas con el salto en mitad, al principio y dentro de una
-  tabla, con las tres alineaciones y espaciado. El arnés escribe el texto con
-  el `\n` escapado, que si no partiría su propia salida.
+  tabla, con las tres alineaciones y espaciado. Los espaciados llevan
+  decimales (2,5, 3,25…) para que la pasada con `es_ES` lea también el
+  undécimo número con coma. El arnés escribe el texto con el `\n` escapado,
+  que si no partiría su propia salida.
 - **Que la prueba caza un C que ignora el salto** (`rompe_salto_en_c.sh`):
   sobre una copia, `we_reloj_vertices` dispone la cadena en un solo renglón, y
-  la prueba cae con los cinco sintéticos (vértices a 11,25, 20,25, 43,125,
-  10,875 y 23,25 unidades) y con la capa de `2946362143` en el sábado (79,73;
+  la prueba cae con los cinco sintéticos (vértices a 11,34, 20,25, 43,125,
+  11,06 y 23,81 unidades) y con la capa de `2946362143` en el sábado (79,73;
   «con la locale es_ES 123»). Sin romper, OK.
 - **La misma caja que la ruta estática** (`cajas_reloj_vs_estatico.py`): la
   capa 217 en un sábado y un jueves, a 0,5 y 1 px por unidad y a la densidad
   de `werender` en 1920x1200 (3,404). Tinta renglón a renglón: bordes superior
-  e inferior a 0,070 unidades como mucho, centro horizontal a 0,165, ancho a
-  0,329 (el kerning). Con `--estimado`, la estimación vieja del ancho, 0,298 y
-  0,356: la estimación no movía renglones, solo bajaba la resolución.
+  e inferior a 0,298 unidades como mucho, centro horizontal a 0,356, ancho a
+  0,722 (el kerning y el redondeo de rasterizar a otra em).
+- **El atlas** (`atlas_de_reloj.py`, a la densidad de 1920x1200, contra
+  main): los 123 relojes de antes, 0 con el atlas o la em distintos (216,5 MB
+  de atlas RGBA en main, 218,3 en la rama). El nuevo, la capa 217: em de
+  160 px, atlas de 231x1980 (1,8 MB).
 - **Plan y render** (`plan_y_render.sh`): el plan lleva `relojfmt 0 %A\s` y
   su `relojtab` acaba en `\nS\sA\sT\sU\sR\sD\sA\sY`; `glexec` dibuja 12 pases
-  con 0 omitidos, igual que main. Cambiando a mano en ese plan la palabra del
-  viernes por la del sábado, el día baja un renglón y no se recorta.
+  con 0 omitidos, igual que main.
 - **La luz** (`luz_relojes.py`, las 21 escenas con reloj, que son las únicas
   cuyo plan puede cambiar; Mesa, `--time 4`, 6 fotogramas, contra main). La
   hora va **congelada** con `hora_fija.c` por `LD_PRELOAD`: sin ella, el
-  minuto que pasa entre el render de la base y el de la rama movió 0,28 la
-  media de `2864255069`, que no tiene nada que ver. Con ella, un jueves y un
-  sábado: 0 apagadas, 0 regresiones, las otras 20 con la misma media que main
-  —también las diez capas de `3462491575` que ahora se rasterizan más
-  grandes—, y `2946362143` −0,13 el jueves (la misma palabra, glifo a glifo) y
-  −0,26 el sábado (un renglón más abajo).
+  minuto puede cambiar entre el render de la base y el de la rama y mover la
+  media de cualquier reloj. Con ella, un jueves y un sábado: 0 apagadas, 0
+  regresiones, las otras 20 con la misma media que main (Δ 0,00), y
+  `2946362143` −0,12 el jueves (la misma palabra, glifo a glifo) y −0,25 el
+  sábado (un renglón más abajo).
 - `tools/test_wetext.py` pasa; `make build` y `make glexec` compilan.
 
 ### Lo que queda fuera
@@ -7860,3 +7862,14 @@ y se ejecutan desde la raíz del repositorio.
 Las otras capas con `\n` en el script (`3521337568`, `3577990983`,
 `3299228616`…) no las deduce el intérprete por otros motivos, y siguen con su
 cadena congelada. El `spacing` horizontal sigue sin usarse, en las dos rutas.
+
+**Pendiente: la resolución del atlas de un reloj.** La em de la capa 217 se
+queda en 160 px porque el tope de ancho se estima con 18 `W`; la ruta estática
+le da 493 px con la cadena del jueves (`atlas_de_reloj.py`). La tinta cae en
+el mismo sitio, pero rasterizada a un tercio que el texto congelado al que
+sustituye. Medir el renglón más largo de verdad —contando los glifos del
+renglón y no los de la cadena entera— lo arreglaría, pero en el corpus sube
+también diez capas de `3462491575`, y con ellas la memoria de textura y el
+alto de algún atlas. Es para una tarea aparte que mida esa memoria y el alto
+frente a `GL_MAX_TEXTURE_SIZE` en Mesa, sin cambiar de paso la fórmula de los
+relojes de una línea.

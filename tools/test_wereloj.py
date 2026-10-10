@@ -259,12 +259,14 @@ def contrato_de_renglones(exe: Path, tmp: Path, fallos: list[str]) -> int:
     # Un salto AL PRINCIPIO no mueve nada con `bottom` ---el bloque crece
     # hacia arriba y el último renglón se queda donde estaba---, así que esos
     # casos van arriba o en el centro, y el de abajo lleva el salto en mitad.
+    # Los espaciados llevan decimales para que la pasada con `es_ES` pruebe
+    # también el undécimo número de la línea `reloj`.
     casos = [
-        (wescript.Formato("%H\n%M", {}, 60.0), "center", "center", 3.0),
+        (wescript.Formato("%H\n%M", {}, 60.0), "center", "center", 3.25),
         (wescript.Formato("\n%H:%M", {}, 60.0), "right", "top", 0.0),
-        (wescript.Formato("%H:%M\n%A", {"%A": dias}, 60.0), "left", "top", 5.0),
-        (wescript.Formato("%A %H:%M", {"%A": dias}, 60.0), "center", "center", 2.0),
-        (wescript.Formato("%M\n%H", {}, 60.0), "left", "bottom", 4.0),
+        (wescript.Formato("%H:%M\n%A", {"%A": dias}, 60.0), "left", "top", 5.5),
+        (wescript.Formato("%A %H:%M", {"%A": dias}, 60.0), "center", "center", 2.5),
+        (wescript.Formato("%M\n%H", {}, 60.0), "left", "bottom", 4.75),
     ]
     hechos = 0
     for n, (fmt, ha, va, esp) in enumerate(casos):
