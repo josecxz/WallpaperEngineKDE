@@ -277,7 +277,13 @@ make indice                       # reescribe los números desde NOTAS.md
 - `7643` **Lo que hace WE, con direcciones** — bloque de tipo 3 frente a 4, la rama `0x1402369ed` del bucle de dibujo, el constructor `0x140230919` y la lista `sistema+0x218`, que crece al nacer y se compacta al morir.
 - `7683` **Lo hecho** — `orden` y `construye_cuerda` en `src/weparticles.c`, sin duplicados con un `instantaneous` repetido; `cinta 1 0 0` en el `.psys`; el plan solo cambia en el `g_RenderVar0` del `rope`; la prueba 11 de `test_weparticles.py`.
 - `7710` **Lo medido** — 71 de 71 en el binario; `6·(N−1)` vértices, cosidos y en orden de nacimiento; 113 planes y 964 `.psys` idénticos, y en las 16 con `rope` solo 38 líneas `g_RenderVar0`; 0 regresiones de luz en las 16.
-- `7753` **Lo que queda fuera** — `trailLength` en régimen, `uvscrolling`, la cuerda con dos puntos en el mismo sitio, el tope de `flags & 2` y la curva.
+- `7753` **Lo que queda fuera** — `trailLength` en régimen, `uvscrolling`, la cuerda con dos puntos en el mismo sitio, el tope de `flags & 2` y la curva (hecha después).
+- `8122` **La curva de un `rope`: la Bézier de `subdivision`, hecha en la CPU** — `subdivision` (4 si falta, topado a 32) es el `TRAILSUBDIVISION` del `.geom`; `construye_cuerda` parte cada tramo en `sub + 1` subquads con su curva, su ancho y su UV.
+- `8134` **Lo que hace WE, con direcciones** — los defectos del `rope` en `0x1401c0c90` (`subdivision` 4, `uvsmoothing` verdadero), el tope en `0x1401cffbd` y el combo en `0x1401d2aa2`.
+- `8153` **El `.geom`, y cómo se lleva al quad sin geometry shader** — controles `fin − R(inicio)` e `inicio + R(fin)`, tamaño `|R|`, y `trailLength`/`trailPosition` que dan la UV de WE en cada punto.
+- `8192` **Lo hecho** — `_subdivision` y el cuarto número de `cinta`; `tramo_curvo` y el búfer con `sub + 1`; el plan no cambia; la prueba 12.
+- `8208` **Lo medido** — 65 de 65 en el binario; la curva a 3e-06 del `.geom`; con 0, la cuerda de main byte a byte; 113 planes y 964 `.psys` idénticos; *Vapor* cambia un 1,145 % de los píxeles con flechas de menos de una unidad; 0 regresiones.
+- `8266` **Lo que queda fuera** — `ropetrail`, el ojo en perspectiva, `uvsmoothing` verdadero por defecto y el tramo que da media vuelta.
 
 ## El ratón
 
@@ -369,18 +375,18 @@ make indice                       # reescribe los números desde NOTAS.md
 - `4207` **Lo que da la garantía es la comprobación, no la deducción** — ~1050 instantes; con una diferencia se descarta y la capa no se toca.
 - `4223` **El alfabeto, y lo que se pierde** — rasterizar glifo a glifo en vez de por línea, y el kerning que eso cuesta.
 - `4242` **Y la locale, otra vez** — `strtof` dentro de plasmashell deja el alfabeto a cero sin un solo error por medio.
-- `7771` **Relojes de varias líneas: el salto viaja al plan y `wereloj` apila renglones** — el `SATURDAY` de `2946362143` empieza por `\n`; la ruta del reloj apila renglones como la estática, de 123 a 124 relojes.
-- `7782` **Lo que cambia** — el `\n` escapado en el plan, el `espaciado` al final de la línea `reloj`; el atlas de los relojes de una línea no cambia.
-- `7809` **Lo que se descartó** — la caja del quad engaña: `getbbox` de Pillow cuenta el espacio final; se compara la tinta. Y `dayFormat`, sin tocar.
-- `7893` **El tope del atlas de un reloj: el renglón que se escribe y un alto máximo** — el tope de ancho estimaba una `W` por glifo y dejaba la 217 de `2946362143` a 160 px de em; ahora se mide renglón a renglón (11 capas suben, ninguna baja) y hay un tope de alto de 16384.
-- `7907` **Lo que cambia** — avances glifo a glifo sobre `Formato.cadenas()`, al px de partida; `ALTO_ATLAS_MAX` rebaja la em si la columna se pasa (en el corpus, ninguna).
-- `7930` **Lo que se descartó** — medir con `getlength` del renglón, que mete un kerning que el reloj no dibuja; y un tope de alto de 8192, que ya bajaría un atlas de main de 9053 px.
-- `7941` **Lo medido** — 218,3 → 278,1 MB de atlas a 1920x1200 (+50,0 en `3462491575`); el más alto, 10550 px frente a los 16384 de Mesa, también en 4K; luz sin regresiones con la hora fija.
-- `8019` **Desestructurar, `Boolean` y `engine.registerAsset`: seis relojes más** — tres huecos de JavaScript en `wescript`, ninguno propio de una escena; de 124 a 130 relojes, y `engine` solo con `registerAsset`.
-- `8040` **Lo que cambia** — el patrón `[a, , c]` en las declaraciones, `Boolean` como `!!v` y un `Motor` cuyo único miembro devuelve un recurso opaco.
-- `8063` **Lo que se descartó** — un `engine` permisivo: el contador de fps de `3238423642` suma `engine.frametime` y pasaría por reloj.
-- `8072` **Lo medido** — el listado de main a la rama son seis líneas añadidas; `tools/test_wescript.py`; luz sin regresiones con la hora fija y nada fuera de las tres escenas se mueve.
-- `8109` **Lo que sigue sin reloj** — `import`, la expresión regular, los otros miembros de `engine` y la `Date` de `3597772384`, que lanza «a número».
+- `7776` **Relojes de varias líneas: el salto viaja al plan y `wereloj` apila renglones** — el `SATURDAY` de `2946362143` empieza por `\n`; la ruta del reloj apila renglones como la estática, de 123 a 124 relojes.
+- `7787` **Lo que cambia** — el `\n` escapado en el plan, el `espaciado` al final de la línea `reloj`; el atlas de los relojes de una línea no cambia.
+- `7814` **Lo que se descartó** — la caja del quad engaña: `getbbox` de Pillow cuenta el espacio final; se compara la tinta. Y `dayFormat`, sin tocar.
+- `7898` **El tope del atlas de un reloj: el renglón que se escribe y un alto máximo** — el tope de ancho estimaba una `W` por glifo y dejaba la 217 de `2946362143` a 160 px de em; ahora se mide renglón a renglón (11 capas suben, ninguna baja) y hay un tope de alto de 16384.
+- `7912` **Lo que cambia** — avances glifo a glifo sobre `Formato.cadenas()`, al px de partida; `ALTO_ATLAS_MAX` rebaja la em si la columna se pasa (en el corpus, ninguna).
+- `7935` **Lo que se descartó** — medir con `getlength` del renglón, que mete un kerning que el reloj no dibuja; y un tope de alto de 8192, que ya bajaría un atlas de main de 9053 px.
+- `7946` **Lo medido** — 218,3 → 278,1 MB de atlas a 1920x1200 (+50,0 en `3462491575`); el más alto, 10550 px frente a los 16384 de Mesa, también en 4K; luz sin regresiones con la hora fija.
+- `8024` **Desestructurar, `Boolean` y `engine.registerAsset`: seis relojes más** — tres huecos de JavaScript en `wescript`, ninguno propio de una escena; de 124 a 130 relojes, y `engine` solo con `registerAsset`.
+- `8045` **Lo que cambia** — el patrón `[a, , c]` en las declaraciones, `Boolean` como `!!v` y un `Motor` cuyo único miembro devuelve un recurso opaco.
+- `8068` **Lo que se descartó** — un `engine` permisivo: el contador de fps de `3238423642` suma `engine.frametime` y pasaría por reloj.
+- `8077` **Lo medido** — el listado de main a la rama son seis líneas añadidas; `tools/test_wescript.py`; luz sin regresiones con la hora fija y nada fuera de las tres escenas se mueve.
+- `8114` **Lo que sigue sin reloj** — `import`, la expresión regular, los otros miembros de `engine` y la `Date` de `3597772384`, que lanza «a número».
 
 ## Inventario del formato: qué leemos y qué no
 

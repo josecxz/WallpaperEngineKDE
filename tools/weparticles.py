@@ -47,9 +47,11 @@ Los tres renderers de estela SI se dibujan, por dos caminos distintos:
     UNA cinta que une las particulas vivas, de la mas vieja a la mas nueva, y
     no guarda nada. Ver `_cinta`.
 
-De `rope` y `ropetrail` se pierde la curva: el geometry shader subdivide cada
-segmento con una Bezier (`subdivision`), y la ruta sin geometry shader ---la que
-usamos--- une los puntos con quads rectos.
+La curva de `rope` no se pierde: el geometry shader de WE subdivide cada tramo
+con una Bezier (`subdivision`), y como la ruta sin geometry shader ---la que
+usamos--- une los puntos con quads rectos, `src/weparticles.c` hace esa
+subdivision en la CPU. La de `ropetrail` si se pierde: sus puntos estan a
+1/60 s y la flecha no llega a un pixel. Ver `_subdivision`.
 
 Uso:
     python3 tools/weparticles.py <dir_wallpaper>      # censo de la escena
@@ -533,9 +535,8 @@ def _cinta(e: dict) -> tuple[int, int, float]:
     """`(modo, puntos, intervalo)` de un `rope` o un `ropetrail`.
 
     El modo lo lee `we_psys_load` y decide el layout del vertice; los otros dos
-    son cuanta cola guarda cada particula. `subdivision` NO entra aqui: es la
-    suavidad de la curva Bezier y la evalua el geometry shader, que en esta ruta
-    no se usa --- los segmentos salen rectos.
+    son cuanta cola guarda cada particula. `subdivision` NO entra aqui: va
+    aparte, en `_subdivision`, para que el plan no cambie.
 
     `rope` no guarda cola: es UNA cinta que une las particulas vivas en el
     orden en que nacieron, y su fabrica en `wallpaper64.exe` no lee ni
@@ -578,6 +579,29 @@ def _cinta(e: dict) -> tuple[int, int, float]:
     # de ignorarlo.
     puntos = max(2, min(32, puntos, round(largo / CINTA_PASO)))
     return (modo, puntos, CINTA_PASO)
+
+
+# `subdivision` de un `rope` cuando el JSON no lo dice, y su tope. Los dos son
+# lectura de `wallpaper64.exe` (NOTAS, «La curva de un `rope`»): la funcion de
+# defectos del `rope` inserta un entero 4 si falta, y la fabrica lo topa a
+# [0, 32] antes de guardarlo; ese mismo numero es el combo `TRAILSUBDIVISION`.
+SUBDIVISION_DEFECTO = 4
+SUBDIVISION_TOPE = 32
+
+
+def _subdivision(e: dict) -> int:
+    """Cuantos puntos mete el geometry shader de WE dentro de cada tramo de un
+    `rope`: la Bezier de `genericropeparticle.geom`. Sin geometry shader la
+    evalua `construye_cuerda` en `src/weparticles.c`.
+
+    El entero se lee como WE: un real se trunca hacia cero (`cvttsd2si`), lo
+    negativo es 0 y de 32 para arriba, 32. Las tres estelas de cursor que piden
+    `subdivision: 100` se quedan en 32.
+    """
+    v = e.get("subdivision")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return SUBDIVISION_DEFECTO
+    return max(0, min(SUBDIVISION_TOPE, int(v)))
 
 
 def _estela(e: dict) -> tuple[float, float, float]:
@@ -700,6 +724,8 @@ class Sistema:
     # `(modo, puntos, intervalo)` de un `rope` o un `ropetrail`; None si el
     # renderer dibuja sprites sueltos. Ver `_cinta`.
     cinta: tuple[int, int, float] | None = None
+    # Solo `rope`: puntos de la Bezier dentro de cada tramo. Ver `_subdivision`.
+    subdivision: int = 0
     # Recorrido de la hoja de sprites: 0 una pasada por vida, 1 un fotograma
     # fijo al azar por particula. `anim_mult` repite la secuencia.
     anim_modo: int = 0
@@ -880,6 +906,8 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None,
                 s.estela = _estela(e)
             elif s.renderer in ("rope", "ropetrail"):
                 s.cinta = _cinta(e)
+                if s.renderer == "rope":
+                    s.subdivision = _subdivision(e)
             # Se anota en vez de dibujarlo mal en silencio; ver `_orientacion`.
             aviso = _orientacion(e, s.renderer in ("rope", "ropetrail"))
             if aviso:
@@ -1019,7 +1047,10 @@ def escribir(s: Sistema, destino: Path, semilla: int) -> None:
               f"seed {semilla & 0x7fffffff}",
               f"anim {s.anim_modo} {num(s.anim_mult)}"]
     if s.cinta:
-        lineas.append(f"cinta {s.cinta[0]} {s.cinta[1]} {num(s.cinta[2])}")
+        # La subdivision del `rope` va al final: un `.so` anterior lee los
+        # tres primeros numeros y la ignora.
+        lineas.append(f"cinta {s.cinta[0]} {s.cinta[1]} {num(s.cinta[2])}"
+                      + (f" {s.subdivision}" if s.cinta[0] == 1 else ""))
     for nombre, emit in s.emisores:
         lineas.append(f"emit {nombre} " + " ".join(num(v) for v in emit))
     for i, off in sorted(s.cps.items()):

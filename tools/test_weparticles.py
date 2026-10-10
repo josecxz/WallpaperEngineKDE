@@ -13,7 +13,7 @@ que el .py emite, para cada sistema del corpus. Es la misma leccion que la
 inferencia de anchos --- validar contra un oraculo antes de conectar --- con el
 oraculo siendo esta vez la otra mitad de la implementacion.
 
-Se comprueban diez cosas:
+Se comprueban doce cosas:
 
   1. Los dos lados conocen exactamente los mismos nombres.
   2. Cada pieza emitida trae los floats que el lector espera.
@@ -36,6 +36,9 @@ Se comprueban diez cosas:
      `prueba_punto_del_emisor`.
  11. Un `rope` es UNA cinta que une las particulas vivas de la mas vieja a la
      mas nueva, como la cose `wallpaper64.exe`; ver `prueba_cuerda`.
+ 12. Con `subdivision`, cada tramo del `rope` sigue la Bezier de
+     `genericropeparticle.geom`, y con `subdivision: 0` la cuerda es la recta
+     de siempre, numero a numero; ver `prueba_subdivision`.
 
 Uso:
     python3 tools/test_weparticles.py [--limit N]
@@ -819,7 +822,9 @@ def preset_cuerda(renderer: str) -> dict:
     """Particulas que nacen en el origen a 10/s y se van a 100 px/s hacia +x
     durante 0,55 s: la `x` de cada una es su edad por 100, asi que el orden de
     nacimiento se lee en la posicion. Con `maxcount` 7 el deposito se recorre
-    en rueda y los huecos dejan de ir en el orden en que nacieron."""
+    en rueda y los huecos dejan de ir en el orden en que nacieron. El `rope`
+    declara `subdivision: 0`: esta prueba es la de la cuerda recta, y sin
+    declararlo WE pone 4."""
     return {
         "maxcount": 7,
         "emitter": [{"name": "sphererandom", "rate": 10, "distancemin": 0,
@@ -827,7 +832,8 @@ def preset_cuerda(renderer: str) -> dict:
         "initializer": [{"name": "lifetimerandom", "min": 0.55, "max": 0.55},
                         {"name": "velocityrandom", "min": "100 0 0",
                          "max": "100 0 0"}],
-        "renderer": [{"name": renderer}],
+        "renderer": [{"name": renderer}
+                     | ({"subdivision": 0} if renderer == "rope" else {})],
         "material": "x.json",
     }
 
@@ -943,6 +949,226 @@ def prueba_cuerda(tmp: Path) -> list[str]:
     if len(cab) != 4 or (int(cab[2]), int(cab[3])) != (5, 24):
         fallos.append(f"estallido `instantaneous` repetido: {cab}; una cuerda "
                       f"de 5 vivas da 24 vertices")
+    return fallos
+
+
+ARNES_VERTICES_C = r"""
+#include <locale.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "weparticles.h"
+/* <psys> <segundos>: simula con la locale del entorno y escribe las piezas sin
+ * reconocer, la cinta, las vivas y los vertices, y despues cada vertice
+ * entero, sus 26 floats, con nueve cifras: lo justo para comparar numero a
+ * numero. */
+int main(int argc, char **argv)
+{
+    (void)argc;
+    float segundos = (float)atof(argv[2]);
+    setlocale(LC_ALL, "");
+    int desconocidas = -1;
+    WeParticleSystem *s = we_psys_load(argv[1], &desconocidas);
+    if (!s) { printf("-1\n"); return 0; }
+    int nv = we_psys_update(s, segundos);
+    const float *v = we_psys_vertices(s);
+    int paso = we_psys_floats_por_vertice(s);
+    setlocale(LC_NUMERIC, "C");
+    printf("%d %d %d %d\n", desconocidas, we_psys_cinta(s), we_psys_vivas(s, 0), nv);
+    for (int i = 0; i < nv; i++) {
+        for (int c = 0; c < paso; c++)
+            printf("%s%.9g", c ? " " : "", v[(size_t)i * paso + c]);
+        printf("\n");
+    }
+    return 0;
+}
+"""
+
+
+def preset_zigzag(subdivision: int | None) -> dict:
+    """Un `rope` de cuatro vivas que no estan en linea: nacen a 10/s en un
+    anillo de 20 a 60 px alrededor del origen ---en el plano, `directions`
+    `1 1 0`--- y se van a 100 px/s hacia +x durante 0,4 s, cada una con su
+    tamano y su color. A los 2,05 s quedan cuatro, y la cuerda que las une va
+    en zigzag. `subdivision` None no la declara."""
+    rope = {"name": "rope"}
+    if subdivision is not None:
+        rope["subdivision"] = subdivision
+    return {
+        "maxcount": 8,
+        "emitter": [{"name": "sphererandom", "rate": 10, "distancemin": 20,
+                     "distancemax": 60, "speedmin": 0, "speedmax": 0}],
+        "initializer": [{"name": "lifetimerandom", "min": 0.4, "max": 0.4},
+                        {"name": "velocityrandom", "min": "100 0 0",
+                         "max": "100 0 0"},
+                        {"name": "sizerandom", "min": 5, "max": 25},
+                        {"name": "colorrandom", "min": "0 0 0",
+                         "max": "255 255 255"}],
+        "renderer": [rope],
+        "material": "x.json",
+    }
+
+
+def _vertices(binario: Path, psys: Path, segundos: str, loc: str):
+    """`(cabecera, vertices)` del arnes, o `(None, salida)` si no dio nada."""
+    r = subprocess.run([str(binario), str(psys), segundos],
+                       capture_output=True, text=True,
+                       env=dict(os.environ, LC_ALL=loc))
+    lineas = r.stdout.splitlines()
+    cab = lineas[0].split() if lineas else []
+    if len(cab) != 4:
+        return None, r.stdout + r.stderr
+    return [int(x) for x in cab], [[float(x) for x in l.split()]
+                                   for l in lineas[1:]]
+
+
+def prueba_subdivision(tmp: Path) -> list[str]:
+    """La curva de un `rope`: la Bezier de `genericropeparticle.geom`.
+
+    Con `subdivision: 3` y `N` vivas salen `4·(N−1)` quads, cuatro por tramo.
+    Los puntos de dentro del tramo `k`, de la viva `A` a la `B` con los
+    controles `C0` y `C3` de siempre, se comparan con lo que el `.geom` evalua
+    en Python, a menos de 1e-3, con `s = smoothstep(0, 1, j/4)`:
+
+    - el punto, `cubicBezier(A, A + 0.15·(B − C0), B + 0.15·(A − C3), B, s)`;
+    - el ancho que da el vertice sin geometry shader con esos controles y ese
+      tamano ---`normalize(cross(ojo, fin − control0))·tamano` en el inicio y
+      `normalize(cross(ojo, control1 − inicio))·tamano` en el fin, con el ojo
+      en Z---, contra el `mix(Ra, Rb, s)` del `.geom`;
+    - el color, `mix`, y la UV que sale de `trailLength`/`trailPosition`,
+      contra `mix(uvMin, uvMax, s)`.
+
+    Las vivas `A`, `B` son las de la misma simulacion con `subdivision: 0`, que
+    no cambia mas que la geometria. Y con `subdivision: 0` la cuerda sale
+    numero a numero igual que con la linea `cinta 1 0 0` de antes, la que un
+    `.so` anterior lee sin cuarto numero: `6·(N−1)` vertices. Sin declarar,
+    Python pone el 4 de WE, y `100` se queda en 32. En la locale C y en una de
+    coma.
+    """
+    fallos = []
+    for decl, quiere in ((3, 3), (0, 0), (None, 4), (100, 32), (-2, 0),
+                         (2.9, 2)):
+        s = weparticles.cargar(_Resolver(preset_zigzag(decl)), "p.json")
+        if s.subdivision != quiere:
+            fallos.append(f"Python: `subdivision: {decl}` da {s.subdivision}, "
+                          f"WE lo deja en {quiere}")
+    psys = {}
+    for sub in (3, 0):
+        s = weparticles.cargar(_Resolver(preset_zigzag(sub)), "p.json")
+        psys[sub] = tmp / f"zigzag{sub}.psys"
+        weparticles.escribir(s, psys[sub], 5)
+    texto = psys[0].read_text()
+    if "\ncinta 1 0 0 0\n" not in texto or "\ncinta 1 0 0 3\n" not in psys[3].read_text():
+        fallos.append("la linea `cinta` del `rope` no lleva la subdivision al final")
+    psys["antes"] = tmp / "zigzag_antes.psys"
+    psys["antes"].write_text(texto.replace("\ncinta 1 0 0 0\n", "\ncinta 1 0 0\n"))
+
+    fuente, binario = tmp / "arnes_vertices.c", tmp / "arnes_vertices"
+    fuente.write_text(ARNES_VERTICES_C)
+    try:
+        subprocess.run(["cc", "-O0", "-std=c11", f"-I{FUENTE_C.parent}",
+                        "-o", str(binario), str(fuente), str(FUENTE_C), "-lm"],
+                       check=True, capture_output=True)
+    except Exception as e:
+        if shutil.which("cc") is None:
+            print(f"  (sin compilador de C: {e}, prueba omitida)")
+            return fallos
+        return fallos + [f"el arnes de vertices no compila: {e}"]
+
+    def resta(a, b): return [x - y for x, y in zip(a, b)]
+    def suma(a, b): return [x + y for x, y in zip(a, b)]
+    def por(a, k): return [x * k for x in a]
+    def mezcla(a, b, s): return [x + (y - x) * s for x, y in zip(a, b)]
+    def dist(a, b): return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+    def ancho(d, tam):
+        # cross((0, 0, 1), d), normalizado y por el tamano
+        r = [-d[1], d[0], 0.0]
+        n = math.sqrt(r[0] ** 2 + r[1] ** 2)
+        return [x / n * tam for x in r] if n > 0 else [math.nan] * 3
+    def bezier(a, b, c, d, t):
+        u = 1.0 - t
+        return [u**3 * p + 3*t*u*u * q + 3*t*t*u * r + t**3 * w
+                for p, q, r, w in zip(a, b, c, d)]
+
+    loc = locale_con_coma()
+    locales = [("C", "C")] + ([(loc, loc)] if loc else [])
+    segundos = "2.05"
+    for etq, entorno in locales:
+        donde = f"LC_ALL={etq}"
+        cab0, v0 = _vertices(binario, psys[0], segundos, entorno)
+        cabv, vv = _vertices(binario, psys["antes"], segundos, entorno)
+        cab3, v3 = _vertices(binario, psys[3], segundos, entorno)
+        if cab0 is None or cab3 is None or cabv is None:
+            fallos.append(f"{donde}: el arnes no devolvio nada")
+            continue
+        n = cab0[2]
+        # ── subdivision 0: la cuerda recta, numero a numero ──
+        print(f"  {donde:<20} {n} vivas; subdivision 0: {cab0[3]} vertices, "
+              f"{'iguales' if (cab0, v0) == (cabv, vv) else 'DISTINTOS'} a "
+              f"`cinta 1 0 0`; subdivision 3: {cab3[3]} vertices")
+        if n != 4 or cab0[1] != 1 or cab0[0]:
+            fallos.append(f"{donde}: cinta {cab0[1]}, {n} vivas, {cab0[0]} "
+                          f"piezas sin reconocer; se esperaba un `rope` de 4")
+            continue
+        if cab0[3] != 6 * (n - 1) or (cab0, v0) != (cabv, vv):
+            fallos.append(f"{donde}: con subdivision 0, {cab0[3]} vertices y "
+                          f"{'iguales' if v0 == vv else 'distintos'} a "
+                          f"`cinta 1 0 0`; se esperaban {6 * (n - 1)} e iguales")
+        # ── subdivision 3: la Bezier del `.geom` ──
+        if cab3[2] != n or cab3[3] != 6 * 4 * (n - 1):
+            fallos.append(f"{donde}: con subdivision 3, {cab3[2]} vivas y "
+                          f"{cab3[3]} vertices; se esperaban {n} y "
+                          f"{24 * (n - 1)}")
+            continue
+        q0 = [v0[i][:24] for i in range(0, len(v0), 6)]
+        q3 = [v3[i][:24] for i in range(0, len(v3), 6)]
+        if any(v3[i][:24] != q3[i // 6] for i in range(len(v3))):
+            fallos.append(f"{donde}: un quad no lleva el mismo dato en sus "
+                          f"seis vertices")
+        # Las vivas, en orden, con su tamano y su color: [x y z tam r g b a].
+        vivas = [q[0:4] + q[8:12] for q in q0] + [q0[-1][4:7] + q0[-1][19:24]]
+        peor = {"punto": 0.0, "ancho": 0.0, "color": 0.0, "uv": 0.0}
+        for k in range(n - 1):
+            A, B = vivas[k], vivas[k + 1]
+            C0 = vivas[k - 1] if k else A
+            C3 = vivas[k + 2] if k + 2 < n else B
+            Ra = ancho(resta(B[:3], C0[:3]), A[3])
+            Rb = ancho(resta(C3[:3], A[:3]), B[3])
+            ctl1 = suma(A[:3], por(resta(B[:3], C0[:3]), 0.15))
+            ctl2 = suma(B[:3], por(resta(A[:3], C3[:3]), 0.15))
+            uv_min = 1.0 - k / (n - 1)
+            uv_max = uv_min - 1.0 / (n - 1)
+            for j in range(5):
+                s = (j / 4) ** 2 * (3 - 2 * (j / 4))
+                M = bezier(A[:3], ctl1, ctl2, B[:3], s)
+                R = mezcla(Ra, Rb, s)
+                col = mezcla(A[4:8], B[4:8], s)
+                uv = mezcla([uv_min], [uv_max], s)[0]
+                # El punto `j` es el inicio del subquad `j` y el fin del `j-1`.
+                lados = []
+                if j < 4:
+                    q = q3[4 * k + j]
+                    ini, fin, c0, c1 = q[0:3], q[4:7], q[12:15], q[16:19]
+                    largo, pos = q[7], q[15]
+                    lados.append((ini, ancho(resta(fin, c0), q[3]), q[8:12],
+                                  1.0 - pos / (largo - 1)))
+                if j > 0:
+                    q = q3[4 * k + j - 1]
+                    ini, fin, c0, c1 = q[0:3], q[4:7], q[12:15], q[16:19]
+                    largo, pos = q[7], q[15]
+                    lados.append((fin, ancho(resta(c1, ini), q[19]), q[20:24],
+                                  1.0 - (pos + 1) / (largo - 1)))
+                for p, r, c, u in lados:
+                    peor["punto"] = max(peor["punto"], dist(p, M))
+                    peor["ancho"] = max(peor["ancho"], dist(r, R))
+                    peor["color"] = max(peor["color"], dist(c, col))
+                    peor["uv"] = max(peor["uv"], abs(u - uv))
+        print(f"  {'':<20} contra el .geom, lo peor: punto "
+              f"{peor['punto']:.2e}, ancho {peor['ancho']:.2e}, color "
+              f"{peor['color']:.2e}, UV {peor['uv']:.2e}")
+        for que, d in peor.items():
+            if not d < 1e-3:
+                fallos.append(f"{donde}: con subdivision 3 el {que} se aparta "
+                              f"{d:.3g} de lo que dibuja el .geom")
     return fallos
 
 
@@ -1198,6 +1424,10 @@ def main() -> int:
     # ── 11. `rope` une las particulas vivas ──
     print("\n── la cuerda de `rope` ──")
     fallos += prueba_cuerda(tmp)
+
+    # ── 12. la curva del `rope` ──
+    print("\n── la curva de `rope` (subdivision) ──")
+    fallos += prueba_subdivision(tmp)
 
     st = Counter()
     fuera = Counter()

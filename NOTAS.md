@@ -7757,7 +7757,10 @@ imagen quieta: el oráculo del cambio es la lectura del binario, no el aspecto.
   `[sistema+0x30]`, y ninguno de los campos se ha confirmado. Solo mueve la
   UV a lo largo de la cuerda.
 - **`uvscrolling` y `uvsmoothing`**, el desfase de `trailPosition`: ningún
-  `rope` del corpus los declara.
+  `rope` del corpus los declara. Pero `uvsmoothing` es verdadero si no se
+  declara (ver [La curva de un
+  `rope`](#la-curva-de-un-rope-la-bézier-de-subdivision-hecha-en-la-cpu)): en
+  WE lo llevan todos.
 - **La cuerda con dos puntos en el mismo sitio**: si dos vivas seguidas
   coinciden, `trailDelta` es nulo y el shader normaliza un vector cero, aquí y
   en WE. Sin ratón, las partículas de `trail_1` nacen en el `offset` de su
@@ -7765,8 +7768,10 @@ imagen quieta: el oráculo del cambio es la lectura del binario, no el aspecto.
 - **El tope de `flags & 2`**, una partícula por fotograma, sigue sin hacerse:
   con el paso fijo de 1/60, la estela del cursor puede tener más puntos que
   en WE.
-- **La curva** (`subdivision`) sigue siendo la del geometry shader, que no se
-  usa: los segmentos salen rectos, ahora entre partícula y partícula.
+- ~~**La curva** (`subdivision`) sigue siendo la del geometry shader, que no se
+  usa: los segmentos salen rectos, ahora entre partícula y partícula.~~
+  **Hecho**: `construye_cuerda` la evalúa en la CPU; ver [La curva de un
+  `rope`](#la-curva-de-un-rope-la-bézier-de-subdivision-hecha-en-la-cpu).
 
 ## Relojes de varias líneas: el salto viaja al plan y `wereloj` apila renglones
 
@@ -8113,3 +8118,165 @@ que leen otros miembros de `engine` y la `Date` de `3597772384`, cuyo `update`
 lanza «a número» por un motivo que no se ha mirado. Las fuentes que
 `2537500835` registra con `registerAsset` no se usan: sus cuatro capas se
 dibujan con la fuente de la capa, como cuando el texto estaba congelado.
+
+## La curva de un `rope`: la Bézier de `subdivision`, hecha en la CPU
+
+**El síntoma.** Desde [Cómo cose WE un
+`rope`](#cómo-cose-we-un-rope-una-sola-cinta-que-une-las-partículas-vivas-de-la-más-vieja-a-la-más-nueva)
+un `rope` es UNA cinta que une las partículas vivas, y cada tramo va de una
+viva a la siguiente: ya no son puntos a 1/60 s. El motivo por el que se pudo
+prescindir de la Bézier del geometry shader ([`rope` y
+`ropetrail`](#rope-y-ropetrail-la-cinta-sí-pide-historial): «ni la flecha de
+la cuerda ni el salto llegan a un píxel») dejó de valer, y la cuerda salía en
+tramos rectos donde WE la dibuja curva. Es lo que quedó apuntado al final de
+aquella sección.
+
+### Lo que hace WE, con direcciones
+
+Con el [método de siempre](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen),
+sobre el `wallpaper64.exe` instalado. `verifica_subdivision.py` comprueba cada
+fila instrucción a instrucción, con las cadenas de `.rdata` que nombra; vive en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261010-135949/medidas/` y
+se ejecuta con la raíz del repositorio como argumento.
+
+| qué | dónde | lo que hace |
+|---|---|---|
+| los defectos del `rope` | `0x1401c0c90`, llamada desde la fábrica en `0x1401cff82` (la única llamada del binario) | antes de leer nada, busca cada campo en el JSON (`0x140087490`) y si falta lo inserta (`0x140086de0`): `subdivision` como entero (tipo 1, `0x1401c0cda`) que vale **4** (`mov qword [rax], 4`, `0x1401c0d00`); `uvsmoothing` booleano **verdadero** (`0x1401c0dc7`, `0x1401c0dd3`); `uvscrolling` falso (`0x1401c0ec6`); `uvscale` entero 1 (`0x1401c0fd7`) |
+| la lectura | `0x1401cff8a`..`0x1401cffcf` | `subdivision` como entero (`0x140085ee0`: nulo → 0, entero tal cual, real truncado con `cvttsd2si`), **topado a 32** (`cmp eax, 0x20; jge` → `mov eax, 0x20`, `0x1401cffbd`..`0x1401cffca`) y a 0 por abajo (`cmovs`, `0x1401cffc4`); se guarda en `+0x38` de lo que devuelve el reservador, que es `bloque + 4` (`0x1401d8dbd`): `+0x3c` del bloque de tipo 3 |
+| el combo | `0x1401d2590`..`0x1401d2be9` | el bucle que monta los combos despacha por el tipo del bloque; el 3 salta a `0x1401d29e1` (`0x1401d25a8`), pone `THICKFORMAT` = 1 (`0x1401d2a34`) y **`TRAILSUBDIVISION` = `[bloque+0x3c]`** (`0x1401d2a3f`, `0x1401d2aa2`), y carga `genericropeparticle` (`0x1401d2be9`) |
+| el `ropetrail`, de paso | `0x1401d01de`, `0x1401d261b`..`0x1401d266f`, `0x1401c128a` | guarda su `subdivision` en `+0x40` (`[bloque+0x44]`), que es su `TRAILSUBDIVISION`; si falta, vale 1 |
+
+O sea: **el número que el autor escribe en `subdivision`, topado a [0, 32] y
+con 4 si no escribe nada, es el `TRAILSUBDIVISION` del shader**, y
+`genericropeparticle.geom` mete ese número de puntos dentro de cada tramo.
+
+### El `.geom`, y cómo se lleva al quad sin geometry shader
+
+Lo que calcula la rama con geometry shader de `genericropeparticle.vert` para
+un tramo de `A` a `B`, con los controles `C0` (la viva de atrás) y `C3` (la de
+delante), y lo que hace con ello el `.geom`, por cada `j` de 1 a `sub` con
+`s = smoothstep(0, 1, j/(sub+1))`:
+
+```
+punto  cubicBezier(A, A + 0.15·(B − C0), B + 0.15·(A − C3), B, s)
+ancho  mix(Ra, Rb, s),  Ra = normalize(cross(ojo, B − C0))·tam(A)
+                         Rb = normalize(cross(ojo, C3 − A))·tam(B)
+color  mix(color(A), color(B), s)
+UV     mix(uvMin, uvMax, s)
+```
+
+Nosotros dibujamos con la rama sin geometry shader: un quad recto por elemento,
+cuyo ancho sale de `cross(ojo, fin − control0)` en el inicio y de
+`cross(ojo, control1 − inicio)` en el fin, normalizado y por el tamaño de cada
+punta. Así que `construye_cuerda` parte cada tramo en `sub + 1` subquads
+(`tramo_curvo`) y a cada uno le da:
+
+- de extremos, dos puntos seguidos de la curva —en las puntas, `A` y `B` tal
+  cual, para que el tramo siguiente empiece justo donde acaba este—;
+- de controles, `fin − R(inicio)` e `inicio + R(fin)`, siendo `R(j)` el
+  `mix(Ra, Rb, s)` antes del `cross`, y de tamaño `|R(j)|`. Con el ojo
+  perpendicular a la cuerda —una escena plana— el ancho es el del `.geom`, y
+  dos subquads vecinos comparten el del punto que los une: la cinta no gira de
+  golpe en las juntas. En las puntas de cada tramo `R` es la `normalize(B − C0)`
+  de antes por el tamaño, la misma a los dos lados de la junta;
+- de `trailLength` y `trailPosition`, `1 + (N − 1)/ds` y `(k + s)/ds`, siendo
+  `ds` lo que avanza `s` en el subquad. Con eso la UV del shader sin geometry
+  shader, `1 − pos/(largo − 1)` y `−1/(largo − 1)` de paso, es
+  `mix(uvMin, uvMax, s)` en **cada** punto de la curva, no solo en las puntas
+  de cada tramo; entre dos puntos va lineal, como en el `.geom`, que también
+  interpola el triángulo.
+
+Con `subdivision` 0 no pasa nada de esto: `construye_cuerda` sigue con
+`segmento()` y los mismos números de antes.
+
+### Lo hecho
+
+- `tools/weparticles.py`: `_subdivision` lee el campo como WE (4 si falta,
+  real truncado, [0, 32]) y el `.psys` de un `rope` lo lleva **al final** de la
+  línea `cinta`: `cinta 1 0 0 3`. Un `.so` anterior lee tres números y no lo
+  ve; un `.psys` anterior que no lo trae lo deja a 0, la cuerda recta. El
+  `ropetrail` no cambia.
+- `src/weparticles.c`, el que comparten glexec y glexecutor (los dos
+  ejecutores no se tocan): `we_psys_load` lee el cuarto número, lo topa otra
+  vez y dimensiona el búfer con `subdiv + 1` quads por tramo —21 MB en el peor
+  caso, 1024 partículas y 32—; `construye_cuerda` llama a `tramo_curvo` si hay
+  subdivisión, y saca `6·(N−1)·(sub+1)` vértices.
+- El plan no cambia: `TRAILSUBDIVISION` solo lo lee el `.geom`, que no se usa.
+- `tools/test_weparticles.py`, prueba 12 (`prueba_subdivision`); la 11 declara
+  ahora `subdivision: 0`, que es lo que mide.
+
+### Lo medido
+
+Las medidas viven en `~/.local/state/wallpaperengine-bucle/ejecuciones/20261010-135949/medidas/`,
+con la raíz del repositorio como argumento, y sacan ellas mismas la base
+(`git archive` del merge-base con main, `6ad4f92`):
+
+- **La lectura** (`verifica_subdivision.py`): 9 cadenas, 55 instrucciones y
+  el recuento de la llamada a los defectos. **65 ok, 0 fallos.**
+- **La curva** (prueba 12 de `test_weparticles.py`): un `rope` de 4 vivas en
+  zigzag, con tamaños y colores distintos. Con `subdivision: 3` salen 72
+  vértices, cuatro subquads por tramo, y contra el `.geom` evaluado en Python
+  lo peor que se aparta es: el punto 2,91e-06, el ancho 1,10e-06, el color
+  5,11e-08 y la UV 2,69e-08; igual en `C` y en `es_ES`. Con la `s` lineal en
+  vez del `smoothstep`, el punto se aparta 4,09; con el control de delante
+  tomado del inicio, el ancho 3,03 (`mutaciones.py`). La misma prueba comprueba que `subdivision`
+  sin declarar da 4, `100` da 32, `-2` da 0 y `2.9` da 2.
+- **La cuerda recta** (`cuerda_contra_main.py`): con `subdivision: 0` el
+  arnés de vértices sobre el `src/weparticles.c` de la rama y el de main
+  —cada uno con el `.psys` que escribe su `weparticles.py`, `cinta 1 0 0 0`
+  y `cinta 1 0 0`— da la misma salida byte a byte y `6·(N−1)` vértices: los
+  presets de las pruebas 11 y 12 a 2, 2,05, 2,37 y 4 s, y los 11 `.psys` de
+  `rope` con `subdivision: 0` de `1927028828` y `2658583633` a los 4 s, en
+  `C` y en `es_ES.UTF-8`. **38 comparaciones, 0 fallos.**
+- **Los planes** (`compara_planes.py`, `werender.py --emit-plan` de los dos
+  árboles sobre las 129): las **113 escenas sin `rope`, idénticas byte a
+  byte**, plan y ficheros; en las 16 con `rope`, el `plan.txt` y todo lo que
+  no es un `.psys` de `rope`, idéntico; **964 `.psys` que no son `rope`,
+  idénticos**; y los 38 de `rope` solo cambian la línea `cinta`, a `cinta 1 0
+  0 N` con N = 0 en 11, 2 en 1, 3 en 20, 4 en 5 (las estelas de ratón que no
+  lo declaran, en `1571201795`, `2710814362`, `2821288001`, `3238423642` y
+  `3462491575`) y 32 en 1 (`2556172772`, que pide 100).
+- **La luz de las 16** (`luz_subdivision.py`, `--time 4 --frames 6`, Mesa en
+  los dos): las 16 renderizan, sin error, sin pases omitidos, con las mismas
+  estadísticas y el mismo `sin_soporte` que la base; ninguna apagada, ninguna
+  pierde luz (las medias no se mueven en la segunda cifra). Las seis con
+  `subdivision` 2 o 3 se renderizan dos veces en la base y salen idénticas
+  píxel a píxel, así que todo píxel distinto es de la curva: cambian
+  `1877658892` un **1,145 %** de los píxeles (0,372 % más de 2 niveles,
+  0,052 % más de 8), `2870014907` 0,053 %, `2864255069` 0,049 %, `2295239496`
+  0,041 %, `2648798210` 0,036 % y `2188295077` 0,008 %. Las de `subdivision`
+  0 y las estelas de ratón, nada: la medida es sin ratón.
+- **Por qué se nota tan poco** (la misma medida, sobre el plan de la rama a
+  los 4 s): las vivas de *Vapor* están cerca y la cuerda ya va casi recta. En
+  `1877658892`, 148 tramos de largo mediano 27,0 con una flecha mediana de
+  0,16 y máxima de 0,87, en unidades de la escena; la mayor de las seis es
+  5,07 (`2648798210`, tramos de 49,1). La curva es la de WE, pero en estas
+  escenas apenas se aparta de la recta; la cuerda «quebrada» que motivó el
+  cambio era de menos de lo que parecía.
+- **La luz de las 129** (`luz_corpus.py`, el `test_luminancia.py` de cada
+  árbol con Mesa, el de la rama contra la luz de main): **0 regresiones**, 0
+  apagadas, 0 que no rendericen. La única media distinta es `3097749052`,
+  36,18 → 36,07, que lleva vídeo y cuyo plan es idéntico byte a byte.
+- `test_weparticles.py` (con `LC_ALL=C` y con `LC_ALL=es_ES.UTF-8`) y
+  `test_wereloj.py` pasan enteros; `make build` y `make glexec` compilan.
+
+El oráculo es el `.geom` de WE más la lectura del binario: el preview de
+*Vapor* es una imagen quieta.
+
+### Lo que queda fuera
+
+- **`ropetrail`**: también lleva `TRAILSUBDIVISION` (1 si no lo declara), pero
+  sus puntos están a 1/60 s y la flecha no llega a un píxel; sigue recto.
+- **El ojo**: el ancho del subquad casa con el del `.geom` cuando el ojo es
+  perpendicular a la cuerda. En una escena con perspectiva, o con
+  `ORIENTATION` 0 —el `.geom` toma entonces el ojo de la cámara y la rama sin
+  geometry shader siempre `g_OrientationForward`—, la anchura dentro del tramo
+  se aparta algo. No se ha contado cuántos `rope` del corpus caen ahí.
+- **`uvsmoothing` es verdadero por defecto**: la función de defectos lo inserta
+  si falta, así que en WE todos los `rope` del corpus sin `uvscrolling` lo
+  llevan encendido (bit `0x40000`). Lo que hace —el desfase de
+  `trailPosition` en `0x1402309b5`..`0x140230a84`— sigue sin leerse; aquí no
+  hay desfase. Solo mueve la UV a lo largo de la cuerda.
+- **Un tramo que da media vuelta**: si `Ra` y `Rb` se anulan, el `.geom`
+  dibuja ahí ancho cero. `tramo_curvo` pone tamaño cero y una dirección no nula
+  —la del tramo— para que el shader no normalice un vector nulo.

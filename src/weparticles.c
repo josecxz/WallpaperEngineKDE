@@ -185,6 +185,10 @@ struct WeParticleSystem {
      * nacer y se borra al morir sin reordenar, asi que no tiene huecos. */
     int *orden;
     int n_orden;
+    /* Solo `rope`: cuantos puntos de la Bezier de `genericropeparticle.geom`
+     * van dentro de cada tramo (`subdivision`, ya topado a [0, 32]). Ver
+     * `tramo_curvo`. */
+    int subdiv;
 
     Particula *p;
     float *verts;
@@ -512,11 +516,14 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
             s->anim_modo = (int)v[0];
             s->anim_mult = v[1];
         } else if (strcmp(kw, "cinta") == 0) {
-            float v[3] = {0.0f, 8.0f, 0.05f};
-            lee_floats(resto, v, 3);
+            /* El cuarto numero, la `subdivision` del `rope`, lo anade un
+             * `weparticles.py` posterior; sin el, la cuerda sale recta. */
+            float v[4] = {0.0f, 8.0f, 0.05f, 0.0f};
+            lee_floats(resto, v, 4);
             s->cinta = (int)v[0];
             s->puntos = (int)v[1];
             s->intervalo = v[2];
+            s->subdiv = (int)v[3];
         } else if (strcmp(kw, "seed") == 0) {
             s->rng = (unsigned int)strtoul(resto, NULL, 10);
             if (!s->rng) s->rng = 0x1234567u;
@@ -605,13 +612,18 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
     size_t floats = WE_PSYS_FLOATS_POR_VERTICE;
     if (s->cinta == 1) {
         /* `rope` no guarda historial: une las particulas vivas, asi que da a
-         * lo sumo `maxcount - 1` segmentos y le basta el mismo numero de
-         * vertices por particula que a un sprite. */
+         * lo sumo `maxcount - 1` tramos, y cada uno son `subdiv + 1` quads.
+         * Con el tope de 32 de WE y 1024 particulas son 21 MB; se reserva por
+         * `maxcount`, pero solo se rellenan y se suben los quads de las vivas. */
         if (s->maxcount > 1024) s->maxcount = 1024;
+        if (s->subdiv < 0) s->subdiv = 0;
+        if (s->subdiv > 32) s->subdiv = 32;
+        v_por_particula *= (size_t)(s->subdiv + 1);
         floats = WE_PSYS_FLOATS_CINTA;
         s->orden = calloc((size_t)s->maxcount, sizeof *s->orden);
         if (!s->orden) { we_psys_free(s); return NULL; }
     } else if (s->cinta) {
+        s->subdiv = 0;
         if (s->puntos < 2) s->puntos = 2;
         if (s->puntos > 32) s->puntos = 32;
         if (s->intervalo < PASO) s->intervalo = PASO;
@@ -1204,8 +1216,9 @@ static void modula(const WeParticleSystem *s, const Particula *q, Modulado *m)
  * `rope` y `ropetrail` no dibujan un sprite por particula sino una CINTA. Cada
  * segmento de la cinta es un elemento con sus dos extremos y dos puntos de
  * control --- asi lo pide `genericropeparticle.vert`, que en la ruta sin
- * geometry shader los une con un quad recto (la curva Bezier solo la evalua el
- * geometry shader, con `subdivision`, y esa ruta no la usamos).
+ * geometry shader los une con un quad recto (la curva Bezier la evalua el
+ * geometry shader, con `subdivision`, y esa ruta no la usamos: la del `rope`
+ * la hace `tramo_curvo` aqui, en la CPU).
  *
  * Lo que cambia es que puntos cose cada una. `ropetrail` cose una cinta por
  * particula, por donde ha pasado, y para eso guarda el historial: un punto
@@ -1274,13 +1287,100 @@ static float *segmento(float *w, const float *a, const float *b,
     return w;
 }
 
+/* Un tramo de `rope` partido en `sub + 1` quads, con la curva que mete
+ * `genericropeparticle.geom` entre `a` y `b` (NOTAS, «La curva de un `rope`»).
+ * `c0` y `c3` son los controles del tramo, los de `construye_cuerda`. Por
+ * cada `j` de 1 a `sub`, con `s = smoothstep(0, 1, j / (sub + 1))` (`suave`):
+ *
+ *   punto   cubicBezier(a, a + 0.15·(b − c0), b + 0.15·(a − c3), b, s)
+ *   ancho   mix(Ra, Rb, s), con Ra = normalize(b − c0)·tam(a) y
+ *           Rb = normalize(c3 − a)·tam(b), antes del `cross` con el ojo
+ *   color   mix(color(a), color(b), s)
+ *   UV      mix(uvMin, uvMax, s)
+ *
+ * El quad sin geometry shader saca el ancho de `cross(ojo, fin − control0)` en
+ * el inicio y de `cross(ojo, control1 − inicio)` en el fin, normalizado y por
+ * el tamano. Asi que cada subquad lleva de controles `fin − R(inicio)` e
+ * `inicio + R(fin)`, y de tamano `|R|`: en una escena plana, con el ojo
+ * perpendicular a la cuerda, da el mismo ancho que el `.geom`, y dos subquads
+ * vecinos comparten el del punto que los une. La UV del vertice es
+ * `1 − pos/(largo − 1)` mas `−1/(largo − 1)` a lo largo del quad; con
+ * `largo = 1 + (n − 1)/ds` y `pos = (k + s)/ds`, siendo `ds` lo que avanza `s`
+ * en el subquad, sale la de WE en cada punto, no solo en las puntas. */
+static float *tramo_curvo(float *w, const float pt[4][WE_HIST_FLOATS],
+                          int sub, int n, int k)
+{
+    const float *c0 = pt[0], *a = pt[1], *b = pt[2], *c3 = pt[3];
+    float ba[3], bb[3], ra[3], rb[3], la = 0.0f, lb = 0.0f;
+    for (int i = 0; i < 3; i++) {
+        ba[i] = a[i] + 0.15f * (b[i] - c0[i]);
+        bb[i] = b[i] + 0.15f * (a[i] - c3[i]);
+        ra[i] = b[i] - c0[i];
+        rb[i] = c3[i] - a[i];
+        la += ra[i] * ra[i];
+        lb += rb[i] * rb[i];
+    }
+    la = sqrtf(la);
+    lb = sqrtf(lb);
+    for (int i = 0; i < 3; i++) {
+        ra[i] = la > 0.0f ? ra[i] / la * a[3] : 0.0f;
+        rb[i] = lb > 0.0f ? rb[i] / lb * b[3] : 0.0f;
+    }
+    /* El punto `j` de la curva y la direccion de su ancho; se corren uno por
+     * subquad. En las puntas, los extremos tal cual, para que el tramo
+     * siguiente empiece justo donde acaba este. */
+    float m[2][WE_HIST_FLOATS], r[2][3];
+    memcpy(m[0], a, sizeof m[0]);
+    memcpy(r[0], ra, sizeof r[0]);
+    float s0 = 0.0f;
+    for (int j = 1; j <= sub + 1; j++) {
+        float s1 = j <= sub ? suave((float)j / (float)(sub + 1)) : 1.0f;
+        if (j <= sub) {
+            float u = 1.0f - s1;
+            float b0 = u * u * u, b1 = 3.0f * s1 * u * u;
+            float b2 = 3.0f * s1 * s1 * u, b3 = s1 * s1 * s1;
+            float l = 0.0f;
+            for (int i = 0; i < 3; i++) {
+                m[1][i] = b0 * a[i] + b1 * ba[i] + b2 * bb[i] + b3 * b[i];
+                r[1][i] = ra[i] + (rb[i] - ra[i]) * s1;
+                l += r[1][i] * r[1][i];
+            }
+            m[1][3] = sqrtf(l);
+            for (int i = 4; i < WE_HIST_FLOATS; i++)
+                m[1][i] = a[i] + (b[i] - a[i]) * s1;
+            /* Si los dos anchos se anulan ---un tramo que da media vuelta---
+             * el `.geom` dibuja ahi una cinta de ancho cero. Aqui el tamano ya
+             * es cero, pero el shader normaliza la direccion: que no sea
+             * nula, o saldria NaN. */
+            if (m[1][3] <= 1e-6f * (a[3] + b[3]))
+                for (int i = 0; i < 3; i++)
+                    r[1][i] = b[i] - a[i];
+        } else {
+            memcpy(m[1], b, sizeof m[1]);
+            memcpy(r[1], rb, sizeof r[1]);
+        }
+        float q0[3], q1[3], ds = s1 - s0;
+        for (int i = 0; i < 3; i++) {
+            q0[i] = m[1][i] - r[0][i];
+            q1[i] = m[0][i] + r[1][i];
+        }
+        w = segmento(w, m[0], m[1], q0, q1, 1.0f + (float)(n - 1) / ds,
+                     ((float)k + s0) / ds);
+        memcpy(m[0], m[1], sizeof m[0]);
+        memcpy(r[0], r[1], sizeof r[0]);
+        s0 = s1;
+    }
+    return w;
+}
+
 /* `rope`: UNA cinta por sistema, de la particula viva mas vieja a la mas nueva
  * (`wallpaper64.exe`, `0x1402308a0`). El segmento `k` va de la `k` a la `k+1`
  * de `orden`, con la `k-1` y la `k+2` de control; en los dos extremos de la
  * cuerda el control es el propio extremo, que es lo que escribe WE, y el
  * shader toma entonces la tangente del segmento. `trailPosition` es `k`, asi
  * que la UV va de 1 en la mas vieja a 0 en la mas nueva. Con menos de dos
- * vivas no hay nada que dibujar, y WE tampoco lo dibuja (`0x1402369ed`). */
+ * vivas no hay nada que dibujar, y WE tampoco lo dibuja (`0x1402369ed`). Con
+ * `subdivision`, cada tramo sale curvo; ver `tramo_curvo`. */
 static int construye_cuerda(WeParticleSystem *s)
 {
     float *w = s->verts;
@@ -1300,10 +1400,14 @@ static int construye_cuerda(WeParticleSystem *s)
             estado(s, &s->p[s->orden[k + 2]], pt[3]);
         else
             memcpy(pt[3], pt[2], sizeof pt[3]);
-        w = segmento(w, pt[1], pt[2], pt[0], pt[3], (float)n, (float)k);
+        if (s->subdiv)
+            w = tramo_curvo(w, (const float (*)[WE_HIST_FLOATS])pt, s->subdiv,
+                            n, k);
+        else
+            w = segmento(w, pt[1], pt[2], pt[0], pt[3], (float)n, (float)k);
         memmove(pt[0], pt[1], 3 * sizeof pt[0]);
     }
-    s->n_verts = (n - 1) * 6;
+    s->n_verts = (n - 1) * 6 * (s->subdiv + 1);
     return s->n_verts;
 }
 
