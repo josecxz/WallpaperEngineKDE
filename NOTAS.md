@@ -7794,9 +7794,9 @@ Lo que **no** cambia es cómo se rasteriza un reloj: el tope de ancho del atlas
 se sigue estimando como antes, con el glifo más ancho por el número de glifos
 (sin contar el `\n`). Los 123 relojes que ya había tienen el mismo atlas y la
 misma em que en main (`atlas_de_reloj.py`). Medir el renglón de verdad
-subía la resolución de esta capa, pero también la de diez de `3462491575` que
-la tarea no pedía, y con ella la memoria de textura, que no se había medido:
-queda como pendiente, abajo.
+subiría la resolución de esta capa, pero también la de diez de `3462491575`
+que la tarea no pedía (la misma medida lo cuenta sin cambiar nada), y con ella
+la memoria de textura, que no se ha medido: queda como pendiente, abajo.
 
 ### Lo que se descartó
 
@@ -7804,8 +7804,8 @@ queda como pendiente, abajo.
   mete en la caja de una línea el avance de un espacio final, y esta cadena
   acaba en uno, así que el quad
   estático lleva un espacio de píxeles en blanco a la derecha que el del
-  reloj no lleva: unas 32–33 unidades de ancho de diferencia que no son tinta
-  (`cajas_reloj_vs_estatico.py` imprime las dos cajas de quad). Lo que
+  reloj no lleva: de 30,93 a 33,77 unidades de ancho de diferencia que no son
+  tinta (`cajas_reloj_vs_estatico.py`, en sus seis comparaciones). Lo que
   se compara es la **tinta**, los píxeles con cobertura del atlas llevados al
   lienzo por la uv de cada quad.
 - **`dayFormat: '1'`**: la escena lo declara en `scriptproperties` y el
@@ -7843,7 +7843,11 @@ y se ejecutan desde la raíz del repositorio.
 - **El atlas** (`atlas_de_reloj.py`, a la densidad de 1920x1200, contra
   main): los 123 relojes de antes, 0 con el atlas o la em distintos (216,5 MB
   de atlas RGBA en main, 218,3 en la rama). El nuevo, la capa 217: em de
-  160 px, atlas de 231x1980 (1,8 MB).
+  160 px, atlas de 231x1980 (1,8 MB). Y, sin cambiar nada, la misma medida
+  rehace la cuenta del tope con el renglón más largo de verdad —avances glifo
+  a glifo de cada renglón de las cadenas que escribe la plantilla—: cambiarían
+  de em 11 capas en 2 escenas, todas hacia arriba, la 217 (de 160 a 409 px) y
+  diez de `3462491575` (de 170–476 px a 409 o 512).
 - **Plan y render** (`plan_y_render.sh`): el plan lleva `relojfmt 0 %A\s` y
   su `relojtab` acaba en `\nS\sA\sT\sU\sR\sD\sA\sY`; `glexec` dibuja 12 pases
   con 0 omitidos, igual que main.
@@ -7868,8 +7872,9 @@ queda en 160 px porque el tope de ancho se estima con 18 `W`; la ruta estática
 le da 493 px con la cadena del jueves (`atlas_de_reloj.py`). La tinta cae en
 el mismo sitio, pero rasterizada a un tercio que el texto congelado al que
 sustituye. Medir el renglón más largo de verdad —contando los glifos del
-renglón y no los de la cadena entera— lo arreglaría, pero en el corpus sube
-también diez capas de `3462491575`, y con ellas la memoria de textura y el
+renglón y no los de la cadena entera— la subiría a 409 px, pero en el corpus
+sube también diez capas de `3462491575` (`atlas_de_reloj.py`, la pasada del
+renglón de verdad), y con ellas la memoria de textura y el
 alto de algún atlas. Es para una tarea aparte que mida esa memoria y el alto
 frente a `GL_MAX_TEXTURE_SIZE` en Mesa, sin cambiar de paso la fórmula de los
 relojes de una línea.
