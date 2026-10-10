@@ -8240,12 +8240,17 @@ con la raíz del repositorio como argumento, y sacan ellas mismas la base
   los dos): las 16 renderizan, sin error, sin pases omitidos, con las mismas
   estadísticas y el mismo `sin_soporte` que la base; ninguna apagada, ninguna
   pierde luz (las medias no se mueven en la segunda cifra). Las seis con
-  `subdivision` 2 o 3 se renderizan dos veces en la base y salen idénticas
-  píxel a píxel, así que todo píxel distinto es de la curva: cambian
-  `1877658892` un **1,145 %** de los píxeles (0,372 % más de 2 niveles,
-  0,052 % más de 8), `2870014907` 0,053 %, `2864255069` 0,049 %, `2295239496`
-  0,041 %, `2648798210` 0,036 % y `2188295077` 0,008 %. Las de `subdivision`
-  0 y las estelas de ratón, nada: la medida es sin ratón.
+  `subdivision` 2 o 3 cambian: `1877658892` un **1,145 %** de los píxeles
+  (0,372 % más de 2 niveles, 0,052 % más de 8), `2870014907` 0,053 %,
+  `2864255069` 0,049 %, `2295239496` 0,041 %, `2648798210` 0,036 % y
+  `2188295077` 0,008 %. Para separarlo del ruido, las 16 se renderizan dos
+  veces en la base: casi todas salen idénticas píxel a píxel, pero no siempre
+  —alguna escena cambia unos píxeles de una pasada a otra por su cuenta, y no
+  siempre la misma—. Por eso la medida exige que la escena cambie más del
+  0,1 % y además al menos diez veces lo que difiere de sí misma;
+  `1877658892` lo cumple con holgura. Las de
+  `subdivision` 0 y las estelas de ratón no cambian más que su base contra sí
+  misma: la medida es sin ratón.
 - **Por qué se nota tan poco** (la misma medida, sobre el plan de la rama a
   los 4 s): las vivas de *Vapor* están cerca y la cuerda ya va casi recta. En
   `1877658892`, 148 tramos de largo mediano 27,0 con una flecha mediana de
