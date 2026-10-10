@@ -142,6 +142,7 @@ make plan WALLPAPER=<ruta>     # deja plan.txt en plugin/contents/scene/
 | `test_weparticles.py` | el contrato entre `weparticles.py` y `src/weparticles.c`, locale incluida |
 | `test_wetext.py` | la unidad del punto, la caja y los quads, medidos contra el corpus |
 | `test_wereloj.py` | el contrato entre `wetext`/`wescript` y `src/wereloj.c`, locale incluida |
+| `test_wescript.py` | lo que dice JS en casos sintéticos del intérprete, y qué capas con `engine` dan reloj |
 | `test_wevideo.py` | `ffprobe` para las dimensiones y `ffmpeg` para los píxeles, sobre los 18 vídeos del corpus |
 | `test_luminancia.py obj/glexec` | **el que decide**: renderiza y mide la luz. `--guardar luz.json` / `--referencia luz.json` caza regresiones |
 
@@ -154,9 +155,10 @@ modelos 3D, focos y luces direccionales. El **bloom** sí, con la cadena LDR de
 WE (`werender.py`, `_emit_bloom`); el camino HDR de nueve escenas usa esa misma
 cadena porque no hay buffers en coma flotante. El vídeo se reproduce, pero
 **solo por CPU**: no hay VAAPI ni NVDEC. De las 148 capas de texto con
-JavaScript, 124 dan la hora en vivo (`tools/wescript.py` interpreta el script
-y deduce la plantilla) y 24 se quedan con el texto literal: las que usan
-`engine`, `import` o expresiones regulares, y las que no son un reloj.
+JavaScript, 130 dan la hora en vivo (`tools/wescript.py` interpreta el script
+y deduce la plantilla) y 18 se quedan con el texto literal: las que leen de
+`engine` algo más que `registerAsset`, las que usan `import` o expresiones
+regulares, y las que no son un reloj.
 
 El **puntero sí llega** —los uniforms del ratón y los 123 sistemas de
 partículas que lo persiguen, en 46 escenas— y la **cámara también se mueve**:

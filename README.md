@@ -318,10 +318,11 @@ Limitaciones conocidas:
   `maxcount` y `probability`; `angles`, `controlpointstartindex` y `flags` no,
   porque el corpus no trae casos con los que comprobarlos.
 - El **texto se ejecuta a medias**: 148 de las 172 capas de texto traen la
-  cadena en un script de JavaScript, y de esas **124 dan la hora en vivo**, en
-  21 escenas. Las 24 restantes se quedan con la copia que el autor guardó
-  —tipografía correcta, hora congelada, a menudo en `12:34`—: unas usan
-  `engine`, `import` o expresiones regulares, que el intérprete no cubre, y
+  cadena en un script de JavaScript, y de esas **130 dan la hora en vivo**, en
+  24 escenas. Las 18 restantes se quedan con la copia que el autor guardó
+  —tipografía correcta, hora congelada, a menudo en `12:34`—: unas leen de
+  `engine` algo más que `registerAsset`, o usan `import` o expresiones
+  regulares, que el intérprete no cubre, y
   otras no son relojes (un contador de fps, dos títulos de canción vacíos).
 - Sin audio reactivo.
 

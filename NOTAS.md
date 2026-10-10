@@ -4154,7 +4154,12 @@ distintos** es diminuto y cerrado. Sale de contarlo, no de suponerlo:
 Un léxico, un parser de precedencia y un evaluador de árbol: 129 de los 148
 salen. Los 19 que no son los que usan `engine` (el objeto global de WE, 5),
 `import` (2), una expresión regular literal (1) y ocho que ni siquiera exportan
-`update`.
+`update`. (Eso suma 16; los otros tres eran dos `const [a, b, c] = …` y la
+`Date` de `3597772384`.) *Actualizado* (ver «Desestructurar, `Boolean` y
+`engine.registerAsset`»): ahora salen 135; de `engine` solo queda el contador
+de fps de `3238423642`, que lee `engine.frametime`, y los 13 que no salen son
+ese, los dos `import`, la expresión regular, los ocho sin `update` y la `Date`
+de `3597772384`, cuyo `update` lanza «a número».
 
 Lo que más costó no fue el intérprete sino **`createScriptProperties()`**. Es
 una cadena de `.addCheckbox({...}).addText({...}).finish()` que declara las
@@ -4250,11 +4255,14 @@ que la prueba pruebe algo.
 hasta que entró el reloj de dos líneas de `2946362143`). Las dos mitades
 —`quads_de_reloj` en Python y `we_reloj_vertices` en C— coinciden en las 124,
 en siete instantes que cruzan la medianoche, el cambio de mes, un 29 de
-febrero y un sábado, y con las locales `C` y `es_ES` las dos.
+febrero y un sábado, y con las locales `C` y `es_ES` las dos. *Actualizado*:
+desde «Desestructurar, `Boolean` y `engine.registerAsset`» son **130 en 24**,
+y `tools/test_wereloj.py` compara las 130, también con `es_ES`.
 
 Las 24 capas con script que se quedan sin reloj están contadas arriba: 19 que
 el intérprete no cubre y cinco que no son un reloj —un contador de fps, un
-`undefined` y tres títulos de canción vacíos—.
+`undefined` y tres títulos de canción vacíos—. *Actualizado*: son 18, 13 que
+no cubre y las mismas cinco.
 
 ## `wectl list` dice de qué tipo es cada wallpaper
 
@@ -8007,3 +8015,101 @@ El kerning de los relojes sigue sin aplicarse (glifo a glifo), y el `spacing`
 horizontal sin usarse. El tope de alto no tiene en cuenta un driver con menos
 de 16384; si alguna vez se ejecuta sobre GLES, el mínimo garantizado es 2048 y
 haría falta preguntarle al contexto.
+
+## Desestructurar, `Boolean` y `engine.registerAsset`: seis relojes más
+
+**El síntoma.** De las 148 capas de texto con script, 24 se quedaban con la
+cadena que guardó el autor, y seis de ellas son relojes de verdad que solo se
+caían por tres huecos de JavaScript en `tools/wescript.py`, ninguno propio de
+una escena (`censo_scripts_sin_reloj.py`, del triador, y el barrido de
+`python3 tools/wescript.py`, que en main da 5 «variable sin definir: engine» y
+2 «nombre de variable»):
+
+- **Desestructurar un array al declarar.** `const [day, month, year] =
+  [pad(..), pad(..), time.getFullYear()]` en el reloj de dos renglones de
+  `3521337568` (capa 369) y `3577990983` (capa 203), que llevan el mismo
+  script: el parser esperaba un nombre y lanzaba «nombre de variable».
+- **`Boolean` como función**, en esos mismos dos: `[...].filter(Boolean)
+  .join(delimiter)` quita los segundos cuando valen `null`.
+- **`engine.registerAsset` en el cuerpo del módulo.** Las cuatro capas de
+  `2537500835` —«Clock» 27, «Date» 36, «Date2» 51, «Date3» 183— registran
+  sus fuentes con `cachedFonts.push(engine.registerAsset(f))` y solo las
+  usan en `applyUserProperties`, que aquí no se ejecuta. `engine` no existía y
+  el módulo no llegaba a prepararse.
+
+### Lo que cambia
+
+Solo `tools/wescript.py`; la ruta del reloj, también la de varias líneas, ya
+existía, así que `wetext`, `werender`, `src/wereloj.c` y los ejecutores no se
+tocan.
+
+- `declaracion` acepta un patrón `[a, b, , d]` en `let`/`var`/`const`: nombres
+  con huecos. Al ejecutar, se desestructura un array o una cadena y lo que
+  falta queda `undefined`; cualquier otra cosa es ScriptError. Los valores por
+  defecto (`[a = 1]`), `...resto`, los patrones anidados y la desestructuración
+  de **objetos** no se cubren: ningún script del corpus los usa, y siguen
+  siendo ScriptError.
+- `Boolean` es una función del ámbito global, `!!v`, para que valga como
+  argumento de `filter` y también llamada.
+- `engine` es un objeto `Motor` con **un solo miembro**, `registerAsset`, que
+  devuelve un `Recurso` opaco: no se lee (ScriptError), no se escribe y no se
+  puede pasar a cadena (`js_str` lo rechaza), así que si lo registrado acaba
+  en el texto la capa no es un reloj. Cualquier otro miembro —`frametime`,
+  `registerAudioBuffers`, …— y cualquier escritura en `engine` siguen siendo
+  ScriptError. Con un matiz: `typeof engine.frametime` da `'undefined'`,
+  porque la rama de `typeof` se traga cualquier ScriptError, como ya hacía
+  con una variable sin definir. Ningún script del corpus lo usa.
+
+### Lo que se descartó
+
+Un `engine` permisivo, un `Objeto` vacío en el que todo miembro da
+`undefined`. Haría pasar el contador de fps de `3238423642`, cuyo `update`
+suma `engine.frametime`: su salida depende del motor, no de la hora. Con el
+`Motor` restringido esa capa sigue fallando con «engine.frametime», y «Title
+Song» y «Artist Name» de `3597772384`, que también leen `frametime`, ya caían
+antes por `import`.
+
+### Lo medido
+
+- **El listado** (`listado_relojes.py`, escena, id, plantilla y tablas de cada
+  capa con reloj sobre las 129, main por `git archive` contra la rama): 124 en
+  main y 130 en la rama; el diff son seis líneas añadidas y ninguna quitada ni
+  cambiada: `3521337568` 369 y `3577990983` 203 con `'%I:%M %P\n%Y/%m/%d'`, y
+  de `2537500835` la 27 `'- %I:%M %p -'`, la 36 `'%e %B,%Y.'` con la tabla de
+  meses en inglés, la 51 `'%A'` con `S U N D A Y`… y la 183 `'%e,%f,%Y.'`.
+- **El censo** (`censo_scripts_sin_reloj.py tools`): «con script 148 reloj
+  130». El barrido de `python3 tools/wescript.py` pasa de «evaluadas 129, con
+  formato comprobado 124» a «evaluadas 135, con formato comprobado 130». Los 13
+  que no se evalúan: 8 sin `update`, 2 `import`, 1 expresión regular, 1
+  «engine.frametime» (el contador de fps) y 1 «a número» (la `Date` de
+  `3597772384`, que queda sin medir). Las 5 que se evalúan sin ser un reloj
+  son las mismas de antes.
+- **`engine` restringido** (`engine_sin_reloj.py` y la prueba nueva
+  `tools/test_wescript.py`): `reloj_de` da None para la capa sin nombre de
+  `3238423642` (value `'Text Layer'`) y para «Title Song» y «Artist Name» de
+  `3597772384`. La prueba recorre las 7 capas del corpus que nombran `engine`
+  y exige que las 3 que leen otro miembro no den reloj y las 4 que solo
+  registran sí; y en sintético, que `engine.frametime`, `registerAudioBuffers`,
+  `engine['timeOfDay']`, escribir en `engine` o usar el recurso en el texto
+  lancen, y que un `registerAsset` en el cuerpo del módulo no lo haga.
+- **Desestructuración y `Boolean`** (`tools/test_wescript.py`, contra lo que
+  dice JS): `const [a, b, c] = [1, 'x', 3]` da `'1x3'`; con `const [p, q] =
+  [7]`, `q` es `undefined`; `[1, 0, '', null, 'y'].filter(Boolean).join('-')`
+  da `'1-y'`; más huecos, cadenas y un bloque.
+- **El contrato** (`tools/test_wereloj.py`): 130 capas en 24 escenas, las 130
+  también con `es_ES`, 3 con varios renglones. `tools/test_wetext.py` pasa.
+- **La luz de los relojes** (`luz_relojes.py`, las 24 escenas con reloj en
+  main o en la rama, Mesa, `--time 4`, 6 fotogramas, la hora congelada con
+  `hora_fija.c` un jueves y un sábado, contra main): 0 apagadas, 0
+  regresiones, y fuera de las tres escenas de la tarea ninguna media cambia
+  (peor |Δ| 0,00). Las tres: `2537500835` 95,51 → 95,78 el jueves y → 95,77 el
+  sábado, `3521337568` 64,34 → 64,31 y → 64,29, `3577990983` 44,54 → 44,49
+  los dos días.
+
+### Lo que sigue sin reloj
+
+`import` (2 capas), la expresión regular literal de `2587542891`, los scripts
+que leen otros miembros de `engine` y la `Date` de `3597772384`, cuyo `update`
+lanza «a número» por un motivo que no se ha mirado. Las fuentes que
+`2537500835` registra con `registerAsset` no se usan: sus cuatro capas se
+dibujan con la fuente de la capa, como cuando el texto estaba congelado.
