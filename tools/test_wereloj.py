@@ -307,7 +307,8 @@ def main() -> int:
             etq = f"{wid} {obj.get('name', '')!r}"
             try:
                 r = wetext.disponer_reloj(res, obj, fmt.alfabeto,
-                                          fmt.max_longitud(), 0.5)
+                                          fmt.max_longitud(), 0.5,
+                                          cadenas=fmt.cadenas())
             except Exception as e:
                 fallos.append(f"{etq}: sin disponer ({e})")
                 continue

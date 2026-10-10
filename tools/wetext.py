@@ -38,6 +38,7 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,6 +73,14 @@ PX_MIN, PX_MAX = 8, 512
 # Al pasarse se rebaja el tamano en la proporcion justa, una sola vez, en vez
 # de pedirle al driver una textura que puede no dar.
 ANCHO_ATLAS_MAX = 4096
+
+# El atlas de un reloj es una columna de glifos, y lo que crece es el ALTO:
+# cifras, dos puntos y mayusculas de NotoSans, 37 glifos, a 512 px de em ya
+# son 13928 px de columna, y hay alfabetos de 47. 16384 es el
+# `GL_MAX_TEXTURE_SIZE` que da Mesa aqui y el minimo que garantiza GL 4.1;
+# ningun reloj del corpus llega, ni en 4K (ver NOTAS, «El tope del atlas de
+# un reloj»).
+ALTO_ATLAS_MAX = 16384
 
 # Separacion entre lineas dentro del atlas, para que el filtrado bilineal de
 # una no muerda la de al lado.
@@ -456,13 +465,15 @@ def _metricas_del_alfabeto(font, alfabeto: str) -> tuple[list[Glifo], list[Image
 
 
 def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
-                   max_glifos: int, px_por_unidad: float = 1.0) -> Reloj | None:
+                   max_glifos: int, px_por_unidad: float = 1.0, *,
+                   cadenas: Iterable[str]) -> Reloj | None:
     """El atlas y las métricas del alfabeto de una capa de reloj.
 
-    `alfabeto` sale de `wescript.Formato.alfabeto` y `max_glifos` de lo más
-    largo que la plantilla pueda escribir. El resto del cálculo ---el tamaño de
-    la em, el tope del atlas, la fuente--- es el mismo que en `disponer`, y
-    tiene que serlo: las dos rutas dibujan en el mismo espacio.
+    `alfabeto` sale de `wescript.Formato.alfabeto`, `cadenas` de
+    `Formato.cadenas` ---lo que la plantilla puede escribir--- y `max_glifos`
+    de la más larga. El tamaño de la em y la fuente salen igual que en
+    `disponer`, y tienen que hacerlo: las dos rutas dibujan en el mismo
+    espacio. El tope de ancho no: se mide como dibuja el reloj, glifo a glifo.
     """
     puntos = _numeros(obj.get("pointsize"), 1, 0.0)[0]
     if puntos <= 0 or not alfabeto:
@@ -475,26 +486,43 @@ def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
     blob = resolver_fuente(res, obj.get("font"))
     font = ImageFont.truetype(io.BytesIO(blob), px)
 
-    # El tope de ancho del atlas se mide sobre la LÍNEA más larga que la
+    # El tope de ancho del atlas se mide sobre el RENGLÓN más largo que la
     # plantilla puede escribir, no sobre el atlas: el atlas de un alfabeto se
-    # empaqueta en rejilla y no se acerca al tope, pero la línea sí puede
-    # pasarse y hay que rebajar el tamaño igual que hace `disponer`.
-    ancho_linea = max_glifos * max((font.getlength(c) for c in alfabeto), default=0.0)
+    # empaqueta en rejilla y no se acerca al tope, pero el renglón sí puede
+    # pasarse y hay que rebajar el tamaño igual que hace `disponer`. Se suman
+    # los avances glifo a glifo, que es como `quads_de_reloj` pone la pluma,
+    # con la fuente al px de partida, que es el que luego se rebaja. Antes se
+    # estimaba con el glifo más ancho por el número de glifos, y con letras
+    # eso cuenta una `W` por cada una: la capa de los días de `2946362143`
+    # quedaba a un tercio de la em que le da la ruta estática.
+    avances = {c: float(font.getlength(c)) for c in alfabeto}
+    ancho_linea = max((sum(avances.get(c, 0.0) for c in renglon)
+                       for s in cadenas for renglon in s.split("\n")),
+                      default=0.0)
     if ancho_linea > ANCHO_ATLAS_MAX:
         px = max(PX_MIN, int(px * ANCHO_ATLAS_MAX / ancho_linea))
         font = ImageFont.truetype(io.BytesIO(blob), px)
         u = em / px
 
-    glifos, imgs = _metricas_del_alfabeto(font, alfabeto)
-    pintados = [(g, im) for g, im in zip(glifos, imgs) if im is not None]
-    if not pintados:
-        return None
+    # Y el de alto, sobre el atlas ya rasterizado: la columna es la suma de
+    # los altos de los glifos, que no escalan del todo en proporción ---el
+    # borde no escala y la caja redondea---, así que se rebaja hasta que cabe.
+    while True:
+        glifos, imgs = _metricas_del_alfabeto(font, alfabeto)
+        pintados = [(g, im) for g, im in zip(glifos, imgs) if im is not None]
+        if not pintados:
+            return None
+        ah = sum(im.height for _, im in pintados)
+        if ah <= ALTO_ATLAS_MAX or px <= PX_MIN:
+            break
+        px = max(PX_MIN, min(px - 1, int(px * ALTO_ATLAS_MAX / ah)))
+        font = ImageFont.truetype(io.BytesIO(blob), px)
+        u = em / px
 
     # Rejilla de una columna: es el mismo empaquetado que usa `disponer` para
     # sus líneas y no hace falta más --- un alfabeto de reloj son once glifos,
     # y el más grande de este corpus son 47.
     aw = max(im.width for _, im in pintados)
-    ah = sum(im.height for _, im in pintados)
     atlas = np.zeros((ah, aw, 4), dtype=np.uint8)
     y = 0
     for g, im in pintados:

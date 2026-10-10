@@ -2042,12 +2042,14 @@ class Renderer:
         if fmt is None:
             return False
         alfabeto = fmt.alfabeto
+        cadenas = fmt.cadenas()
         max_glifos = fmt.max_longitud()
         if not alfabeto or max_glifos <= 0:
             return False
         try:
             r = wetext.disponer_reloj(self.res, obj.raw, alfabeto, max_glifos,
-                                      self.pixeles[1] / max(1, self.canvas[1]))
+                                      self.pixeles[1] / max(1, self.canvas[1]),
+                                      cadenas=cadenas)
         except Exception as e:
             self.notes.append(f"reloj sin disponer ({obj.name}): {e}")
             return False
@@ -2090,9 +2092,9 @@ class Renderer:
         # las 11:11 la tinta ocupa mucho menos que a las 08:38, y el buffer se
         # reserva una vez.
         #
-        # Sobre los MISMOS instantes que `Formato.max_longitud`, que es quien
-        # dimensiona la malla. Antes se cortaba en los 200 primeros y ese corte
-        # no era inocente: los instantes que cubren a proposito las 24 horas,
+        # Sobre las MISMAS cadenas que `Formato.max_longitud`, que es quien
+        # dimensiona la malla, y que el tope del atlas. Antes se cortaba en
+        # los 200 primeros instantes y ese corte no era inocente: los instantes que cubren a proposito las 24 horas,
         # los 12 meses y los 7 dias de la semana van DETRAS del barrido largo,
         # asi que el corte se los llevaba TODOS y dejaba solo los 278 primeros
         # dias del barrido. Con `%B` en la plantilla, el mes mas ancho podia no
@@ -2105,7 +2107,6 @@ class Renderer:
         # minutos o segundos--- pero el coste da igual: medido sobre
         # `3299228616` ---la escena a la que le pasaba---, el render tarda
         # 2,42 s con las cadenas y 2,42 s con el corte de 200.
-        cadenas = {fmt.render(t) for t in wescript._instantes_de_prueba()}
         peor = max((wetext.quads_de_reloj(r, s) for s in cadenas),
                    key=lambda v: float(np.abs(v[:, :2]).max()), default=verts)
         ancho = 2.0 * float(np.abs(peor[:, 0]).max())
