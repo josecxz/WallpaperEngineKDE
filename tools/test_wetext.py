@@ -240,11 +240,73 @@ def prueba_recorte_de_lineas(fallos: list[str]) -> None:
         fallos.append(f"limitrows=2 no dejo dos lineas ({disp and disp.lineas})")
 
 
+def prueba_tope_del_reloj_por_renglon(fallos: list[str]) -> None:
+    """El tope de ancho de un reloj se mide con el renglon que se escribe.
+
+    Antes se estimaba con el glifo mas ancho por el numero de glifos, y dos
+    relojes con el mismo alfabeto y el mismo largo salian a la misma em
+    aunque uno escribiera `I` y el otro `W`. Ahora el de las `I` no toca el
+    tope y el de las `W` si, y un salto parte el renglon: la misma cadena en
+    dos renglones cabe al doble de em que en uno.
+    """
+    obj = _objeto(text="", pointsize=60.0)
+    alfabeto = "IW"
+
+    def em(*cadenas: str) -> float:
+        r = wetext.disponer_reloj(_res(), obj, alfabeto, 24, 4.0,
+                                  cadenas=cadenas)
+        return obj["pointsize"] * wetext.UNIDADES_POR_PUNTO / r.u
+
+    estrecho, ancho = em("I" * 24), em("W" * 24)
+    partido = em("W" * 12 + "\n" + "W" * 12)
+    if not estrecho > ancho:
+        fallos.append(f"reloj: 24 `I` y 24 `W` salen a la misma em "
+                      f"({estrecho:.0f} y {ancho:.0f} px)")
+    if not partido > 1.5 * ancho:
+        fallos.append(f"reloj: el salto no parte el renglon del tope "
+                      f"({partido:.0f} px en dos renglones, {ancho:.0f} en uno)")
+    r = wetext.disponer_reloj(_res(), obj, alfabeto, 24, 4.0,
+                              cadenas=["W" * 24])
+    renglon = 24 * next(g.avance for g in r.glifos if g.cp == ord("W"))
+    if renglon > wetext.ANCHO_ATLAS_MAX:
+        fallos.append(f"reloj: el renglon de 24 `W` mide {renglon:.0f} px, "
+                      f"mas que el tope de {wetext.ANCHO_ATLAS_MAX}")
+
+
+def prueba_tope_de_alto_del_reloj(fallos: list[str]) -> None:
+    """El atlas de un reloj es una columna y su alto tiene tope.
+
+    Ningun reloj del corpus llega a `ALTO_ATLAS_MAX`, asi que se prueba con
+    el tope rebajado: la columna tiene que caber y la em bajar, no recortarse.
+    """
+    obj = _objeto(text="", pointsize=60.0)
+    alfabeto = "0123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    libre = wetext.disponer_reloj(_res(), obj, alfabeto, 5, 4.0,
+                                  cadenas=["12:34"])
+    tope = libre.atlas.shape[0] // 2
+    guardado = wetext.ALTO_ATLAS_MAX
+    wetext.ALTO_ATLAS_MAX = tope
+    try:
+        r = wetext.disponer_reloj(_res(), obj, alfabeto, 5, 4.0,
+                                  cadenas=["12:34"])
+    finally:
+        wetext.ALTO_ATLAS_MAX = guardado
+    if r.atlas.shape[0] > tope:
+        fallos.append(f"reloj: atlas de {r.atlas.shape[0]} px de alto con el "
+                      f"tope a {tope}")
+    if not r.u > libre.u:
+        fallos.append("reloj: el tope de alto no rebaja la em")
+    if r.atlas.shape[0] < 0.9 * tope:
+        fallos.append(f"reloj: el tope de alto rebaja de mas "
+                      f"({r.atlas.shape[0]} px con el tope a {tope})")
+
+
 def main() -> int:
     fallos: list[str] = []
     for prueba in (prueba_valor_de_script, prueba_texto_vacio, prueba_centrado,
                    prueba_origen_y_eje_y, prueba_uv_dentro_del_atlas,
-                   prueba_recorte_de_lineas, prueba_todas_se_disponen,
+                   prueba_recorte_de_lineas, prueba_tope_del_reloj_por_renglon,
+                   prueba_tope_de_alto_del_reloj, prueba_todas_se_disponen,
                    prueba_la_caja_reproduce_la_de_we):
         prueba(fallos)
         print(f"  {prueba.__name__}")

@@ -1332,8 +1332,13 @@ class Formato:
         recorriendo los mismos instantes con los que se comprobó el formato.
         Los saltos de línea no cuentan: no llevan quad.
         """
-        return max(len(s) - s.count("\n")
-                   for s in map(self.render, _instantes_de_prueba()))
+        return max(len(s) - s.count("\n") for s in self.cadenas())
+
+    def cadenas(self) -> set[str]:
+        """Las cadenas distintas que la plantilla escribe en los instantes de
+        prueba. Son el peor caso de todo lo que se dimensiona una vez: los
+        quads de la malla, el tope del atlas y el margen de la capa."""
+        return {self.render(t) for t in _instantes_de_prueba()}
 
     def render(self, cuando: dt.datetime) -> str:
         salida = []

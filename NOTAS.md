@@ -7867,7 +7867,7 @@ Las otras capas con `\n` en el script (`3521337568`, `3577990983`,
 `3299228616`…) no las deduce el intérprete por otros motivos, y siguen con su
 cadena congelada. El `spacing` horizontal sigue sin usarse, en las dos rutas.
 
-**Pendiente: la resolución del atlas de un reloj.** La em de la capa 217 se
+~~**Pendiente: la resolución del atlas de un reloj.** La em de la capa 217 se
 queda en 160 px porque el tope de ancho se estima con 18 `W`; la ruta estática
 le da 493 px con la cadena del jueves (`atlas_de_reloj.py`). La tinta cae en
 el mismo sitio, pero rasterizada a un tercio que el texto congelado al que
@@ -7877,4 +7877,133 @@ sube también diez capas de `3462491575` (`atlas_de_reloj.py`, la pasada del
 renglón de verdad), y con ellas la memoria de textura y el
 alto de algún atlas. Es para una tarea aparte que mida esa memoria y el alto
 frente a `GL_MAX_TEXTURE_SIZE` en Mesa, sin cambiar de paso la fórmula de los
-relojes de una línea.
+relojes de una línea.~~ **Cerrado** en [El tope del atlas de un
+reloj](#el-tope-del-atlas-de-un-reloj-el-renglón-que-se-escribe-y-un-alto-máximo):
+la 217 pasa a 409 px y las diez de `3462491575` a 409 o 512; 218,3 → 278,1 MB
+de atlas a 1920x1200, el atlas más alto en 10550 px frente a los 16384 de Mesa.
+
+## El tope del atlas de un reloj: el renglón que se escribe y un alto máximo
+
+**El síntoma.** La capa de los días de `2946362143` (la 217) se rasterizaba a
+160 px de em, y la ruta estática a la que sustituye le daba 493 (medido en
+«Lo medido» de [Relojes de varias
+líneas](#relojes-de-varias-líneas-el-salto-viaja-al-plan-y-wereloj-apila-renglones),
+cuyo pendiente es este): la tinta en el mismo sitio, pero estirada desde un
+atlas a un tercio.
+`wetext.disponer_reloj` rebaja la em cuando la línea más larga pasaría de
+`ANCHO_ATLAS_MAX` (4096 px), pero esa línea no la medía: la estimaba como
+`max_glifos ×` el glifo más ancho del alfabeto. Con una tabla de días o
+meses eso cuenta una `W` por cada carácter, y en el `%A ` de la 217, con las
+letras separadas por espacios, 18.
+
+### Lo que cambia
+
+- **El tope de ancho se mide sobre el renglón que se escribe.** Para cada
+  cadena distinta que la plantilla escribe en `_instantes_de_prueba()`, se
+  parte por `\n` y se suman los avances glifo a glifo de cada renglón, con la
+  fuente al px de partida —el mismo que luego se rebaja en proporción—. Es
+  como `quads_de_reloj` pone la pluma, sin kerning. Las cadenas las da
+  `Formato.cadenas()`, que ahora usan también `max_longitud` (los quads de la
+  malla) y el margen de `_emit_reloj`: las tres cosas que se dimensionan una
+  vez se miden sobre las mismas cadenas.
+- **Un tope de alto, `ALTO_ATLAS_MAX` = 16384.** El atlas del reloj es una
+  columna de glifos y lo que crece con la em es el alto: 37 glifos de NotoSans
+  (cifras, `:` y mayúsculas) a 512 px ya hacen una columna de 13928 px, y hay
+  alfabetos de 47. Si la columna se pasa, la em se rebaja en proporción y se
+  vuelve a rasterizar hasta que cabe —el borde de 2 px no escala, así que una
+  vez puede no bastar—. 16384 es el `GL_MAX_TEXTURE_SIZE` de Mesa aquí y el
+  mínimo que garantiza GL 4.1. En el corpus no rebaja ninguna capa, ni a
+  1920x1200 ni a 3840x2400: la em ya está acotada por `PX_MAX` (512 px), y la
+  columna más alta a 512 px son 10550.
+- Ni los ejecutores ni `src/wereloj.c`: el atlas y la uv de cada glifo viajan
+  por el plan como antes. Tampoco la ruta estática ni el empaquetado en una
+  columna.
+
+### Lo que se descartó
+
+- **Medir el renglón con `font.getlength(renglón)`**, que es lo que hace
+  `disponer`. Incluye el kerning, y el reloj no lo aplica: rasteriza glifo a
+  glifo y avanza glifo a glifo (ver [El
+  alfabeto](#el-alfabeto-y-lo-que-se-pierde)). El tope tiene que medir lo que
+  luego se dibuja.
+- **Bajar el tope de alto a 8192**, el doble del de ancho: ya en main hay un
+  atlas de 9053 px de alto (la capa 2894 de `3462491575`, a 438 px de em), y
+  ese tope le bajaría la em a una capa que hoy está bien.
+
+### Lo medido
+
+Las medidas viven con la tarea, en
+`~/.local/state/wallpaperengine-bucle/ejecuciones/20261010-082940/medidas/`,
+y se ejecutan desde la raíz del repositorio.
+
+- **`GL_MAX_TEXTURE_SIZE` en Mesa**: 16384 (`Mesa Intel(R) Graphics
+  (RPL-S)`), con `cc -O2 -o max_textura max_textura.c -lEGL -lGL &&
+  __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
+  ./max_textura`, que abre el mismo contexto que `glexec` (EGL sin
+  superficie, GL 3.3 core).
+- **El atlas** (`atlas_de_reloj.py a|b|c|d`, contra main 8c71c75, a la
+  densidad de `werender` con 1920x1200 y con 3840x2400). Rehace a mano la em
+  del renglón de verdad y la de la estimación, sin pasar por
+  `disponer_reloj`, y deduce en la base qué capas tienen que cambiar: son las
+  11 esperadas, y en la rama tienen todas la em del renglón:
+
+  | capa | em main → rama | atlas main → rama |
+  |---|---|---|
+  | `2946362143` 217 | 160 → 409 | 231x1980 → 584x4965 |
+  | `3462491575` 1140 | 210 → 409 | 244x2281 → 471x4378 |
+  | `3462491575` 1509 | 255 → 409 | 244x2628 → 390x4161 |
+  | `3462491575` 265 | 230 → 409 | 257x2475 → 453x4365 |
+  | `3462491575` 278 | 275 → 409 | 245x2675 → 362x3939 |
+  | `3462491575` 286 | 425 → 512 | 376x7901 → 453x9462 |
+  | `3462491575` 2894 | 438 → 512 | 376x9053 → 439x10550 |
+  | `3462491575` 4786 | 394 → 512 | 376x7765 → 487x10032 |
+  | `3462491575` 504 | 170 → 409 | 245x2100 → 584x4965 |
+  | `3462491575` 6259 | 476 → 512 | 376x8526 → 404x9135 |
+  | `3462491575` 6404 | 308 → 409 | 245x2880 → 324x3795 |
+
+  Ninguna capa baja de em, a ninguna de las dos pantallas. Las otras 113
+  tienen la em y el atlas idénticos a main (0 distintas), y siguen siendo 124
+  relojes. El tope de alto no rebaja ninguna.
+- **La memoria** (la misma medida, `d`): 218,3 MB de atlas RGBA de reloj a
+  1920x1200 en main y 278,1 en la rama (+59,8): `3462491575` de 92,2 a
+  142,2 MB (+50,0) y `2946362143` de 1,8 a 11,6 (+9,8); las otras 19 escenas
+  con reloj, igual. Es la suma de los 124 relojes deducidos; en vivo solo se
+  sube el atlas de los que se emiten, y de `3462491575`, con sus propiedades
+  por defecto, `werender` emite 3.
+- **El ancho y el alto frente a Mesa** (`c`): a 1920x1200, el atlas más ancho
+  pasa de 376 a 584 px (la 217) y el más alto de 9053 a 10550 (la 2894); a
+  3840x2400, de 376 a 598 de ancho (la 504) y el mismo 10550 de alto, porque
+  las capas que crecen ya llegan a `PX_MAX`. A 3840x2400 la memoria va de
+  452,5 a 542,2 MB. Todo por debajo de 16384.
+- **Las pruebas** (`tools/test_wetext.py`): dos nuevas.
+  `prueba_tope_del_reloj_por_renglon` pide que 24 `I` salgan a más em que 24
+  `W` con el mismo alfabeto, y que la misma cadena partida en dos renglones
+  salga a más de 1,5 veces la em de uno; `prueba_tope_de_alto_del_reloj`
+  rebaja el tope a la mitad del alto que sale sin él y pide que la columna
+  quepa, que la em baje y que no baje de más (más del 90 % del tope). Con la
+  estimación de antes y sin tope de alto (`rompe_tope_renglon.sh`, sobre una
+  copia) caen las dos, con 4 fallos: 183 px de em en los tres casos, y una
+  columna de 13928 px con el tope a 6964. `tools/test_wereloj.py` pasa: 124
+  capas en 21 escenas, las 124 también con `es_ES`.
+- **Plan y render** (`render_y_subida.sh`, Mesa, 1920x1200): `3462491575`
+  dibuja 140 pases y `2946362143` 12, con 0 omitidos; `sube_texturas.c` sube
+  cada textura de los dos planes con la misma llamada que `glexec` y mira
+  `glGetError`: 59 y 9 texturas, la más alta de 10550 px, 0 errores. El mismo
+  programa da `GL_INVALID_VALUE` con una de 1x16385, que es lo que comprueba
+  que mira de verdad.
+- **La luz de los relojes** (`luz_relojes.py`, las 21 escenas con reloj,
+  Mesa, `--time 4`, 6 fotogramas, la hora congelada con `hora_fija.c` un
+  jueves y un sábado, contra main): 0 apagadas, 0 regresiones, y la única con
+  la media distinta es `2946362143` (25,84 → 25,83 el jueves, 25,71 → 25,70 el
+  sábado: la misma tinta, rasterizada a otra em). `3462491575` queda en 131,27
+  los dos días: el cambio no llega a la segunda cifra decimal de la media.
+- **Las 129** (`luz_129.sh`: `test_luminancia.py obj/glexec` de main con
+  `--guardar` y de la rama con `--referencia`, bajo el cerrojo del corpus): 0
+  regresiones, 0 apagadas y la misma cuenta de sospechosas que main (1).
+
+### Lo que queda fuera
+
+El kerning de los relojes sigue sin aplicarse (glifo a glifo), y el `spacing`
+horizontal sin usarse. El tope de alto no tiene en cuenta un driver con menos
+de 16384; si alguna vez se ejecuta sobre GLES, el mínimo garantizado es 2048 y
+haría falta preguntarle al contexto.
