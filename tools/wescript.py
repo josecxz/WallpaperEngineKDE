@@ -306,6 +306,17 @@ class Parser:
         decls = []
         while True:
             nombre = self.mira()
+            if self.es("["):
+                # `const [a, b, c] = [...]`: desestructurar un array. El patrón
+                # es una lista de nombres ---con huecos, `[, b]`--- y lo demás
+                # (valores por defecto, `...resto`, patrones anidados o de
+                # objeto) no sale en el corpus y se queda en ScriptError.
+                destino = self.patron_de_array()
+                self.come("=")
+                decls.append((destino, self.asignacion()))
+                if not self.prueba(","):
+                    break
+                continue
             if nombre.tipo != "ident":
                 raise ScriptError("nombre de variable")
             self.i += 1
@@ -315,6 +326,24 @@ class Parser:
                 break
         self.punto_y_coma()
         return ("decl", decls)
+
+    def patron_de_array(self) -> list:
+        """Los nombres de `[a, , c]`, con None en los huecos."""
+        self.come("[")
+        nombres: list = []
+        while not self.es("]"):
+            if self.prueba(","):
+                nombres.append(None)
+                continue
+            t = self.mira()
+            if t.tipo != "ident" or t.valor in _PALABRAS:
+                raise ScriptError("patrón de desestructuración")
+            self.i += 1
+            nombres.append(t.valor)
+            if not self.prueba(","):
+                break
+        self.come("]")
+        return nombres
 
     def funcion(self):
         self.i += 1
@@ -583,6 +612,24 @@ class Objeto(dict):
     """Un objeto de JS. Es un dict; lo separa del resto para `typeof`."""
 
 
+class Motor:
+    """`engine`, el objeto global de WE, con un único miembro: `registerAsset`.
+
+    Hay scripts que registran sus fuentes en el cuerpo del módulo
+    ---`cachedFonts.push(engine.registerAsset(f))`--- y solo las usan en
+    `applyUserProperties`, que aquí no se ejecuta. Eso no hace que lo que
+    devuelve `update` dependa del motor, y por eso se deja pasar. Cualquier
+    otro miembro (`frametime`, `registerAudioBuffers`...) sí hace que dependa,
+    y sigue siendo un ScriptError: un `engine` que diera `undefined` a todo
+    convertiría un contador de fps en un «reloj» que no cambia.
+    """
+
+
+class Recurso:
+    """Lo que devuelve `engine.registerAsset`: opaco. Ni se lee ni se escribe;
+    si acaba en el texto, `js_str` lo rechaza y la capa no es un reloj."""
+
+
 class Constructor:
     """Lo que devuelve `createScriptProperties()`: una cadena de `.addX({...})`.
 
@@ -752,6 +799,11 @@ class Interprete:
         g.declara("console", Objeto())
         g.declara("thisLayer", Objeto())
         g.declara("shared", Objeto())
+        g.declara("engine", Motor())
+        # `Boolean` como función es `!!v`; hace falta como argumento, en el
+        # `.filter(Boolean)` que quita los trozos vacíos antes de un `join`.
+        g.declara("Boolean", Funcion(
+            ["v"], [("return", ("un", "!", ("un", "!", ("var", "v"))))], g))
         for s in self.ast:
             if s[0] == "func" and s[1]:
                 g.declara(s[1], Funcion(s[2], s[3], g))
@@ -772,7 +824,18 @@ class Interprete:
         clase = s[0]
         if clase == "decl":
             for nombre, expr in s[1]:
-                a.declara(nombre, self.eval(expr, a) if expr is not None else None)
+                valor = self.eval(expr, a) if expr is not None else None
+                if isinstance(nombre, list):
+                    # Lo que falta queda `undefined`, como en JS. Se desestructura
+                    # un array o una cadena; cualquier otra cosa no es iterable
+                    # aquí, y en JS tampoco lo sería un número o `undefined`.
+                    if not isinstance(valor, (list, str)):
+                        raise ScriptError("desestructurar algo que no es array")
+                    for i, n in enumerate(nombre):
+                        if n is not None:
+                            a.declara(n, valor[i] if i < len(valor) else None)
+                else:
+                    a.declara(nombre, valor)
         elif clase == "expr":
             self.eval(s[1], a)
         elif clase == "bloque":
@@ -1025,6 +1088,12 @@ class Interprete:
             return obj.metodo(js_str(clave))
         if obj == "__Date__":
             return ("__met_Date__", obj, clave)
+        if isinstance(obj, Motor):
+            if clave == "registerAsset":
+                return ("__met_motor__", obj, clave)
+            raise ScriptError(f"engine.{js_str(clave)}")
+        if isinstance(obj, Recurso):
+            raise ScriptError("propiedad de un recurso de engine")
         if isinstance(obj, dict):
             return obj.get(js_str(clave))
         if obj is None:
@@ -1095,6 +1164,8 @@ class Interprete:
             raise ScriptError(f"Number.{nombre}")
         if clase == "__met_Date__":
             raise ScriptError(f"Date.{nombre} estático")
+        if clase == "__met_motor__":
+            return Recurso()
         raise ScriptError(nombre)
 
     def _metodo_array(self, obj: list, nombre: str, args):
