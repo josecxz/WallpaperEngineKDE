@@ -8255,8 +8255,10 @@ con la raíz del repositorio como argumento, y sacan ellas mismas la base
   cambio era de menos de lo que parecía.
 - **La luz de las 129** (`luz_corpus.py`, el `test_luminancia.py` de cada
   árbol con Mesa, el de la rama contra la luz de main): **0 regresiones**, 0
-  apagadas, 0 que no rendericen. La única media distinta es `3097749052`,
-  36,18 → 36,07, que lleva vídeo y cuyo plan es idéntico byte a byte.
+  apagadas, 0 que no rendericen. Si alguna media se mueve, es `3097749052`,
+  que no renderiza igual dos veces (ver [El corro, el ruido y una orientación
+  que ya estaba bien](#el-corro-el-ruido-y-una-orientación-que-ya-estaba-bien))
+  y cuyo plan sale idéntico en `compara_planes.py`.
 - `test_weparticles.py` (con `LC_ALL=C` y con `LC_ALL=es_ES.UTF-8`) y
   `test_wereloj.py` pasan enteros; `make build` y `make glexec` compilan.
 
