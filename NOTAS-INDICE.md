@@ -370,7 +370,7 @@ make indice                       # reescribe los números desde NOTAS.md
 - `4218` **El alfabeto, y lo que se pierde** — rasterizar glifo a glifo en vez de por línea, y el kerning que eso cuesta.
 - `4237` **Y la locale, otra vez** — `strtof` dentro de plasmashell deja el alfabeto a cero sin un solo error por medio.
 - `7763` **Relojes de varias líneas: el salto viaja al plan y `wereloj` apila renglones** — el `SATURDAY` de `2946362143` empieza por `\n`; la ruta del reloj apila renglones como la estática, de 123 a 124 relojes.
-- `7774` **Lo que cambia** — el `\n` escapado en el plan, el `espaciado` al final de la línea `reloj`, y el tope de ancho medido sobre las cadenas y no estimado (160 → 409 px).
+- `7774` **Lo que cambia** — el `\n` escapado en el plan, el `espaciado` al final de la línea `reloj`; el atlas de los relojes de una línea no cambia.
 - `7801` **Lo que se descartó** — la caja del quad engaña: `getbbox` de Pillow cuenta el espacio final; se compara la tinta. Y `dayFormat`, sin tocar.
 
 ## Inventario del formato: qué leemos y qué no
