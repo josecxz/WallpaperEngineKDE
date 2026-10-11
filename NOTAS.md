@@ -8409,17 +8409,22 @@ plan dice `volteada 1`, y `werender.volteo_de_hoja` en Python.
 - **El render** (`am_pm.py`, Mesa, `--time 0`, `TZ=Etc/GMT+6` y
   `TZ=Etc/GMT-6`): el rectángulo de la capa 303 es x 2127..2179, y 385..432 en
   el lienzo de 3840x2160. Suma de |diferencia| entre las dos horas en el
-  recorte: **0** en main y, en la rama, **379188** en una pasada hecha a las
-  16 h/04 h locales y **379253** en otra a las 12 h/00 h —lo que hay detrás
-  del indicador cambia algo con la hora de la pasada, y la cifra con ello—. Y
-  el recorte de cada hora se
-  parece al fotograma que toca: correlación del perfil por filas +0,99 con el
-  que toca y −0,64 con el otro, en los dos sentidos.
-- **La luz** (`luz_escena.py`, la escena que cambia, Mesa, 6 fotogramas):
-  media 52,39 en main y en la rama, 0 regresiones.
+  recorte: **0** en main y, en la rama, del orden de 379 000. La cifra exacta
+  no se da: varía con la hora de la pasada, porque cambia algo de lo que hay
+  detrás del indicador. Y el recorte de cada hora se parece al fotograma que
+  toca: correlación del perfil por filas +0,99 con el que toca y entre −0,6 y
+  −0,7 con el otro, en los dos sentidos.
+- **La luz** (`luz_escena.py`, la escena que cambia, Mesa, 6 fotogramas, base
+  y rama en el mismo minuto): la misma media en main y en la rama —diferencia
+  rama − base +0,00— y 0 regresiones. La media en sí no se da porque no se
+  reproduce: la escena lleva un reloj, sus dígitos cambian la luz y
+  `luz_escena.py` renderiza con la hora del sistema; de una pasada a otra se
+  mueve en la segunda cifra decimal.
 - **Los avisos** (`avisos.py`, `make build` y `make glexec` en frío, main contra
-  la rama): los mismos 2, de cabeceras de Qt; 0 nuevos. `test_wereloj.py`,
-  `test_wescript.py` y `test_werender.py` pasan.
+  la rama): **0 nuevos**. El que sale en las dos es `GL_GLEXT_VERSION`
+  redefinido, de `qopenglext.h` de Qt; cuántos salen no se cita, porque en una
+  pasada salió además otro de `qchar.h`, también de Qt y en las dos por igual.
+  `test_wereloj.py`, `test_wescript.py` y `test_werender.py` pasan.
 
 ### Lo que queda
 

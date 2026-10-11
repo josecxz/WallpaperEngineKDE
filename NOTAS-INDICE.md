@@ -392,7 +392,7 @@ make indice                       # reescribe los números desde NOTAS.md
 - `8346` **Lo que cambia** — `thisLayer.getTextureAnimation().setFrame`, la línea `hojahora`, y el volteo: los uniforms de WE no se suben tal cual sobre una textura volteada.
 - `8383` **Lo que se descartó** — encender `SPRITESHEET` o reproducir por `frame_time` las hojas sin script, y reconocer el script por su texto.
 - `8392` **Lo medido** — 09:00 y 15:00 con `es_ES` a 1e-6; de las 129 solo cambia un plan; el recorte de la capa difiere entre AM y PM en la rama y es idéntico en main.
-- `8424` **Lo que queda** — reproducir por `frame_time` las 56 hojas y si WE enciende `SPRITESHEET` solo; las de varias imágenes; `setFrame` movido por clics.
+- `8429` **Lo que queda** — reproducir por `frame_time` las 56 hojas y si WE enciende `SPRITESHEET` solo; las de varias imágenes; `setFrame` movido por clics.
 
 ## Inventario del formato: qué leemos y qué no
 
