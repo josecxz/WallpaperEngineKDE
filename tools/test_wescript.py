@@ -13,6 +13,12 @@ dice JS en cada caso, escrito a mano y pequeño:
      `registerAsset` en el texto.
   4. Sobre el corpus: las capas que leen otro miembro de `engine` siguen sin
      reloj, y las que solo registran fuentes sí lo dan.
+  5. `thisLayer.getTextureAnimation().setFrame(n)` en el script de una
+     propiedad que no es texto: la tabla de 24 fotogramas cuando `n` depende
+     solo de la hora ---la de la capa 303 de `3299228616`, `[0]*12 + [1]*12`---
+     y ninguna cuando no se llama a `setFrame`, cuando el fotograma no cambia,
+     cuando depende del minuto o cuando el script usa otro método de la
+     animación.
 
 Uso:
     python3 tools/test_wescript.py
@@ -129,6 +135,45 @@ def corpus(fallos: list[str]) -> tuple[int, int]:
     return con, sin
 
 
+def hoja(cuerpo: str) -> list[int] | None:
+    """La tabla de un `update` sintético en la propiedad `visible`."""
+    return wescript.hoja_por_hora({"visible": {
+        "script": f"export function update(value) {{ {cuerpo} }}",
+        "value": True}})
+
+
+AM_PM = ("var h = new Date().getHours();"
+         "thisLayer.getTextureAnimation().setFrame(h >= 12 ? 1 : 0); return value;")
+
+HOJAS = [
+    # (qué, cuerpo de update, la tabla que tiene que salir)
+    ("AM/PM", AM_PM, [0] * 12 + [1] * 12),
+    ("una por hora, con fracción", "const a = thisLayer.getTextureAnimation();"
+     "a.setFrame(new Date().getHours() + 0.25); return value;", list(range(24))),
+    ("sin setFrame", "var h = new Date().getHours(); return h >= 12;", None),
+    ("fotograma fijo", "thisLayer.getTextureAnimation().setFrame(1); return value;", None),
+    ("con el minuto", "thisLayer.getTextureAnimation()"
+     ".setFrame(new Date().getMinutes() % 2); return value;", None),
+    ("solo por la tarde", "if (new Date().getHours() >= 12) "
+     "thisLayer.getTextureAnimation().setFrame(1); return value;", None),
+    ("otro método", "const a = thisLayer.getTextureAnimation(); a.pause();"
+     "a.setFrame(new Date().getHours() >= 12 ? 1 : 0); return value;", None),
+]
+
+
+def hoja_del_corpus(fallos: list[str]) -> None:
+    """La capa 303 de `3299228616`, y que el texto de esa escena no cambia."""
+    p = wepaths.we_workshop() / "3299228616" / "scene.pkg"
+    _, ents = pkg_inspect.read_pkg(str(p))
+    s = json.loads([e for e in ents if e["name"] == "scene.json"][0]["data"])
+    o = [o for o in s["objects"] if o.get("id") == 303][0]
+    tabla = wescript.hoja_por_hora(o)
+    ok = tabla == [0] * 12 + [1] * 12
+    print(f"  {'ok' if ok else 'MAL':3} {'3299228616 capa 303 visible':32} {tabla}")
+    if not ok:
+        fallos.append(f"3299228616 capa 303: {tabla}")
+
+
 def main() -> int:
     fallos: list[str] = []
     print("── sintéticos ──")
@@ -159,6 +204,23 @@ def main() -> int:
         "new Date().getMinutes(); }", {})
     if wescript.formato_de(ip) is not None:
         fallos.append("formato_de da reloj con engine.frametime")
+
+    print("── setFrame por hora ──")
+    for que, cuerpo, espera in HOJAS:
+        r = hoja(cuerpo)
+        ok = r == espera
+        print(f"  {'ok' if ok else 'MAL':3} {que:32} {r}")
+        if not ok:
+            fallos.append(f"hoja {que}: {r} y tenía que ser {espera}")
+    # Para un texto, `setFrame` no cambia lo que devuelve `update`.
+    try:
+        r = update("thisLayer.getTextureAnimation().setFrame(1); return 'x';")
+    except wescript.ScriptError as e:
+        r = f"ScriptError: {e}"
+    print(f"  {'ok' if r == 'x' else 'MAL':3} {'setFrame en un texto':32} {r!r}")
+    if r != "x":
+        fallos.append(f"setFrame en un texto: {r!r}")
+    hoja_del_corpus(fallos)
 
     print("── capas del corpus con engine ──")
     con, sin = corpus(fallos)

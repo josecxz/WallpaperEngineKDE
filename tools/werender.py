@@ -271,6 +271,35 @@ def _escapa(s: str) -> str:
             .replace("\n", "\\n") or "\\s")
 
 
+def fotogramas_de_hoja(frames: list[dict], ancho: float, alto: float,
+                       cuantos: int) -> list[list[float]]:
+    """Los `cuantos` primeros fotogramas de `tex.frames` como los dos uniforms
+    de WE: `g_Texture0Rotation` (los dos ejes del fotograma) y
+    `g_Texture0Translation` (su esquina), con la v hacia abajo y partidos por
+    el tamano de lo que se subio."""
+    return [[float(f["width"]) / ancho, float(f["width_y"]) / alto,
+             float(f["height_x"]) / ancho, float(f["height"]) / alto,
+             float(f["x"]) / ancho, float(f["y"]) / alto]
+            for f in frames[:cuantos]]
+
+
+def volteo_de_hoja(f: list[float]) -> tuple[list[float], list[float]]:
+    """Los uniforms de un fotograma sobre la textura VOLTEADA al subirla. La
+    misma cuenta que `we_hoja_uniforms` en `src/wereloj.c`; el `+ 0.0` es para
+    no escribir `-0`."""
+    r, t = f[:4], f[4:]
+    return ([r[0], -r[1] + 0.0, -r[2] + 0.0, r[3]],
+            [t[0] + r[2], 1.0 - t[1] - r[3]])
+
+
+def linea_hojahora(volteada: bool, fotogramas: list[list[float]],
+                   tabla: list[int]) -> str:
+    """La linea `hojahora` del pase base; el formato esta en `wereloj.h`."""
+    return (f"hojahora {int(volteada)} {len(fotogramas)} "
+            + " ".join(f"{x:.9g}" for f in fotogramas for x in f)
+            + " " + " ".join(str(f) for f in tabla))
+
+
 def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
                por_id: dict | None = None) -> list[float]:
     """Matriz que coloca la geometria del objeto en su sitio del lienzo.
@@ -1645,6 +1674,42 @@ class Renderer:
         self._hojas[name] = info
         return info
 
+    def _hoja_por_hora(self, obj, hoja_tex) -> tuple | None:
+        """`(volteada, fotogramas, tabla)` si un script de la capa elige el
+        fotograma de su hoja con la hora, o None.
+
+        La tabla la da `wescript.hoja_por_hora`, evaluando el script; los
+        fotogramas salen de `tex.frames`, en pixeles, y aqui se pasan a los
+        dos uniforms de WE ---`g_Texture0Rotation` y `g_Texture0Translation`,
+        con la v hacia abajo---, partidos por lo que se SUBIO: `texture()`
+        recorta la imagen, asi que las UV 0..1 recorren eso y no el relleno.
+        Solo viajan los fotogramas hasta el ultimo que la tabla usa.
+
+        Que no haya script no cambia nada: una hoja sin quien elija el
+        fotograma se sigue dibujando como antes, entera. Reproducirla por su
+        `frame_time` es otra cosa; ver NOTAS.
+        """
+        try:
+            tabla = wescript.hoja_por_hora(obj.raw)
+        except Exception as e:                 # ancho a proposito: ver `_emit_text`
+            self.notes.append(f"hoja sin deducir ({obj.name}): {e}")
+            return None
+        if tabla is None:
+            return None
+        name, tw, th, volteada = hoja_tex
+        try:
+            tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
+        except Exception as e:
+            self.notes.append(f"[{obj.name}] hoja sin leer: {e}")
+            return None
+        if not tex.frames or max(tabla) >= len(tex.frames) or tw <= 0 or th <= 0:
+            self.notes.append(f"[{obj.name}] la tabla pide un fotograma que "
+                              f"la hoja no tiene")
+            return None
+        fotogramas = fotogramas_de_hoja(tex.frames, tw, th, max(tabla) + 1)
+        self.stats["hoja_por_hora"] = self.stats.get("hoja_por_hora", 0) + 1
+        return volteada, fotogramas, tabla
+
     def _emit_psys(self, obj) -> None:
         """Escribe el `.psys` del objeto y lo declara en la cabecera del plan."""
         ruta = obj.raw.get("particle")
@@ -2400,6 +2465,9 @@ class Renderer:
             self.body.append(f"blend {p.blending if p.stage == 'base' else 'none'}")
 
         bind_by_index = {b["index"]: b["name"] for b in p.binds}
+        # La textura del slot 0 del pase base tal como se subio, por si un
+        # script de la capa elige su fotograma con la hora; ver `_hoja_por_hora`.
+        hoja_tex = None
         for slot in range(8):
             uni = f"g_Texture{slot}"
             name = p.textures[slot] if slot < len(p.textures) else None
@@ -2435,6 +2503,8 @@ class Renderer:
                     t = self.texture(name, modo, mg, flip=not particula)
                     if t:
                         src = f"tex:{t[0]}"
+                        if slot == 0 and p.stage == "base" and obj is not None:
+                            hoja_tex = (name, t[1], t[2], not particula)
                         self.body.append(
                             f"u4f g_Texture{slot}Resolution {t[1]} {t[2]} {t[1]} {t[2]}")
                 if src and src.startswith("rt:"):
@@ -2807,8 +2877,23 @@ class Renderer:
         tw, th = rt_size(p.target, self.pixeles) if p.target else self.pixeles
         self.body.append(f"u2f g_TexelSize {1.0 / max(1, tw):.9g} "
                          f"{1.0 / max(1, th):.9g}")
-        self.body.append("u4f g_Texture0Rotation 1 0 0 1")
-        self.body.append("u2f g_Texture0Translation 0 0")
+        hoja = self._hoja_por_hora(obj, hoja_tex) if hoja_tex else None
+        if hoja is None:
+            self.body.append("u4f g_Texture0Rotation 1 0 0 1")
+            self.body.append("u2f g_Texture0Translation 0 0")
+        else:
+            # Un script elige el fotograma de la hoja con la hora: el plan
+            # lleva la hoja y la tabla, y el ejecutor pone los dos uniforms con
+            # su reloj (`we_hoja_uniforms` en src/wereloj.c). Los de aqui son
+            # los del fotograma 0, ya volteados, para quien no lea `hojahora`.
+            volteada, fotogramas, tabla = hoja
+            r, t = (volteo_de_hoja(fotogramas[0]) if volteada
+                    else (fotogramas[0][:4], fotogramas[0][4:]))
+            self.body.append("u4f g_Texture0Rotation "
+                             + " ".join(f"{x:.9g}" for x in r))
+            self.body.append("u2f g_Texture0Translation "
+                             + " ".join(f"{x:.9g}" for x in t))
+            self.body.append(linea_hojahora(volteada, fotogramas, tabla))
         # Alfa, brillo y color son del OBJETO, no del material: una capa puede
         # declararse a media opacidad o tenida. Estaban fijos a neutro, asi que
         # se dibujaban a plena intensidad. En el corpus hay 133 objetos con

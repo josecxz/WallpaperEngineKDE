@@ -955,6 +955,12 @@ int main(int argc, char **argv)
     struct { char uni[64]; int n; float v[16]; } unis[MAX_UNIFORMS];
     int n_unis = 0;
     char outpath[512] = "";
+    /* Hoja de sprites cuyo fotograma elige la hora (`hojahora`, en el pase
+     * base). La hora se toma una vez, por lo mismo que `relojes_all`: las
+     * repeticiones del cuerpo del plan tienen que dar la misma imagen. */
+    WeHoja *hoja = NULL;
+    int hay_hoja = 0;
+    const time_t ahora_hoja = time(NULL);
 
     /* El quad y los buffers necesitan el contexto ya activo. */
     init_quad();
@@ -1180,6 +1186,7 @@ int main(int argc, char **argv)
             in_pass = 1;
             prog = 0;
             n_samplers = n_unis = 0;
+            hay_hoja = 0;
             mesh_id = -1;
             psys_id = -1;
             snprintf(target, sizeof target, "SCREEN");
@@ -1204,6 +1211,12 @@ int main(int argc, char **argv)
             sscanf(line, "%*s %63s %127s", samplers[n_samplers].uni,
                    samplers[n_samplers].src);
             n_samplers++;
+        } else if (strcmp(kw, "hojahora") == 0) {
+            /* La lee `src/wereloj.c`, el mismo módulo que usa el ejecutor
+             * en vivo. */
+            if (!hoja)
+                hoja = we_hoja_nueva();
+            hay_hoja = hoja && we_hoja_linea(hoja, tras_palabra(line));
         } else if (strncmp(kw, "u", 1) == 0 && n_unis < MAX_UNIFORMS) {
             int cnt = 0;
             if (strcmp(kw, "u1f") == 0) cnt = 1;
@@ -1280,6 +1293,17 @@ int main(int argc, char **argv)
                 }
             }
 
+            /* El fotograma de la hoja, por encima de lo que el plan horneó. */
+            float hoja_rot[4], hoja_tras[2];
+            if (hay_hoja && we_hoja_uniforms(hoja, ahora_hoja, hoja_rot, hoja_tras)) {
+                GLint loc = glGetUniformLocation(prog, "g_Texture0Rotation");
+                if (loc >= 0)
+                    glUniform4fv(loc, 1, hoja_rot);
+                loc = glGetUniformLocation(prog, "g_Texture0Translation");
+                if (loc >= 0)
+                    glUniform2fv(loc, 1, hoja_tras);
+            }
+
             if (psys_id >= 0) {
                 /* El instante sale del propio pase: `g_Time` ya viene resuelto
                  * en el plan y asi la simulacion no necesita un reloj aparte
@@ -1314,6 +1338,7 @@ int main(int argc, char **argv)
         }
     }
     fclose(plan);
+    we_hoja_free(hoja);
 
     /* El ultimo objeto sigue abierto: sin esto se pierde la capa de arriba. */
     flush_object();

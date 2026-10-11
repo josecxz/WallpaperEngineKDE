@@ -3865,6 +3865,12 @@ Por orden de lo que más se nota:
    dibuja la copia que guardó el autor y el reloj sale congelado. Hace falta un
    intérprete con la API del motor, y con él entran también los otros campos
    con script —origin en 23 capas, scale en 22— y el resto de la escena.
+   **Empezado** fuera del texto: `setFrame` cuando el fotograma depende solo
+   de la hora, las 30 capas AM/PM de `3299228616` —ver [Una hoja de sprites
+   cuyo fotograma elige la
+   hora](#una-hoja-de-sprites-cuyo-fotograma-elige-la-hora-el-indicador-ampm)—.
+   **Pendiente**: reproducir por `frame_time` las 56 capas con hoja animada, y
+   el resto de campos con script.
 4. ~~Reproducir vídeo~~ **hecho**: `src/wevideo.c` lo decodifica con libav y lo
    comparten los dos ejecutores; las 3 escenas con textura de vídeo se mueven y
    los 15 wallpapers de tipo vídeo entran en la biblioteca —ver [Vídeo de
@@ -8287,3 +8293,141 @@ El oráculo es el `.geom` de WE más la lectura del binario: el preview de
 - **Un tramo que da media vuelta**: si `Ra` y `Rb` se anulan, el `.geom`
   dibuja ahí ancho cero. `tramo_curvo` pone tamaño cero y una dirección no nula
   —la del tramo— para que el shader no normalice un vector nulo.
+
+## Una hoja de sprites cuyo fotograma elige la hora: el indicador AM/PM
+
+**El síntoma.** En `3299228616` (Lonely Cat) el reloj lleva al lado un
+indicador de 22x20 escalado ×2,37 que tiene que decir «AM» o «PM». Su
+material, `number.am.json`, es `genericimage2` con `SPRITESHEET: 1`, y la
+textura `number.am` mide 22x40 con dos fotogramas de 22x20 en el `TEXS`: el 0
+arriba («AM») y el 1 debajo («PM»). Con el combo, `genericimage2.vert` muestrea
+`g_Texture0Translation + u * g_Texture0Rotation.xy + v * g_Texture0Rotation.zw`,
+y `werender.py` escribía siempre la identidad (`1 0 0 1` y `0 0`): la capa
+enseñaba la hoja ENTERA aplastada en su quad, «AM» y «PM» apilados. Quien
+elige el fotograma es un script en la propiedad `visible`, no en el texto:
+
+```js
+var nowTime = new Date().getHours();
+thisLayer.getTextureAnimation().setFrame(nowTime >= 12 ? 1 : 0);
+return value;
+```
+
+### El censo
+
+- **Scripts fuera del texto que llaman a `setFrame`** (`censo_scripts_no_texto.py
+  tools | grep setFrame`): 39 en 6 escenas. Solo los 30 de `3299228616`
+  —capas `number.am.pm`, el mismo script en `visible`; con las propiedades por
+  defecto (`language` 1, `clocklocation` 1, `clock24hformat` verdadero) solo la
+  303 está visible, las otras 29 son copias para otros idiomas y posiciones—
+  dependen de la hora. Los otros 9 no son ese caso y no se tocan:
+  - `3238423642` 941/944/947/950, en `scale`: `setFrame` lo llaman `init()` y
+    `cursorClick()` con `shared.*`; `update` no existe. Lo mueven los clics.
+  - `3555933181` 309/287 («Nixie Tube»), en `visible`: el `setFrame` está en
+    un `setValue()` que `update` tiene comentado. Además están ocultas.
+  - `3597772384` 525, en `angles`: `init()` y `cursorClick()` con
+    `localStorage`, y `engine.timeOfDay`.
+  - `3462491575` 3560 y `3521337568` 1037, en `visible`: una biblioteca de
+    animación con `engine.frametime` y `engine.setTimeout`.
+- **`2946362143`**, que venía en la pista: el script de `visible` de su capa
+  217 es una copia del script de texto de la fecha; devuelve una cadena y no
+  llama a `setFrame`.
+- **Capas con hoja animada** (`censo_hojas_capas.py tools`, la textura con más
+  de un fotograma en el `TEXS`): **56 capas en 10 escenas** — `3299228616` 30,
+  `2262142032` 8, `3577990983` 5, `3238423642` 4, `1527827385` 2,
+  `2229352184` 2, `3555933181` 2, `1371480958` 1, `2220826239` 1,
+  `3597772384` 1. Declaran `SPRITESHEET: 1` **37**: las 30 de `3299228616`, las
+  5 de `3577990983` y las 2 Nixie (ocultas); las otras 19 no lo declaran. Con
+  **varias imágenes** (`image_id` distintos en los fotogramas) hay 12: las 5 de
+  `3577990983` con 5 imágenes de 7680x7560 y 140 fotogramas de 1920x1080, las
+  2 de `2229352184` con 4, y con 2 la 61 de `2220826239` y la 396, 477, 983 y
+  1017 de `2262142032`. Dos hojas (`1371480958` 155 y `1527827385` 121/150)
+  tienen `frame_time` 0 en todos sus fotogramas.
+
+### Lo que cambia
+
+Las tres piezas de un reloj, para una hoja:
+
+- **`tools/wescript.py`**: `thisLayer` es una `Capa` cuyo único miembro es
+  `getTextureAnimation()`, que da una `Animacion` con un solo método,
+  `setFrame(n)`; lo demás de `thisLayer` sigue siendo `undefined` y cualquier
+  otro método de la animación (`play`, `pause`, `getFrame`…) es ScriptError,
+  porque con él el fotograma pasa a depender de la reproducción.
+  `hoja_por_hora(obj)` evalúa el `update` de cada script de la capa que no sea
+  el del texto —cualquier propiedad, a cualquier profundidad— en los ~1080
+  `_instantes_de_prueba` de los relojes, y da la tabla de 24 fotogramas solo si
+  todos los instantes de cada hora piden el mismo, se pide en todos, y no es
+  siempre el mismo. Lo que depende del minuto, o se pide solo a ratos, no da
+  tabla. Si dos scripts de una capa dieran tablas distintas tampoco.
+- **`tools/werender.py`**: en el pase base, si la capa tiene tabla, escribe
+  `hojahora <volteada> <n> (<rx ry rz rw tx ty>)×n <f0>…<f23>` con los
+  fotogramas de `tex.frames` pasados a los uniforms de WE (los dos ejes y la
+  esquina, v hacia abajo) y partidos por lo que se **sube** —`texture()`
+  recorta al `image_size`—. Los dos `u4f`/`u2f` de siempre llevan el
+  fotograma 0 para un ejecutor que no lea la línea. Sin tabla, el plan no
+  cambia.
+- **`src/wereloj.c`**, que ya enlazan los dos ejecutores: `we_hoja_linea` lee
+  la línea con la locale numérica sujeta a `C`, `we_hoja_uniforms_we` da los
+  uniforms de WE para la hora local de un `time_t`, y `we_hoja_uniforms` los
+  que se suben. `tools/glexec.c` los pone una vez por ejecución, como
+  `relojes_all`; `src/glexecutor.cpp`, en cada fotograma con `time(nullptr)`,
+  así que el indicador cambia a mediodía sin recargar el plan.
+
+**La orientación.** La textura de una capa se sube volteada y el quad lleva
+la v hacia arriba, así que los uniforms de WE no se pueden subir tal cual: el
+fotograma 0, (1, 0, 0, 0,5) y (0, 0), muestrearía la mitad de abajo de lo
+subido, que es «PM». Con v' = 1 − v en las dos, `T + u·R.xy + v·R.zw` sigue
+siendo una transformación del mismo tipo: R' = (R.x, −R.y, −R.z, R.w) y
+T' = (T.x + R.z, 1 − T.y − R.w). Es lo que hace `we_hoja_uniforms` cuando el
+plan dice `volteada 1`, y `werender.volteo_de_hoja` en Python.
+
+### Lo que se descartó
+
+- **Encender `SPRITESHEET` o reproducir por `frame_time`** las hojas sin
+  script. Son el siguiente trozo, y cambiarían los planes de las otras 9
+  escenas con hoja.
+- **Reconocer el script por su texto** (`getHours() >= 12`). La tabla sale de
+  evaluarlo; un `setFrame(new Date().getHours())` da 24 fotogramas distintos
+  igual.
+
+### Lo medido
+
+- **El intérprete** (`tools/test_wescript.py`): la capa 303 da
+  `[0]*12 + [1]*12`; en sintético, AM/PM y una hoja por hora con fracción dan
+  tabla, y sin `setFrame`, con fotograma fijo, con el minuto, solo por la
+  tarde o con `pause()` no. Sobre el corpus (`tablas_corpus.py`): 30 capas con
+  tabla, todas `number.am.pm` de `3299228616`.
+- **El módulo C** (`tools/test_hoja.py`, que compila `src/wereloj.c` con `cc`
+  sin avisos): con la hoja real de `number.am` y `TZ=UTC`, a las 09:00 da
+  rotación (1, 0, 0, 0,5) y traslación (0, 0), y a las 15:00 traslación
+  (0, 0,5), en `C` y en `es_ES.UTF-8` (donde `strtof("0.5")` sin guarda da 0),
+  a 1e-6; las 24 horas contra la tabla y contra el volteo de Python; la línea
+  del plan de `3299228616` es la que se espera, y `glexec.c` y
+  `glexecutor.cpp` llaman a `we_hoja_uniforms`.
+- **Los planes** (`planes_vs_base.py`, `--emit-plan` de las 129 contra main
+  por `git archive`, `plan.txt` y los `.vert`/`.frag`/`.psys` con la ruta del
+  plan sustituida): cambia una, `3299228616`, solo en `plan.txt`.
+- **El render** (`am_pm.py`, Mesa, `--time 0`, `TZ=Etc/GMT+6` y
+  `TZ=Etc/GMT-6`): el rectángulo de la capa 303 es x 2127..2179, y 385..432 en
+  el lienzo de 3840x2160. Suma de |diferencia| entre las dos horas en el
+  recorte: **0** en main y, en la rama, **379188** en una pasada hecha a las
+  16 h/04 h locales y **379253** en otra a las 12 h/00 h —lo que hay detrás
+  del indicador cambia algo con la hora de la pasada, y la cifra con ello—. Y
+  el recorte de cada hora se
+  parece al fotograma que toca: correlación del perfil por filas +0,99 con el
+  que toca y −0,64 con el otro, en los dos sentidos.
+- **La luz** (`luz_escena.py`, la escena que cambia, Mesa, 6 fotogramas):
+  media 52,39 en main y en la rama, 0 regresiones.
+- **Los avisos** (`avisos.py`, `make build` y `make glexec` en frío, main contra
+  la rama): los mismos 2, de cabeceras de Qt; 0 nuevos. `test_wereloj.py`,
+  `test_wescript.py` y `test_werender.py` pasan.
+
+### Lo que queda
+
+- **Reproducir la hoja por `frame_time`** en las capas sin script: las 56 del
+  censo menos las que mueve un script. Con eso llega la pregunta que no se ha
+  contestado: si WE enciende `SPRITESHEET` por su cuenta cuando la textura
+  está animada —19 de las 56 no lo declaran y aun así tienen hoja—. Las 12 de
+  varias imágenes necesitan además elegir la textura por `image_id`, y las de
+  `frame_time` 0 decidir qué es una duración nula.
+- **`setFrame` movido por clics, `shared` o `init()`** (`3238423642`,
+  `3597772384`): necesita eventos y estado entre scripts, que no hay.

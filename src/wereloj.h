@@ -43,6 +43,38 @@ int we_reloj_vertices(const WeReloj *r, time_t cuando, float *verts);
 /* La cadena que se dibujaría en ese instante. Para las pruebas. */
 int we_reloj_texto(const WeReloj *r, time_t cuando, char *salida, int tope);
 
+/* ── Hoja de sprites cuyo fotograma elige la hora ─────────────────────────
+ *
+ * Una capa de imagen con `SPRITESHEET` muestrea su hoja por
+ * `g_Texture0Translation + u * g_Texture0Rotation.xy + v * g_Texture0Rotation.zw`.
+ * Cuando un script de la capa pide el fotograma con `setFrame` y ese
+ * fotograma depende solo de la hora, `tools/wescript.py` lo reduce a una tabla
+ * de 24 filas y el plan la trae en el pase base con la hoja:
+ *
+ *   hojahora <volteada> <n> (<rx> <ry> <rz> <rw> <tx> <ty>) x n <f0> ... <f23>
+ *
+ * Los seis números de cada fotograma son los dos uniforms tal como los pone
+ * WE, con la v hacia abajo. `volteada` dice si la textura se subió del revés
+ * ---las de capa sí, ver `texture()` en werender.py---, y entonces los
+ * uniforms que se suben no son esos sino su reflejo. */
+typedef struct WeHoja WeHoja;
+
+WeHoja *we_hoja_nueva(void);
+void we_hoja_free(WeHoja *h);
+
+/* Lee lo que va detrás de `hojahora`. Devuelve 1 si lo entendió. */
+int we_hoja_linea(WeHoja *h, const char *resto);
+
+/* Los uniforms de WE para la hora LOCAL de `cuando`, sin voltear. Devuelve 0
+ * si la hoja no está completa. */
+int we_hoja_uniforms_we(const WeHoja *h, time_t cuando,
+                        float rotacion[4], float traslacion[2]);
+
+/* Los que hay que subir: los de arriba, reflejados si la textura está
+ * volteada. Es lo que llaman los dos ejecutores. */
+int we_hoja_uniforms(const WeHoja *h, time_t cuando,
+                     float rotacion[4], float traslacion[2]);
+
 #ifdef __cplusplus
 }
 #endif
