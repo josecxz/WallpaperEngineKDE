@@ -944,7 +944,10 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    char line[4096];
+    /* Una `hojatiempo` lleva siete números por fotograma: con 100 ya pasa de
+     * 5 KB, y con las 256 que admite `wereloj.c`, de 25. `fgets` partiría la
+     * línea y el resto se leería como otra. */
+    static char line[32768];
     int in_pass = 0, drawn = 0, skipped = 0, mesh_id = -1, psys_id = -1;
     GLuint prog = 0;
     char target[128] = "SCREEN";
@@ -957,9 +960,11 @@ int main(int argc, char **argv)
     char outpath[512] = "";
     /* Hoja de sprites cuyo fotograma elige la hora (`hojahora`, en el pase
      * base). La hora se toma una vez, por lo mismo que `relojes_all`: las
-     * repeticiones del cuerpo del plan tienen que dar la misma imagen. */
+     * repeticiones del cuerpo del plan tienen que dar la misma imagen. La
+     * misma `WeHoja` sirve para la que corre por su `frame_time`
+     * (`hojatiempo`); `hay_hoja` dice cuál de las dos trae el pase. */
     WeHoja *hoja = NULL;
-    int hay_hoja = 0;
+    enum { SIN_HOJA, HOJA_HORA, HOJA_TIEMPO } hay_hoja = SIN_HOJA;
     const time_t ahora_hoja = time(NULL);
 
     /* El quad y los buffers necesitan el contexto ya activo. */
@@ -1186,7 +1191,7 @@ int main(int argc, char **argv)
             in_pass = 1;
             prog = 0;
             n_samplers = n_unis = 0;
-            hay_hoja = 0;
+            hay_hoja = SIN_HOJA;
             mesh_id = -1;
             psys_id = -1;
             snprintf(target, sizeof target, "SCREEN");
@@ -1216,7 +1221,13 @@ int main(int argc, char **argv)
              * en vivo. */
             if (!hoja)
                 hoja = we_hoja_nueva();
-            hay_hoja = hoja && we_hoja_linea(hoja, tras_palabra(line));
+            hay_hoja = hoja && we_hoja_linea(hoja, tras_palabra(line))
+                     ? HOJA_HORA : SIN_HOJA;
+        } else if (strcmp(kw, "hojatiempo") == 0) {
+            if (!hoja)
+                hoja = we_hoja_nueva();
+            hay_hoja = hoja && we_hoja_tiempo_linea(hoja, tras_palabra(line))
+                     ? HOJA_TIEMPO : SIN_HOJA;
         } else if (strncmp(kw, "u", 1) == 0 && n_unis < MAX_UNIFORMS) {
             int cnt = 0;
             if (strcmp(kw, "u1f") == 0) cnt = 1;
@@ -1293,9 +1304,21 @@ int main(int argc, char **argv)
                 }
             }
 
-            /* El fotograma de la hoja, por encima de lo que el plan horneó. */
+            /* El fotograma de la hoja, por encima de lo que el plan horneó.
+             * La que corre por tiempo usa el `g_Time` del propio pase, como
+             * las partículas de abajo: el mismo reloj que ven los shaders. */
             float hoja_rot[4], hoja_tras[2];
-            if (hay_hoja && we_hoja_uniforms(hoja, ahora_hoja, hoja_rot, hoja_tras)) {
+            int con_hoja = 0;
+            if (hay_hoja == HOJA_HORA) {
+                con_hoja = we_hoja_uniforms(hoja, ahora_hoja, hoja_rot, hoja_tras);
+            } else if (hay_hoja == HOJA_TIEMPO) {
+                float t_hoja = 0.0f;
+                for (int i = 0; i < n_unis; i++)
+                    if (strcmp(unis[i].uni, "g_Time") == 0)
+                        t_hoja = unis[i].v[0];
+                con_hoja = we_hoja_tiempo_uniforms(hoja, t_hoja, hoja_rot, hoja_tras);
+            }
+            if (con_hoja) {
                 GLint loc = glGetUniformLocation(prog, "g_Texture0Rotation");
                 if (loc >= 0)
                     glUniform4fv(loc, 1, hoja_rot);

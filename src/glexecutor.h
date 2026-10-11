@@ -246,10 +246,11 @@ private:
         // "p046.frag -> _downscaled1", solo para WE_TRACE_PASES. Se compone
         // en resolve() porque targetName se descarta justo despues.
         QString etiqueta;
-        // Hoja de sprites cuyo fotograma elige la hora (linea `hojahora` del
-        // pase base): indice en `m_hojas`, o -1. Sus dos uniforms los pone
-        // `we_hoja_uniforms` con el reloj del sistema en cada fotograma, por
-        // encima de lo que el plan hornea.
+        // Hoja de sprites del pase base: indice en `m_hojas`, o -1. Si es
+        // de las que elige la hora (`hojahora`), sus dos uniforms los pone
+        // `we_hoja_uniforms` con el reloj del sistema; si corre por su
+        // `frame_time` (`hojatiempo`), `we_hoja_tiempo_uniforms` con `g_Time`.
+        // Los dos, en cada fotograma, por encima de lo que el plan hornea.
         int hoja = -1;
         GlLocation hojaRotacion = -1, hojaTraslacion = -1;
     };
@@ -383,7 +384,7 @@ private:
         float escala[3] = {1.0f, 1.0f, 1.0f};
     };
     QVector<PsysPadre> m_psysPadre;
-    // Las hojas por hora del plan. Son memoria propia, no handles de GL: se
+    // Las hojas de sprites del plan. Son memoria propia, no handles de GL: se
     // sueltan al recargar el plan y en el destructor, haya contexto o no.
     QVector<WeHoja *> m_hojas;
     void sueltaHojas();

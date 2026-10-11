@@ -300,6 +300,27 @@ def linea_hojahora(volteada: bool, fotogramas: list[list[float]],
             + " " + " ".join(str(f) for f in tabla))
 
 
+# Los fotogramas que caben en una hoja de `src/wereloj.c` (`MAX_FOTOGRAMAS`).
+MAX_FOTOGRAMAS_HOJA = 256
+
+
+def _combo_encendido(combos: dict, nombre: str) -> bool:
+    """Si el combo vale algo distinto de cero, como lo leeria `#if`."""
+    try:
+        return int(combos.get(nombre) or 0) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+def linea_hojatiempo(volteada: bool, fotogramas: list[list[float]],
+                     duraciones: list[float]) -> str:
+    """La linea `hojatiempo` del pase base: cada fotograma con su
+    `frame_time`. El formato esta en `wereloj.h`."""
+    return (f"hojatiempo {int(volteada)} {len(fotogramas)} "
+            + " ".join(" ".join(f"{x:.9g}" for x in f) + f" {d:.9g}"
+                       for f, d in zip(fotogramas, duraciones)))
+
+
 def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
                por_id: dict | None = None) -> list[float]:
     """Matriz que coloca la geometria del objeto en su sitio del lienzo.
@@ -1685,9 +1706,8 @@ class Renderer:
         recorta la imagen, asi que las UV 0..1 recorren eso y no el relleno.
         Solo viajan los fotogramas hasta el ultimo que la tabla usa.
 
-        Que no haya script no cambia nada: una hoja sin quien elija el
-        fotograma se sigue dibujando como antes, entera. Reproducirla por su
-        `frame_time` es otra cosa; ver NOTAS.
+        Sin tabla, lo que haya que hacer con la hoja lo decide
+        `_hoja_por_tiempo`.
         """
         try:
             tabla = wescript.hoja_por_hora(obj.raw)
@@ -1709,6 +1729,48 @@ class Renderer:
         fotogramas = fotogramas_de_hoja(tex.frames, tw, th, max(tabla) + 1)
         self.stats["hoja_por_hora"] = self.stats.get("hoja_por_hora", 0) + 1
         return volteada, fotogramas, tabla
+
+    def _hoja_por_tiempo(self, obj, hoja_tex) -> tuple | None:
+        """`(volteada, fotogramas, duraciones)` de una capa con `SPRITESHEET`
+        cuya textura es una hoja, o None si no lo es.
+
+        WE avanza la hoja al enlazar la textura (`0x14015f0d0`): suma al
+        tiempo del fotograma el mismo paso que acumula `g_Time` y, cuando
+        llega a su `frame_time`, pasa al siguiente, y del ultimo al 0. Empieza
+        en el 0 con el tiempo a cero (`0x14015ec2b`). Es un bucle sobre la suma
+        de las duraciones, y eso hace el ejecutor con `g_Time`
+        (`we_hoja_tiempo_uniforms` en src/wereloj.c).
+
+        Solo se reproduce ---`duraciones` no es None--- lo que esa cuenta
+        cubre entera: una sola imagen (con varias, cada fotograma muestrea la
+        suya, `image_id`, y aqui solo se sube la 0), todos los `frame_time`
+        mayores que cero y ningun script de la capa que pida la animacion
+        (`wescript.mueve_la_hoja`). Lo demas se queda quieto en el fotograma
+        0, que es por donde WE empieza y no la hoja entera aplastada.
+        """
+        name, tw, th, volteada = hoja_tex
+        try:
+            tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
+        except Exception as e:
+            self.notes.append(f"[{obj.name}] hoja sin leer: {e}")
+            return None
+        if not tex.frames or tw <= 0 or th <= 0:
+            return None
+        if int(tex.frames[0].get("image_id", 0)) != 0:
+            self.notes.append(f"[{obj.name}] el fotograma 0 de la hoja no es "
+                              f"de la imagen 0")
+            return None
+        duraciones = [float(f["frame_time"]) for f in tex.frames]
+        reproduce = (len(tex.images) == 1
+                     and all(int(f.get("image_id", 0)) == 0 for f in tex.frames)
+                     and all(d > 0 for d in duraciones)
+                     and len(tex.frames) <= MAX_FOTOGRAMAS_HOJA
+                     and not wescript.mueve_la_hoja(obj.raw))
+        fotogramas = fotogramas_de_hoja(tex.frames, tw, th,
+                                        len(tex.frames) if reproduce else 1)
+        clave = "hoja_por_tiempo" if reproduce else "hoja_quieta"
+        self.stats[clave] = self.stats.get(clave, 0) + 1
+        return volteada, fotogramas, duraciones if reproduce else None
 
     def _emit_psys(self, obj) -> None:
         """Escribe el `.psys` del objeto y lo declara en la cabecera del plan."""
@@ -2878,7 +2940,29 @@ class Renderer:
         self.body.append(f"u2f g_TexelSize {1.0 / max(1, tw):.9g} "
                          f"{1.0 / max(1, th):.9g}")
         hoja = self._hoja_por_hora(obj, hoja_tex) if hoja_tex else None
-        if hoja is None:
+        # Sin tabla por hora, la hoja corre sola por su `frame_time` si el
+        # shader la muestrea: con `SPRITESHEET` apagado WE escribe los mismos
+        # uniforms y nadie los lee. Las particulas no: su fotograma lo saca
+        # `ComputeSpriteFrame` de `g_RenderVar1` y de la vida de cada una.
+        por_tiempo = None
+        if (hoja is None and hoja_tex and not particula
+                and _combo_encendido(combos_v, "SPRITESHEET")):
+            por_tiempo = self._hoja_por_tiempo(obj, hoja_tex)
+        if por_tiempo is not None:
+            # Los dos uniforms llevan el fotograma 0, ya volteado: es lo que
+            # se ve si la hoja no se reproduce y lo que ve un ejecutor que no
+            # lea `hojatiempo`. Si se reproduce, el ejecutor los pisa con los
+            # del fotograma de `g_Time`.
+            volteada, fotogramas, duraciones = por_tiempo
+            r, t = (volteo_de_hoja(fotogramas[0]) if volteada
+                    else (fotogramas[0][:4], fotogramas[0][4:]))
+            self.body.append("u4f g_Texture0Rotation "
+                             + " ".join(f"{x:.9g}" for x in r))
+            self.body.append("u2f g_Texture0Translation "
+                             + " ".join(f"{x:.9g}" for x in t))
+            if duraciones is not None:
+                self.body.append(linea_hojatiempo(volteada, fotogramas, duraciones))
+        elif hoja is None:
             self.body.append("u4f g_Texture0Rotation 1 0 0 1")
             self.body.append("u2f g_Texture0Translation 0 0")
         else:

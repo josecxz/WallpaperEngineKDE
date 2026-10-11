@@ -1760,6 +1760,16 @@ def _scripts_de_capa(x, ruta: tuple = ()):
             yield from _scripts_de_capa(v, ruta + (i,))
 
 
+def mueve_la_hoja(obj: dict) -> bool:
+    """Si algún script de la capa pide la animación de su textura
+    (`getTextureAnimation`). Con eso el fotograma ya no es solo el del
+    `frame_time`: WE lo fija por objeto mientras se dibuja (`0x1402065a6`),
+    con `setFrame`, `stop`, `play` o lo que el script haga, y aquí solo se
+    reduce el caso de la hora (`hoja_por_hora`)."""
+    return any("getTextureAnimation" in d["script"]
+               for d in _scripts_de_capa(obj))
+
+
 def hoja_por_hora(obj: dict) -> list[int] | None:
     """La tabla de 24 fotogramas de una capa, o None.
 
