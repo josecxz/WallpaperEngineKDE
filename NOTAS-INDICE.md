@@ -395,10 +395,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `8434` **Lo que queda** — ~~reproducir por `frame_time` y si WE enciende `SPRITESHEET` solo~~, hecho en el trozo siguiente; las de varias imágenes; `setFrame` movido por clics.
 - `8450` **Los combos van en mayúsculas y la hoja corre por `frame_time`: lo leído en wallpaper64.exe** — el censo buscaba `SPRITESHEET` y 16 capas lo declaran como `spritesheet`; WE pasa los nombres de combo por `toupper` y avanza la hoja con el paso de `g_Time`. Las 4 hojas de una imagen sin script de `2262142032` corren; las de varias imágenes, quietas en el fotograma 0.
 - `8473` **Lo leído, con direcciones** — `toupper` en el lector de pases (`0x140154480`); el avance al enlazar la textura (`0x14015f0d0`), desde el fotograma 0, con el paso de `g_Time`; `spritesheetrefreshsync` solo duerme hasta el próximo fotograma; `frame_time` 0, uno por fotograma de render.
-- `8533` **Lo que cambia** — `_combos_en_mayusculas` en `wescene`, `mueve_la_hoja` en `wescript`, el fotograma 0 y la línea `hojatiempo` en `werender`, y `we_hoja_tiempo_uniforms` en los dos ejecutores con `g_Time`.
-- `8568` **Lo que se descartó** — normalizar solo `spritesheet`, imitar el paso a paso de WE, medir en el `origin` de la capa y el perfil de luminancia.
-- `8585` **Lo medido** — 58 direcciones; 34 planes cambian, cada uno con su causa; 34 → 54119 en el recorte de la 389 y el fotograma que toca; 0 regresiones de luz, y las caídas son el `color` y el `alpha` que `VERSION` aplica.
-- `8636` **Lo que queda** — la textura por `image_id`; el `alpha` que el valor por defecto del material pisa sin `VERSION`; `setFrame` por clics.
+- `8535` **Lo que cambia** — `_combos_en_mayusculas` en `wescene`, `mueve_la_hoja` en `wescript`, el fotograma 0 y la línea `hojatiempo` en `werender`, y `we_hoja_tiempo_uniforms` en los dos ejecutores con `g_Time`.
+- `8570` **Lo que se descartó** — normalizar solo `spritesheet`, imitar el paso a paso de WE, medir en el `origin` de la capa y el perfil de luminancia.
+- `8588` **Lo medido** — 60 comprobaciones del binario; 34 planes cambian, cada uno con su causa; 34 → 54119 en el recorte de la 389 y el fotograma que toca; 0 regresiones de luz, y las caídas son el `color` y el `alpha` que `VERSION` aplica.
+- `8650` **Lo que queda** — la textura por `image_id`; el `alpha` que el valor por defecto del material pisa sin `VERSION`; `setFrame` por clics.
 
 ## Inventario del formato: qué leemos y qué no
 

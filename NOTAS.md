@@ -8454,21 +8454,21 @@ Quedaba en [Lo que queda](#lo-que-queda-6) de la hoja por hora: reproducir por
 enciende `SPRITESHEET` por su cuenta, porque 19 de las 56 capas con hoja «no
 lo declaraban». La pregunta venía casi entera de un error del censo:
 `censo_hojas_capas.py` buscaba la clave `SPRITESHEET`, y **16 de esas 19 la
-declaran en minúsculas**, `"spritesheet": 1`, casi siempre junto a
-`"version": 2`. `wescene.py` copiaba los combos tal cual, así que el `.vert`
+declaran en minúsculas**, `"spritesheet": 1`; las otras 3 no declaran combos
+y sus `frame_time` son 0. Lo encienden 53 de las 56. `wescene.py` copiaba los combos tal cual, así que el `.vert`
 salía con `#define spritesheet 1`, `#if SPRITESHEET` quedaba apagado y la capa
 dibujaba la hoja entera aplastada en su quad. En el corpus hay 142 combos de
 material que no van en mayúsculas —`version` en 127 materiales de 32 escenas y
 `spritesheet` en 15 de 5— y 42 `version` más en overrides de `scene.json`
-(`combos_minusculas.py` y `combos_overrides.py`). Ninguna clave aparece en las
-dos formas en un mismo pase.
+(`combos_minusculas.py` y `combos_overrides.py`, que repite `cifras_notas.py`).
+Ninguna clave aparece en las dos formas en un mismo pase.
 
 Las 4 capas que entran en este trozo son de Sci-Fi Cyber City (`2262142032`):
 hoja de una sola imagen, todos los `frame_time` mayores que cero y ningún
-script de la capa que pida la animación —su único script está en `origin` y la
-mece 0,02 px por fotograma—: la 323 `fzUsl` y la 331 `fzadsUl` (100 fotogramas,
-5 s), la 389 `BzqB` (un letrero de cerveza, 2 fotogramas de 0,26 s: verde y
-blanco) y la 688 `3KUK` (9 fotogramas, 8,9 s).
+script de la capa que pida la animación —su único script está en `origin` y
+mueve la y 0,021 o 0,022 en cada `update`—: la 323 `fzUsl` y la 331 `fzadsUl`
+(100 fotogramas, 5 s), la 389 `BzqB` (un letrero de cerveza, 2 fotogramas de
+0,26 s: verde y blanco) y la 688 `3KUK` (9 fotogramas, 8,9 s).
 
 ### Lo leído, con direcciones
 
@@ -8484,8 +8484,8 @@ todas `verifica_exe.sh`.
   `c − 'a' ≤ 25` → `c − 32` (`0x1402bfb60..0x1402bfb68`). La copia es la clave
   del mapa de combos (`0x1401545fd`) y el valor se guarda en ella
   (`0x140154607`); después sigue con `constantshadervalues` (`0x14015464e`).
-  De las 16 referencias a la cadena `combos` (`0x14048b4c4`) esta es la única
-  que la busca en un json; las otras 15 la escriben en materiales que WE arma
+  De las 16 referencias a la cadena `combos` (`0x14048b4c4`), esta es la única
+  seguida de la búsqueda en un json (`0x140087490`); las otras 15 la escriben en materiales que WE arma
   en memoria (`0x140209af9`, `0x14020a263`…), que se crean por `0x140150770`.
   Que los overrides de `scene.json` lleguen también por aquí se deduce de eso
   —no hay otro lector de `combos`— y no se ha seguido instrucción a
@@ -8525,8 +8525,10 @@ todas `verifica_exe.sh`.
   (`0x140114d10`, `0x140114d17`) con el que el bucle (`0x140113510`) busca la
   primera capa con textura animada (`0x14011356f`), resta lo que lleva en su
   fotograma a su `frame_time` (`0x14011358c..0x1401135b3`) y duerme eso
-  —`Sleep` en ms (`0x1401135e8`)—: refresca al ritmo de la hoja. Lo declaran
-  las escenas de GIF de WE; ninguna del corpus.
+  —`Sleep` en ms (`0x1401135e8`, la importación `0x140426170`)—: refresca al
+  ritmo de la hoja. Lo declaran dos escenas de muestra de WE,
+  `scenes/gifs/gifscene.json` y `scenes/videoplayer/scene.json`; ninguna de
+  las 129 del corpus.
 - **Y `frame_time` 0**, que deja fuera a `1371480958` y `1527827385`: con esa
   cuenta pasa un fotograma por cada fotograma de render.
 
@@ -8546,7 +8548,7 @@ todas `verifica_exe.sh`.
   `hojatiempo <volteada> <n> (<rx ry rz rw tx ty> <dur>)×n`. Las partículas no:
   su fotograma lo da `ComputeSpriteFrame`.
 - **`src/wereloj.c`**: `we_hoja_tiempo_linea` lee la línea con la locale
-  numérica sujeta a `C` (con `es_ES`, `0.25999999` se leería `0` y la
+  numérica sujeta a `C` (con `es_ES`, `strtof` lee `0.5` como 0, y una
   duración nula la rechaza); `we_hoja_fotograma_en` da el fotograma de un
   instante de escena; `we_hoja_tiempo_uniforms`, los uniforms que se suben,
   volteados con la misma cuenta que `we_hoja_uniforms` (ahora una función,
@@ -8554,7 +8556,7 @@ todas `verifica_exe.sh`.
   hora y al revés.
 - **Los ejecutores**: `tools/glexec.c` la llama con el `g_Time` del propio
   pase, como las partículas, y su búfer de línea pasa de 4096 a 32768 bytes
-  —la `hojatiempo` de 100 fotogramas ocupa 5208—; `src/glexecutor.cpp`, en cada
+  —la `hojatiempo` más larga de `2262142032`, de 100 fotogramas, ocupa 5208—; `src/glexecutor.cpp`, en cada
   fotograma con `time`, el mismo `g_Time` que acaban de recibir los shaders.
 
 Las demás hojas, por regla y no por escena: las de **varias imágenes**
@@ -8572,11 +8574,12 @@ empieza; `3299228616` sigue por hora, con su plan idéntico; las 4 de
   de `g_Brightness` y `g_UserAlpha`. Es lo que cambia la luz de las escenas de
   abajo, y lo que hace WE.
 - **Imitar el paso a paso de WE** —como mucho un fotograma por fotograma de
-  render, y un estado por textura que solo avanza cuando se enlaza—. Con un
-  paso de 1/60 s y fotogramas de 0,05 s o más da lo mismo que el módulo, y el
-  ejecutor no tiene que guardar estado entre fotogramas.
+  render, y un estado por textura que solo avanza cuando se enlaza—. Mientras
+  el paso de render sea más corto que el fotograma más corto de la hoja (el de
+  estas cuatro es de 0,05 s) da lo mismo que el módulo, y el ejecutor no tiene
+  que guardar estado entre fotogramas.
 - **Medir el recorte en el `origin` de la capa** (2545, 877). El paralaje en
-  reposo la lleva a unos (2842, 1379); el rectángulo se saca de la
+  reposo la lleva a x 2807..2878, y 1326..1433; el rectángulo se saca de la
   `g_EffectModelViewProjectionMatrix` del pase que lleva la `hojatiempo`.
 - **Comparar el perfil de luminancia**. Los dos fotogramas del letrero son el
   mismo dibujo en verde y en blanco: por luminancia correlan casi igual con
@@ -8586,8 +8589,16 @@ empieza; `3299228616` sigue por hora, con su plan idéntico; las 4 de
 
 Todo con los scripts de `medidas/` de la ejecución 20261011-140915.
 
-- **El binario** (`verifica_exe.sh`): las 58 comprobaciones de arriba, en su
-  sitio.
+- **El binario** (`verifica_exe.sh`): las 60 comprobaciones de arriba, en su
+  sitio, entre ellas las 16 referencias a `combos` y que `0x140426170`
+  importa `Sleep`.
+- **Las cifras de esta sección que no son de otra medida**
+  (`cifras_notas.py`): el censo de `SPRITESHEET` (37 en mayúsculas, 16 en
+  minúsculas, 3 sin declarar y con `frame_time` 0), los combos en minúsculas
+  del corpus, las duraciones de las 4 capas, lo que mueve el script de
+  `origin`, quién declara `spritesheetrefreshsync`, la longitud de la
+  `hojatiempo`, el `color` y el `alpha` de las capas de abajo y la preview de
+  `3097749052`.
 - **Los combos** (`combos_plan.py`): en el `--emit-plan` de `2262142032`,
   0 de los 158 `.vert`/`.frag` llevan `#define spritesheet` o
   `#define version`; el `.vert` del pase base de la 323, 331, 389 y 688 lleva
@@ -8615,19 +8626,22 @@ Todo con los scripts de `medidas/` de la ejecución 20261011-140915.
   sin `hojatiempo`; las 7 capas de varias imágenes con los uniforms de su
   fotograma 0 a 1e-6.
 - **La luz** (`luz_escenas.py`, las 34, Mesa, 6 fotogramas): **0
-  regresiones**. 28 se quedan igual (±0,04). Las que bajan, con la razón contra
-  su preview: `2242388122` 113,49 → 88,75 (1,307 → 1,022), `2229352184`
-  73,72 → 64,04 (1,112 → 0,966), `3097749052` 36,18 → 30,86 (0,933 → 0,796;
-  la base se mueve 0,1 entre pasadas), `2413651762` 101,31 → 98,46, `2406504988`
-  111,46 → 108,80, `3577990983` 44,49 → 41,65. La de `2242388122` es el
-  `color` de sus capas (0,604, 0,733, 0,831), que sin `VERSION` no se aplicaba
-  y con él llega en `g_Color4`: queda a un 2 % de la preview. La de
-  `3097749052`, `2413651762` y `2406504988` es el `alpha` de una capa (0,24,
-  0,37, 0,91), que en main pisaba el `g_UserAlpha 1` por defecto del material
-  escrito después del tinte; con `VERSION` el shader ya no lo lee. La preview
-  de `3097749052` es un GIF de 205x205 recortado sobre el personaje, sin la
-  banda de nubes opaca que main pintaba arriba. La de `3577990983` es el
-  fotograma 0 en vez de la hoja entera de 7680x7560.
+  regresiones**; 28 se quedan igual (±0,04) y 6 bajan. Las 6, en tres pasadas
+  de `luz_pasadas.py` (media main → rama, razón contra la preview):
+  `2242388122` 113,5 → 88,8 (1,31 → 1,02), `2229352184` 73,7 → 64,0
+  (1,11 → 0,97), `3097749052` 36,1..36,2 → 30,7..30,9 (0,93 → 0,79..0,80),
+  `2413651762` 101,3 → 98,5 (1,39 → 1,35), `2406504988` 111,5 → 108,8
+  (1,00 → 0,98) y `3577990983` 44,5 → 41,6 (0,65 → 0,61). `3097749052` no da
+  la misma media dos veces, ni en main ni en la rama: se mueve en la segunda
+  cifra decimal, y por eso aquí va con un decimal y como intervalo. La de `2242388122` es el `color` de cuatro de sus capas (0,604,
+  0,831, 0,733 y 0,733), que sin `VERSION` no se aplicaba y con él llega en
+  `g_Color4`: queda a un 2 % de la preview. La de `3097749052`, `2413651762` y
+  `2406504988` es el `alpha` de una capa (0,24, 0,37 y 0,91), que en el plan de
+  main pisaba un `g_UserAlpha 1` por defecto del material escrito después del
+  tinte; con `VERSION` el shader ya no lo lee. La preview de `3097749052` es un
+  GIF de 205x205 recortado sobre el personaje, sin la banda de nubes opaca que
+  main pintaba arriba. La de `3577990983` es el fotograma 0 en vez de las 5
+  imágenes de 7680x7560 enteras.
 - **Los tests** (`tests_j.py`): `test_wereloj`, `test_wescript`,
   `test_werender`, `test_wetext` y `test_hoja` pasan; `test_wescene`, 0 fallos
   en main y en la rama, con 582 → 576 variantes y 291 → 288 pares, porque las
