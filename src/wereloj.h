@@ -75,6 +75,31 @@ int we_hoja_uniforms_we(const WeHoja *h, time_t cuando,
 int we_hoja_uniforms(const WeHoja *h, time_t cuando,
                      float rotacion[4], float traslacion[2]);
 
+/* ── Hoja de sprites que corre por su `frame_time` ────────────────────────
+ *
+ * La que no mueve ningún script: WE la avanza con el mismo paso que acumula
+ * `g_Time`, un fotograma tras otro según su duración, y del último vuelve al
+ * 0. El plan la trae en el pase base, con la duración detrás de cada
+ * fotograma:
+ *
+ *   hojatiempo <volteada> <n> (<rx> <ry> <rz> <rw> <tx> <ty> <dur>) x n
+ *
+ * Los seis números y `volteada` son como en `hojahora`. Una `WeHoja` leída
+ * así no tiene tabla por hora: `we_hoja_uniforms` da 0 con ella, y al revés. */
+
+/* Lee lo que va detrás de `hojatiempo`. Devuelve 1 si lo entendió. */
+int we_hoja_tiempo_linea(WeHoja *h, const char *resto);
+
+/* El fotograma que toca a los `segundos` de escena, o -1 si la hoja no es de
+ * las que corren por tiempo. Para las pruebas. */
+int we_hoja_fotograma_en(const WeHoja *h, double segundos);
+
+/* Los uniforms que hay que subir a los `segundos` de escena ---el valor de
+ * `g_Time`---, ya reflejados si la textura está volteada. Es lo que llaman
+ * los dos ejecutores; devuelve 0 si la hoja no corre por tiempo. */
+int we_hoja_tiempo_uniforms(const WeHoja *h, double segundos,
+                            float rotacion[4], float traslacion[2]);
+
 #ifdef __cplusplus
 }
 #endif

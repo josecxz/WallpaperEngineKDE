@@ -18,6 +18,16 @@ Esta prueba compila ese módulo desde `src/` y comprueba:
   3. Que la línea del plan de `3299228616` es la que se esperaba, y que los
      dos ejecutores llaman a `we_hoja_uniforms`.
 
+Y la hoja que corre sola por su `frame_time` (la línea `hojatiempo`):
+
+  4. Con la hoja real de la capa 389 de `2262142032` (dos fotogramas de
+     0,26 s), en `C` y en `es_ES`: a 0,10 s el fotograma 0, a 0,36 s el 1 y a
+     0,62 s otra vez el 0, porque es un bucle; y los uniforms que se suben, a
+     1e-6 de `werender.volteo_de_hoja`.
+  5. Que el plan de `2262142032` trae esa línea en el pase de la capa, sin
+     `#define spritesheet`/`version` en minúsculas, y que los dos ejecutores
+     llaman a `we_hoja_tiempo_uniforms`.
+
 Uso:
     python3 tools/test_hoja.py
 """
@@ -100,10 +110,59 @@ int main(int argc, char **argv)
 """
 
 
-def compila(tmp: Path) -> Path:
-    src = tmp / "arnes.c"
-    src.write_text(ARNES)
-    exe = tmp / "arnes"
+ARNES_TIEMPO = r"""
+#include <locale.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "wereloj.h"
+
+/* argv[1]: un fichero con la línea `hojatiempo` del plan; argv[2]: la locale
+ * con la que se LEE. Por la entrada, un instante de escena por línea; por la
+ * salida, el fotograma y los uniforms que se suben. */
+int main(int argc, char **argv)
+{
+    if (argc > 2 && !setlocale(LC_ALL, argv[2]))
+        return 4;
+    FILE *f = fopen(argv[1], "r");
+    if (!f) return 2;
+    static char linea[65536];
+    if (!fgets(linea, sizeof linea, f)) return 2;
+    fclose(f);
+    const char *p = linea;
+    while (*p && *p != ' ') p++;           /* fuera `hojatiempo` */
+    WeHoja *h = we_hoja_nueva();
+    if (!we_hoja_tiempo_linea(h, p)) {
+        printf("no la lee\n");
+        return 3;
+    }
+    /* Leída por tiempo, no tiene tabla por hora. */
+    float r[4], tr[2];
+    if (we_hoja_uniforms(h, 0, r, tr)) {
+        printf("tambien por hora\n");
+        return 5;
+    }
+    setlocale(LC_ALL, "C");
+    char pet[64];
+    while (fgets(pet, sizeof pet, stdin)) {
+        double t = strtod(pet, NULL);
+        if (!we_hoja_tiempo_uniforms(h, t, r, tr)) {
+            printf("sin uniforms\n");
+            continue;
+        }
+        printf("%d %.9g %.9g %.9g %.9g %.9g %.9g\n", we_hoja_fotograma_en(h, t),
+               r[0], r[1], r[2], r[3], tr[0], tr[1]);
+    }
+    we_hoja_free(h);
+    return 0;
+}
+"""
+
+
+def compila(tmp: Path, arnes: str = ARNES, nombre: str = "arnes") -> Path:
+    src = tmp / f"{nombre}.c"
+    src.write_text(arnes)
+    exe = tmp / nombre
     r = subprocess.run(
         ["cc", "-O1", "-std=c11", "-Wall", "-Wextra", f"-I{RAIZ}/src",
          "-o", str(exe), str(src), str(RAIZ / "src" / "wereloj.c")],
@@ -155,6 +214,98 @@ def corre(exe: Path, linea: str, locale: str, horas: list[int],
 
 def cerca(a, b) -> bool:
     return len(a) == len(b) and all(abs(x - y) <= TOLERANCIA for x, y in zip(a, b))
+
+
+ESCENA_TIEMPO = "2262142032"
+CAPA_TIEMPO = 389
+# Instante de escena -> fotograma que toca: 0,26 s cada uno y vuelta al 0.
+ESPERADO_TIEMPO = {0.10: 0, 0.36: 1, 0.62: 0}
+
+
+def hoja_de_capa(escena: str, capa: int):
+    """La hoja de la capa y el tamaño que se sube, como en `capa_y_hoja`."""
+    d = Path(wepaths.we_workshop()) / escena
+    _, ents = pkg_inspect.read_pkg(str(d / "scene.pkg"))
+    j = json.loads([e for e in ents if e["name"] == "scene.json"][0]["data"])
+    obj = [o for o in j["objects"] if o.get("id") == capa][0]
+    res = AssetResolver.for_wallpaper(d, Path(wepaths.we_assets()))
+    modelo = json.loads(res.read_bytes(obj["image"]))
+    material = json.loads(res.read_bytes(modelo["material"]))
+    nombre = material["passes"][0]["textures"][0]
+    tex = wetex.read_texture(res.read_bytes(wescene.texture_path(nombre)))
+    mip = tex.images[0][0]
+    iw, ih = tex.image_size
+    return obj, tex, (min(mip.width, iw or mip.width), min(mip.height, ih or mip.height))
+
+
+def prueba_por_tiempo(fallos: list[str]) -> None:
+    """Los puntos 4 y 5 de arriba."""
+    obj, tex, (tw, th) = hoja_de_capa(ESCENA_TIEMPO, CAPA_TIEMPO)
+    dur = [f["frame_time"] for f in tex.frames]
+    print(f"\n── hoja por frame_time de {ESCENA_TIEMPO} capa {CAPA_TIEMPO} ──")
+    print(f"  textura {tw}x{th}, {len(tex.frames)} fotogramas de "
+          + ", ".join(f"{d:.6g}" for d in dur) + " s, "
+          f"{len(tex.images)} imagen, scripts con getTextureAnimation: "
+          f"{wescript.mueve_la_hoja(obj)}")
+    if len(tex.frames) != 2 or any(abs(d - 0.26) > 1e-6 for d in dur):
+        fallos.append(f"la hoja no es la de dos fotogramas de 0,26 s: {dur}")
+    fot = werender.fotogramas_de_hoja(tex.frames, tw, th, len(tex.frames))
+    linea = werender.linea_hojatiempo(True, fot, dur)
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        exe = compila(tmp, ARNES_TIEMPO, "arnes_tiempo")
+        for locale in ("C", "es_ES.UTF-8"):
+            plan = tmp / "hoja.txt"
+            plan.write_text(linea + "\n")
+            p = subprocess.run([str(exe), str(plan), locale],
+                               input="".join(f"{t}\n" for t in ESPERADO_TIEMPO),
+                               capture_output=True, text=True)
+            if p.returncode:
+                fallos.append(f"el arnés de tiempo falla [{locale}]: {p.stdout} {p.stderr}")
+                continue
+            for (t, quiero), l in zip(ESPERADO_TIEMPO.items(), p.stdout.splitlines()):
+                c = l.split()
+                i, gl = int(c[0]), [float(x) for x in c[1:7]]
+                r, tr = werender.volteo_de_hoja(fot[quiero])
+                ok = i == quiero and cerca(gl, r + tr)
+                print(f"  {'ok' if ok else 'MAL':3} [{locale:11}] t={t:.2f} s "
+                      f"fotograma {i} (toca {quiero})  se suben {gl[:4]} {gl[4:]}")
+                if not ok:
+                    fallos.append(f"[{locale}] t={t} da {i} {gl}, no {quiero} {r + tr}")
+
+    # El plan de la escena: la línea, en el pase de la capa, y los combos.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(wepaths.we_workshop()) / ESCENA_TIEMPO
+        p = subprocess.run(
+            [sys.executable, str(RAIZ / "tools" / "werender.py"), str(d),
+             str(Path(td) / "x.png"), "--emit-plan", str(Path(td) / "plan")],
+            capture_output=True, text=True)
+        dir_plan = Path(td) / "plan"
+        plan = (dir_plan / "plan.txt").read_text() if not p.returncode else ""
+        minusculas = [f.name for f in sorted(dir_plan.glob("*.vert")) + sorted(dir_plan.glob("*.frag"))
+                      if re.search(r"#define (spritesheet|version)\b", f.read_text())]
+        vert = None
+        for bloque in plan.split("\npass\n"):
+            if linea in bloque.splitlines():
+                vert = Path(re.search(r"^prog (\S+)", bloque, re.M).group(1))
+                vert = vert.read_text() if vert.is_file() else ""
+    print(f"  la línea de la capa en el plan: {'sí' if vert is not None else 'NO'}; "
+          f"#define SPRITESHEET 1 en su .vert: "
+          f"{'sí' if vert and '#define SPRITESHEET 1' in vert else 'NO'}; "
+          f"ficheros con combos en minúsculas: {len(minusculas)}")
+    if vert is None:
+        fallos.append("el plan de 2262142032 no trae la hojatiempo de la capa 389")
+    elif "#define SPRITESHEET 1" not in vert:
+        fallos.append("el .vert de la capa 389 no enciende SPRITESHEET")
+    if minusculas:
+        fallos.append(f"combos en minúsculas en {minusculas}")
+
+    for f in ("tools/glexec.c", "src/glexecutor.cpp"):
+        n = len(re.findall(r"\bwe_hoja_tiempo_uniforms\s*\(", (RAIZ / f).read_text()))
+        print(f"  {f:20} llama a we_hoja_tiempo_uniforms {n} vez")
+        if n < 1:
+            fallos.append(f"{f} no llama a we_hoja_tiempo_uniforms")
 
 
 def main() -> int:
@@ -223,6 +374,8 @@ def main() -> int:
         print(f"  {f:20} llama a we_hoja_uniforms {n} vez")
         if n < 1:
             fallos.append(f"{f} no llama a we_hoja_uniforms")
+
+    prueba_por_tiempo(fallos)
 
     if fallos:
         print(f"\nFALLO: {len(fallos)}")

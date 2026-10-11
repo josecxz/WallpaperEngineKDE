@@ -391,6 +391,14 @@ def _load_material(res: AssetResolver, path: str) -> list[dict]:
     return mat.get("passes", [])
 
 
+def _combos_en_mayusculas(combos) -> dict[str, object]:
+    """Los combos de un pase con el nombre como lo guarda WE. `toupper` del
+    CRT solo toca `a`..`z` (`0x1402bfb48`), y `str.upper` haria lo mismo con
+    lo que hay en el corpus, que es ASCII."""
+    return {"".join(chr(ord(c) - 32) if "a" <= c <= "z" else c for c in str(k)): v
+            for k, v in (combos or {}).items()}
+
+
 def _make_pass(res: AssetResolver, owner: str, stage: str, mp: dict,
                override: dict | None, target: str | None,
                binds: list[dict]) -> RenderPass:
@@ -399,13 +407,20 @@ def _make_pass(res: AssetResolver, owner: str, stage: str, mp: dict,
         raise SceneError(f"pase sin shader en {owner}/{stage}")
     vpath, fpath = shader_paths(shader)
 
-    combos = dict(mp.get("combos") or {})
+    # Los nombres de combo van en MAYUSCULAS: el lector de pases de material
+    # de WE (`0x140154480` en wallpaper64.exe) pasa cada uno por `toupper`
+    # antes de guardarlo, y el shader solo pregunta por la forma en
+    # mayusculas. El corpus trae 142 combos de material en minusculas
+    # (`version` y `spritesheet`, en 34 escenas) y 42 `version` en
+    # overrides; copiados tal cual salia
+    # `#define spritesheet 1` y `#if SPRITESHEET` quedaba apagado. Ver NOTAS.
+    combos = _combos_en_mayusculas(mp.get("combos"))
     constants = dict(mp.get("constantshadervalues") or {})
     textures = list(mp.get("textures") or [])
 
     # El override del objeto pisa lo que declara el material.
     if override:
-        combos.update(override.get("combos") or {})
+        combos.update(_combos_en_mayusculas(override.get("combos")))
         constants.update(override.get("constantshadervalues") or {})
         if override.get("textures"):
             ov = override["textures"]

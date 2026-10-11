@@ -8336,7 +8336,12 @@ return value;
   `2262142032` 8, `3577990983` 5, `3238423642` 4, `1527827385` 2,
   `2229352184` 2, `3555933181` 2, `1371480958` 1, `2220826239` 1,
   `3597772384` 1. Declaran `SPRITESHEET: 1` **37**: las 30 de `3299228616`, las
-  5 de `3577990983` y las 2 Nixie (ocultas); las otras 19 no lo declaran. Con
+  5 de `3577990983` y las 2 Nixie (ocultas); las otras 19 no lo declaran.
+  **Corregido** en [Los combos van en
+  mayúsculas](#los-combos-van-en-mayúsculas-y-la-hoja-corre-por-frame_time-lo-leído-en-wallpaper64exe):
+  el censo buscaba la clave en mayúsculas, y 16 de esas 19 lo declaran como
+  `spritesheet`. Lo encienden **53**; solo las 3 de `frame_time` 0 no traen
+  combos. Con
   **varias imágenes** (`image_id` distintos en los fotogramas) hay 12: las 5 de
   `3577990983` con 5 imágenes de 7680x7560 y 140 fotogramas de 1920x1080, las
   2 de `2229352184` con 4, y con 2 la 61 de `2220826239` y la 396, 477, 983 y
@@ -8428,11 +8433,212 @@ plan dice `volteada 1`, y `werender.volteo_de_hoja` en Python.
 
 ### Lo que queda
 
-- **Reproducir la hoja por `frame_time`** en las capas sin script: las 56 del
+- ~~**Reproducir la hoja por `frame_time`** en las capas sin script: las 56 del
   censo menos las que mueve un script. Con eso llega la pregunta que no se ha
   contestado: si WE enciende `SPRITESHEET` por su cuenta cuando la textura
-  está animada —19 de las 56 no lo declaran y aun así tienen hoja—. Las 12 de
-  varias imágenes necesitan además elegir la textura por `image_id`, y las de
-  `frame_time` 0 decidir qué es una duración nula.
+  está animada —19 de las 56 no lo declaran y aun así tienen hoja—.~~ Hecho
+  el primer trozo en [Los combos van en
+  mayúsculas](#los-combos-van-en-mayúsculas-y-la-hoja-corre-por-frame_time-lo-leído-en-wallpaper64exe):
+  no lo enciende solo, es que 16 lo declaran en minúsculas y WE pasa los
+  combos a mayúsculas; las 4 hojas de una imagen sin script corren por su
+  `frame_time`. Las 12 de varias imágenes, quietas en el fotograma 0, siguen
+  necesitando elegir la textura por `image_id`, y las de `frame_time` 0 ya
+  tienen respuesta en el binario (un fotograma por cada fotograma de render).
 - **`setFrame` movido por clics, `shared` o `init()`** (`3238423642`,
   `3597772384`): necesita eventos y estado entre scripts, que no hay.
+
+## Los combos van en mayúsculas y la hoja corre por `frame_time`: lo leído en wallpaper64.exe
+
+Quedaba en [Lo que queda](#lo-que-queda-6) de la hoja por hora: reproducir por
+`frame_time` las hojas que no mueve ningún script, y antes contestar si WE
+enciende `SPRITESHEET` por su cuenta, porque 19 de las 56 capas con hoja «no
+lo declaraban». La pregunta venía casi entera de un error del censo:
+`censo_hojas_capas.py` buscaba la clave `SPRITESHEET`, y **16 de esas 19 la
+declaran en minúsculas**, `"spritesheet": 1`, casi siempre junto a
+`"version": 2`. `wescene.py` copiaba los combos tal cual, así que el `.vert`
+salía con `#define spritesheet 1`, `#if SPRITESHEET` quedaba apagado y la capa
+dibujaba la hoja entera aplastada en su quad. En el corpus hay 142 combos de
+material que no van en mayúsculas —`version` en 127 materiales de 32 escenas y
+`spritesheet` en 15 de 5— y 42 `version` más en overrides de `scene.json`
+(`combos_minusculas.py` y `combos_overrides.py`). Ninguna clave aparece en las
+dos formas en un mismo pase.
+
+Las 4 capas que entran en este trozo son de Sci-Fi Cyber City (`2262142032`):
+hoja de una sola imagen, todos los `frame_time` mayores que cero y ningún
+script de la capa que pida la animación —su único script está en `origin` y la
+mece 0,02 px por fotograma—: la 323 `fzUsl` y la 331 `fzadsUl` (100 fotogramas,
+5 s), la 389 `BzqB` (un letrero de cerveza, 2 fotogramas de 0,26 s: verde y
+blanco) y la 688 `3KUK` (9 fotogramas, 8,9 s).
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). Las comprueba
+todas `verifica_exe.sh`.
+
+- **Los nombres de combo pasan por `toupper`.** El cargador de un material lee
+  `passes` (`0x140151903`) y llama al lector de cada pase, `0x140154480`
+  (`0x140151970` y `0x1401519c2`). Ese lector busca `combos` (`0x1401544d3`,
+  `0x1401544da`) y, por cada clave, copia el nombre letra a letra pasándolo por
+  `0x1402bfb48` (`0x140154595..0x1401545a0`), que es el `toupper` del CRT:
+  `c − 'a' ≤ 25` → `c − 32` (`0x1402bfb60..0x1402bfb68`). La copia es la clave
+  del mapa de combos (`0x1401545fd`) y el valor se guarda en ella
+  (`0x140154607`); después sigue con `constantshadervalues` (`0x14015464e`).
+  De las 16 referencias a la cadena `combos` (`0x14048b4c4`) esta es la única
+  que la busca en un json; las otras 15 la escriben en materiales que WE arma
+  en memoria (`0x140209af9`, `0x14020a263`…), que se crean por `0x140150770`.
+  Que los overrides de `scene.json` lleguen también por aquí se deduce de eso
+  —no hay otro lector de `combos`— y no se ha seguido instrucción a
+  instrucción; aquí se tratan igual.
+  **WE no distingue mayúsculas en los nombres de combo**; `version` también
+  enciende `VERSION`.
+- **La hoja avanza al enlazar la textura**, en `0x14015f0d0`. Si la textura
+  está animada (`test [tex+0x1c], 0x4`, `0x14015f0f7`) y tiene fotogramas
+  —un vector de registros de 32 bytes en `+0xb8..+0xc0`, `0x14015f0fd`,
+  `0x14015f104`, con el `frame_time` en el primer float—: si el objeto que se
+  dibuja ha fijado un fotograma (`[contexto+0x132c]`, `0x14015f129`; lo pone y
+  lo suelta por objeto `0x1402065a6`/`0x1402065bb`, que es lo que hace
+  `getTextureAnimation()`), usa ese. Si no, una vez por fotograma de render
+  (`0x14015f162` contra la marca que guarda en `0x14015f275`) suma el paso de
+  tiempo (`0x14015f16b`) al tiempo que lleva en el fotograma (`0x14015f1b2`) y,
+  si llega a su `frame_time` (`0x14015f1c4`, `0x14015f1c9`), pasa al siguiente
+  descontando la duración (`0x14015f1d2`, `0x14015f1d8`); tras el último, al 0
+  (`0x14015f1f4`). El tiempo sobrante se recorta a la duración del fotograma
+  nuevo (`0x14015f208`): como mucho avanza uno por paso. Los uniforms los
+  precalcula por fotograma y los copia: `g_TextureNRotation` (`0x14015f2a3`) y
+  `g_TextureNTranslation` (`0x14015f2d3`).
+- **El arranque.** El constructor de la textura pone a cero el índice
+  (`0x14015ec2b`) y el tiempo y la marca (`0x14015ebef`): la hoja empieza en el
+  fotograma 0 sin desfase.
+- **El paso es el de `g_Time`.** La actualización de la escena cuenta el
+  fotograma de render (`0x14017fca7`), guarda el paso (`0x14017fcc1`) y lo
+  acumula en `g_Time` (`0x14017fcca`, `0x14017fce5`; vuelve a 0 pasados
+  432000 s, `0x14017fcde`). Son `contexto+0x154` y `+0x15c`; la textura los lee
+  como `+0x144` y `+0x14c` de su subobjeto, que empieza en `contexto+0x10`
+  (`0x14017fae8`): el mismo desfase que tiene el gestor de materiales, que es
+  `contexto+0x1640` (`0x14017fb3e`) y `[objeto+0xc8]+0x1630` (`0x140209b23`).
+  Así que el fotograma a los `t` segundos de escena es el que cubre `t` módulo
+  la suma de las duraciones.
+- **`spritesheetrefreshsync` no elige fotograma.** Es un booleano de `general`
+  (la cadena `0x14048e4f0`, leída en `0x140187656`) que enciende el bit 6 de la
+  escena (`0x140187674`); al arrancar pasa a un modo de la aplicación
+  (`0x140114d10`, `0x140114d17`) con el que el bucle (`0x140113510`) busca la
+  primera capa con textura animada (`0x14011356f`), resta lo que lleva en su
+  fotograma a su `frame_time` (`0x14011358c..0x1401135b3`) y duerme eso
+  —`Sleep` en ms (`0x1401135e8`)—: refresca al ritmo de la hoja. Lo declaran
+  las escenas de GIF de WE; ninguna del corpus.
+- **Y `frame_time` 0**, que deja fuera a `1371480958` y `1527827385`: con esa
+  cuenta pasa un fotograma por cada fotograma de render.
+
+### Lo que cambia
+
+- **`tools/wescene.py`**: `_combos_en_mayusculas` en `_make_pass`, para los
+  combos del material y los del override; solo `a`..`z`, como `toupper`.
+- **`tools/wescript.py`**: `mueve_la_hoja(obj)`, si algún script de la capa
+  menciona `getTextureAnimation`. Con eso el fotograma ya no es solo el del
+  `frame_time`.
+- **`tools/werender.py`**: en el pase base de una capa que no es partícula,
+  sin tabla por hora y con `SPRITESHEET` encendido, `_hoja_por_tiempo` mira la
+  textura. Si tiene `frames`, los dos `u4f`/`u2f` llevan el **fotograma 0**
+  volteado con `volteo_de_hoja` (antes, la identidad). Si además es de una sola
+  imagen, todos los `frame_time` son mayores que cero, caben en los 256 de
+  `wereloj.c` y ningún script mueve la hoja, escribe
+  `hojatiempo <volteada> <n> (<rx ry rz rw tx ty> <dur>)×n`. Las partículas no:
+  su fotograma lo da `ComputeSpriteFrame`.
+- **`src/wereloj.c`**: `we_hoja_tiempo_linea` lee la línea con la locale
+  numérica sujeta a `C` (con `es_ES`, `0.25999999` se leería `0` y la
+  duración nula la rechaza); `we_hoja_fotograma_en` da el fotograma de un
+  instante de escena; `we_hoja_tiempo_uniforms`, los uniforms que se suben,
+  volteados con la misma cuenta que `we_hoja_uniforms` (ahora una función,
+  `voltea`). La `WeHoja` es la misma; una leída por tiempo no tiene tabla por
+  hora y al revés.
+- **Los ejecutores**: `tools/glexec.c` la llama con el `g_Time` del propio
+  pase, como las partículas, y su búfer de línea pasa de 4096 a 32768 bytes
+  —la `hojatiempo` de 100 fotogramas ocupa 5208—; `src/glexecutor.cpp`, en cada
+  fotograma con `time`, el mismo `g_Time` que acaban de recibir los shaders.
+
+Las demás hojas, por regla y no por escena: las de **varias imágenes**
+(`2262142032` 396/477/983/1017, `2220826239` 61, `2229352184` 211/274,
+`3577990983` ×5) y la que mueve un script con clics (`3597772384` 525) se
+quedan **quietas en el fotograma 0** de la imagen 0, que es por donde WE
+empieza; `3299228616` sigue por hora, con su plan idéntico; las 4 de
+`3238423642` y las 2 Nixie de `3555933181` no tienen pase; las 3 de
+`frame_time` 0 no declaran combos.
+
+### Lo que se descartó
+
+- **Normalizar solo `spritesheet`.** El lector no distingue: `version` pasa
+  por el mismo `toupper`, y con `VERSION` `genericimage2` lee `g_Color4` en vez
+  de `g_Brightness` y `g_UserAlpha`. Es lo que cambia la luz de las escenas de
+  abajo, y lo que hace WE.
+- **Imitar el paso a paso de WE** —como mucho un fotograma por fotograma de
+  render, y un estado por textura que solo avanza cuando se enlaza—. Con un
+  paso de 1/60 s y fotogramas de 0,05 s o más da lo mismo que el módulo, y el
+  ejecutor no tiene que guardar estado entre fotogramas.
+- **Medir el recorte en el `origin` de la capa** (2545, 877). El paralaje en
+  reposo la lleva a unos (2842, 1379); el rectángulo se saca de la
+  `g_EffectModelViewProjectionMatrix` del pase que lleva la `hojatiempo`.
+- **Comparar el perfil de luminancia**. Los dos fotogramas del letrero son el
+  mismo dibujo en verde y en blanco: por luminancia correlan casi igual con
+  los dos. Lo que los separa es el color, G − R.
+
+### Lo medido
+
+Todo con los scripts de `medidas/` de la ejecución 20261011-140915.
+
+- **El binario** (`verifica_exe.sh`): las 58 comprobaciones de arriba, en su
+  sitio.
+- **Los combos** (`combos_plan.py`): en el `--emit-plan` de `2262142032`,
+  0 de los 158 `.vert`/`.frag` llevan `#define spritesheet` o
+  `#define version`; el `.vert` del pase base de la 323, 331, 389 y 688 lleva
+  `#define SPRITESHEET 1` y el pase, la `hojatiempo`.
+- **Los planes** (`planes_vs_base.py`, las 129 contra main): cambian **34**,
+  todas del censo y cada una con su causa. 29 solo por el combo en minúsculas;
+  `2220826239`, `2229352184`, `3577990983` y `3597772384` además por el
+  fotograma 0, y `2262142032` por las tres cosas, con la línea nueva. De las
+  35 escenas con combos en minúsculas, la que no cambia es `3238423642`: sus
+  capas con hoja no tienen pase.
+- **El módulo C** (`tools/test_hoja.py`, ampliado; `cc -Wall -Wextra` sin
+  avisos): con la hoja real de la 389, el fotograma 0 a 0,10 s, el 1 a 0,36 s
+  y el 0 a 0,62 s, en `C` y en `es_ES.UTF-8`, con los uniforms a 1e-6 de
+  `volteo_de_hoja`; y la línea del plan en el pase de la capa.
+- **Los ejecutores** (`ejecutores.py`): los dos llaman a
+  `we_hoja_tiempo_uniforms`; `make build` y `make glexec` en frío, **0 avisos
+  nuevos** frente a main (el de siempre, `GL_GLEXT_VERSION` de Qt).
+- **El render** (`render_hoja.py`, Mesa, `--time 0.10` y `0.36`): el recorte de
+  la 389 es x 2807..2878, y 1326..1433. Suma de |diferencia| entre los dos
+  instantes: **34** en main y **54119** en la rama. Perfil por filas de G − R en
+  la rama: a 0,10 s +0,959 con el fotograma 0 y +0,445 con el 1; a 0,36 s
+  −0,289 con el 0 y +0,341 con el 1.
+- **Fuera del trozo** (`fuera_del_trozo.py`): el plan de `3299228616`, sus 92
+  ficheros de texto idénticos a main; `3577990983`, `3238423642` y `3597772384`
+  sin `hojatiempo`; las 7 capas de varias imágenes con los uniforms de su
+  fotograma 0 a 1e-6.
+- **La luz** (`luz_escenas.py`, las 34, Mesa, 6 fotogramas): **0
+  regresiones**. 28 se quedan igual (±0,04). Las que bajan, con la razón contra
+  su preview: `2242388122` 113,49 → 88,75 (1,307 → 1,022), `2229352184`
+  73,72 → 64,04 (1,112 → 0,966), `3097749052` 36,18 → 30,86 (0,933 → 0,796;
+  la base se mueve 0,1 entre pasadas), `2413651762` 101,31 → 98,46, `2406504988`
+  111,46 → 108,80, `3577990983` 44,49 → 41,65. La de `2242388122` es el
+  `color` de sus capas (0,604, 0,733, 0,831), que sin `VERSION` no se aplicaba
+  y con él llega en `g_Color4`: queda a un 2 % de la preview. La de
+  `3097749052`, `2413651762` y `2406504988` es el `alpha` de una capa (0,24,
+  0,37, 0,91), que en main pisaba el `g_UserAlpha 1` por defecto del material
+  escrito después del tinte; con `VERSION` el shader ya no lo lee. La preview
+  de `3097749052` es un GIF de 205x205 recortado sobre el personaje, sin la
+  banda de nubes opaca que main pintaba arriba. La de `3577990983` es el
+  fotograma 0 en vez de la hoja entera de 7680x7560.
+- **Los tests** (`tests_j.py`): `test_wereloj`, `test_wescript`,
+  `test_werender`, `test_wetext` y `test_hoja` pasan; `test_wescene`, 0 fallos
+  en main y en la rama, con 582 → 576 variantes y 291 → 288 pares, porque las
+  de `version` eran variantes aparte de las de `VERSION`.
+
+### Lo que queda
+
+- **Elegir la textura por `image_id`** en las 12 capas de varias imágenes, que
+  ahora se quedan en el fotograma 0.
+- **El `alpha` y el brillo de una capa sin `VERSION`**: el bucle de constantes
+  del material escribe `g_UserAlpha` y `g_Brightness` con su valor por defecto
+  después de `uniforms_de_tinte` y los pisa. Con `VERSION` ya no muerde en
+  estas escenas, pero las capas de `genericimage2` sin él lo siguen teniendo.
+- **`setFrame` movido por clics** (`3238423642`, `3597772384`), como antes.

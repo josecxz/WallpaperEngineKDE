@@ -357,6 +357,17 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             } else {
                 we_hoja_free(h);
             }
+        } else if (kw == QLatin1String("hojatiempo")) {
+            // La hoja que corre por su `frame_time`; va a `m_hojas` como la de
+            // la hora, y al dibujar `we_hoja_tiempo_uniforms` dice cuál es.
+            WeHoja *h = we_hoja_nueva();
+            const QByteArray resto = line.mid(kw.size()).toUtf8();
+            if (h && we_hoja_tiempo_linea(h, resto.constData())) {
+                cur.hoja = int(m_hojas.size());
+                m_hojas.append(h);
+            } else {
+                we_hoja_free(h);
+            }
         } else if (kw == QLatin1String("endpass")) {
             inPass = false;
             if (!cur.vert.isEmpty()) {
@@ -1521,9 +1532,13 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         // El fotograma de la hoja sale de la hora de AHORA y no de la de
         // carga: un indicador AM/PM tiene que cambiar a mediodia sin recargar
         // el plan. Son dos uniforms y una `localtime_r` por pase con hoja.
+        // La que corre por su `frame_time` sale de `time`, el mismo `g_Time`
+        // que acaban de recibir los shaders.
         if (op.hoja >= 0 && op.hoja < m_hojas.size()) {
             float rot[4], tras[2];
-            if (we_hoja_uniforms(m_hojas.at(op.hoja), ::time(nullptr), rot, tras)) {
+            const WeHoja *h = m_hojas.at(op.hoja);
+            if (we_hoja_tiempo_uniforms(h, time, rot, tras)
+                || we_hoja_uniforms(h, ::time(nullptr), rot, tras)) {
                 if (op.hojaRotacion >= 0)
                     glUniform4fv(op.hojaRotacion, 1, rot);
                 if (op.hojaTraslacion >= 0)

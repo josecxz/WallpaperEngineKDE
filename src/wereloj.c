@@ -409,7 +409,10 @@ struct WeHoja {
     int n;                              /* fotogramas leídos */
     float fotograma[MAX_FOTOGRAMAS][6]; /* rotación (4) y traslación (2) */
     int hora[24];
-    int completa;
+    int completa;                       /* `hojahora` con sus 24 horas */
+    float duracion[MAX_FOTOGRAMAS];     /* `frame_time`, en segundos */
+    double total;                       /* la suma de las duraciones */
+    int por_tiempo;                     /* `hojatiempo` leída entera */
 };
 
 WeHoja *we_hoja_nueva(void)
@@ -432,6 +435,9 @@ int we_hoja_linea(WeHoja *h, const char *resto)
     locale_t loc_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
     locale_t previa = loc_c ? uselocale(loc_c) : (locale_t)0;
     int ok = 0;
+
+    /* Un ejecutor puede releer la misma hoja con una línea de otro tipo. */
+    h->completa = h->por_tiempo = 0;
 
     const char *p = resto;
     char *fin;
@@ -473,6 +479,21 @@ int we_hoja_linea(WeHoja *h, const char *resto)
     return ok;
 }
 
+/* En la textura volteada la v de las UV y la del quad van al revés que en
+ * WE: v' = 1 - v en las dos. Sustituyendo en `T + u*R.xy + v*R.zw` sale otra
+ * transformación del mismo tipo, y es la que se sube: cambian de signo las dos
+ * componentes que mezclan la v con la u, y el origen pasa a la esquina de
+ * abajo del fotograma. */
+static void voltea(float rotacion[4], float traslacion[2])
+{
+    const float r[4] = {rotacion[0], rotacion[1], rotacion[2], rotacion[3]};
+    const float t[2] = {traslacion[0], traslacion[1]};
+    rotacion[1] = -r[1];
+    rotacion[2] = -r[2];
+    traslacion[0] = t[0] + r[2];
+    traslacion[1] = 1.0f - t[1] - r[3];
+}
+
 int we_hoja_uniforms_we(const WeHoja *h, time_t cuando,
                         float rotacion[4], float traslacion[2])
 {
@@ -492,19 +513,99 @@ int we_hoja_uniforms(const WeHoja *h, time_t cuando,
 {
     if (!we_hoja_uniforms_we(h, cuando, rotacion, traslacion))
         return 0;
-    if (h->volteada) {
-        /* En la textura volteada la v de las UV y la del quad van al revés
-         * que en WE: v' = 1 - v en las dos. Sustituyendo en
-         * `T + u*R.xy + v*R.zw` sale otra transformación del mismo tipo, y
-         * es la que se sube: cambian de signo las dos componentes que mezclan
-         * la v con la u, y el origen pasa a la esquina de abajo del
-         * fotograma. */
-        const float r[4] = {rotacion[0], rotacion[1], rotacion[2], rotacion[3]};
-        const float t[2] = {traslacion[0], traslacion[1]};
-        rotacion[1] = -r[1];
-        rotacion[2] = -r[2];
-        traslacion[0] = t[0] + r[2];
-        traslacion[1] = 1.0f - t[1] - r[3];
+    if (h->volteada)
+        voltea(rotacion, traslacion);
+    return 1;
+}
+
+/* ── hoja de sprites por `frame_time` ───────────────────────────────────── */
+
+int we_hoja_tiempo_linea(WeHoja *h, const char *resto)
+{
+    if (!h || !resto)
+        return 0;
+    h->completa = h->por_tiempo = 0;
+
+    /* La misma guarda que `we_hoja_linea`. */
+    locale_t loc_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    locale_t previa = loc_c ? uselocale(loc_c) : (locale_t)0;
+    int ok = 0;
+
+    const char *p = resto;
+    char *fin;
+    long volteada = strtol(p, &fin, 10);
+    if (fin != p) {
+        p = fin;
+        long n = strtol(p, &fin, 10);
+        if (fin != p && n > 0 && n <= MAX_FOTOGRAMAS) {
+            p = fin;
+            int leidos = 0;
+            double total = 0.0;
+            for (int i = 0; i < n * 7; i++) {
+                float x = strtof(p, &fin);
+                if (fin == p) break;
+                if (i % 7 < 6) {
+                    h->fotograma[i / 7][i % 7] = x;
+                } else {
+                    /* Una duración nula o negativa no cabe en el bucle de
+                     * abajo; `werender.py` no las manda. */
+                    if (!(x > 0.0f)) break;
+                    h->duracion[i / 7] = x;
+                    total += x;
+                }
+                p = fin;
+                leidos++;
+            }
+            if (leidos == n * 7) {
+                h->volteada = volteada != 0;
+                h->n = (int)n;
+                h->total = total;
+                h->por_tiempo = 1;
+                ok = 1;
+            }
+        }
     }
+
+    if (loc_c) {
+        uselocale(previa);
+        freelocale(loc_c);
+    }
+    return ok;
+}
+
+int we_hoja_fotograma_en(const WeHoja *h, double segundos)
+{
+    if (!h || !h->por_tiempo || !(h->total > 0.0))
+        return -1;
+    /* WE suma el paso de cada fotograma al tiempo del fotograma actual y,
+     * cuando llega a su duración, pasa al siguiente; del último, al 0. Empieza
+     * en el 0 con el tiempo a cero, así que a los `segundos` de escena está en
+     * el que cubre `segundos` módulo la suma de las duraciones. El resto se
+     * hace a mano para no tirar de libm: `tools/test_hoja.py` compila este
+     * módulo sin `-lm`. */
+    double t = segundos - (double)(long long)(segundos / h->total) * h->total;
+    if (t < 0.0)
+        t += h->total;
+    double acumulado = 0.0;
+    for (int i = 0; i < h->n; i++) {
+        acumulado += h->duracion[i];
+        if (t < acumulado)
+            return i;
+    }
+    return h->n - 1;
+}
+
+int we_hoja_tiempo_uniforms(const WeHoja *h, double segundos,
+                            float rotacion[4], float traslacion[2])
+{
+    int i = we_hoja_fotograma_en(h, segundos);
+    if (i < 0)
+        return 0;
+    const float *f = h->fotograma[i];
+    for (int k = 0; k < 4; k++) rotacion[k] = f[k];
+    traslacion[0] = f[4];
+    traslacion[1] = f[5];
+    if (h->volteada)
+        voltea(rotacion, traslacion);
     return 1;
 }
