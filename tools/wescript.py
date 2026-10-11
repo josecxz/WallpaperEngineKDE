@@ -630,6 +630,20 @@ class Recurso:
     si acaba en el texto, `js_str` lo rechaza y la capa no es un reloj."""
 
 
+class Capa(Objeto):
+    """`thisLayer`. Lo demás que se lea de ella sigue siendo `undefined`, como
+    cuando era un objeto vacío; lo único que entiende es
+    `getTextureAnimation()`, que da la animación de la textura de la capa."""
+
+
+class Animacion:
+    """Lo que devuelve `thisLayer.getTextureAnimation()`, con un solo método:
+    `setFrame(n)`, que apunta el fotograma en el intérprete. Cualquier otro
+    (`play`, `pause`, `getFrame`...) es un ScriptError: con él el fotograma
+    deja de ser lo que el script pide en este instante y pasa a depender de
+    la reproducción, que aquí no existe."""
+
+
 class Constructor:
     """Lo que devuelve `createScriptProperties()`: una cadena de `.addX({...})`.
 
@@ -788,6 +802,9 @@ class Interprete:
         self.propiedades = propiedades or {}
         self.global_ = Ambito()
         self.fecha: dt.datetime = dt.datetime.now()
+        # El último `setFrame` de la llamada en curso; ver `fotograma_en`.
+        self.fotograma: float | None = None
+        self.animacion = Animacion()
         self._prepara()
 
     # --- preparación: se ejecuta el cuerpo del módulo una vez
@@ -797,7 +814,7 @@ class Interprete:
         g.declara("createScriptProperties", "__constructor__")
         g.declara("Math", Objeto())
         g.declara("console", Objeto())
-        g.declara("thisLayer", Objeto())
+        g.declara("thisLayer", Capa())
         g.declara("shared", Objeto())
         g.declara("engine", Motor())
         # `Boolean` como función es `!!v`; hace falta como argumento, en el
@@ -818,6 +835,18 @@ class Interprete:
             raise ScriptError("el script no exporta update()")
         self.fecha = cuando
         return js_str(self.llama(f, [valor]))
+
+    def fotograma_en(self, cuando: dt.datetime, valor=None) -> float | None:
+        """El fotograma que `update(value)` pide con `setFrame` en ese
+        instante, o None si en esa llamada no lo pide. Lo que devuelve
+        `update` no se mira: es el valor de la propiedad, no el fotograma."""
+        f = self.global_.vars.get("update")
+        if not isinstance(f, Funcion):
+            raise ScriptError("el script no exporta update()")
+        self.fecha = cuando
+        self.fotograma = None
+        self.llama(f, [valor])
+        return self.fotograma
 
     # --- sentencias
     def ejecuta(self, s, a: Ambito):
@@ -1094,6 +1123,12 @@ class Interprete:
             raise ScriptError(f"engine.{js_str(clave)}")
         if isinstance(obj, Recurso):
             raise ScriptError("propiedad de un recurso de engine")
+        if isinstance(obj, Capa) and clave == "getTextureAnimation":
+            return ("__met_capa__", obj, clave)
+        if isinstance(obj, Animacion):
+            if clave == "setFrame":
+                return ("__met_anim__", obj, clave)
+            raise ScriptError(f"getTextureAnimation().{js_str(clave)}")
         if isinstance(obj, dict):
             return obj.get(js_str(clave))
         if obj is None:
@@ -1166,6 +1201,13 @@ class Interprete:
             raise ScriptError(f"Date.{nombre} estático")
         if clase == "__met_motor__":
             return Recurso()
+        if clase == "__met_capa__":
+            return self.animacion
+        if clase == "__met_anim__":
+            if not args:
+                raise ScriptError("setFrame sin fotograma")
+            self.fotograma = js_numero(args[0])
+            return None
         raise ScriptError(nombre)
 
     def _metodo_array(self, obj: list, nombre: str, args):
@@ -1663,6 +1705,83 @@ def reloj_de(obj: dict) -> Formato | None:
     t = obj.get("text") or {}
     valor = t.get("value") if isinstance(t.get("value"), str) else ""
     return formato_de(ip, valor or "")
+
+
+# ── el fotograma de una hoja de sprites, elegido por la hora ────────────────
+#
+# Fuera del texto también hay scripts: cualquier propiedad de una capa
+# ---`visible`, `scale`, `angles`...--- puede llevar uno, y su `update` corre
+# cada fotograma. Algunos no cambian la propiedad sino la animación de la
+# textura, con `thisLayer.getTextureAnimation().setFrame(n)`. Cuando ese `n`
+# depende solo de la hora local, lo que viaja en el plan es la tabla de las
+# 24 horas, y el ejecutor elige la fila con su reloj, como con los relojes.
+
+def fotogramas_por_hora(ip: Interprete, valor=None) -> list[int] | None:
+    """El fotograma de cada hora local, o None si el script no se reduce a
+    eso.
+
+    La tabla sale de evaluar `update` en los mismos ~1080 instantes con los
+    que se comprueba un reloj (`_instantes_de_prueba`, que pasan por las 24
+    horas), y solo se da si TODOS los de una misma hora piden el mismo
+    fotograma. Así se descarta lo que depende del minuto o del día, que una
+    tabla por hora no puede decir; lo que no llama a `setFrame` en alguna de
+    las llamadas, porque entonces se queda el fotograma que hubiera; y lo que
+    pide siempre el mismo, que no depende de la hora.
+    """
+    tabla: list[float | None] = [None] * 24
+    try:
+        for t in _instantes_de_prueba():
+            f = ip.fotograma_en(t, valor)
+            if f is None or f != f or f < 0:
+                return None
+            if tabla[t.hour] is None:
+                tabla[t.hour] = f
+            elif tabla[t.hour] != f:
+                return None
+    except Exception:
+        return None
+    if any(f is None for f in tabla) or len(set(tabla)) == 1:
+        return None
+    # `setFrame` admite fracciones; la hoja se queda en el fotograma entero
+    # por debajo.
+    return [int(f) for f in tabla]
+
+
+def _scripts_de_capa(x, ruta: tuple = ()):
+    """Los `{script, value, scriptproperties}` de una capa, salvo el del
+    texto: ese es el de la cadena, y lo lleva `reloj_de`."""
+    if isinstance(x, dict):
+        if ruta and isinstance(x.get("script"), str) and ruta[0] != "text":
+            yield x
+        for k, v in x.items():
+            yield from _scripts_de_capa(v, ruta + (k,))
+    elif isinstance(x, list):
+        for i, v in enumerate(x):
+            yield from _scripts_de_capa(v, ruta + (i,))
+
+
+def hoja_por_hora(obj: dict) -> list[int] | None:
+    """La tabla de 24 fotogramas de una capa, o None.
+
+    Se miran todos sus scripts. Si dos dieran tabla y no coincidieran no se
+    sabría cuál manda ---depende del orden en que WE los corre---, así que
+    entonces tampoco hay tabla.
+    """
+    tablas = []
+    for d in _scripts_de_capa(obj):
+        props = d.get("scriptproperties")
+        props = {k: (v.get("value") if isinstance(v, dict) else v)
+                 for k, v in props.items()} if isinstance(props, dict) else {}
+        try:
+            ip = Interprete(d["script"], props)
+        except Exception:
+            continue
+        tabla = fotogramas_por_hora(ip, d.get("value"))
+        if tabla is not None:
+            tablas.append(tabla)
+    if not tablas or any(t != tablas[0] for t in tablas):
+        return None
+    return tablas[0]
 
 
 # ── barrido del corpus ──────────────────────────────────────────────────────

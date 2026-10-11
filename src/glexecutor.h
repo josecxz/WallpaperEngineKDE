@@ -38,8 +38,9 @@
 using GlName = unsigned int;      // glGenTextures, glCreateProgram...
 using GlLocation = int;           // glGetUniformLocation (-1 = no existe)
 
-// Definido en `src/wereloj.h`; aqui basta el tipo opaco.
+// Definidos en `src/wereloj.h`; aqui basta el tipo opaco.
 struct WeReloj;
+struct WeHoja;
 
 class GlExecutor
 {
@@ -245,6 +246,12 @@ private:
         // "p046.frag -> _downscaled1", solo para WE_TRACE_PASES. Se compone
         // en resolve() porque targetName se descarta justo despues.
         QString etiqueta;
+        // Hoja de sprites cuyo fotograma elige la hora (linea `hojahora` del
+        // pase base): indice en `m_hojas`, o -1. Sus dos uniforms los pone
+        // `we_hoja_uniforms` con el reloj del sistema en cada fotograma, por
+        // encima de lo que el plan hornea.
+        int hoja = -1;
+        GlLocation hojaRotacion = -1, hojaTraslacion = -1;
     };
 
     struct Target {
@@ -376,6 +383,10 @@ private:
         float escala[3] = {1.0f, 1.0f, 1.0f};
     };
     QVector<PsysPadre> m_psysPadre;
+    // Las hojas por hora del plan. Son memoria propia, no handles de GL: se
+    // sueltan al recargar el plan y en el destructor, haya contexto o no.
+    QVector<WeHoja *> m_hojas;
+    void sueltaHojas();
     int m_meshCount = 0, m_meshPassCount = 0, m_meshAnimCount = 0;
     int m_psysCount = 0, m_psysUnknownParts = 0, m_psysCursorCount = 0;
     QVector<Target> m_targets;              // indexable y estable

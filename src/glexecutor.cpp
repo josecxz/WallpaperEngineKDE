@@ -89,6 +89,7 @@ void makeTarget(GlName *tex, GlName *fbo, int w, int h)
 
 GlExecutor::~GlExecutor()
 {
+    sueltaHojas();
     // glDelete* sin contexto activo es comportamiento indefinido, y un
     // destructor puede ejecutarse en cualquier momento del apagado. Si no hay
     // contexto se prefiere avisar y filtrar los handles: el proceso esta
@@ -114,6 +115,7 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
     }
 
     m_ops.clear();
+    sueltaHojas();
     // El decodificador de una capa de video NO es memoria a secas: son un hilo
     // desacoplado y su anillo de fotogramas. Vaciar el mapa sin cerrarlo deja
     // el hilo decodificando un wallpaper que ya no se ve. `releaseResources`
@@ -344,6 +346,17 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
         } else if (kw == QLatin1String("sampler") && tok.size() >= 3) {
             cur.samplerNames.append(tok[1].toUtf8());
             cur.samplerSources.append(tok[2].toUtf8());
+        } else if (kw == QLatin1String("hojahora")) {
+            // La lee `src/wereloj.c`, el mismo modulo que usa `tools/glexec.c`.
+            // Son solo numeros: lo que va detras de la palabra clave tal cual.
+            WeHoja *h = we_hoja_nueva();
+            const QByteArray resto = line.mid(kw.size()).toUtf8();
+            if (h && we_hoja_linea(h, resto.constData())) {
+                cur.hoja = int(m_hojas.size());
+                m_hojas.append(h);
+            } else {
+                we_hoja_free(h);
+            }
         } else if (kw == QLatin1String("endpass")) {
             inPass = false;
             if (!cur.vert.isEmpty()) {
@@ -527,6 +540,10 @@ void GlExecutor::resolve(Op &op)
     }
     m_liveUniforms += live.size();
     op.uniforms = live;
+    if (op.hoja >= 0) {
+        op.hojaRotacion = glGetUniformLocation(op.program, "g_Texture0Rotation");
+        op.hojaTraslacion = glGetUniformLocation(op.program, "g_Texture0Translation");
+    }
 
     // Traza de resolucion: fuera del bucle de dibujado, se emite una sola vez
     // al cargar el plan. Sirve para ver a que buffer y con que tamano acaba
@@ -942,6 +959,13 @@ bool GlExecutor::initialize(QString *error)
 }
 
 // ── dibujado ────────────────────────────────────────────────────────────────
+
+void GlExecutor::sueltaHojas()
+{
+    for (WeHoja *h : m_hojas)
+        we_hoja_free(h);
+    m_hojas.clear();
+}
 
 void GlExecutor::updateClocks()
 {
@@ -1491,6 +1515,19 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             case 9:  glUniformMatrix3fv(u.location, 1, GL_FALSE, v); break;
             case 16: glUniformMatrix4fv(u.location, 1, GL_FALSE, v); break;
             default: break;
+            }
+        }
+
+        // El fotograma de la hoja sale de la hora de AHORA y no de la de
+        // carga: un indicador AM/PM tiene que cambiar a mediodia sin recargar
+        // el plan. Son dos uniforms y una `localtime_r` por pase con hoja.
+        if (op.hoja >= 0 && op.hoja < m_hojas.size()) {
+            float rot[4], tras[2];
+            if (we_hoja_uniforms(m_hojas.at(op.hoja), ::time(nullptr), rot, tras)) {
+                if (op.hojaRotacion >= 0)
+                    glUniform4fv(op.hojaRotacion, 1, rot);
+                if (op.hojaTraslacion >= 0)
+                    glUniform2fv(op.hojaTraslacion, 1, tras);
             }
         }
 
