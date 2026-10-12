@@ -368,6 +368,18 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             } else {
                 we_hoja_free(h);
             }
+        } else if (kw == QLatin1String("hojaimagenes")) {
+            // La de varias imagenes: corre por tiempo como la de arriba, y
+            // cada fotograma trae su textura, que al dibujar da
+            // `we_hoja_tiempo_textura`.
+            WeHoja *h = we_hoja_nueva();
+            const QByteArray resto = line.mid(kw.size()).toUtf8();
+            if (h && we_hoja_imagenes_linea(h, resto.constData())) {
+                cur.hoja = int(m_hojas.size());
+                m_hojas.append(h);
+            } else {
+                we_hoja_free(h);
+            }
         } else if (kw == QLatin1String("endpass")) {
             inPass = false;
             if (!cur.vert.isEmpty()) {
@@ -512,6 +524,8 @@ void GlExecutor::resolve(Op &op)
         s.location = glGetUniformLocation(op.program, op.samplerNames.at(i).constData());
         if (s.location < 0)
             continue;                       // el shader no lo declara: fuera
+        if (op.hoja >= 0 && op.samplerNames.at(i) == "g_Texture0")
+            op.hojaUnidad = s.unit;
         if (src.startsWith("tex:")) {
             s.source = Source::Texture;
             // constFind evita copiar el TexSpec entero solo para leer el id, y
@@ -1488,8 +1502,19 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             break;
         }
 
+        // Una hoja de varias imagenes: en `g_Texture0` va la del fotograma
+        // que toca a `time`, como cuando WE enlaza la textura.
+        GLuint hojaTex = 0;
+        if (op.hojaUnidad >= 0 && op.hoja >= 0 && op.hoja < m_hojas.size()) {
+            const int ti = we_hoja_tiempo_textura(m_hojas.at(op.hoja), time);
+            const auto it = ti >= 0 ? m_textures.constFind(ti) : m_textures.constEnd();
+            if (it != m_textures.constEnd())
+                hojaTex = it->id;
+        }
         for (const Sampler &s : op.samplers) {
             GLuint tex = s.texture;
+            if (hojaTex && s.unit == op.hojaUnidad)
+                tex = hojaTex;
             if (s.source == Source::Target)
                 tex = resolveTarget(s.targetIndex).tex;
             else if (s.source == Source::Previous)

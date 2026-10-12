@@ -8454,9 +8454,12 @@ plan dice `volteada 1`, y `werender.volteo_de_hoja` en Python.
   mayúsculas](#los-combos-van-en-mayúsculas-y-la-hoja-corre-por-frame_time-lo-leído-en-wallpaper64exe):
   no lo enciende solo, es que 16 lo declaran en minúsculas y WE pasa los
   combos a mayúsculas; las 4 hojas de una imagen sin script corren por su
-  `frame_time`. Las 12 de varias imágenes, quietas en el fotograma 0, siguen
-  necesitando elegir la textura por `image_id`, y las de `frame_time` 0 ya
-  tienen respuesta en el binario (un fotograma por cada fotograma de render).
+  `frame_time`. ~~Las 12 de varias imágenes, quietas en el fotograma 0, siguen
+  necesitando elegir la textura por `image_id`~~ (hecho para las 7 sin script
+  en [Las hojas de varias
+  imágenes](#las-hojas-de-varias-imágenes-eligen-la-textura-por-image_id-lo-leído-en-wallpaper64exe)),
+  y las de `frame_time` 0 ya tienen respuesta en el binario (un fotograma por
+  cada fotograma de render).
 - **`setFrame` movido por clics, `shared` o `init()`** (`3238423642`,
   `3597772384`): necesita eventos y estado entre scripts, que no hay.
 
@@ -8662,8 +8665,11 @@ Todo con los scripts de `medidas/` de la ejecución 20261011-140915.
 
 ### Lo que queda
 
-- **Elegir la textura por `image_id`** en las 12 capas de varias imágenes, que
-  ahora se quedan en el fotograma 0.
+- ~~**Elegir la textura por `image_id`** en las 12 capas de varias imágenes, que
+  ahora se quedan en el fotograma 0.~~ Hecho en [Las hojas de varias
+  imágenes](#las-hojas-de-varias-imágenes-eligen-la-textura-por-image_id-lo-leído-en-wallpaper64exe):
+  WE enlaza la imagen del fotograma que toca; las 7 sin script corren, y las
+  5 de `3577990983`, que mueve un script, siguen en el fotograma 0.
 - **El `alpha` y el brillo de una capa sin `VERSION`**: el bucle de constantes
   del material escribe `g_UserAlpha` y `g_Brightness` con su valor por defecto
   después de `uniforms_de_tinte` y los pisa. Con `VERSION` ya no muerde en
@@ -8973,3 +8979,158 @@ vieja, 0, que era «en todas partes»— y uno de un sistema hijo de Karma
 - **`flags & 1` (borrar al pasar a menos de `deletethreshold`)** y el `offset`
   no se implementan: ningún uso del corpus declara `flags`, y el `offset` no lo
   usa el operador.
+
+## Las hojas de varias imágenes eligen la textura por `image_id`: lo leído en wallpaper64.exe
+
+Quedaba en [Lo que queda](#lo-que-queda-7) de los combos en mayúsculas: las
+hojas cuyo `TEXS` reparte los fotogramas entre **varias imágenes** del `.tex`
+se quedaban quietas en el fotograma 0, porque `werender` solo subía la imagen
+0. Son 12 capas en 4 escenas (`censo_hojas_multimagen.py`), todas visibles con
+las propiedades por defecto: los letreros de neón de Sci-Fi Cyber City
+(`2262142032`: 396 con 4 fotogramas, 477 con 17, 983 y 1017 con 167 —119 en
+la imagen 0 y 48 en la 1—), los brillos de los ojos de `2229352184` (211 y
+274, la misma textura de 4 imágenes y 30 fotogramas), el parpadeo del ojo
+rojo de `2220826239` (61: 8 fotogramas, el 0 de 4,5 s y los demás de 0,03) y
+las 5 de `3577990983` (5 imágenes de 7680x7560). Esas 5 tienen un script de
+`visible` que para y arranca la animación, `wescript.mueve_la_hoja` da
+verdadero, y se quedan fuera por esa regla, como antes.
+
+La última imagen suele ser más baja que las otras (2048x1024 tras 2048x2048,
+256x128 tras 256x256), y los píxeles de cada fotograma son de **su** imagen:
+en la 0 caerían en otro sitio. Antes de escribir nada había que saber qué
+hace WE con el `image_id`.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). Las comprueba
+todas `verifica_exe.sh`.
+
+- **El lector del `TEXS`** arma un registro de 32 bytes por fotograma. Lee el
+  `image_id` (`0x14015e2d5`) y lo guarda en `+4` (`0x14015e2df`), con el
+  `frame_time` en `+0` (`0x14015e2f6`, `0x14015e2fd`). Toma la imagen de ese
+  índice del vector de imágenes, de 24 bytes cada una (`0x14015e4b2`), su
+  primer mip (`0x14015e4b6`) y su ancho y su alto (`0x14015e4c1`,
+  `0x14015e4ce`), y **parte por ellos** los seis números del fotograma: `x`,
+  `width` y `height_x` por el ancho; `y`, `width_y` y `height` por el alto
+  (`0x14015e4d6..0x14015e4eb`). El registro va al vector de fotogramas
+  (`0x14015e530`, `0x14015e533`): tiempo, imagen, traslación y rotación.
+- **El avance** (`0x14015f0d0`, el de [la hoja por
+  `frame_time`](#lo-leído-con-direcciones-3)) lee el `image_id` del fotograma
+  que toca (`0x14015f28e`), junto a la traslación de `+8` (`0x14015f2cf`), y
+  lo apunta en `textura+0x98` (`0x14015f2e8`); sin hoja animada, 0
+  (`0x14015f113`).
+- **El enlace** es la función que sigue al avance en la tabla virtual de la
+  textura (`0x1404870a8` → `0x14015f0d0`, `0x1404870b0` → `0x1400ee8b0`).
+  Con la misma unidad (`slot & 0xf`, `0x1400ee8e1`) lee `textura+0x98`
+  (`0x1400ee8f0`) e indexa con él un vector de registros de 24 bytes en
+  `textura+0x140` (`0x1400ee8fa..0x1400ee909`), cuyo `+0x10` pasa a la
+  llamada de enlace del dispositivo (`0x1400ee913`). Que ese vector sea el de
+  las texturas de GL de cada imagen se deduce de esto, no se ha seguido hasta
+  `glBindTexture`.
+
+Es decir: **cada imagen es una textura aparte, y en el sampler va la del
+fotograma que toca**, con sus uniforms calculados sobre el tamaño de esa
+imagen. WE parte por el mip entero; aquí cada imagen se sube recortada a
+`image_size` (como la 0) y se parte por lo subido, que da la misma
+coordenada de textura.
+
+### Lo que cambia
+
+- **`tools/werender.py`**: `texture()` acepta `imagen` (la clave de la caché
+  la incluye). `_hoja_por_tiempo` ya no exige una sola imagen, sino que todos
+  los `image_id` existan; si alguno no es 0 y la hoja se reproduce, sube cada
+  imagen usada con el mismo recorte y volteo que la 0, parte cada fotograma
+  por el tamaño de la suya y devuelve la textura de cada uno. El pase base
+  lleva entonces, en lugar de `hojatiempo`,
+  `hojaimagenes <volteada> <n> (<rx ry rz rw tx ty> <dur> <tex>)×n`
+  (`linea_hojaimagenes`). Los `u4f`/`u2f` siguen siendo los del fotograma 0
+  de la imagen 0.
+- **`src/wereloj.c`**: `hojatiempo` y `hojaimagenes` las lee el mismo
+  `lee_por_tiempo`, con siete u ocho números por fotograma y la locale
+  numérica sujeta a `C`; la textura se lee con `strtol`.
+  `we_hoja_imagenes_linea` deja la `WeHoja` corriendo por tiempo, como
+  `we_hoja_tiempo_linea`, y `we_hoja_tiempo_textura` da la textura del plan
+  del fotograma de un instante, o −1 si la hoja no trae texturas.
+- **Los ejecutores**, desde ese módulo: `tools/glexec.c` lee `hojaimagenes` en
+  la misma `WeHoja` y, al resolver los samplers del pase, pone en
+  `g_Texture0` `textures[we_hoja_tiempo_textura(hoja, g_Time)]`; el `g_Time`
+  del pase se calcula una vez, antes, para esto y para los uniforms.
+  `src/glexecutor.cpp` guarda en el `Op` la unidad de `g_Texture0`
+  (`hojaUnidad`) y en cada fotograma busca en `m_textures` la que da
+  `we_hoja_tiempo_textura` con el mismo `time` que reciben los shaders.
+
+### Lo que se descartó
+
+- **Una línea hermana detrás de `hojatiempo`** con solo las texturas. Fue la
+  primera versión. Un ejecutor que no la conozca seguiría leyendo la
+  `hojatiempo` y correría la hoja sobre la imagen 0: en los fotogramas de las
+  otras imágenes muestrearía trozos de la 0 que no son suyos. Con la palabra
+  nueva para la línea entera, ese ejecutor la salta y deja la capa en el
+  fotograma 0, como en main; está medido abajo.
+- **Juntar las imágenes en un atlas** y dejar los ejecutores como estaban. WE
+  no lo hace —enlaza texturas aparte— y la altura del atlas no cabe en
+  general: las 5 imágenes de 7560 de `3577990983` darían 37800 px, por encima
+  del tope de 16384 de Mesa. No se probó.
+- **Partir todos los fotogramas por el tamaño de la imagen 0.** Es lo que
+  hacía el fotograma 0 hasta ahora, y en la 983 los de la imagen 1 (de 1024
+  de alto) saldrían con la mitad de alto y en otro sitio. `test_hoja.py`
+  comprueba que los uniforms del C **no** coinciden con esa cuenta en los
+  fotogramas de la imagen 1.
+
+### Lo medido
+
+Todo con los scripts de `medidas/` de la ejecución 20261012-102605.
+
+- **El binario** (`verifica_exe.sh`): las 29 comprobaciones de arriba.
+- **El plan** (`hojas_en_plan.py`, que busca el pase de cada capa por los
+  píxeles de su textura): las 7 capas llevan `hojaimagenes` y no
+  `hojatiempo`, con 4, 17, 167, 167, 30, 30 y 8 fotogramas, como su `TEXS`;
+  en todos, la textura del fotograma tiene los píxeles de la imagen de su
+  `image_id`, los seis números son los del `TEXS` partidos por el tamaño de
+  esa imagen (a 1e-6) y la duración es su `frame_time`. Las 5 de
+  `3577990983`, sin `hojatiempo` ni `hojaimagenes` y con los uniforms del
+  fotograma 0. Lo que se sube de más: 4 texturas en `2262142032` (17,5 MB en
+  RGBA), 3 en `2229352184` (40,0 MB) y 1 en `2220826239` (0,1 MB); la mayor
+  textura de esos planes es de 4727 px, y el plan con más texturas tiene 47,
+  por debajo de las 64 de `glexec.c`.
+- **Los planes de las 129** (`planes_vs_main.py`, rutas normalizadas): cambian
+  **3**, `2220826239`, `2229352184` y `2262142032`; fuera de ellas, 0. En cada
+  una cambia solo `plan.txt`: las `hojaimagenes` (1, 2 y 4), las líneas `tex`
+  nuevas y las `tex`/`sampler` que se renumeran detrás.
+- **El módulo C** (`tools/test_hoja.py`, ampliado; `cc -Wall -Wextra` sin
+  avisos): con la hoja real de la 983, en `C` y en `es_ES.UTF-8`, a 0,02,
+  1,90 y 8,58 s (fotogramas 0 y 47, imagen 0), 4,62 s (el 115, girado, de la
+  imagen 0) y 4,78, 5,14 y 6,66 s (119, 128 y 166, imagen 1), el fotograma,
+  la textura de su imagen y los uniforms a 1e-6 de los de Python sobre el
+  tamaño de esa imagen. Leída de `hojatiempo`, la misma hoja da textura −1, y
+  lo que va detrás de `hojatiempo` no se acepta como `hojaimagenes`.
+- **El render** (`render_983.py`, Mesa, 3840x2160): el recorte de la 983 es
+  x 2621..2901, y 1368..1497. Los instantes son 1,90 s (fotograma 47, imagen
+  0) y 11,82 s (128, imagen 1), elegidos para que las otras tres hojas que
+  tocan el recorte —el letrero de cerveza, una de nueve fotogramas y la 396—
+  estén en el mismo fotograma en los dos. Suma de |diferencia| entre ellos:
+  **128 en main y 106680 en la rama**. A 11,82 s, la rama contra main a 1,90
+  s: 32627. Y el plan de la rama dibujado con el `glexec` de main da a
+  11,82 s el mismo recorte que main: suma **0**.
+- **Los ejecutores** (`ejecutores.py`): los dos llaman a
+  `we_hoja_tiempo_textura` y a `we_hoja_imagenes_linea`; `make build` y
+  `make glexec` en frío, **0 avisos nuevos** frente a main (el de siempre,
+  `GL_GLEXT_VERSION` de Qt).
+- **La luz** (`luz_tres.py`, las 3 escenas, Mesa, 6 fotogramas a 4 s, con el
+  `informe` de `test_luminancia.py --referencia`): **0 regresiones**.
+  `2220826239` 49,41 → 49,41, `2229352184` 64,04 → 64,04 y `2262142032`
+  77,89 → 77,89; en otra pasada la rama dio 77,88 en esta última, que se
+  mueve en la segunda cifra decimal.
+- `test_werender.py`, `test_wereloj.py` y `test_wescript.py` pasan.
+
+### Lo que queda
+
+- **Las 5 de `3577990983`**, que un script para y arranca con
+  `getTextureAnimation().play()`/`stop()` y `engine.setTimeout`: necesitan el
+  estado del script entre fotogramas, que no hay. Además son 5 imágenes de
+  7680x7560 por capa, unos 1,1 GB en RGBA: subirlas tal cual no es viable, y
+  habría que mirar si WE las guarda comprimidas en la GPU.
+- **`g_Texture0Resolution`** sigue siendo el de la imagen 0 en todos los
+  fotogramas. No se ha leído si WE lo cambia con la imagen; en las 7 capas
+  solo difiere en el alto de la última imagen.

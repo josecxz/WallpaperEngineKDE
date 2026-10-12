@@ -100,6 +100,27 @@ int we_hoja_fotograma_en(const WeHoja *h, double segundos);
 int we_hoja_tiempo_uniforms(const WeHoja *h, double segundos,
                             float rotacion[4], float traslacion[2]);
 
+/* Si los fotogramas se reparten entre varias imágenes del `.tex`, la línea es
+ * otra, con la textura del plan de cada fotograma detrás de su duración:
+ *
+ *   hojaimagenes <volteada> <n> (<rx> <ry> <rz> <rw> <tx> <ty> <dur> <tex>) x n
+ *
+ * WE enlaza en el sampler la imagen del fotograma que toca, y los seis
+ * números de cada fotograma ya vienen partidos por el tamaño de la suya. Va
+ * aparte de `hojatiempo` para que un ejecutor que no la conozca la salte
+ * entera y deje la capa en el fotograma 0: con `hojatiempo` reproduciría la
+ * hoja sobre la imagen 0 y los fotogramas de las otras saldrían de trozos
+ * que no son suyos. Leída así, la `WeHoja` corre por tiempo igual que con
+ * `hojatiempo`. */
+
+/* Lee lo que va detrás de `hojaimagenes`. Devuelve 1 si lo entendió. */
+int we_hoja_imagenes_linea(WeHoja *h, const char *resto);
+
+/* La textura del plan que va en `g_Texture0` a los `segundos` de escena, o -1
+ * si la hoja no se leyó de `hojaimagenes` (entonces es la del sampler). Es lo
+ * que llaman los dos ejecutores. */
+int we_hoja_tiempo_textura(const WeHoja *h, double segundos);
+
 #ifdef __cplusplus
 }
 #endif

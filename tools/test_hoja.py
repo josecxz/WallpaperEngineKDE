@@ -28,6 +28,23 @@ Y la hoja que corre sola por su `frame_time` (la línea `hojatiempo`):
      `#define spritesheet`/`version` en minúsculas, y que los dos ejecutores
      llaman a `we_hoja_tiempo_uniforms`.
 
+Y la que reparte sus fotogramas entre varias imágenes del `.tex` (la línea
+`hojaimagenes`, que es una `hojatiempo` con la textura de cada fotograma):
+
+  6. Con la hoja real de la capa 983 de `2262142032` (167 fotogramas de
+     0,04 s: 119 en la imagen 0, de 2048x2048, y 48 en la 1, de 2048x1024),
+     en `C` y en `es_ES`: en instantes de fotogramas de la imagen 0 (también
+     uno girado) y de la 1, `we_hoja_tiempo_textura` da la textura de la
+     imagen del fotograma, y los uniforms están a 1e-6 de los que calcula
+     Python partiendo por el tamaño de ESA imagen ---y no a 1e-6 de los que
+     saldrían con el de la 0, para que la prueba distinga---. Leída de
+     `hojatiempo`, la misma hoja da textura -1 (la del sampler), y lo que va
+     detrás de `hojatiempo` no se lee como `hojaimagenes`.
+  7. Que en el plan de `2262142032` la capa (y la 1017, que tiene la misma
+     tabla) lleva su `hojaimagenes`, con dos
+     texturas que siguen al `image_id`, y que los dos ejecutores llaman a
+     `we_hoja_tiempo_textura`.
+
 Uso:
     python3 tools/test_hoja.py
 """
@@ -151,6 +168,64 @@ int main(int argc, char **argv)
             continue;
         }
         printf("%d %.9g %.9g %.9g %.9g %.9g %.9g\n", we_hoja_fotograma_en(h, t),
+               r[0], r[1], r[2], r[3], tr[0], tr[1]);
+    }
+    we_hoja_free(h);
+    return 0;
+}
+"""
+
+
+ARNES_IMAGENES = r"""
+#include <locale.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "wereloj.h"
+
+/* argv[1]: un fichero con la hoja como `hojatiempo` y, debajo, como
+ * `hojaimagenes`; argv[2]: la locale con la que se LEE. Por la entrada, un
+ * instante de escena por línea; por la salida, el fotograma, la textura y los
+ * uniforms. */
+int main(int argc, char **argv)
+{
+    if (argc > 2 && !setlocale(LC_ALL, argv[2]))
+        return 4;
+    FILE *f = fopen(argv[1], "r");
+    if (!f) return 2;
+    static char tiempo[65536], imagenes[65536];
+    if (!fgets(tiempo, sizeof tiempo, f) || !fgets(imagenes, sizeof imagenes, f))
+        return 2;
+    fclose(f);
+    const char *p = tiempo, *q = imagenes;
+    while (*p && *p != ' ') p++;           /* fuera `hojatiempo` */
+    while (*q && *q != ' ') q++;           /* fuera `hojaimagenes` */
+    WeHoja *h = we_hoja_nueva();
+    /* Leída de `hojatiempo`, la textura es la del sampler. */
+    if (!we_hoja_tiempo_linea(h, p) || we_hoja_tiempo_textura(h, 0.0) != -1) {
+        printf("hojatiempo con textura\n");
+        return 5;
+    }
+    /* Siete números por fotograma no son una `hojaimagenes`. */
+    if (we_hoja_imagenes_linea(h, p)) {
+        printf("lee hojatiempo como hojaimagenes\n");
+        return 6;
+    }
+    if (!we_hoja_imagenes_linea(h, q)) {
+        printf("no lee hojaimagenes\n");
+        return 7;
+    }
+    setlocale(LC_ALL, "C");
+    char pet[64];
+    float r[4], tr[2];
+    while (fgets(pet, sizeof pet, stdin)) {
+        double t = strtod(pet, NULL);
+        if (!we_hoja_tiempo_uniforms(h, t, r, tr)) {
+            printf("sin uniforms\n");
+            continue;
+        }
+        printf("%d %d %.9g %.9g %.9g %.9g %.9g %.9g\n",
+               we_hoja_fotograma_en(h, t), we_hoja_tiempo_textura(h, t),
                r[0], r[1], r[2], r[3], tr[0], tr[1]);
     }
     we_hoja_free(h);
@@ -308,6 +383,108 @@ def prueba_por_tiempo(fallos: list[str]) -> None:
             fallos.append(f"{f} no llama a we_hoja_tiempo_uniforms")
 
 
+CAPA_IMAGENES = 983
+# Instantes de escena (el centro de un fotograma de 0,04 s): el 0 y el 47 de
+# la imagen 0, el 115 girado de la 0, el 119 ---el primero de la 1---, el 128
+# y el último, y el 47 otra vez en la segunda vuelta.
+INSTANTES_IMAGENES = (0.02, 1.90, 4.62, 4.78, 5.14, 6.66, 8.58)
+# Las texturas que se dan a cada imagen en la línea de prueba: cualquier
+# número que no sea el índice sirve para ver que se devuelve el del plan.
+TEXTURA_DE_IMAGEN = 100
+
+
+def prueba_varias_imagenes(fallos: list[str]) -> None:
+    """Los puntos 6 y 7 de arriba."""
+    d = Path(wepaths.we_workshop()) / ESCENA_TIEMPO
+    obj, tex, (tw, th) = hoja_de_capa(ESCENA_TIEMPO, CAPA_IMAGENES)
+    dur = [f["frame_time"] for f in tex.frames]
+    imgs = [int(f["image_id"]) for f in tex.frames]
+    # Lo que se sube de cada imagen: recortada a `image_size`, como en `texture()`.
+    iw, ih = tex.image_size
+    tam = [(min(im[0].width, iw or im[0].width), min(im[0].height, ih or im[0].height))
+           for im in tex.images]
+    print(f"\n── hoja de varias imágenes de {ESCENA_TIEMPO} capa {CAPA_IMAGENES} ──")
+    print(f"  {len(tex.frames)} fotogramas, por imagen "
+          f"{ {k: imgs.count(k) for k in sorted(set(imgs))} }, imágenes "
+          + ", ".join(f"{w}x{h}" for w, h in tam)
+          + f", scripts con getTextureAnimation: {wescript.mueve_la_hoja(obj)}")
+    if len(tam) != 2 or tam[0][1] == tam[1][1] or set(imgs) != {0, 1}:
+        fallos.append(f"la hoja no es la de dos imágenes de distinto alto: {tam}")
+    fot = [werender.fotogramas_de_hoja([f], *tam[k], 1)[0]
+           for f, k in zip(tex.frames, imgs)]
+    con_la_0 = werender.fotogramas_de_hoja(tex.frames, tw, th, len(tex.frames))
+    tiempo = werender.linea_hojatiempo(True, fot, dur)
+    linea = werender.linea_hojaimagenes(True, fot, dur,
+                                        [TEXTURA_DE_IMAGEN + k for k in imgs])
+
+    total = sum(dur)
+    vistas = set()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        exe = compila(tmp, ARNES_IMAGENES, "arnes_imagenes")
+        plan = tmp / "hoja.txt"
+        plan.write_text(tiempo + "\n" + linea + "\n")
+        for locale in ("C", "es_ES.UTF-8"):
+            p = subprocess.run([str(exe), str(plan), locale],
+                               input="".join(f"{t}\n" for t in INSTANTES_IMAGENES),
+                               capture_output=True, text=True)
+            if p.returncode:
+                fallos.append(f"el arnés de imágenes falla [{locale}]: {p.stdout} {p.stderr}")
+                continue
+            for t, l in zip(INSTANTES_IMAGENES, p.stdout.splitlines()):
+                c = l.split()
+                i, textura = int(c[0]), int(c[1])
+                gl = [float(x) for x in c[2:8]]
+                quiero = int((t % total) / 0.04)
+                r, tr = werender.volteo_de_hoja(fot[quiero])
+                r0, tr0 = werender.volteo_de_hoja(con_la_0[quiero])
+                distinto = imgs[quiero] == 0 or not cerca(gl, r0 + tr0)
+                ok = (i == quiero and textura == TEXTURA_DE_IMAGEN + imgs[quiero]
+                      and cerca(gl, r + tr) and distinto)
+                vistas.add(imgs[quiero])
+                print(f"  {'ok' if ok else 'MAL':3} [{locale:11}] t={t:.2f} s "
+                      f"fotograma {i} (toca {quiero}, imagen {imgs[quiero]}"
+                      f"{', girado' if tex.frames[quiero]['width'] == 0 else ''}) "
+                      f"textura {textura}  se suben {gl[:4]} {gl[4:]}")
+                if not ok:
+                    fallos.append(f"[{locale}] t={t} da {i} {textura} {gl}, no "
+                                  f"{quiero} {TEXTURA_DE_IMAGEN + imgs[quiero]} {r + tr}")
+    if vistas != {0, 1}:
+        fallos.append(f"los instantes no cubren las dos imágenes: {vistas}")
+
+    # El plan de la escena: la `hojaimagenes` de la capa, con las texturas
+    # que le hayan tocado. Las mismas cifras y duraciones que la de prueba;
+    # la 1017 tiene la misma tabla, así que salen las dos.
+    with tempfile.TemporaryDirectory() as td:
+        p = subprocess.run(
+            [sys.executable, str(RAIZ / "tools" / "werender.py"), str(d),
+             str(Path(td) / "x.png"), "--emit-plan", str(Path(td) / "plan")],
+            capture_output=True, text=True)
+        plan = (Path(td) / "plan" / "plan.txt").read_text() if not p.returncode else ""
+    sin_tex = [x for k, x in enumerate(linea.split()[3:]) if k % 8 != 7]
+    todas = []
+    for l in plan.splitlines():
+        c = l.split()
+        if c[:3] == linea.split()[:3] and [x for k, x in enumerate(c[3:])
+                                           if k % 8 != 7] == sin_tex:
+            todas.append([int(x) for x in c[3:][7::8]])
+    # Dos texturas y dos imágenes, y cada imagen siempre con la misma.
+    siguen = [len(ids) == len(imgs) and len(set(ids)) == 2
+              and len(set(zip(imgs, ids))) == 2 for ids in todas]
+    print(f"  líneas hojaimagenes con la tabla de la capa en el plan: {len(todas)}; "
+          f"texturas {[sorted(set(ids)) for ids in todas]}, que siguen al "
+          f"image_id: {sum(siguen)}")
+    if not todas or not all(siguen):
+        fallos.append("el plan de 2262142032 no trae la hojaimagenes de la capa 983 "
+                      "siguiendo al image_id")
+
+    for f in ("tools/glexec.c", "src/glexecutor.cpp"):
+        n = len(re.findall(r"\bwe_hoja_tiempo_textura\s*\(", (RAIZ / f).read_text()))
+        print(f"  {f:20} llama a we_hoja_tiempo_textura {n} vez")
+        if n < 1:
+            fallos.append(f"{f} no llama a we_hoja_tiempo_textura")
+
+
 def main() -> int:
     fallos: list[str] = []
     obj, tex, (tw, th) = capa_y_hoja()
@@ -376,6 +553,7 @@ def main() -> int:
             fallos.append(f"{f} no llama a we_hoja_uniforms")
 
     prueba_por_tiempo(fallos)
+    prueba_varias_imagenes(fallos)
 
     if fallos:
         print(f"\nFALLO: {len(fallos)}")
