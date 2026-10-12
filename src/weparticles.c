@@ -111,6 +111,7 @@ typedef struct {
     int n_hist;
     float t_hist;
     int emisor;                     /* cual la solto; solo para contarlas */
+    int instancia;                  /* 0, o la `Instancia` (desde 1) que la solto */
 } Particula;
 
 /* Un punto del historial de una cinta: posicion, tamano, color y alfa TAL COMO
@@ -126,6 +127,19 @@ typedef struct { float pos[3]; int idx; } Evento;
  * porque el hueco se reutiliza en cuanto muere: sin la semilla, la instancia
  * pasaria a seguir a la siguiente que naciera ahi. */
 typedef struct { int idx; unsigned int semilla; float credito; } Seguidora;
+
+/* Una instancia de un hijo de nacimiento o de muerte cuyo emisor tiene `rate`.
+ * En WE es un sistema entero que el evento crea DONDE ha pasado y que desde
+ * ahi emite a su ritmo hasta que se acaba su `duration` ---sin ella, para
+ * siempre---; el hueco solo se libera cuando ya no emite y no le queda ninguna
+ * particula viva. Ver «La instancia de un hijo de evento» en NOTAS. */
+typedef struct {
+    float pos[3];                   /* donde la creo el evento, espacio del padre */
+    float credito;
+    float queda;                    /* segundos de `duration`; 0 = sin tope */
+    int vivas;                      /* particulas suyas que siguen vivas */
+    int emite;                      /* 0: apagada, o hueco sin estrenar */
+} Instancia;
 
 /* Una linea `emit`. Cada emisor lleva su forma, su ritmo y su credito, pero
  * todos sueltan al MISMO deposito: `maxcount` es del sistema, no del emisor. */
@@ -232,6 +246,9 @@ struct WeParticleSystem {
     float escala_inv[3];            /* evento del padre -> mi espacio */
     Seguidora *sigue;               /* `eventfollow`: una por instancia */
     int n_sigue;
+    Instancia *fijas;               /* nacimiento/muerte con `rate` */
+    int n_fijas;
+    int tope_fija;                  /* vivas por instancia: el `maxcount` del preset */
     /* Donde han nacido y muerto particulas en el paso en curso. Se llenan en
      * `paso` (y en `nace`) y los vacia `paso_con_hijos` en el mismo paso, asi
      * que no necesitan crecer: los de mas se pierden, y un estallido perdido
@@ -655,6 +672,7 @@ void we_psys_free(WeParticleSystem *s)
     free(s->hist);
     free(s->orden);
     free(s->sigue);
+    free(s->fijas);
     free(s);
 }
 
@@ -926,7 +944,7 @@ static void paso(WeParticleSystem *s, float dt)
      *
      * Un hijo de evento no emite por su cuenta: su `rate` es el de CADA
      * instancia, y quien lo aplica es `paso_con_hijos`, donde esta la
-     * particula que sigue.
+     * particula que sigue o donde la creo el evento.
      *
      * Con varios emisores, cada uno lleva su credito y su `duration`, y van
      * por orden al mismo deposito: si esta lleno, el primero ocupa los huecos
@@ -953,6 +971,8 @@ static void paso(WeParticleSystem *s, float dt)
         q->edad += dt;
         if (q->edad >= q->vida) {
             q->viva = 0;
+            if (q->instancia && s->fijas)
+                s->fijas[q->instancia - 1].vivas--;
             /* Solo se anota si hay quien escuche: sin hijo esto es un `if` por
              * particula muerta y nada mas. */
             if (s->hijo && s->n_mueren < WE_MAX_EVENTOS) {
@@ -1520,8 +1540,10 @@ static int construye(WeParticleSystem *s)
  *
  * `donde` llega en el espacio del PADRE. El hijo se dibuja con la escala de su
  * entrada de `children` encima de la del padre, asi que el mismo punto en su
- * espacio es ese dividido por esa escala. */
-static void suelta(WeParticleSystem *s, int n, const float *donde)
+ * espacio es ese dividido por esa escala.
+ *
+ * `inst` es la `Instancia` (desde 1) a la que se le apuntan, o 0. */
+static void suelta(WeParticleSystem *s, int n, const float *donde, int inst)
 {
     float d[3];
     for (int k = 0; k < 3; k++)
@@ -1531,6 +1553,10 @@ static void suelta(WeParticleSystem *s, int n, const float *donde)
         if (hueco < 0)
             return;                 /* deposito lleno: lo demas se pierde */
         nace(s, &s->em[0], hueco, d);
+        if (inst) {
+            s->p[hueco].instancia = inst;
+            s->fijas[inst - 1].vivas++;
+        }
     }
 }
 
@@ -1576,7 +1602,7 @@ static void sigue(WeParticleSystem *c, const WeParticleSystem *pa, float h)
         c->sigue[libre].idx = e->idx;
         c->sigue[libre].semilla = pa->p[e->idx].semilla;
         c->sigue[libre].credito = 0.0f;
-        suelta(c, c->rafaga, e->pos);
+        suelta(c, c->rafaga, e->pos, 0);
     }
     if (c->em[0].rate <= 0.0f)
         return;
@@ -1587,7 +1613,59 @@ static void sigue(WeParticleSystem *c, const WeParticleSystem *pa, float h)
         f->credito += c->em[0].rate * h;
         int n = (int)f->credito;
         f->credito -= (float)n;
-        suelta(c, n, pa->p[f->idx].pos);
+        suelta(c, n, pa->p[f->idx].pos, 0);
+    }
+}
+
+/* Lo que hace en este paso un hijo de nacimiento o de muerte cuyo emisor tiene
+ * `rate`, ANTES de dar el suyo. Es la regla de `wallpaper64.exe`:
+ *
+ * - Cada evento crea una instancia mientras haya menos de `maxcount` de la
+ *   entrada (0x14023aef1); con todas ocupadas, el evento no crea nada. El
+ *   sorteo de `probability` va despues de ese tope, como alli.
+ * - La instancia suelta su `instantaneous` al crearse y luego emite a su
+ *   `rate` DONDE la creo el evento: no sigue a nadie, solo `eventfollow` se
+ *   recoloca cada paso (0x1402364c9).
+ * - Emite hasta que se acaba su `duration`; sin ella, con `rate` > 0, para
+ *   siempre (0x14023ae24). No tiene que ver con lo que viva la particula
+ *   del padre.
+ * - Su hueco se libera cuando ya no emite y no le queda ninguna particula
+ *   viva (0x14022c310). Con `rate` y sin `duration` eso no pasa nunca: las
+ *   primeras `maxcount` instancias son las unicas.
+ * - Cada instancia es un sistema con su propio `maxcount`, el del preset: con
+ *   esas vivas, no emite ni acumula (0x1402379c6). */
+static void fijas(WeParticleSystem *c, const Evento *ev, int n, float h)
+{
+    const Emisor *e = &c->em[0];
+    for (int i = 0; i < n; i++) {
+        int libre = -1;
+        for (int j = 0; j < c->n_fijas; j++)
+            if (!c->fijas[j].emite && !c->fijas[j].vivas) { libre = j; break; }
+        if (libre < 0)
+            break;
+        if (!toca(c))
+            continue;
+        Instancia *f = &c->fijas[libre];
+        memcpy(f->pos, ev[i].pos, sizeof f->pos);
+        f->credito = 0.0f;
+        f->queda = e->duracion;
+        f->emite = 1;
+        suelta(c, c->rafaga, f->pos, libre + 1);
+    }
+    for (int j = 0; j < c->n_fijas; j++) {
+        Instancia *f = &c->fijas[j];
+        if (!f->emite)
+            continue;
+        if (f->vivas < c->tope_fija) {
+            f->credito += e->rate * h;
+            int k = (int)f->credito;
+            f->credito -= (float)k;
+            if (k > c->tope_fija - f->vivas)
+                k = c->tope_fija - f->vivas;
+            suelta(c, k, f->pos, j + 1);
+        }
+        if (f->queda > 0.0f && (f->queda -= h) <= 0.0f)
+            f->emite = 0;
     }
 }
 
@@ -1618,9 +1696,13 @@ static void paso_con_hijos(WeParticleSystem *s, float h)
         }
         const Evento *ev = c->modo == WE_HIJO_NACE ? s->nacen : s->mueren;
         int n = c->modo == WE_HIJO_NACE ? s->n_nacen : s->n_mueren;
+        if (c->fijas) {
+            fijas(c, ev, n, h);
+            continue;
+        }
         for (int i = 0; i < n; i++)
             if (toca(c))
-                suelta(c, c->rafaga, ev[i].pos);
+                suelta(c, c->rafaga, ev[i].pos, 0);
     }
     s->n_nacen = s->n_mueren = 0;
     for (WeParticleSystem *c = s->hijo; c; c = c->hermano)
@@ -1653,6 +1735,22 @@ void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int modo,
         for (int j = 0; j < instancias; j++)
             hijo->sigue[j].idx = -1;
         hijo->n_sigue = instancias;
+    } else if (hijo->n_em > 0 && hijo->em[0].rate > 0.0f) {
+        /* Uno de nacimiento o de muerte que emite: sus instancias se quedan
+         * donde nacen y hay que llevarles la cuenta; ver `fijas`. Los que solo
+         * traen `instantaneous` se apagan en cuanto lo sueltan, y les basta
+         * la rafaga. El deposito es el de todas a la vez (`maxcount` del preset
+         * por `instancias`, lo arma el plan), asi que el de cada una es eso
+         * repartido. */
+        if (instancias < 1)
+            instancias = 1;
+        hijo->fijas = calloc((size_t)instancias, sizeof *hijo->fijas);
+        if (!hijo->fijas)
+            return;
+        hijo->n_fijas = instancias;
+        hijo->tope_fija = hijo->maxcount / instancias;
+        if (hijo->tope_fija < 1)
+            hijo->tope_fija = 1;
     }
     hijo->padre = padre;
     hijo->modo = modo;
