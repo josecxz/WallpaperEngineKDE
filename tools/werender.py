@@ -292,6 +292,28 @@ def volteo_de_hoja(f: list[float]) -> tuple[list[float], list[float]]:
             [t[0] + r[2], 1.0 - t[1] - r[3]])
 
 
+def es_punto(texto: str, uni: str) -> bool:
+    """Si un uniform con `"position": true` se usa como un punto, que es lo
+    que hay que voltear con la textura.
+
+    La marca dice como lo edita el editor de WE ---un punto que se arrastra
+    sobre la capa--- y no como lo lee el shader. Entre los assets de WE y las
+    129 escenas hay 21 uniforms con ella, en 11 shaders: 20 son puntos que se
+    restan a una coordenada de textura, se pasan a una funcion o se
+    muestrean, siempre como vector entero. El otro, `u_FixedSize` de un
+    shader del Workshop (`test_shader.frag`, que traen 4 escenas), es una
+    proporcion que solo se lee por componentes,
+    `u_FixedSize.x / u_FixedSize.y`; volteado, su `1 1` pasa a `1 0` y divide
+    por cero. Lo que los separa es eso: un punto se usa entero al menos una
+    vez, aunque luego tambien se lean sus componentes (`fisheye`)."""
+    for linea in texto.splitlines():
+        if re.match(r"\s*uniform\b", linea):
+            continue
+        if re.search(rf"\b{re.escape(uni)}\b(?!\s*\.)", linea):
+            return True
+    return False
+
+
 def linea_hojahora(volteada: bool, fotogramas: list[list[float]],
                    tabla: list[int]) -> str:
     """La linea `hojahora` del pase base; el formato esta en `wereloj.h`."""
@@ -2358,10 +2380,19 @@ class Renderer:
                 texto = weshader.resolve_includes(texto, sresolver)
             except weshader.ShaderError:
                 pass          # sin el include, al menos los de este fichero
-            return weshader.parse_uniform_meta(texto)
+            meta = weshader.parse_uniform_meta(texto)
+            for uni, m in meta.items():
+                if m.get("position"):
+                    m["punto"] = es_punto(texto, uni)
+            return meta
 
-        meta = metadatos(fuente_f)
-        meta.update(metadatos(fuente_v))
+        meta_f = metadatos(fuente_f)
+        meta = dict(meta_f)
+        for uni, m in metadatos(fuente_v).items():
+            # Un punto en cualquiera de los dos ficheros es un punto.
+            if "punto" in m and uni in meta_f:
+                m["punto"] = m["punto"] or meta_f[uni].get("punto", False)
+            meta[uni] = m
 
         combos = dict(p.combos)
         # La iluminacion se enciende solo si hay con que iluminar. Un pase con
@@ -3021,6 +3052,17 @@ class Renderer:
             vals = _floats(value)
             if not vals or len(vals) > 4:
                 continue
+            # `"position": true` marca un punto que el editor de WE coloca
+            # sobre la capa, en SUS coordenadas de textura: v hacia abajo. Las
+            # nuestras van al reves (la textura se sube volteada y el quad
+            # lleva la v hacia arriba), asi que el punto se voltea igual que
+            # los fotogramas de una hoja. Sin esto el centro del `spin` de
+            # 2637739953 ---(0.39, 0.23), encima de la cabeza--- caia en
+            # (0.39, 0.77) desde arriba, y la espiral de dragones que debia
+            # girar sobre si misma orbitaba por media pantalla. Ver `es_punto`
+            # para el unico `position` del corpus que no es un punto.
+            if m.get("punto") and len(vals) == 2:
+                vals[1] = 1.0 - vals[1]
             self.body.append(
                 f"u{len(vals)}f {uni_name} " + " ".join(f"{v:.6g}" for v in vals))
 
