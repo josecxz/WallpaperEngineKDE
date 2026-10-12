@@ -23,7 +23,9 @@ Se comprueban doce cosas:
   5. La marca del cursor viaja: un punto de control con la marca puesta lo
      mueve `we_psys_puntero`, y sin puntero el operador que tira de el no
      actua.
-  6. Los tres hijos de evento nacen cuando les toca; ver `prueba_hijos`.
+  6. Los tres hijos de evento nacen cuando les toca, y una instancia de
+     nacimiento o de muerte con `rate` emite como en `wallpaper64.exe`; ver
+     `prueba_hijos`.
   7. `orientation` sigue la regla que `wallpaper64.exe` aplica a los cuatro
      renderers, y ningun renderer del corpus pide una base que no sea la
      canonica.
@@ -251,6 +253,22 @@ de un padre lo coloca el evento, y sumarle ademas el punto lo llevaria a 7 km
 de la particula que sigue."""
 PSYS_HIJO_CON_PUNTO = PSYS_HIJO + "cp 0 5000 -5000 0 0\n"
 
+"""Un hijo con `rate` y sin `instantaneous`, como los 8 de nacimiento del corpus
+que no declaran rafaga: 10 por segundo, 0,5 s de vida. El `maxcount` es el que
+escribe el plan, el del preset (20) por las 2 instancias de la entrada."""
+PSYS_HIJO_RITMO = """\
+maxcount 40
+starttime 0
+seed 9
+anim 0 1
+emit sphererandom 10 0 0 0 0 0 0 1 1 0 0 0 0 0 0 0 0 0 0 0
+init lifetimerandom 0.5 0.5 1
+"""
+
+"""El mismo con 3 de `maxcount` en el preset: cada instancia se queda en 3 vivas
+aunque su ritmo diera para 5."""
+PSYS_HIJO_RITMO_TOPE = PSYS_HIJO_RITMO.replace("maxcount 40", "maxcount 6")
+
 
 def compila_arnes_hijos(tmp: Path) -> Path | None:
     fuente, binario = tmp / "arnes_hijos.c", tmp / "arnes_hijos"
@@ -278,8 +296,18 @@ def prueba_hijos(tmp: Path) -> list[str]:
       tiene que haber estallado.
     - `eventdeath` nace con su muerte: a los 3 s todavia no ha muerto ninguno,
       y a los 9 s si.
-    - Ninguno emite por su cuenta: un `eventspawn` con rafaga 0 no saca nada,
-      aunque su `.psys` traiga `rate 20`.
+    - Una instancia de `eventspawn` o `eventdeath` cuyo emisor tiene `rate`
+      sigue la regla de `wallpaper64.exe` (ver NOTAS, «La instancia de un hijo
+      de evento»): sin `instantaneous` no suelta nada de golpe y emite a su
+      `rate` donde la creo el evento, para siempre ---tambien cuando ya ha
+      muerto la particula que la creo---; solo hay `maxcount` de la entrada a
+      la vez, y cada una con el `maxcount` del preset como tope. Con 2
+      instancias de 10/s y 0,5 s de vida son 2 x 10 x 0,5 = 10 vivas a los 3 s
+      y a los 8 s, cuando las dos particulas que las crearon (nacidas hacia
+      0,5 y 1 s, con 6 s de vida) ya han muerto; con 3 de tope, 2 x 3 = 6.
+      Sin la regla, o con el hijo atado a la vida del padre, a los 8 s no
+      queda nada; sin el tope de instancias, cada nacimiento del padre (uno
+      cada 0,5 s) suma 5.
     - El punto de control del hijo no lo mueve: lo coloca el evento, asi que
       un `eventfollow` con su punto 0 lejos sigue pegado a su particula.
     """
@@ -291,10 +319,14 @@ def prueba_hijos(tmp: Path) -> list[str]:
     hijo.write_text(PSYS_HIJO)
     hijo_punto = tmp / "hijo_punto.psys"
     hijo_punto.write_text(PSYS_HIJO_CON_PUNTO)
+    ritmo, ritmo_tope = tmp / "hijo_ritmo.psys", tmp / "hijo_ritmo_tope.psys"
+    ritmo.write_text(PSYS_HIJO_RITMO)
+    ritmo_tope.write_text(PSYS_HIJO_RITMO_TOPE)
 
-    def mide(modo: int, rafaga: int, escala: float, t: float, h: Path = hijo):
+    def mide(modo: int, rafaga: int, escala: float, t: float, h: Path = hijo,
+             instancias: int = 4):
         r = subprocess.run([str(binario), str(padre), str(h), str(modo),
-                            str(rafaga), "4", str(escala), str(t)],
+                            str(rafaga), str(instancias), str(escala), str(t)],
                            capture_output=True, text=True)
         campos = r.stdout.split()
         return (int(campos[0]), int(campos[1]), float(campos[2])) \
@@ -334,10 +366,18 @@ def prueba_hijos(tmp: Path) -> list[str]:
         fallos.append(f"eventfollow con el punto 0 del hijo lejos: {m[1]} "
                       f"particulas a {m[2]:.0f} px de la suya; el punto del "
                       f"hijo no debe moverlo")
-    sin_rafaga = mide(NACE, 0, 1.0, 3.0)
-    if sin_rafaga[1]:
-        fallos.append(f"un hijo de evento emite por su cuenta: {sin_rafaga[1]} "
-                      f"particulas con rafaga 0")
+    # La instancia con `rate`: (modo, psys, instante, lo que dice la regla).
+    for modo, h, t, esperado in ((NACE, ritmo, 3.0, 10), (NACE, ritmo, 8.0, 10),
+                                 (NACE, ritmo_tope, 8.0, 6),
+                                 (MUERE, ritmo, 3.0, 0), (MUERE, ritmo, 9.0, 10)):
+        m = mide(modo, 0, 1.0, t, h, instancias=2)
+        tipo = "eventspawn" if modo == NACE else "eventdeath"
+        print(f"  {tipo:<12} con rate, sin instantaneous, {h.stem}: "
+              f"{m[1]} vivas a los {t:g} s (regla: {esperado})")
+        if abs(m[1] - esperado) > 1:
+            fallos.append(f"{tipo} con rate y sin instantaneous ({h.stem}): "
+                          f"{m[1]} vivas a los {t:g} s, la regla de WE da "
+                          f"{esperado}")
     return fallos
 
 

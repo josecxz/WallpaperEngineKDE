@@ -4595,6 +4595,12 @@ hay que decidir es de dónde saca el hijo su origen en cada uno de los tres
 modos. Empezar por `eventspawn`, que es el de esta escena y el que no necesita
 seguir a nada.
 
+**Hecho**: los cuatro tipos y los nietos se dibujan desde [Los hijos de un
+sistema](#los-hijos-de-un-sistema-cuatro-tipos-y-eventspawn-estaba-leído-al-revés),
+y lo que hace la instancia de un hijo de evento con `rate` está leído en el
+motor: [La instancia de un hijo de
+evento](#la-instancia-de-un-hijo-de-evento-lo-leído-en-wallpaper64exe).
+
 ### 2. La lluvia de estrellas sale toda del mismo punto
 
 En la captura las fugaces entran por sitios distintos del cielo; aquí salen
@@ -5621,10 +5627,14 @@ Así que `static` no eran 34 entradas en 1 escena sino **320 en 51**, y
   la escena: el objeto hijo declara `parent` y su `origin` y `scale` son los
   de la entrada, relativos al padre. Así hereda también lo que mueva al padre.
 - **`eventspawn` / `eventdeath`**: cada nacimiento o muerte del padre crea una
-  instancia del hijo, que suelta su `instantaneous` ahí mismo. Las 8 entradas
-  del corpus que no lo declaran —seis con `rate`, dos sin nada— siguen
-  soltando su `maxcount` entero, que es lo que hacían antes: qué hace en WE una
-  instancia con `rate` clavada en un punto —¿emite para siempre?— no se sabe.
+  instancia del hijo, que suelta su `instantaneous` ahí mismo. ~~Las 8
+  entradas del corpus que no lo declaran —seis con `rate`, dos sin nada—
+  siguen soltando su `maxcount` entero, que es lo que hacían antes: qué hace en
+  WE una instancia con `rate` clavada en un punto —¿emite para siempre?— no se
+  sabe.~~ **Leído**: sí, emite a su `rate` para siempre donde la creó el
+  evento, sin soltar nada de golpe si no declara `instantaneous`, y solo hay
+  `maxcount` de la entrada a la vez. Ver [La instancia de un hijo de
+  evento](#la-instancia-de-un-hijo-de-evento-lo-leído-en-wallpaper64exe).
 - **`eventfollow`**: cada partícula del padre que nace se lleva una instancia
   si queda alguna libre (`maxcount` de la entrada a la vez); la instancia
   suelta su `instantaneous` al empezar y luego emite a su `rate` **donde esté
@@ -9134,3 +9144,178 @@ Todo con los scripts de `medidas/` de la ejecución 20261012-102605.
 - **`g_Texture0Resolution`** sigue siendo el de la imagen 0 en todos los
   fotogramas. No se ha leído si WE lo cambia con la imagen; en las 7 capas
   solo difiere en el alto de la última imagen.
+
+## La instancia de un hijo de evento: lo leído en wallpaper64.exe
+
+[Los hijos de un
+sistema](#los-hijos-de-un-sistema-cuatro-tipos-y-eventspawn-estaba-leído-al-revés)
+dejó una pregunta abierta: qué hace en WE una instancia de `eventspawn` o
+`eventdeath` cuyo emisor declara `rate`, o no declara nada. Aquí se soltaba
+de golpe el `maxcount` entero del preset en cada nacimiento del padre y no se
+emitía nada más; con `instantaneous`, se soltaba eso y el `rate` se ignoraba.
+Las dos cosas eran conjeturas. Son 9 entradas del corpus en 4 escenas
+(`censo_hijos.py`):
+
+| entrada | escena | `rate` | `instantaneous` | `maxcount` entrada / preset |
+|---|---|---|---|---|
+| `Rain_Splash_Drops_copy1` (×3) | `2464842912` | 1 | — | 350 / 5 |
+| `Flare_Smoke` | `2937370591` | 50 | — | — (10) / 500 |
+| `ember_small` (×2) | `3238423642` | 2 | — | 25 / 3 |
+| `Flare` | `2821288001`, `3238423642` | — (10) | — | 5 / 1 |
+| `Flare_Sparks` | `2937370591` | 10 | 1 | — (10) / 500 |
+
+El resto de los `eventspawn` del corpus, 14, declaran `instantaneous` y
+`rate: 0`. `eventdeath` no hay ninguno.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen). Cada
+dirección la comprueba `verifica_exe.py` contra el binario: **55/55**.
+
+- **El lector de `children`** guarda el tipo en `+0x60` de la entrada:
+  `eventfollow` 2, `eventspawn` 3 (`0x1401d1382`), `eventdeath` 4
+  (`0x1401d13a5`); `probability` en `+0x6c` y `maxcount` en `+0x70`
+  (`0x1401d13f7`), que sin declarar vale 10 (`0x1401d1589`).
+- **Un evento crea una instancia, con tope.** En el nacimiento, para los
+  tipos 2 y 3 (`0x14023aed6`/`0x14023aed9`): si las instancias vivas ya son
+  el `maxcount` de la entrada (`0x14023aef1`), el evento **no crea nada**; si
+  no, sortea `probability` (`0x14023af51`) y crea una nueva —un sistema entero,
+  `0x4b0` bytes, `0x14023af69`— o recicla una de la lista libre
+  (`0x14023b04b`), y vuelve a mirar el tope (`0x14023b25f`). La muerte hace lo
+  mismo con el tipo 4 (`0x1402373f3`, tope en `0x1402376bc`).
+- **Dónde está la instancia.** Al crearla, `0x14022a360` copia la posición de
+  la partícula del evento (`0x14022a37f`) a la de la instancia
+  (`0x14022a4ec`). Cada paso, solo las de tipo 2 se vuelven a colocar
+  (`0x1402364c9`): **una instancia de `eventspawn` se queda donde nació la
+  partícula**, aunque esta se mueva o muera.
+- **Cómo emite.** Es un sistema con sus emisores: suelta su ráfaga pendiente,
+  que al crearse o reciclarse es su `instantaneous` (`0x14022f70b`,
+  `0x140237acd`), y acumula `rate · dt` (`0x140237ad8`) al crédito
+  (`0x140237ae5`). **Sí emite a su `rate` después de crearse**. Mientras
+  tiene vivas tantas como el `maxcount` del preset, no emite ni acumula
+  (`0x1402379c6`).
+- **Hasta cuándo.** Tras cada paso (`0x14023ae24`): con `duration` > 0 la
+  descuenta y al llegar a 0 apaga el emisor (`0x14023ae3f`). Sin `duration`,
+  **con `rate` > 0 el emisor no se apaga nunca** (`0x14023ae48`). Sin `rate`
+  solo lo dejan encendido `instantaneous` más el bit periódico de `flags`
+  (`0x14023ae4f`, `0x14023ae55`). Si no, se apaga —un emisor activo menos,
+  `0x14023ae61`— después de haber soltado su ráfaga en ese mismo paso.
+- **Cuándo se libera.** Cada paso se pregunta si la instancia sigue viva
+  (`0x140236516`, `0x14022c310`): lo está si le queda un emisor activo
+  (`0x14022c38e`) o una partícula viva (`0x14022c397`). Si no, se quita y
+  su hueco vale para el siguiente evento. Con `rate` y sin `duration` eso no
+  pasa nunca: **las primeras `maxcount` instancias son las únicas**, y cuando
+  se agotan los eventos siguientes no crean nada.
+- **Sin `instantaneous` suelta 0.** El lector del emisor inserta los campos
+  que faltan antes de leerlos: `rate` 10 (`0x1401b8e59`), `duration` 0
+  (`0x1401b8f0b`) e `instantaneous` 0 (`0x1401b9037`). El registro del
+  emisor guarda `rate` en `+0x10` (`0x1401c1ca5`), la `duration` en `+0x14`
+  y `+0x1c` (`0x1401c1cc7`, `0x1401c1cf4`) y el `instantaneous` en `+0x44` y
+  `+0x48` (`0x1401c1d18`, `0x1401c1d22`). Así que el emisor que no declara
+  nada vale `rate` 10 sin ráfaga: el `Flare` de la `City` emite a 10 por
+  segundo y no suelta su depósito.
+- **`eventfollow`, de paso, confirmado.** Cuando muere su partícula, la
+  instancia apaga todos sus emisores (`0x14023735b`, `0x14023737a`) y deja
+  de seguir. Es lo que ya hacía `sigue`.
+
+### Lo que se descartó
+
+- **«Emite hasta que muere la partícula que la creó.»** Pasa en `eventfollow`
+  y no en los otros dos: el apagado de `0x14023735b` está solo en la rama de
+  tipo 2, y el de `0x14023ae24` no mira al padre.
+- **«Se satura.»** El riesgo era que, si la instancia emite para siempre, el
+  depósito se llenara con un estallido por nacimiento. No pasa, porque el
+  tope de instancias impide crear más. Y cada instancia tiene su propio
+  `maxcount`, el del preset, así que el depósito de todas
+  (`maxcount × instancias`, que ya armaba el plan) es justo la suma.
+
+### El reparto
+
+Sin campo nuevo en el plan ni en el `.psys`: la línea `psyspadre` ya traía
+modo, ráfaga e instancias, y el `.psys` del hijo su `rate` y su `duration`.
+
+- `werender.py`: la ráfaga es el `instantaneous`, y **0** si no lo hay, en
+  los tres tipos. Cambian solo las 4 escenas de la tabla.
+- `src/weparticles.c`, compartido por los dos ejecutores: un hijo de
+  nacimiento o de muerte cuyo emisor tiene `rate` > 0 lleva una `Instancia`
+  por puesto (`fijas`), con su sitio, su crédito, su `duration` y cuántas
+  partículas suyas viven. Cada partícula sabe de qué instancia es. Los que
+  solo traen `instantaneous` siguen como estaban: se apagan en el paso en que
+  sueltan, y les basta la ráfaga.
+
+### Lo medido
+
+Todo con los scripts de `medidas/` de la ejecución 20261012-144158.
+
+- **El binario** (`verifica_exe.py`): las 55 comprobaciones de arriba.
+- **La prueba de contrato** (`test_weparticles.py`, «los hijos de evento»),
+  ampliada con un hijo de 10/s, 0,5 s de vida y sin `instantaneous`,
+  colgado con 2 instancias de un padre que nace cada 0,5 s y vive 6 s:
+
+```
+  eventspawn   con rate, sin instantaneous, hijo_ritmo: 10 vivas a los 3 s (regla: 10)
+  eventspawn   con rate, sin instantaneous, hijo_ritmo: 10 vivas a los 8 s (regla: 10)
+  eventspawn   con rate, sin instantaneous, hijo_ritmo_tope: 6 vivas a los 8 s (regla: 6)
+  eventdeath   con rate, sin instantaneous, hijo_ritmo: 0 vivas a los 3 s (regla: 0)
+  eventdeath   con rate, sin instantaneous, hijo_ritmo: 10 vivas a los 9 s (regla: 10)
+```
+
+  A los 8 s ya han muerto las dos partículas que crearon las instancias, y
+  siguen las 10. Con el simulador de `main` falla en esos cuatro casos y en
+  ninguno más (`muerde.sh`: 0 vivas en los cuatro). Los `eventfollow` de la
+  prueba dan lo mismo que en `main`. El `eventspawn` y el `eventdeath` de antes
+  pasan de 3 a 16 partículas, porque su hijo trae `rate 20` y ahora emite.
+- **Las escenas** (`vivas_hijos.py`): planes y `.psys` armados con el
+  `werender.py` de cada árbol y simulados con su `weparticles.c`, con los
+  hijos atados como en `glexec.c`. Vivas de media en los 2,5 s que acaban en
+  cada instante:
+
+| hijo | escena | `main` 10 s / 30 s | rama 10 s / 30 s | la regla |
+|---|---|---|---|---|
+| `Flare_Smoke` | `2937370591` | 3062,9 / 3088,4 | 206,1 / 208,6 | 206,2 |
+| `Rain_Splash_Drops_copy1` (3) | `2464842912` | 24,4–24,9 / 26,0–27,2 | 32,9–33,4 / 33,3–33,8 | 35,7 |
+| `Flare_Sparks` | `2937370591` | 3,1 / 3,3 | 22,5 / 22,5 | 22,5 |
+| `ember_small` (2) | `3238423642` | 1,3–1,6 / 1,2–1,6 | 11,5–14,2 / 15,3–15,4 | 15,0–15,9 |
+| `Flare` | `2821288001` | 4,7 / 3,0 | 4,8 / 4,8 | 4,9 |
+| `Flare` | `3238423642` | 4,6 / 3,1 | 4,8 / 4,9 | 4,9 |
+
+  La regla es `instancias × rate × vida`. Con el tope por instancia en 1
+  (`ember_small`, `Flare`) es `instancias × vida / (vida + 1/rate)`, porque
+  llena no acumula. El `rate` es el del `.psys`, con el `instanceoverride`
+  del padre ya aplicado: el humo sale a 15 y no a 50. `ember_small` a los
+  10 s no llega porque su padre aún no ha nacido 25 veces. Las gotas se
+  quedan un 7 % por debajo porque el paso es fijo: una vida de 0,085–0,17 s
+  se redondea a pasos de 1/60.
+- **Planes y `.psys` byte a byte** contra `main` (`identicas.py`,
+  `werender.py --emit-plan`, rutas normalizadas): **125/125 idénticas**
+  fuera de las 4 escenas; en las 4 cambia solo `plan.txt`, la ráfaga de
+  `psyspadre`.
+- **La luz** (`luz.sh`; las dos pasadas enteras con Mesa y bajo el cerrojo,
+  `luz_main.json` y `luz_rama.json`): 129/129 renderizan, **0 apagadas, 0
+  regresiones**. Las 4 escenas: `2464842912` 73,13 → 73,12, `2937370591`
+  201,07 → 201,01, `3238423642` 32,35 → 32,35, `2821288001` 83,25 → 83,26.
+  Fuera de ellas se mueven 11, como mucho 0,29. Es ruido entre pasadas, con
+  plan y `.psys` idénticos: `3097749052` da dos PNG distintos de una pasada a
+  otra también con el `glexec` de `main`.
+- `make glexec`, `make psysprobe` y `make build` compilan, sin avisos nuevos.
+
+### Lo que queda
+
+- **Los hijos que solo traen `instantaneous`** —14 en el corpus— también
+  tienen tope de instancias en WE, y la suya se libera cuando mueren sus
+  partículas. Aquí no se cuentan: cada evento suelta su ráfaga mientras
+  quepa en el depósito, que es `maxcount × instancias`. Se parecen mientras
+  la ráfaga sea el `maxcount` del preset. No se ha medido cuánto difieren
+  cuando no lo es.
+- **`eventfollow` libera el puesto antes que WE.** Allí la instancia huérfana
+  sigue ocupando su hueco hasta que mueren sus partículas (`0x14022c310`).
+  Aquí `sigue` lo suelta en cuanto muere la partícula que seguía. Con las
+  estelas cortas del corpus apenas se nota, pero es una diferencia leída.
+- **`delay` y la emisión periódica** (`minperiodicdelay`…, el bit 4 de
+  `flags`) del emisor de una instancia no llegan al `.psys`. Ninguno de los 9
+  hijos de la tabla los declara.
+- **El depósito del simulador** se topa en 8192 (1024 en una cinta), y el
+  tope de cada instancia sale de repartirlo. Con 350 instancias, cualquier
+  preset de más de 23 se quedaría corto. En el corpus no pasa: el mayor es
+  `Flare_Smoke`, 10 × 500.

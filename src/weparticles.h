@@ -80,10 +80,12 @@ int we_psys_update(WeParticleSystem *s, float t);
 enum { WE_HIJO_MUERE = 0, WE_HIJO_NACE = 1, WE_HIJO_SIGUE = 2 };
 
 /* Cuelga `hijo` de `padre`. Cada evento crea una instancia del hijo, que
- * suelta `rafaga` particulas al empezar; las de `SIGUE` emiten ademas al
- * `rate` de su `.psys` mientras su particula viva. `instancias` es cuantas
- * pueden seguir a la vez (solo cuenta en `SIGUE`; en los otros dos el tope es
- * el `maxcount` del hijo), `probabilidad` la de que un evento cree instancia y
+ * suelta `rafaga` particulas al empezar y luego emite al `rate` de su `.psys`:
+ * las de `SIGUE` donde este su particula y mientras viva; las de `NACE` y
+ * `MUERE`, donde las creo el evento y hasta que se acabe su `duration` ---sin
+ * ella, para siempre, como en WE---. `instancias` es cuantas puede haber a la
+ * vez (en `NACE`/`MUERE` sin `rate` no se cuentan: el tope es el `maxcount`
+ * del hijo), `probabilidad` la de que un evento cree instancia y
  * `escala` la de la entrada de `children`: el hijo se dibuja con ella, asi que
  * la posicion del evento se divide por ella para caer en su sitio.
  *
@@ -91,7 +93,8 @@ enum { WE_HIJO_MUERE = 0, WE_HIJO_NACE = 1, WE_HIJO_SIGUE = 2 };
  * pase y su `.psys`--- pero se simulan en tandem: el `we_psys_update` del
  * padre da el paso de los dos y el del hijo solo rehace vertices. Por eso el
  * ejecutor tiene que llamar a esto DESPUES de cargar los dos y ANTES del
- * primer `update`. Un hijo con padre no emite por su cuenta: solo por evento. */
+ * primer `update`. Un hijo con padre no emite por su cuenta: solo por sus
+ * instancias. */
 void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int modo,
                     int rafaga, int instancias, float probabilidad,
                     const float escala[3]);

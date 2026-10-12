@@ -1903,13 +1903,16 @@ class Renderer:
         # Un hijo de evento no emite por su cuenta: cada evento del padre crea
         # una INSTANCIA suya, y lo que el preset describe es una instancia.
         #
-        # - La rafaga es lo que suelta al crearse: su `instantaneous`. Un hijo
-        #   de nacimiento o de muerte que no lo declara ---8 del corpus, seis
-        #   con `rate`--- suelta su `maxcount` entero, que es como se dibujaba
-        #   antes; uno que sigue a una particula emite a su `rate` y no suelta
-        #   nada de golpe.
-        # - El `rate` es el de CADA instancia de `eventfollow`; si el preset no
-        #   lo declara, el de WE por defecto (`RITMO_POR_DEFECTO`).
+        # - La rafaga es lo que suelta al crearse: su `instantaneous`, y si no
+        #   lo declara, nada, que es su defecto en WE. Las 8 entradas de
+        #   nacimiento del corpus que no lo declaran soltaban antes su
+        #   `maxcount` entero; en `wallpaper64.exe` no sueltan nada de golpe y
+        #   emiten a su `rate` (ver NOTAS, «La instancia de un hijo de
+        #   evento»).
+        # - El `rate` es el de CADA instancia, de cualquiera de los tres tipos;
+        #   si el preset no lo declara, el de WE por defecto
+        #   (`RITMO_POR_DEFECTO`). Cuanto dura cada instancia lo decide el
+        #   simulador (`fijas` y `sigue` en src/weparticles.c).
         # - El deposito es el de todas las instancias a la vez: el `maxcount`
         #   del preset por el de la entrada de `children`, que la documentacion
         #   de WE define como el numero maximo de sistemas hijos.
@@ -1921,10 +1924,7 @@ class Renderer:
             preset = max(1, sis.maxcount)
             emit = sis.emisores[0][1] if sis.emisores else []
             inst = int(emit[16]) if len(emit) > 16 else 0
-            if inst > 0:
-                rafaga = min(inst, preset)
-            else:
-                rafaga = 0 if modo == wescene.MODO_HIJO["eventfollow"] else preset
+            rafaga = min(inst, preset) if inst > 0 else 0
             instancias = int(obj.raw.get("_instancias") or 1)
             # El tope duro (8192, 1024 en una cinta) lo pone el simulador.
             sis.maxcount = preset * instancias
