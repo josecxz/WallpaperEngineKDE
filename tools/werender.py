@@ -17,11 +17,12 @@ Uso:
     make glexec        # deja el ejecutor en obj/glexec
     python3 tools/werender.py <dir_wallpaper> <salida.png> [--time 0.0]
                               [--only-base] [--exec obj/glexec]
-                              [--puntero <u> <v>]
+                              [--puntero <u> <v>] [--hora HH:MM:SS]
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import os
@@ -355,6 +356,21 @@ def linea_hojahora(volteada: bool, fotogramas: list[list[float]],
 
 # Los fotogramas que caben en una hoja de `src/wereloj.c` (`MAX_FOTOGRAMAS`).
 MAX_FOTOGRAMAS_HOJA = 256
+
+
+def linea_giro(forma: tuple[float, float, float], base: float) -> str:
+    """La linea `giro` de una capa cuyo `angles` lleva un script de la hora;
+    el formato esta en `wereloj.h`. `forma` es la de `wescript.giro_por_hora`
+    y `base` el angulo propio con que se horneo la colocacion, los dos en
+    GRADOS. La hora va en el marcador `@HORA@`."""
+    a, b, c = forma
+    return f"giro {a:.17g} {b:.17g} {c:.17g} {base:.17g} @HORA@"
+
+
+def hora_del_dia(texto: str) -> float:
+    """`HH:MM:SS` como fraccion del dia, que es lo que da `engine.timeOfDay`."""
+    h, m, s = (texto.split(":") + ["0", "0"])[:3]
+    return (int(h) * 3600 + int(m) * 60 + float(s)) / 86400.0 % 1.0
 
 
 def _combo_encendido(combos: dict, nombre: str) -> bool:
@@ -1475,10 +1491,15 @@ class MeshAnim(NamedTuple):
 class Renderer:
     def __init__(self, wallpaper: Path, exec_path: Path, time: float = 0.0,
                  resolucion: tuple[int, int] | None = None,
-                 puntero: tuple[float, float] | None = None):
+                 puntero: tuple[float, float] | None = None,
+                 hora: float | None = None):
         self.res = AssetResolver.for_wallpaper(wallpaper, wepaths.we_assets())
         self.exec_path = exec_path
         self.time = time
+        # La hora local que ven las agujas (`giro`), como fraccion del dia.
+        # `None` es la de ahora, que es lo que hace `glexec` con los relojes de
+        # texto; `--hora` la fija para que un render se pueda repetir.
+        self.hora = hora
         # Donde esta el raton, en coordenadas de pantalla: (0,0) arriba a la
         # izquierda. `None` es lo normal offline y NO quiere decir "en el
         # centro": quiere decir que no hay raton sobre el fondo, que es un
@@ -2089,6 +2110,41 @@ class Renderer:
         return (f"anclaje {mid} {hueso} {punto[0]:.6g} {punto[1]:.6g} "
                 f"{base[0]:.6g} {base[1]:.6g} "
                 f"{e00:.9g} {e01:.9g} {e10:.9g} {e11:.9g}")
+
+    def _linea_de_giro(self, obj, padres: set[str]) -> str | None:
+        """La linea `giro` de una capa cuyo `angles` gira con la hora, o None.
+
+        La forma la da `wescript.giro_por_hora`, en grados, y el ejecutor
+        rehace con ella la colocacion del `object` en cada fotograma. Lo que
+        se gira es SOLO esa colocacion, que es donde vive el angulo de una
+        capa: los pases corren en su espacio. Por eso no hay giro:
+
+          - en una particula, que se compone 1:1 y lleva el angulo en la
+            matriz de su sistema;
+          - en una `passthrough`, cuya colocacion no mira los angulos;
+          - en una capa de la que cuelga otra: el `origin` del hijo gira con
+            el angulo del padre (`transform_absoluto`), y eso el ejecutor no
+            lo rehace. Se queda con el `value`, como antes.
+
+        Los uniforms que algun pase lleve con la MVP del objeto
+        (`g_EffectModelViewProjectionMatrix`, la luz) se quedan con el angulo
+        horneado. Las tres agujas del corpus no leen ninguno.
+        """
+        if (obj.kind == "particle" or obj.raw.get("_passthrough")
+                or str(obj.raw.get("id")) in padres):
+            return None
+        try:
+            forma = wescript.giro_por_hora(obj.raw)
+        except Exception as e:                 # ancho a proposito: ver `_emit_text`
+            self.notes.append(f"giro sin deducir ({obj.name}): {e}")
+            return None
+        if forma is None:
+            return None
+        # La colocacion del plan ya lleva el `value` guardado, en radianes;
+        # el ejecutor gira la diferencia entre ese y el de la hora.
+        base = math.degrees((_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[2])
+        self.stats["giro_por_hora"] = self.stats.get("giro_por_hora", 0) + 1
+        return linea_giro(forma, base)
 
     def _emit_mesh(self, obj) -> None:
         """Sube la malla puppet del objeto, si la tiene y sabemos leerla.
@@ -3155,7 +3211,8 @@ class Renderer:
                   "@PUNTERO_ANT_X@": f"{u:.6g}", "@PUNTERO_ANT_Y@": f"{v:.6g}",
                   # El P de la camara con este raton: el suavizado sobre un
                   # raton quieto acaba en su objetivo. Sin raton es el centro.
-                  "@PARALLAX_X@": f"{px:.6g}", "@PARALLAX_Y@": f"{py:.6g}"}
+                  "@PARALLAX_X@": f"{px:.6g}", "@PARALLAX_Y@": f"{py:.6g}",
+                  "@HORA@": f"{self._hora_del_dia():.12f}"}
         salida = []
         for linea in self.body:
             if "@" in linea:
@@ -3163,6 +3220,15 @@ class Renderer:
                     linea = linea.replace(marca, valor)
             salida.append(linea)
         return salida
+
+    def _hora_del_dia(self) -> float:
+        """`engine.timeOfDay` de este render: la fijada, o la local de ahora
+        con su fraccion de segundo."""
+        if self.hora is not None:
+            return self.hora
+        d = datetime.datetime.now()
+        return (d.hour * 3600 + d.minute * 60 + d.second
+                + d.microsecond / 1e6) / 86400.0
 
     # ── escena completa ───────────────────────────────────────────────────
     def render_sequence(self, out_dir: Path, count: int, fps: float,
@@ -3372,6 +3438,9 @@ class Renderer:
         # de que el autor las haya puesto en orden dentro de la escena.
         orden = ([o for o in scene.objects if getattr(o, "solo_buffer", False)]
                  + [o for o in scene.objects if not getattr(o, "solo_buffer", False)])
+        # Los objetos de los que cuelga otro; ver `_linea_de_giro`.
+        padres = {str(o.raw.get("parent")) for o in scene.objects
+                  if o.raw.get("parent") is not None}
         for obj in orden:
             if obj.kind not in ("image", "particle", "text") or not obj.passes:
                 continue
@@ -3435,6 +3504,9 @@ class Renderer:
             anc = self._linea_de_anclaje(obj, canvas)
             if anc:
                 self.body.append(anc)
+            giro = self._linea_de_giro(obj, padres)
+            if giro:
+                self.body.append(giro)
             # Lo que el RATON mueve al objeto por el parallax de camara. La
             # parte en reposo ya esta en `place`; esta la suma el ejecutor cada
             # fotograma. Va con el `amount * depth` de la raiz, porque WE mueve
@@ -3815,7 +3887,15 @@ def main() -> int:
             print(f"  {k}: {v}")
         return 0
 
-    r = Renderer(wallpaper, exec_path, t, resolucion=pantalla, puntero=puntero)
+    # `--hora 10:10:30` fija la hora local que ven las agujas de un reloj
+    # (`giro`). Sin ella es la de ahora. Los relojes de texto y las hojas por
+    # hora no la miran: esos los resuelve el ejecutor con `time()`.
+    hora = None
+    if "--hora" in sys.argv:
+        hora = hora_del_dia(sys.argv[sys.argv.index("--hora") + 1])
+
+    r = Renderer(wallpaper, exec_path, t, resolucion=pantalla, puntero=puntero,
+                 hora=hora)
     mp = None
     if "--passes" in sys.argv:
         mp = int(sys.argv[sys.argv.index("--passes") + 1])

@@ -7,10 +7,11 @@ dice JS en cada caso, escrito a mano y pequeño:
   1. Desestructurar un array al declarar ---`const [a, b, c] = [...]`---, con
      `undefined` para lo que falte y huecos `[, b]`.
   2. `Boolean` como función, la del `.filter(Boolean)`.
-  3. `engine` con un solo miembro, `registerAsset`, que devuelve algo opaco.
-     Cualquier otro miembro tiene que seguir siendo un ScriptError, porque con
-     él la salida depende del motor; y también lo es usar lo que devuelve
-     `registerAsset` en el texto.
+  3. `engine` con dos miembros: `registerAsset`, que devuelve algo opaco, y
+     `timeOfDay`, la hora local como fracción del día. Cualquier otro miembro
+     tiene que seguir siendo un ScriptError, porque con él la salida depende
+     del motor; y también lo es usar lo que devuelve `registerAsset` en el
+     texto.
   4. Sobre el corpus: las capas que leen otro miembro de `engine` siguen sin
      reloj, y las que solo registran fuentes sí lo dan.
   5. `thisLayer.getTextureAnimation().setFrame(n)` en el script de una
@@ -19,6 +20,15 @@ dice JS en cada caso, escrito a mano y pequeño:
      y ninguna cuando no se llama a `setFrame`, cuando el fotograma no cambia,
      cuando depende del minuto o cuando el script usa otro método de la
      animación.
+  6. Un script de `angles` que solo lee `engine.timeOfDay`: la forma
+     `A · frac(B · tod) + C` en sintéticos ---con y sin `% 1`, con
+     desplazamiento--- y ninguna cuando lee `engine.runtime`, el `value` que
+     recibe, una hora en minutos enteros, cuando no devuelve el `Vec3`, cuando
+     toca otra componente, o cuando no es una recta a tramos. Sobre el corpus,
+     de los 7 scripts de `angles` la aceptan exactamente las tres agujas de
+     `2396319149` (362, 368 y 371), y en ellas la forma da lo que el
+     intérprete, a 1e-6 grados, en más de 2000 `tod` que incluyen 0, 0,5, los
+     cambios de minuto y de hora y 0,999999.
 
 Uso:
     python3 tools/test_wescript.py
@@ -72,6 +82,7 @@ SINTETICOS = [
      "const pad = n => n.toString().padStart(2, '0'); const t = new Date();"
      "return [pad(t.getHours()), pad(t.getMinutes()), null].filter(Boolean).join(':');",
      "17:38"),
+    ("engine.timeOfDay", "return Math.round(engine.timeOfDay * 86400);", "63485"),
 ]
 
 # Scripts cuya salida depende del motor: tienen que lanzar.
@@ -79,7 +90,7 @@ RECHAZOS = [
     ("engine.frametime", "return engine.frametime;", ""),
     ("engine.frametime acumulado", "t += engine.frametime; return 'x';", "let t = 0;"),
     ("engine.registerAudioBuffers", "return 'x';", "engine.registerAudioBuffers(64);"),
-    ("engine[\"timeOfDay\"]", "return engine['timeOfDay'];", ""),
+    ("engine[\"runtime\"]", "return engine['runtime'];", ""),
     ("escribir en engine", "engine.foo = 1; return 'x';", ""),
     ("el recurso en el texto", "return engine.registerAsset('f.otf');", ""),
     ("un miembro del recurso", "return engine.registerAsset('f.otf').name;", ""),
@@ -161,6 +172,85 @@ HOJAS = [
 ]
 
 
+def giro(cuerpo: str) -> tuple[float, float, float] | None:
+    """La forma de un `update` sintético en `angles`, guardado a 0 0 0."""
+    return wescript.giro_por_hora({"angles": {
+        "script": f"export function update(value) {{ {cuerpo} }}",
+        "value": "0.00000 0.00000 0.00000"}})
+
+
+GIROS = [
+    # (qué, cuerpo de update, la forma que tiene que salir)
+    ("la de las horas", "value.z = engine.timeOfDay * -720; return value;",
+     (-720.0, 1.0, 0.0)),
+    ("la de los minutos", "value.z = ((engine.timeOfDay * 24) % 1) * -360;"
+     "return value;", (-360.0, 24.0, 0.0)),
+    ("con desplazamiento", "value.z = 90 + ((engine.timeOfDay * 1440) % 1) * 360;"
+     "return value;", (360.0, 1440.0, 90.0)),
+    ("con una variable", "let t = engine.timeOfDay; value.z = (t * 2 % 1) * 180;"
+     "return value;", (180.0, 2.0, 0.0)),
+    ("engine.runtime", "value.z = engine.runtime * 10; return value;", None),
+    ("lee el value", "value.z = value.z + engine.timeOfDay * 360; return value;", None),
+    ("minutos enteros", "const d = new Date();"
+     "value.z = (d.getHours() * 60 + d.getMinutes()) * -0.5; return value;", None),
+    ("siempre el mismo", "value.z = 45; return value;", None),
+    ("no devuelve", "value.z = engine.timeOfDay * 360;", None),
+    ("toca la x", "value.x = 1; value.z = engine.timeOfDay * 360; return value;", None),
+    ("no es una recta", "value.z = Math.sqrt(engine.timeOfDay) * 360; return value;", None),
+    ("un Vec3 nuevo", "return new Vec3(0, 0, scriptProperties.r);", None),
+]
+
+# Las agujas del corpus: lo único que la forma puede aceptar.
+AGUJAS = {("2396319149", 362), ("2396319149", 368), ("2396319149", 371)}
+
+
+def tods_de_comprobacion() -> list[float]:
+    """Más de 2000 `tod` en [0, 1), aparte de los de `_tods_de_prueba` con los
+    que se acepta la forma: uno cada 24 s, cada cambio de minuto y de hora y
+    1e-8 antes y después, 0, 0,5 y 0,999999."""
+    tods = {k / 3600.0 for k in range(3600)}
+    for m in range(1440):
+        for d in (-1e-8, 0.0, 1e-8):
+            tods.add(min(max(0.0, m / 1440.0 + d), 0.999999))
+    tods.update({0.0, 0.5, 0.999999})
+    return sorted(tods)
+
+
+def giros_del_corpus(fallos: list[str]) -> None:
+    """Los 7 scripts de `angles` del corpus: quién da forma y si es exacta."""
+    import math
+    vistos, aceptados = 0, []
+    for d in sorted(wepaths.we_workshop().iterdir()):
+        p = d / "scene.pkg"
+        if not p.is_file():
+            continue
+        _, ents = pkg_inspect.read_pkg(str(p))
+        sj = [e for e in ents if e["name"] == "scene.json"]
+        s = json.loads(sj[0]["data"]) if sj else {}
+        for o in s.get("objects") or []:
+            a = o.get("angles") if isinstance(o, dict) else None
+            if not (isinstance(a, dict) and isinstance(a.get("script"), str)):
+                continue
+            vistos += 1
+            forma = wescript.giro_por_hora(o)
+            print(f"  {d.name} {o.get('id'):>5} {str(o.get('name', ''))[:24]!r:28} -> {forma}")
+            if forma is None:
+                continue
+            aceptados.append((d.name, o.get("id")))
+            ip = wescript.Interprete(a["script"], {})
+            v = [math.degrees(float(x)) for x in a["value"].split()]
+            tods = tods_de_comprobacion()
+            peor = max(abs(wescript.grados_del_giro(forma, t) - ip.giro_en(t, v))
+                       for t in tods)
+            ok = peor <= 1e-6 and len(tods) >= 2000
+            print(f"  {'ok' if ok else 'MAL':3} {len(tods)} tod, error máximo {peor:.3g} grados")
+            if not ok:
+                fallos.append(f"giro {d.name} {o.get('id')}: error {peor:.3g}")
+    print(f"  scripts de angles: {vistos}, con forma: {sorted(aceptados)}")
+    if vistos != 7 or set(aceptados) != AGUJAS or len(aceptados) != 3:
+        fallos.append(f"giros del corpus: {vistos} scripts, aceptados {aceptados}")
+
+
 def hoja_del_corpus(fallos: list[str]) -> None:
     """La capa 303 de `3299228616`, y que el texto de esa escena no cambia."""
     p = wepaths.we_workshop() / "3299228616" / "scene.pkg"
@@ -221,6 +311,16 @@ def main() -> int:
     if r != "x":
         fallos.append(f"setFrame en un texto: {r!r}")
     hoja_del_corpus(fallos)
+
+    print("── angles por hora ──")
+    for que, cuerpo, espera in GIROS:
+        r = giro(cuerpo)
+        ok = (r == espera if espera is None or r is None
+              else all(abs(x - y) <= 1e-9 for x, y in zip(r, espera)))
+        print(f"  {'ok' if ok else 'MAL':3} {que:32} {r}")
+        if not ok:
+            fallos.append(f"giro {que}: {r} y tenía que ser {espera}")
+    giros_del_corpus(fallos)
 
     print("── capas del corpus con engine ──")
     con, sin = corpus(fallos)
