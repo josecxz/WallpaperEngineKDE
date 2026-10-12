@@ -161,7 +161,8 @@ y deduce la plantilla) y 18 se quedan con el texto literal: las que leen de
 regulares, y las que no son un reloj.
 
 El **puntero sí llega** —los uniforms del ratón y los 123 sistemas de
-partículas que lo persiguen, en 46 escenas— y la **cámara también se mueve**:
+partículas atados a él, en 46 escenas, que casi siempre se apartan a su paso
+como en WE— y la **cámara también se mueve**:
 `cameraparallax`, con la fórmula leída en el motor de WE, desplaza cada capa
 según la profundidad de su raíz en 29 escenas, también en reposo, y el mismo
 punto de la cámara es el `g_ParallaxPosition` de las 6 escenas con
