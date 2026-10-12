@@ -4237,9 +4237,9 @@ más larga del corpus 47, más lo que mide cada uno.
 Se perdía el kerning. Aquí se escribió que con dígitos no se notaba y que la
 misma cadena daba los mismos avances por las dos rutas en la fuente de
 `3029745918`: **era falso**. En esa fuente «04» mide 258,8 px con raqm y
-270,8 glifo a glifo a 200 px de em, y en 27 capas de 11 escenas el renglón se
-apartaba más de 0,02 em. Ya no se pierde: los pares del alfabeto viajan al
-plan —ver [El kerning de los
+270,8 glifo a glifo a 200 px de em (`ejemplos_kerning.py`), y en 27 capas
+de 11 escenas el renglón se apartaba más de 0,02 em. Ya no se pierde: los
+pares del alfabeto viajan al plan —ver [El kerning de los
 relojes](#el-kerning-de-los-relojes-los-pares-del-alfabeto-viajan-al-plan)—.
 
 La malla se reserva para el **peor caso** de la plantilla, porque el búfer se
@@ -8755,9 +8755,9 @@ nota; medido (`kerning_disposicion.py`, la disposición real de los 130
 relojes, a la fuente y al px de su atlas, con `px_por_unidad` 0,5 y 1), **27
 capas de 11 escenas** se apartaban más de 0,02 em de `getlength(renglón)` en
 algún renglón de `_instantes_de_prueba()`, y la que más, 0,368 em. A 200 px de
-em: el «01:24» de `3285617191` mide 374,0 px con raqm y 436,4 glifo a glifo
-(los pares `0 1`, −23, y `2 4`, −39,4), y el «04» de `3029745918`, 258,8 y
-270,8 (`0 4`, −12).
+em (`ejemplos_kerning.py`): el «01:24» de `3285617191` mide 374,0 px con
+raqm y 436,4 glifo a glifo (los pares `0 1`, −23, y `2 4`, −39,40625), y el
+«04» de `3029745918`, 258,8 y 270,8 (`0 4`, −12).
 
 No hay oráculo de WE: nada de lo leído demuestra que WE aplique kerning a un
 texto. La referencia es la coherencia con la ruta estática, que ya lo aplica
@@ -8785,7 +8785,8 @@ que mediría su cadena congelada.
   dentro del mismo `uselocale` que el resto de la línea —`strtof` bajo
   `es_ES`, regla de la locale— y suma el par en las dos pasadas, la del ancho
   y la de los quads. Los pares crecen con `realloc`: el alfabeto con más del
-  corpus trae 317 (la capa 1457 de `3238423642`), y la mayoría ninguno. Ni
+  corpus trae 317 (la capa 1457 de `3238423642`, `ejemplos_kerning.py`), y la
+  mayoría ninguno. Ni
   `glexec.c` ni `glexecutor.cpp` cambian: los dos pasan a `wereloj.c` toda
   línea que empieza por `reloj`.
 
@@ -8795,8 +8796,8 @@ que mediría su cadena congelada.
   `src/` y la fuente en el plan, para lo que los pares ya dan exacto.
 - **Temer los espacios.** El 0,368 em de «| S A T U R D A Y |» (`3238423642`,
   capa 1434) es todo de pares letra-espacio —los 14 pares no nulos del
-  renglón son `␣S`, `S␣`, `␣T`, `T␣`…— y el par con espacio lo recoge como
-  cualquier otro.
+  renglón son `␣S`, `S␣`, `␣T`, `T␣`…, `ejemplos_kerning.py`— y el par con
+  espacio lo recoge como cualquier otro.
 - **Ligaduras y ajustes contextuales**, el riesgo de reducir HarfBuzz a
   pares: en el corpus no hay ninguno en lo que escriben los relojes. Con los
   pares, el ancho, la pluma y el origen de cada glifo dan **0** de diferencia
