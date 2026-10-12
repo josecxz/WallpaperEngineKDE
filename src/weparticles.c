@@ -4,6 +4,7 @@
 
 #include "weparticles.h"
 
+#include <float.h>
 #include <locale.h>
 #include <math.h>
 #include <stdio.h>
@@ -88,8 +89,8 @@ static const Entrada OPERADORES[] = {
     {"angularmovement",     OP_ANGMOV,  4},   /* fuerza[3], rozamiento */
     /* escala, escalatiempo, velmin, velmax, fasemin, fasemax, mascara[3] */
     {"turbulence",          OP_TURB,    9},
-    /* punto de control, escala, umbral, desplazamiento[3] */
-    {"controlpointattract", OP_ATRAE,   6},
+    /* punto de control, escala, umbral, flags */
+    {"controlpointattract", OP_ATRAE,   4},
     /* dist_interior, dist_exterior, vel_interior, vel_exterior, eje[3] */
     {"vortex",              OP_VORTICE, 7},
     /* canal (0 velocidad / 1 rapidez), escala, octavas, min[3], max[3] */
@@ -160,11 +161,10 @@ struct WeParticleSystem {
     float cp_off[MAX_CP][3];
     /* Si hay puntero AHORA. Sin el, los operadores que tiran de un punto de
      * control atado al cursor no actuan: dejarlos actuar sobre el punto en
-     * reposo los convierte en un sumidero hacia el origen del sistema ---con
-     * `scale -500` y `drag 2.5` la nube de 512 px se apelotona en una bola de
-     * 64--- y eso no es lo que hace Wallpaper Engine, donde el puntero SIEMPRE
-     * esta en algun sitio. Aqui puede no estarlo: el fondo solo sabe del raton
-     * mientras pasa por encima. */
+     * reposo abriria en el origen del sistema un hueco ---o un sumidero, con
+     * `scale` positiva--- que Wallpaper Engine no tiene, porque alli el
+     * puntero SIEMPRE esta en algun sitio. Aqui puede no estarlo: el fondo
+     * solo sabe del raton mientras pasa por encima. */
     int cursor_vivo;
 
     /* Como recorre la hoja de sprites: 0 = una pasada por vida, 1 = un
@@ -1009,15 +1009,24 @@ static void paso(WeParticleSystem *s, float dt)
                 const float *cp = (idx >= 0 && idx < MAX_CP) ? s->cp[idx] : s->cp[0];
                 float d[3], n2 = 0.0f;
                 for (int k = 0; k < 3; k++) {
-                    d[k] = q->pos[k] - (cp[k] + v[3 + k]);
+                    d[k] = q->pos[k] - cp[k];
                     n2 += d[k] * d[k];
                 }
                 float n = sqrtf(n2);
-                /* Fuera del umbral no actua: es lo que deja a las luciernagas
-                 * vagando y solo las recoge cuando se alejan demasiado. */
-                if (n > v[2] && n > 1e-4f)
-                    for (int k = 0; k < 3; k++)
-                        q->vel[k] += d[k] / n * v[1] * dt;
+                /* La regla de wallpaper64.exe (0x140241554): solo DENTRO del
+                 * umbral, con una fuerza que cae en linea recta hasta cero en
+                 * el borde, y `vel -= direccion * k`, asi que la `scale`
+                 * negativa EMPUJA. Con `flags & 2` el paso no pasa del punto
+                 * (0x1402416aa). Antes era al reves en las dos cosas ---fuera
+                 * del umbral, y la negativa atraia--- y las luciernagas que en
+                 * WE esquivan el raton lo perseguian por toda la pantalla. */
+                if (n > FLT_MIN && n < v[2]) {
+                    float k = v[1] * dt * (1.0f - n / v[2]);
+                    if (((int)v[3] & 2) && n < k)
+                        k = n;
+                    for (int j2 = 0; j2 < 3; j2++)
+                        q->vel[j2] -= d[j2] / n * k;
+                }
                 break;
             }
             case OP_VORTICE: {

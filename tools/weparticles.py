@@ -434,9 +434,23 @@ def _op_turb(e):
         + _v3(e.get("mask"), 1.0)
 
 
-def _op_atrae(e):
-    return [_f1(e.get("controlpoint"), 0.0), _f1(e.get("scale"), 0.0),
-            _f1(e.get("threshold"), 0.0)] + _v3(e.get("origin"))
+# `controlpointattract`, leido en wallpaper64.exe: la fabrica (0x1401cc9d3)
+# lee `offset`, `scale`, `threshold`, `deletethreshold`, `flags` y
+# `controlpoint`, y el operador (0x140241554) solo actua DENTRO de `threshold`,
+# con una fuerza que cae en linea recta hasta cero en el borde y que con
+# `scale` negativa EMPUJA: es lo que hace `examplecursoravoid` de WE (-5000,
+# 64). `origin` no lo lee WE, y `offset` lo lee pero el operador no lo usa.
+# Los defectos dependen del mismo booleano que los de la turbulencia
+# (`[rbp+0x2238]`, 0x1401cca06): 512 y 512 en una escena ortografica, 20 y 5
+# si no (0x1401bdfe2..0x1401be0b4). Ver NOTAS.md, «El cursor aparta».
+ATRAE_ORTO = (512.0, 512.0)
+ATRAE_PERSPECTIVA = (20.0, 5.0)
+
+
+def _op_atrae(e, ortografica: bool = True):
+    escala, umbral = ATRAE_ORTO if ortografica else ATRAE_PERSPECTIVA
+    return [_f1(e.get("controlpoint"), 0.0), _f1(e.get("scale"), escala),
+            _f1(e.get("threshold"), umbral), _f1(e.get("flags"), 0.0)]
 
 
 def _op_vortice(e):
@@ -688,18 +702,17 @@ def _cursor(op: dict, cursor: set[int]) -> bool:
 
     `flags & 1` en un punto de control lo ata al puntero, y de las 136
     apariciones de `controlpointattract` del corpus, 111 apuntan justo a ese
-    punto: el preset de luciernagas y sus derivados, que en Wallpaper Engine
-    persiguen al raton.
+    punto: el preset de luciernagas y sus derivados. 109 de esas 111 llevan
+    `scale` negativa, que en Wallpaper Engine APARTA las particulas del raton
+    cuando pasa a menos de `threshold`; ver `_op_atrae`.
 
     Ya no se descarta nada por esto ---el `.psys` marca cual es el punto del
     cursor y `we_psys_puntero` lo mueve---, pero saberlo sigue haciendo falta
     para contarlo. Quien decide si el operador actua es el simulador, y su
     regla es la de siempre: sin puntero encima del fondo, un punto atado al
-    cursor no atrae. Dejarlo atraer desde el origen del sistema convierte la
-    interaccion en un sumidero: con `scale -500` y `drag 2.5` la velocidad
-    terminal hacia el centro son 200 px/s, diez veces la turbulencia que
-    deberia dispersarlas, y la nube de 512 px de radio se apelotona en una bola
-    de 64 --- que es el `threshold`.
+    cursor no actua. En WE el puntero siempre esta en algun sitio; aqui no, y
+    dejar el punto en el origen del sistema abriria alli un hueco que en WE no
+    hay.
     """
     if op.get("name") != "controlpointattract":
         return False
@@ -891,7 +904,12 @@ def cargar(res: AssetResolver, ruta: str, override: dict | None = None,
         if not isinstance(e, dict):
             continue
         fn = OPERADORES.get(e.get("name", ""))
-        vals = fn(e) if fn else None
+        # Igual que la turbulencia entre los inicializadores: los defectos de
+        # la atraccion dependen de la escena; ver `_op_atrae`.
+        if fn is _op_atrae:
+            vals = fn(e, ortografica)
+        else:
+            vals = fn(e) if fn else None
         if vals is None:
             s.sin_soporte.append(f"operator:{e.get('name')}")
         else:
