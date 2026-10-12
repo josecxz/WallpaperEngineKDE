@@ -4234,11 +4234,13 @@ del reloj rasteriza **glifo a glifo**: un atlas con cada carácter que la
 plantilla puede llegar a escribir, que para `%H:%M` son once y para la fecha
 más larga del corpus 47, más lo que mide cada uno.
 
-Se pierde el kerning. Con dígitos no se nota —las cifras de una fuente de
-reloj son tabulares— y está medido: la misma cadena por las dos rutas da los
-mismos avances hasta el último decimal en la fuente de `3029745918`. En un
-nombre de mes sí podría notarse, y queda escrito por si algún día se ve
-apretado.
+Se perdía el kerning. Aquí se escribió que con dígitos no se notaba y que la
+misma cadena daba los mismos avances por las dos rutas en la fuente de
+`3029745918`: **era falso**. En esa fuente «04» mide 258,8 px con raqm y
+270,8 glifo a glifo a 200 px de em, y en 27 capas de 11 escenas el renglón se
+apartaba más de 0,02 em. Ya no se pierde: los pares del alfabeto viajan al
+plan —ver [El kerning de los
+relojes](#el-kerning-de-los-relojes-los-pares-del-alfabeto-viajan-al-plan)—.
 
 La malla se reserva para el **peor caso** de la plantilla, porque el búfer se
 pide una vez y la cadena cambia; los glifos que sobran salen degenerados. Y se
@@ -7921,7 +7923,10 @@ letras separadas por espacios, 18.
   cadena distinta que la plantilla escribe en `_instantes_de_prueba()`, se
   parte por `\n` y se suman los avances glifo a glifo de cada renglón, con la
   fuente al px de partida —el mismo que luego se rebaja en proporción—. Es
-  como `quads_de_reloj` pone la pluma, sin kerning. Las cadenas las da
+  como `quads_de_reloj` pone la pluma, sin kerning (hoy ya con él: ver [El
+  kerning de los
+  relojes](#el-kerning-de-los-relojes-los-pares-del-alfabeto-viajan-al-plan)).
+  Las cadenas las da
   `Formato.cadenas()`, que ahora usan también `max_longitud` (los quads de la
   malla) y el margen de `_emit_reloj`: las tres cosas que se dimensionan una
   vez se miden sobre las mismas cadenas.
@@ -7941,10 +7946,13 @@ letras separadas por espacios, 18.
 ### Lo que se descartó
 
 - **Medir el renglón con `font.getlength(renglón)`**, que es lo que hace
-  `disponer`. Incluye el kerning, y el reloj no lo aplica: rasteriza glifo a
-  glifo y avanza glifo a glifo (ver [El
+  `disponer`. Incluye el kerning, y el reloj entonces no lo aplicaba:
+  rasterizaba glifo a glifo y avanzaba glifo a glifo (ver [El
   alfabeto](#el-alfabeto-y-lo-que-se-pierde)). El tope tiene que medir lo que
-  luego se dibuja.
+  luego se dibuja. Desde [El kerning de los
+  relojes](#el-kerning-de-los-relojes-los-pares-del-alfabeto-viajan-al-plan)
+  la pluma suma los pares y el tope los mide con ella, que en el corpus da
+  exactamente `getlength(renglón)`.
 - **Bajar el tope de alto a 8192**, el doble del de ancho: ya en main hay un
   atlas de 9053 px de alto (la capa 2894 de `3462491575`, a 438 px de em), y
   ese tope le bajaría la em a una capa que hoy está bien.
@@ -8022,8 +8030,10 @@ y se ejecutan desde la raíz del repositorio.
 
 ### Lo que queda fuera
 
-El kerning de los relojes sigue sin aplicarse (glifo a glifo), y el `spacing`
-horizontal sin usarse. El tope de alto no tiene en cuenta un driver con menos
+~~El kerning de los relojes sigue sin aplicarse (glifo a glifo)~~, hecho en [El
+kerning de los
+relojes](#el-kerning-de-los-relojes-los-pares-del-alfabeto-viajan-al-plan). El
+`spacing` horizontal sigue sin usarse. El tope de alto no tiene en cuenta un driver con menos
 de 16384; si alguna vez se ejecuta sobre GLES, el mínimo garantizado es 2048 y
 haría falta preguntarle al contexto.
 
@@ -8733,3 +8743,96 @@ viene.
   sentido contrario al de WE. El `preview.gif` (200x200) no deja decidirlo, y
   la misma pregunta vale para cualquier ángulo de un efecto (las
   direcciones de `waterwaves`, `foliagesway`…), no solo para el `spin`.
+
+## El kerning de los relojes: los pares del alfabeto viajan al plan
+
+**El síntoma.** La ruta estática del texto (`wetext.disponer`) rasteriza por
+línea con PIL y raqm, que es HarfBuzz, y aplica el kerning. La de los relojes
+(`disponer_reloj` y `quads_de_reloj` en Python, `src/wereloj.c` en los dos
+ejecutores) avanzaba la pluma glifo a glifo con `getlength(c)` y lo perdía.
+[El alfabeto](#el-alfabeto-y-lo-que-se-pierde) decía que con cifras no se
+nota; medido (`kerning_disposicion.py`, la disposición real de los 130
+relojes, a la fuente y al px de su atlas, con `px_por_unidad` 0,5 y 1), **27
+capas de 11 escenas** se apartaban más de 0,02 em de `getlength(renglón)` en
+algún renglón de `_instantes_de_prueba()`, y la que más, 0,368 em. A 200 px de
+em: el «01:24» de `3285617191` mide 374,0 px con raqm y 436,4 glifo a glifo
+(los pares `0 1`, −23, y `2 4`, −39,4), y el «04» de `3029745918`, 258,8 y
+270,8 (`0 4`, −12).
+
+No hay oráculo de WE: nada de lo leído demuestra que WE aplique kerning a un
+texto. La referencia es la coherencia con la ruta estática, que ya lo aplica
+y que el proyecto da por la tipografía buena; un reloj tiene que medir lo mismo
+que mediría su cadena congelada.
+
+### Lo que cambia
+
+- **`wetext._pares_del_alfabeto`**: con la fuente y el px del atlas, el
+  ajuste de cada par del alfabeto, `getlength(ab) − getlength(a) −
+  getlength(b)`. Se guardan en `Reloj.kern` solo los que no son cero. Se
+  calculan al px que se queda: si un tope rebaja la em, se vuelven a medir,
+  porque HarfBuzz redondea a 1/64 de píxel y no escalan en proporción.
+- **`wetext._plumas`**: el origen de cada glifo y el avance del renglón, con
+  el par del glifo anterior sumado antes de cada uno. Es la pluma de
+  `quads_de_reloj` (también el ancho con el que alinea) y la del tope de ancho
+  de `disponer_reloj`, que así mide lo que se dibuja, ahora con kerning.
+- **El plan**: una línea por par, `relojkern <malla> <cp_a> <cp_b> <dx>`, en
+  px del atlas. Va aparte, como el espaciado al final de `reloj`: un
+  ejecutor anterior no la entiende, la salta y dibuja como antes. Las líneas
+  de un reloj las escribe ahora `werender.lineas_de_reloj`, que usan
+  `_emit_reloj` y `tools/test_wereloj.py`, para que la prueba no lleve una
+  copia que se desfase.
+- **`src/wereloj.c`**, en los dos ejecutores a la vez: lee `relojkern`
+  dentro del mismo `uselocale` que el resto de la línea —`strtof` bajo
+  `es_ES`, regla de la locale— y suma el par en las dos pasadas, la del ancho
+  y la de los quads. Los pares crecen con `realloc`: el alfabeto con más del
+  corpus trae 317 (la capa 1457 de `3238423642`), y la mayoría ninguno. Ni
+  `glexec.c` ni `glexecutor.cpp` cambian: los dos pasan a `wereloj.c` toda
+  línea que empieza por `reloj`.
+
+### Lo que se descartó
+
+- **Dar forma al renglón entero en el ejecutor**: haría falta HarfBuzz en
+  `src/` y la fuente en el plan, para lo que los pares ya dan exacto.
+- **Temer los espacios.** El 0,368 em de «| S A T U R D A Y |» (`3238423642`,
+  capa 1434) es todo de pares letra-espacio —los 14 pares no nulos del
+  renglón son `␣S`, `S␣`, `␣T`, `T␣`…— y el par con espacio lo recoge como
+  cualquier otro.
+- **Ligaduras y ajustes contextuales**, el riesgo de reducir HarfBuzz a
+  pares: en el corpus no hay ninguno en lo que escriben los relojes. Con los
+  pares, el ancho, la pluma y el origen de cada glifo dan **0** de diferencia
+  contra raqm en todos los renglones, no «menos de 0,01 em».
+
+### Lo medido
+
+- **La disposición** (`kerning_disposicion.py`, 130 relojes, cada renglón de
+  `_instantes_de_prueba()`, a `px_por_unidad` 0,5 y 1): sin pares, 27 capas
+  > 0,02 em en 11 escenas y máximo 0,368 em; con pares, 0,000000 em de peor
+  caso en el ancho del renglón, en la pluma tras i glifos contra
+  `getlength(renglón[:i])` y en el origen del glifo i contra el que le da
+  raqm (`getlength(renglón[:i+1]) − getlength(renglón[i])`, que incluye el
+  par con el anterior). Llevan pares 42 capas de 12 escenas: las 11 y
+  `2946362143`, cuyo `%A ` tiene pares que no llegan a 0,02 em.
+- **El contrato** (`tools/test_wereloj.py`): pasa con las 130 capas, las 130
+  también con `es_ES`; las 42 con pares se comparan contra los números tal
+  como viajan en el plan y al margen del float del C (1e-4, u 8 ulp a la
+  magnitud del vértice), y un caso nuevo con la fuente de `3029745918` (capa
+  90) a las 04:42 —38 pares en el alfabeto, 2 en el renglón, que mueven la
+  tinta 49,652 unidades— coincide a 1e-4 con las dos locales.
+  `mutacion_kern.sh` deja `kern_de` a cero en una copia: la prueba cae con
+  26 discrepancias y el caso de las 04:42.
+- **Los planes de las 129** (`planes_main_rama.sh`, main contra la rama):
+  117 idénticos y 12 que cambian, las 12 con `relojkern`. Quitando esas
+  líneas, en 6 escenas cambian además 9 líneas `object` y 18 `umat4`: la
+  caja del reloj, que `_emit_reloj` agranda con un margen medido sobre los
+  quads del peor caso, y esos quads ahora son más estrechos. Las líneas
+  `reloj` y `tex` no cambian: ninguna capa cambia de em, el tope de ancho
+  no rebaja ninguna.
+- **La luz de las 11** (`luz_11.py`: `test_luminancia` con Mesa, la hora
+  congelada y el `glexec` de cada lado, a las 17:38 de un miércoles y a las
+  04:42 de un sábado): 0 regresiones, 0 apagadas. Las medias son las mismas
+  salvo `3082427731` 77,90 → 77,91 el miércoles y `3029745918` 97,13 →
+  97,15 el sábado.
+- **`make build` y `make glexec` desde cero** (`compila_limpio.sh`): un
+  aviso en main y en la rama, el `GL_GLEXT_VERSION` de las cabeceras de Qt;
+  ninguno nuevo. `test_wescript.py`, `test_wetext.py` y `test_werender.py`
+  pasan.

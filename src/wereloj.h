@@ -24,8 +24,8 @@ WeReloj *we_reloj_nuevo(void);
 void we_reloj_free(WeReloj *r);
 
 /* Lee una directiva del plan. `kw` es la palabra clave (`reloj`, `relojfmt`,
- * `relojtab`, `relojglifo`) y `resto` lo que va detrás del identificador de
- * malla. Devuelve 1 si la entendió. */
+ * `relojtab`, `relojglifo`, `relojkern`) y `resto` lo que va detrás del
+ * identificador de malla. Devuelve 1 si la entendió. */
 int we_reloj_linea(WeReloj *r, const char *kw, const char *resto);
 
 /* Cuántos vértices ocupa la malla: siempre los mismos, para que el búfer se

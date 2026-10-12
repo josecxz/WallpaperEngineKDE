@@ -27,6 +27,12 @@ typedef struct {
     float uv[4];
 } Glifo;
 
+/* El kerning de un par: lo que se suma a la pluma entre `a` y `b`. */
+typedef struct {
+    int a, b;
+    float dx;               /* px del atlas */
+} Par;
+
 typedef struct {
     char codigo[4];         /* "%A", "%B" o "%N" */
     int filas;
@@ -39,6 +45,10 @@ struct WeReloj {
     int n_tablas;
     Glifo glifo[MAX_GLIFOS];
     int n_glifos;
+    /* Los pares van aparte y crecen según llegan: un alfabeto de 47 puede
+     * traer más de dos mil, y la mayoría de los relojes ninguno. */
+    Par *par;
+    int n_pares, cap_pares;
 
     float periodo;
     float caja[2], pad[2];
@@ -62,6 +72,8 @@ WeReloj *we_reloj_nuevo(void)
 
 void we_reloj_free(WeReloj *r)
 {
+    if (r)
+        free(r->par);
     free(r);
 }
 
@@ -167,6 +179,35 @@ int we_reloj_linea(WeReloj *r, const char *kw, const char *resto)
             }
             r->n_tablas++;
             ok = 1;
+        }
+    } else if (strcmp(kw, "relojkern") == 0) {
+        /* `<cp_a> <cp_b> <dx>`. Llegó después que las demás y va en su propia
+         * línea: un ejecutor anterior no la entiende y dibuja sin kerning. */
+        char *fin;
+        const char *p = resto;
+        long a = strtol(p, &fin, 10);
+        int ok_a = fin != p;
+        p = fin;
+        long b = strtol(p, &fin, 10);
+        int ok_b = fin != p;
+        p = fin;
+        float dx = strtof(p, &fin);
+        if (ok_a && ok_b && fin != p) {
+            if (r->n_pares == r->cap_pares) {
+                int cap = r->cap_pares ? 2 * r->cap_pares : 64;
+                Par *nuevo = realloc(r->par, (size_t)cap * sizeof *nuevo);
+                if (nuevo) {
+                    r->par = nuevo;
+                    r->cap_pares = cap;
+                }
+            }
+            if (r->n_pares < r->cap_pares) {
+                r->par[r->n_pares].a = (int)a;
+                r->par[r->n_pares].b = (int)b;
+                r->par[r->n_pares].dx = dx;
+                r->n_pares++;
+                ok = 1;
+            }
         }
     } else if (strcmp(kw, "relojglifo") == 0) {
         if (r->n_glifos < MAX_GLIFOS) {
@@ -314,6 +355,14 @@ static const Glifo *busca_glifo(const WeReloj *r, int cp)
     return NULL;
 }
 
+static float kern_de(const WeReloj *r, int a, int b)
+{
+    for (int i = 0; i < r->n_pares; i++)
+        if (r->par[i].a == a && r->par[i].b == b)
+            return r->par[i].dx;
+    return 0.0f;
+}
+
 int we_reloj_vertices(const WeReloj *r, time_t cuando, float *verts)
 {
     if (!r || !r->configurado || !verts || r->n_glifos <= 0)
@@ -346,15 +395,22 @@ int we_reloj_vertices(const WeReloj *r, time_t cuando, float *verts)
         int fin = inicio;
         while (texto[fin] && texto[fin] != '\n') fin++;
 
-        /* Primera pasada: cuánto avanza el renglón entero. Hace falta antes
-         * de colocar nada, porque la alineación se mide desde el otro
-         * extremo. */
+        /* Primera pasada: cuánto avanza el renglón entero, con el kerning de
+         * cada par. Hace falta antes de colocar nada, porque la alineación se
+         * mide desde el otro extremo. El par se forma con el glifo anterior
+         * que existe, igual que `_plumas` en `tools/wetext.py`. */
         float avance = 0.0f;
+        int previo = -1;
         for (int i = inicio; i < fin;) {
             int cp;
             i += siguiente_cp(texto + i, &cp);
             const Glifo *g = busca_glifo(r, cp);
-            if (g) avance += g->avance;
+            if (!g)
+                continue;
+            if (previo >= 0)
+                avance += kern_de(r, previo, cp);
+            avance += g->avance;
+            previo = cp;
         }
         float x_linea = (r->halign == 0) ? 0.0f
                       : (r->halign == 2) ? util_w / r->u - avance
@@ -362,12 +418,16 @@ int we_reloj_vertices(const WeReloj *r, time_t cuando, float *verts)
         float y_linea = y_bloque + k * (r->alto_linea + r->espaciado);
 
         float pluma = 0.0f;
+        previo = -1;
         for (int i = inicio; i < fin && n < r->max_glifos;) {
             int cp;
             i += siguiente_cp(texto + i, &cp);
             const Glifo *g = busca_glifo(r, cp);
             if (!g)
                 continue;
+            if (previo >= 0)
+                pluma += kern_de(r, previo, cp);
+            previo = cp;
             if (g->ink[2] > g->ink[0]) {
                 float x_a = (x_linea + pluma + g->ink[0]) * r->u;
                 float x_b = (x_linea + pluma + g->ink[2]) * r->u;
