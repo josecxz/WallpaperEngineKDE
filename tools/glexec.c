@@ -946,7 +946,8 @@ int main(int argc, char **argv)
 
     /* Una `hojatiempo` lleva siete números por fotograma: con 100 ya pasa de
      * 5 KB, y con las 256 que admite `wereloj.c`, de 25. `fgets` partiría la
-     * línea y el resto se leería como otra. */
+     * línea y el resto se leería como otra. Una `hojaimagenes` lleva uno más,
+     * un entero corto, y cabe igual. */
     static char line[32768];
     int in_pass = 0, drawn = 0, skipped = 0, mesh_id = -1, psys_id = -1;
     GLuint prog = 0;
@@ -962,7 +963,8 @@ int main(int argc, char **argv)
      * base). La hora se toma una vez, por lo mismo que `relojes_all`: las
      * repeticiones del cuerpo del plan tienen que dar la misma imagen. La
      * misma `WeHoja` sirve para la que corre por su `frame_time`
-     * (`hojatiempo`); `hay_hoja` dice cuál de las dos trae el pase. */
+     * (`hojatiempo`, o `hojaimagenes` si es de varias imágenes); `hay_hoja`
+     * dice cuál de las dos trae el pase. */
     WeHoja *hoja = NULL;
     enum { SIN_HOJA, HOJA_HORA, HOJA_TIEMPO } hay_hoja = SIN_HOJA;
     const time_t ahora_hoja = time(NULL);
@@ -1228,6 +1230,13 @@ int main(int argc, char **argv)
                 hoja = we_hoja_nueva();
             hay_hoja = hoja && we_hoja_tiempo_linea(hoja, tras_palabra(line))
                      ? HOJA_TIEMPO : SIN_HOJA;
+        } else if (strcmp(kw, "hojaimagenes") == 0) {
+            /* La que reparte sus fotogramas entre varias imágenes: corre por
+             * tiempo como la de arriba, y cada fotograma trae su textura. */
+            if (!hoja)
+                hoja = we_hoja_nueva();
+            hay_hoja = hoja && we_hoja_imagenes_linea(hoja, tras_palabra(line))
+                     ? HOJA_TIEMPO : SIN_HOJA;
         } else if (strncmp(kw, "u", 1) == 0 && n_unis < MAX_UNIFORMS) {
             int cnt = 0;
             if (strcmp(kw, "u1f") == 0) cnt = 1;
@@ -1256,6 +1265,14 @@ int main(int argc, char **argv)
              * el render target, y crearlo implica bindear su FBO para
              * limpiarlo: si eso pasa despues, el draw se va al buffer
              * equivocado y el destino se queda vacio. */
+            /* La hoja que corre por tiempo usa el `g_Time` del propio pase,
+             * como las partículas de abajo: el mismo reloj que ven los
+             * shaders. */
+            float t_hoja = 0.0f;
+            for (int i = 0; i < n_unis; i++)
+                if (strcmp(unis[i].uni, "g_Time") == 0)
+                    t_hoja = unis[i].v[0];
+
             GLuint bound[MAX_SAMPLERS];
             for (int i = 0; i < n_samplers; i++) {
                 const char *s = samplers[i].src;
@@ -1266,6 +1283,14 @@ int main(int argc, char **argv)
                     bound[i] = find_rt(s + 3)->tex;
                 else if (strcmp(s, "prev") == 0)
                     bound[i] = compo[compo_cur].tex;
+                /* Una hoja de varias imágenes: en `g_Texture0` va la del
+                 * fotograma que toca, como cuando WE enlaza la textura. */
+                if (hay_hoja == HOJA_TIEMPO
+                    && strcmp(samplers[i].uni, "g_Texture0") == 0) {
+                    int ti = we_hoja_tiempo_textura(hoja, t_hoja);
+                    if (ti >= 0 && ti < MAX_TEX && textures[ti])
+                        bound[i] = textures[ti];
+                }
             }
 
             int to_screen = strcmp(target, "SCREEN") == 0;
@@ -1304,18 +1329,13 @@ int main(int argc, char **argv)
                 }
             }
 
-            /* El fotograma de la hoja, por encima de lo que el plan horneó.
-             * La que corre por tiempo usa el `g_Time` del propio pase, como
-             * las partículas de abajo: el mismo reloj que ven los shaders. */
+            /* El fotograma de la hoja, por encima de lo que el plan horneó;
+             * el `t_hoja` de arriba. */
             float hoja_rot[4], hoja_tras[2];
             int con_hoja = 0;
             if (hay_hoja == HOJA_HORA) {
                 con_hoja = we_hoja_uniforms(hoja, ahora_hoja, hoja_rot, hoja_tras);
             } else if (hay_hoja == HOJA_TIEMPO) {
-                float t_hoja = 0.0f;
-                for (int i = 0; i < n_unis; i++)
-                    if (strcmp(unis[i].uni, "g_Time") == 0)
-                        t_hoja = unis[i].v[0];
                 con_hoja = we_hoja_tiempo_uniforms(hoja, t_hoja, hoja_rot, hoja_tras);
             }
             if (con_hoja) {

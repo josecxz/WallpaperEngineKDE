@@ -253,6 +253,10 @@ private:
         // Los dos, en cada fotograma, por encima de lo que el plan hornea.
         int hoja = -1;
         GlLocation hojaRotacion = -1, hojaTraslacion = -1;
+        // La unidad de `g_Texture0`, o -1. Si la hoja es de `hojaimagenes`,
+        // `we_hoja_tiempo_textura` dice en cada fotograma que textura del
+        // plan va ahi: la de la imagen del fotograma que toca.
+        int hojaUnidad = -1;
     };
 
     struct Target {

@@ -374,6 +374,16 @@ def linea_hojatiempo(volteada: bool, fotogramas: list[list[float]],
                        for f, d in zip(fotogramas, duraciones)))
 
 
+def linea_hojaimagenes(volteada: bool, fotogramas: list[list[float]],
+                       duraciones: list[float], texturas: list[int]) -> str:
+    """La `hojatiempo` de una hoja de varias imagenes, con otra palabra y la
+    textura del plan de cada fotograma detras de su duracion. Formato en
+    `wereloj.h`."""
+    return (f"hojaimagenes {int(volteada)} {len(fotogramas)} "
+            + " ".join(" ".join(f"{x:.9g}" for x in f) + f" {d:.9g} {t}"
+                       for f, d, t in zip(fotogramas, duraciones, texturas)))
+
+
 def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
                por_id: dict | None = None) -> list[float]:
     """Matriz que coloca la geometria del objeto en su sitio del lienzo.
@@ -1559,8 +1569,13 @@ class Renderer:
 
     # ── texturas ──────────────────────────────────────────────────────────
     def texture(self, name: str, mode: str = "",
-                margin: float = 1.0, flip: bool = True) -> tuple[int, int, int] | None:
+                margin: float = 1.0, flip: bool = True,
+                imagen: int = 0) -> tuple[int, int, int] | None:
         """Decodifica una textura a RGBA cruda y devuelve (id, ancho, alto).
+
+        `imagen` es cual de las imagenes del `.tex`: casi siempre hay una, y
+        las demas solo las pide una hoja que reparte sus fotogramas entre
+        varias (`_hoja_por_tiempo`).
 
         `mode` es el modo que declara el sampler en sus metadatos. Los mapas
         `flowmask` codifican un VECTOR de arrastre por pixel: RG - 0.498 son
@@ -1570,13 +1585,13 @@ class Renderer:
         sin ello el parpado de Jeanne -- un `shake` cuyo flujo tira del
         parpado -- arrastraba hacia arriba y el gesto salia al reves.
         """
-        clave = (name, mode == "flowmask", round(margin, 4), flip)
+        clave = (name, mode == "flowmask", round(margin, 4), flip, imagen)
         if clave in self.tex_ids:
             i = self.tex_ids[clave]
             return i, self._tex_dims[i][0], self._tex_dims[i][1]
         try:
             tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
-            mip = tex.images[0][0]
+            mip = tex.images[imagen][0]
             if getattr(mip, "video", False):
                 # El `.tex` no lleva pixeles sino un MP4 entero. No se abre
                 # aqui: se pasa al plan y lo decodifica el ejecutor.
@@ -1769,7 +1784,7 @@ class Renderer:
             return None
         if tabla is None:
             return None
-        name, tw, th, volteada = hoja_tex
+        name, tw, th, volteada = hoja_tex[:4]
         try:
             tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
         except Exception as e:
@@ -1784,8 +1799,8 @@ class Renderer:
         return volteada, fotogramas, tabla
 
     def _hoja_por_tiempo(self, obj, hoja_tex) -> tuple | None:
-        """`(volteada, fotogramas, duraciones)` de una capa con `SPRITESHEET`
-        cuya textura es una hoja, o None si no lo es.
+        """`(volteada, fotogramas, duraciones, texturas)` de una capa con
+        `SPRITESHEET` cuya textura es una hoja, o None si no lo es.
 
         WE avanza la hoja al enlazar la textura (`0x14015f0d0`): suma al
         tiempo del fotograma el mismo paso que acumula `g_Time` y, cuando
@@ -1795,13 +1810,21 @@ class Renderer:
         (`we_hoja_tiempo_uniforms` en src/wereloj.c).
 
         Solo se reproduce ---`duraciones` no es None--- lo que esa cuenta
-        cubre entera: una sola imagen (con varias, cada fotograma muestrea la
-        suya, `image_id`, y aqui solo se sube la 0), todos los `frame_time`
-        mayores que cero y ningun script de la capa que pida la animacion
-        (`wescript.mueve_la_hoja`). Lo demas se queda quieto en el fotograma
-        0, que es por donde WE empieza y no la hoja entera aplastada.
+        cubre entera: todos los `frame_time` mayores que cero y ningun script
+        de la capa que pida la animacion (`wescript.mueve_la_hoja`). Lo demas
+        se queda quieto en el fotograma 0, que es por donde WE empieza y no la
+        hoja entera aplastada.
+
+        Si los fotogramas se reparten entre varias imagenes del `.tex`, cada
+        uno es de la suya, `image_id`. WE guarda ese indice con el fotograma
+        (`0x14015e2df`), divide sus pixeles por el ancho y el alto de ESA
+        imagen (`0x14015e4b6..0x14015e4eb`), al avanzar lo apunta en la
+        textura (`0x14015f2e8`) y al enlazarla elige por el la imagen que va
+        al sampler (`0x1400ee8f0..0x1400ee913`). Aqui se sube cada imagen como
+        una textura del plan y `texturas` dice la de cada fotograma; con una
+        sola imagen es None, porque ya es la del slot 0.
         """
-        name, tw, th, volteada = hoja_tex
+        name, tw, th, volteada, modo = hoja_tex
         try:
             tex = wetex.read_texture(self.res.read_bytes(wescene.texture_path(name)))
         except Exception as e:
@@ -1814,16 +1837,39 @@ class Renderer:
                               f"de la imagen 0")
             return None
         duraciones = [float(f["frame_time"]) for f in tex.frames]
-        reproduce = (len(tex.images) == 1
-                     and all(int(f.get("image_id", 0)) == 0 for f in tex.frames)
+        imagenes = [int(f.get("image_id", 0)) for f in tex.frames]
+        reproduce = (all(0 <= i < len(tex.images) for i in imagenes)
                      and all(d > 0 for d in duraciones)
                      and len(tex.frames) <= MAX_FOTOGRAMAS_HOJA
                      and not wescript.mueve_la_hoja(obj.raw))
-        fotogramas = fotogramas_de_hoja(tex.frames, tw, th,
-                                        len(tex.frames) if reproduce else 1)
+        texturas = None
+        tamano = {0: (tw, th)}
+        if reproduce and any(imagenes):
+            # Las demas imagenes, con el mismo recorte y volteo que la 0: la
+            # ultima suele ser mas baja (2048x1024 tras 2048x2048), y cada
+            # fotograma se parte por lo que se subio de la suya.
+            texturas = []
+            for i in imagenes:
+                t = self.texture(name, modo, 1.0, flip=volteada, imagen=i)
+                if not t:
+                    self.notes.append(f"[{obj.name}] la imagen {i} de la hoja "
+                                      f"no se pudo subir")
+                    reproduce, texturas = False, None
+                    break
+                texturas.append(t[0])
+                tamano[i] = (float(t[1]), float(t[2]))
+        if reproduce:
+            fotogramas = [fotogramas_de_hoja([f], *tamano[i], 1)[0]
+                          for f, i in zip(tex.frames, imagenes)]
+        else:
+            fotogramas = fotogramas_de_hoja(tex.frames, tw, th, 1)
         clave = "hoja_por_tiempo" if reproduce else "hoja_quieta"
         self.stats[clave] = self.stats.get(clave, 0) + 1
-        return volteada, fotogramas, duraciones if reproduce else None
+        if texturas is not None:
+            self.stats["hoja_varias_imagenes"] = \
+                self.stats.get("hoja_varias_imagenes", 0) + 1
+        return (volteada, fotogramas, duraciones if reproduce else None,
+                texturas)
 
     def _emit_psys(self, obj) -> None:
         """Escribe el `.psys` del objeto y lo declara en la cabecera del plan."""
@@ -2612,7 +2658,7 @@ class Renderer:
                     if t:
                         src = f"tex:{t[0]}"
                         if slot == 0 and p.stage == "base" and obj is not None:
-                            hoja_tex = (name, t[1], t[2], not particula)
+                            hoja_tex = (name, t[1], t[2], not particula, modo)
                         self.body.append(
                             f"u4f g_Texture{slot}Resolution {t[1]} {t[2]} {t[1]} {t[2]}")
                 if src and src.startswith("rt:"):
@@ -2998,15 +3044,22 @@ class Renderer:
             # Los dos uniforms llevan el fotograma 0, ya volteado: es lo que
             # se ve si la hoja no se reproduce y lo que ve un ejecutor que no
             # lea `hojatiempo`. Si se reproduce, el ejecutor los pisa con los
-            # del fotograma de `g_Time`.
-            volteada, fotogramas, duraciones = por_tiempo
+            # del fotograma de `g_Time`. Si la hoja tiene varias imagenes, la
+            # linea es `hojaimagenes`, que ademas le dice que textura enlazar
+            # en `g_Texture0`: con otra palabra para que un ejecutor que no la
+            # conozca la salte entera y deje el fotograma 0, en vez de correr
+            # la hoja sobre la imagen 0.
+            volteada, fotogramas, duraciones, texturas = por_tiempo
             r, t = (volteo_de_hoja(fotogramas[0]) if volteada
                     else (fotogramas[0][:4], fotogramas[0][4:]))
             self.body.append("u4f g_Texture0Rotation "
                              + " ".join(f"{x:.9g}" for x in r))
             self.body.append("u2f g_Texture0Translation "
                              + " ".join(f"{x:.9g}" for x in t))
-            if duraciones is not None:
+            if texturas is not None:
+                self.body.append(linea_hojaimagenes(volteada, fotogramas,
+                                                    duraciones, texturas))
+            elif duraciones is not None:
                 self.body.append(linea_hojatiempo(volteada, fotogramas, duraciones))
         elif hoja is None:
             self.body.append("u4f g_Texture0Rotation 1 0 0 1")

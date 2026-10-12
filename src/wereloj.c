@@ -8,6 +8,7 @@
 
 #include "wereloj.h"
 
+#include <limits.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -473,6 +474,8 @@ struct WeHoja {
     float duracion[MAX_FOTOGRAMAS];     /* `frame_time`, en segundos */
     double total;                       /* la suma de las duraciones */
     int por_tiempo;                     /* `hojatiempo` leída entera */
+    int textura[MAX_FOTOGRAMAS];        /* la del plan, de `hojaimagenes` */
+    int con_texturas;                   /* `hojaimagenes` leída entera */
 };
 
 WeHoja *we_hoja_nueva(void)
@@ -497,7 +500,7 @@ int we_hoja_linea(WeHoja *h, const char *resto)
     int ok = 0;
 
     /* Un ejecutor puede releer la misma hoja con una línea de otro tipo. */
-    h->completa = h->por_tiempo = 0;
+    h->completa = h->por_tiempo = h->con_texturas = 0;
 
     const char *p = resto;
     char *fin;
@@ -580,16 +583,19 @@ int we_hoja_uniforms(const WeHoja *h, time_t cuando,
 
 /* ── hoja de sprites por `frame_time` ───────────────────────────────────── */
 
-int we_hoja_tiempo_linea(WeHoja *h, const char *resto)
+/* `hojatiempo` lleva siete números por fotograma; `hojaimagenes`, ocho: los
+ * mismos y, detrás, la textura del plan del fotograma. */
+static int lee_por_tiempo(WeHoja *h, const char *resto, int con_textura)
 {
     if (!h || !resto)
         return 0;
-    h->completa = h->por_tiempo = 0;
+    h->completa = h->por_tiempo = h->con_texturas = 0;
 
     /* La misma guarda que `we_hoja_linea`. */
     locale_t loc_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
     locale_t previa = loc_c ? uselocale(loc_c) : (locale_t)0;
     int ok = 0;
+    const int k = con_textura ? 8 : 7;
 
     const char *p = resto;
     char *fin;
@@ -601,26 +607,33 @@ int we_hoja_tiempo_linea(WeHoja *h, const char *resto)
             p = fin;
             int leidos = 0;
             double total = 0.0;
-            for (int i = 0; i < n * 7; i++) {
-                float x = strtof(p, &fin);
-                if (fin == p) break;
-                if (i % 7 < 6) {
-                    h->fotograma[i / 7][i % 7] = x;
+            for (int i = 0; i < n * k; i++) {
+                if (i % k == 7) {
+                    long t = strtol(p, &fin, 10);
+                    if (fin == p || t < 0 || t > INT_MAX) break;
+                    h->textura[i / k] = (int)t;
                 } else {
-                    /* Una duración nula o negativa no cabe en el bucle de
-                     * abajo; `werender.py` no las manda. */
-                    if (!(x > 0.0f)) break;
-                    h->duracion[i / 7] = x;
-                    total += x;
+                    float x = strtof(p, &fin);
+                    if (fin == p) break;
+                    if (i % k < 6) {
+                        h->fotograma[i / k][i % k] = x;
+                    } else {
+                        /* Una duración nula o negativa no cabe en el bucle
+                         * de abajo; `werender.py` no las manda. */
+                        if (!(x > 0.0f)) break;
+                        h->duracion[i / k] = x;
+                        total += x;
+                    }
                 }
                 p = fin;
                 leidos++;
             }
-            if (leidos == n * 7) {
+            if (leidos == n * k) {
                 h->volteada = volteada != 0;
                 h->n = (int)n;
                 h->total = total;
                 h->por_tiempo = 1;
+                h->con_texturas = con_textura;
                 ok = 1;
             }
         }
@@ -631,6 +644,16 @@ int we_hoja_tiempo_linea(WeHoja *h, const char *resto)
         freelocale(loc_c);
     }
     return ok;
+}
+
+int we_hoja_tiempo_linea(WeHoja *h, const char *resto)
+{
+    return lee_por_tiempo(h, resto, 0);
+}
+
+int we_hoja_imagenes_linea(WeHoja *h, const char *resto)
+{
+    return lee_por_tiempo(h, resto, 1);
 }
 
 int we_hoja_fotograma_en(const WeHoja *h, double segundos)
@@ -668,4 +691,12 @@ int we_hoja_tiempo_uniforms(const WeHoja *h, double segundos,
     if (h->volteada)
         voltea(rotacion, traslacion);
     return 1;
+}
+
+int we_hoja_tiempo_textura(const WeHoja *h, double segundos)
+{
+    if (!h || !h->con_texturas)
+        return -1;
+    int i = we_hoja_fotograma_en(h, segundos);
+    return i < 0 ? -1 : h->textura[i];
 }
