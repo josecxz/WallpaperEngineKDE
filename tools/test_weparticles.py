@@ -103,7 +103,8 @@ ARNES_C = r"""
  * Con `<psys> <segundos>` simula y escribe el centro de la nube; con tres
  * numeros mas, lo mismo pero con el puntero ahi. Es lo que hace
  * `tools/psysprobe.c`, repetido aqui para que la prueba no dependa de otro
- * target del Makefile. */
+ * target del Makefile. Con `<usar> <radio>` detras, `usar` 0 deja el sistema
+ * sin puntero, y ademas cuenta las particulas a menos de `radio` del punto. */
 int main(int argc, char **argv)
 {
     setlocale(LC_ALL, "");
@@ -112,45 +113,70 @@ int main(int argc, char **argv)
     if (!s) { printf("-1\n"); return 0; }
     if (argc < 3) { printf("%d\n", desconocidas); return 0; }
 
+    float p[3] = {0, 0, 0};
     if (argc >= 6) {
-        const float p[3] = {(float)atof(argv[3]), (float)atof(argv[4]),
-                            (float)atof(argv[5])};
-        we_psys_puntero(s, p);
+        p[0] = (float)atof(argv[3]);
+        p[1] = (float)atof(argv[4]);
+        p[2] = (float)atof(argv[5]);
+        if (argc < 7 || atoi(argv[6]))
+            we_psys_puntero(s, p);
     }
+    const float radio = argc >= 8 ? (float)atof(argv[7]) : -1.0f;
     int nv = we_psys_update(s, (float)atof(argv[2]));
     const float *v = we_psys_vertices(s);
     int paso = we_psys_floats_por_vertice(s);
     double cx = 0, cy = 0;
-    int n = 0;
+    int n = 0, dentro = 0;
     for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
         cx += v[(size_t)i * paso];
         cy += v[(size_t)i * paso + 1];
         n++;
     }
+    /* Los vertices son las esquinas del quad, no el centro de la particula:
+     * se promedian las de cada una antes de medir la distancia. */
+    for (int i = 0; radio >= 0 && i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+        double x = 0, y = 0;
+        for (int k = 0; k < WE_PSYS_VERTICES_POR_PARTICULA; k++) {
+            x += v[(size_t)(i + k) * paso];
+            y += v[(size_t)(i + k) * paso + 1];
+        }
+        x /= WE_PSYS_VERTICES_POR_PARTICULA;
+        y /= WE_PSYS_VERTICES_POR_PARTICULA;
+        if ((x - p[0]) * (x - p[0]) + (y - p[1]) * (y - p[1]) < radio * radio)
+            dentro++;
+    }
     /* Se ha simulado con la locale del escritorio ---que es de lo que va la
      * prueba de al lado--- pero los numeros hay que ESCRIBIRLOS con punto o
      * no los lee quien llama. */
     setlocale(LC_NUMERIC, "C");
-    printf("%d %d %.1f %.1f\n", desconocidas, we_psys_cursor(s),
+    printf("%d %d %.1f %.1f", desconocidas, we_psys_cursor(s),
            n ? cx / n : 0.0, n ? cy / n : 0.0);
+    if (radio >= 0)
+        printf(" %d", dentro);
+    printf("\n");
     return 0;
 }
 """
 
 """Un sistema con un punto de control atado al cursor y un operador que tira
-de el. Los numeros son los del preset `fireflies` de WE, que es el origen de
-111 de los 136 `controlpointattract` del corpus."""
+de el. `scale`, `threshold` y `drag` son los del preset `fireflies` de WE, que
+es el origen de 111 de los 136 `controlpointattract` del corpus; el ritmo y el
+tope estan subidos para que haya particulas que contar cerca del puntero. Las
+particulas nacen quietas, en el disco plano de `directions 1 1 0` ---el defecto
+de WE---: con `1 1 1` la esfera las reparte en z hasta 512 px y la distancia,
+que el operador mide en 3D, deja fuera de su alcance a la mitad de las que en
+pantalla caen junto al puntero."""
 PSYS_CURSOR = """\
-maxcount 64
+maxcount 4000
 starttime 0
 seed 7
 anim 0 1
-emit sphererandom 20 0 0 0 512 512 0 1 1 1 0 0 0 0 0 0 0 0 0 0
+emit sphererandom 400 0 0 0 512 512 0 1 1 0 0 0 0 0 0 0 0 0 0 0
 cp 0 0 0 0 0
 cp 1 0 0 0 1
 init lifetimerandom 30 30 1
 oper movement 0 0 0 2.5
-oper controlpointattract 1 -500 64 0 0 0
+oper controlpointattract 1 @ESCALA@ 64 0
 """
 
 
@@ -1204,59 +1230,70 @@ def compila_arnes(tmp: Path) -> Path | None:
 
 
 def prueba_cursor(tmp: Path) -> list[str]:
-    """La marca del cursor, de `weparticles.py` a `we_psys_puntero`.
+    """La marca del cursor, de `weparticles.py` a `we_psys_puntero`, y la regla
+    de `controlpointattract` leida en wallpaper64.exe.
 
-    Es un contrato de dos piezas y ninguna falla sola. Si la marca no viaja en
-    la linea `cp`, el punto se queda en el origen del sistema y el operador
-    ---que en el corpus es siempre `controlpointattract` con `scale` negativa---
-    se convierte en un sumidero que apelotona la nube en el centro. Si viaja
-    pero el simulador no la mira, pasa lo mismo. Las dos averias se ven igual
-    en un PNG: una nube mas pequena de lo que deberia.
+    La marca es un contrato de dos piezas y ninguna falla sola: si no viaja en
+    la linea `cp`, o el simulador no la mira, el punto se queda en el origen
+    del sistema y el puntero no hace nada.
 
-    Asi que se mide donde acaba la nube: sin puntero tiene que quedarse
-    alrededor del origen ---la emite una esfera de 512 px--- y con puntero
-    tiene que irse a el.
+    La regla (0x140241554): el operador solo actua a menos de `threshold` del
+    punto, y la `scale` negativa EMPUJA. Con el puntero en mitad de la nube,
+    la de -500 tiene que vaciar el circulo de alrededor y dejar el resto donde
+    estaba; la de +500 tiene que apretarlo hacia el centro. El hueco se mide a
+    48 px y no a 64: la fuerza cae a cero en el borde, asi que con `drag` las
+    empujadas frenan justo antes de los 64 y se quedan en el anillo. Antes
+    era al reves: la negativa atraia, desde fuera del circulo, y la nube
+    entera se iba al puntero.
     """
     binario = compila_arnes(tmp)
     if binario is None:
         return []
 
-    psys = tmp / "cursor.psys"
-    psys.write_text(PSYS_CURSOR)
-    destino = (400.0, -300.0)
-
-    def centro(*extra: str) -> tuple[int, float, float] | None:
-        r = subprocess.run([str(binario), str(psys), "10", *extra],
-                           capture_output=True, text=True)
-        campos = r.stdout.split()
-        if len(campos) != 4:
-            return None
-        return int(campos[1]), float(campos[2]), float(campos[3])
-
+    punto = (100.0, -50.0)
     fallos = []
-    sin = centro()
-    con = centro(f"{destino[0]}", f"{destino[1]}", "0")
-    if sin is None or con is None:
-        return ["el arnes no devolvio el centro de la nube"]
 
-    if not sin[0]:
+    def mide(escala: str, usar: bool, radio: float):
+        psys = tmp / f"cursor{escala}.psys"
+        psys.write_text(PSYS_CURSOR.replace("@ESCALA@", escala))
+        r = subprocess.run([str(binario), str(psys), "10", f"{punto[0]}",
+                            f"{punto[1]}", "0", "1" if usar else "0",
+                            f"{radio}"], capture_output=True, text=True)
+        campos = r.stdout.split()
+        if len(campos) != 5:
+            return None
+        return int(campos[1]), float(campos[2]), float(campos[3]), int(campos[4])
+
+    sin = mide("-500", False, 48)
+    con = mide("-500", True, 48)
+    nucleo_sin = mide("500", False, 16)
+    nucleo_con = mide("500", True, 16)
+    if None in (sin, con, nucleo_sin, nucleo_con):
+        return ["el arnes no devolvio la nube"]
+
+    if not con[0]:
         fallos.append("la marca del cursor no llega al C: `we_psys_cursor` "
                       "dice que no hay ningun punto atado al puntero")
-    dist_sin = math.dist(sin[1:], destino)
-    dist_con = math.dist(con[1:], destino)
-    print(f"  sin puntero  centro ({sin[1]:.0f}, {sin[2]:.0f})   "
-          f"a {dist_sin:.0f} px del destino")
-    print(f"  con puntero  centro ({con[1]:.0f}, {con[2]:.0f})   "
-          f"a {dist_con:.0f} px del destino")
-    # La nube no colapsa en un punto ---el `threshold` de 64 px la suelta antes
-    # de llegar, y la emision sigue soltando particulas nuevas en la esfera de
-    # 512--- asi que lo que se exige es que se haya ido A el, no que este clavada.
-    if dist_con > 150.0:
-        fallos.append(f"con el puntero en {destino} la nube se queda a "
-                      f"{dist_con:.0f} px: el punto de control no lo sigue")
-    if math.dist(sin[1:], (0.0, 0.0)) > 150.0:
-        fallos.append("sin puntero la nube no se queda alrededor del origen: "
-                      "el operador del cursor esta actuando cuando no debe")
+    print(f"  scale -500: a menos de 48 px del puntero {sin[3]} sin el, "
+          f"{con[3]} con el")
+    print(f"  scale +500: a menos de 16 px del puntero {nucleo_sin[3]} sin el, "
+          f"{nucleo_con[3]} con el")
+    print(f"  scale -500: centro de la nube ({sin[1]:.0f}, {sin[2]:.0f}) sin "
+          f"puntero, ({con[1]:.0f}, {con[2]:.0f}) con el")
+    if sin[3] < 20:
+        fallos.append(f"sin puntero solo hay {sin[3]} particulas cerca del "
+                      "punto: la prueba no tiene que contar")
+    if con[3] * 4 > sin[3]:
+        fallos.append(f"con scale -500 quedan {con[3]} de {sin[3]} particulas "
+                      "a menos de 48 px del puntero: no las aparta")
+    if nucleo_con[3] < 2 * nucleo_sin[3]:
+        fallos.append(f"con scale +500 hay {nucleo_con[3]} particulas a menos de "
+                      f"16 px del puntero, y sin el {nucleo_sin[3]}: no las atrae")
+    # Fuera del umbral no actua: la nube de 512 px no se mueve hacia el puntero.
+    if math.dist(con[1:3], sin[1:3]) > 20.0:
+        fallos.append("con scale -500 el centro de la nube se mueve "
+                      f"{math.dist(con[1:3], sin[1:3]):.0f} px: el operador "
+                      "actua fuera de `threshold`")
     return fallos
 
 

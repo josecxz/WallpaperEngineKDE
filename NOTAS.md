@@ -1073,6 +1073,9 @@ Cinco fallos, ninguno en la simulación:
   punto se queda en el origen y el operador deja de ser una interacción para
   ser un sumidero: la nube de 512 px de radio se apelotona en una bola de 64.
   Cuando el motor en vivo sepa dónde está el puntero, entra por ahí.
+  *(Después: la regla del operador misma estaba al revés —actuaba fuera del
+  `threshold` y la `scale` negativa atraía—; la leída en el motor está en
+  «El cursor aparta: `controlpointattract` leído en wallpaper64.exe».)*
 - **Las texturas de partícula se suben sin voltear.** En una capa normal el
   volteo se cancela con el de las UV; en un sprite que muestrea un *rectángulo*
   de una hoja no se cancela nada.
@@ -8837,3 +8840,136 @@ que mediría su cadena congelada.
   aviso en main y en la rama, el `GL_GLEXT_VERSION` de las cabeceras de Qt;
   ninguno nuevo. `test_wescript.py`, `test_wetext.py` y `test_werender.py`
   pasan.
+
+## El cursor aparta: `controlpointattract` leído en wallpaper64.exe
+
+En Karma (`2637739953`), con el ratón quieto, las luciérnagas y las motas de
+polvo de **toda** la escena volaban hacia el cursor, se pasaban, volvían y
+acababan orbitándolo en una bola. El operador que lo hace,
+`controlpointattract`, nunca se había leído en el motor: la regla del
+simulador era una deducción («Decisiones que son lecturas, no hechos»,
+arriba), con dos supuestos sin comprobar —que actúa **fuera** del `threshold`
+(«es lo que deja a las luciérnagas vagando y solo las recoge cuando se alejan
+demasiado») y que la `scale` negativa **atrae**—. Los dos eran al revés.
+
+### Lo leído, con direcciones
+
+Con el método de [Dónde guarda WE sus valores por
+defecto](#dónde-guarda-we-sus-valores-por-defecto-y-cómo-se-leen):
+
+- **La fábrica** compara el nombre en `0x1401cc9d3` y reserva un bloque de
+  **tipo `0xa`** y `0xc0` bytes (`0x1401d8b30`), con los datos desde `+0x10`.
+  Lee `offset` (vec3, en `+0x10/+0x20/+0x30` del bloque, una componente por
+  vector de 4), `scale` (`+0x40`), `threshold` (`+0x50`), `deletethreshold`
+  **al cuadrado** (`+0x60`, el `mulss xmm6,xmm6` de `0x1401ccbef`), `flags`
+  (`+0xb0`, `0x1401ccbe2`) y `controlpoint` (`+0xb4`). `origin` no lo lee.
+- **Los defectos** los inserta `0x1401bdee0` antes de leer, con el booleano de
+  la fábrica (`[rbp+0x2238]`, `0x1401cca06`, el mismo que el de la turbulencia
+  y por tanto «escena ortográfica»): `scale` y `threshold` **512 y 512** si está
+  encendido (`0x1401bdfe2`, `0x1401bdfef`, `0x1401be0b2`); **20 y 5** si no
+  (`0x1401bdff4`, `0x1401be0b4`). `deletethreshold`, 15 encendido y 0,5
+  apagado (`0x1401be179`, `0x1401be183`).
+- **El operador** es la entrada 10 de la tabla de saltos de `0x14023fd6c`
+  (`0x14024bb58`, índice `tipo − 1`), y cae en `0x140241554`. Trabaja sobre 4
+  partículas a la vez:
+
+```
+d    = |p − cp|                            0x140241630..0x14024167e
+cp   = el registro del punto, +0x30..+0x38 (0x14022a120), SIN el offset
+vale = FLT_MIN < d < threshold             0x140241686..0x140241696
+k    = scale · t · (1 − d / threshold)     0x14024169c..0x1402416a6
+si flags & 2:  k = min(k, d)               0x140241577, 0x1402416aa..0x1402416b2
+vel −= (p − cp) / d · k     si vale        0x1402416ba..0x1402416f0
+```
+
+  `FLT_MIN` es la constante que inicializa `0x14024bafc` (desde
+  `0x140492cd0`); el 1 de `1 − d/threshold`, `0x140483640`. Con `scale`
+  positiva la partícula va hacia el punto; con negativa, se aparta.
+- **`flags & 1`** llama a `0x14022a150`, que mira el segmento recorrido en el
+  paso (posición anterior → actual), su punto más cercano al punto de control,
+  y si está a menos de `deletethreshold` (`cmpltps` contra `+0x60`,
+  `0x14022a2e7`) cambia un valor de la partícula por otro: la borra. Tampoco
+  usa el `offset`.
+- **El tiempo `t`** es el segundo argumento de la función de operadores
+  (`0x14023fbc0`, `xmm2`), que quien llama calcula como
+  `dt · min(0,025 / F, 1)^0,7` (`0x140237724..0x14023775f`), con
+  `F = [sistema+0x14c]`. Si `[sistema+0x148]` cae entre 1 y 20, el paso se da en
+  dos mitades (`0x140237764..0x140237784`). Con el mismo `t` se aplica el
+  `drag` de `movement` (`[rbp+0x2010]`, `0x14023fe65`), y con el primer
+  argumento, `dt`, la gravedad (`[rbp+0x2008]`).
+
+Lo cuadran los presets de WE: `examplecursoravoid.json` —«el cursor
+aparta»— lleva `scale −5000, threshold 64`; `magic_gravity.json`,
+`+10000`; y la escena de muestra del propio operador
+(`particleelementpreviews/controlpointattract`), `+2000`.
+
+### El corpus con la regla leída
+
+136 usos en 39 escenas; 111 sobre un punto atado al cursor, en 38, y **109 de
+esos 111 con `scale` negativa**: en las 38 escenas, partículas que en WE
+**esquivan** el ratón aquí lo perseguían desde cualquier distancia. Los
+`threshold` sobre el cursor son 64 (55), 32 (31), 256, 100… Nadie declara
+`flags` ni `deletethreshold`. 13 usos no declaran `threshold` —con la regla
+vieja, 0, que era «en todas partes»— y uno de un sistema hijo de Karma
+(`s010`) no declara `scale`, que era 0 y queda en 512. 6 usos llevaban un
+`origin` no nulo que se sumaba al punto; WE no lo lee.
+
+### Lo que cambia
+
+- **`tools/weparticles.py`**: `_op_atrae` escribe `controlpoint`, `scale`,
+  `threshold` y `flags`, con los defectos de WE según la escena
+  (`ATRAE_ORTO`, `ATRAE_PERSPECTIVA`), como `_init_turbvel`. Deja de leer
+  `origin`.
+- **`src/weparticles.c`**, que enlazan los dos ejecutores: `OP_ATRAE` pasa a 4
+  floats y a la regla de arriba, con `dt` en lugar de `t` (ver «Lo que queda»).
+  La regla de `cursor_vivo` —sin puntero, el punto del cursor no actúa— se
+  queda; su porqué ya no es el sumidero sino el hueco que abriría en el origen
+  del sistema.
+- **`tools/test_weparticles.py`**: `prueba_cursor` medía que la nube se fuera
+  al puntero, que es justo el fallo. Ahora, con un disco de 4000 partículas
+  quietas y el puntero dentro: con `scale −500` el círculo de 48 px tiene que
+  vaciarse, con `+500` el de 16 px tiene que llenarse, y el centro de la nube no
+  se mueve. El hueco se mide a 48 px y no a 64 porque la fuerza cae a cero en
+  el borde y las empujadas frenan en el anillo. El disco es plano
+  (`directions 1 1 0`, el defecto de WE): con la `1 1 1` de la prueba vieja la
+  mitad de las partículas tenían z de cientos de px, y la distancia, que es 3D
+  en WE y aquí, las dejaba fuera del radio aunque en pantalla estuvieran junto
+  al puntero.
+
+### Lo medido
+
+- **La prueba nueva**, con la rama: el círculo de 48 px pasa de 116 partículas
+  a **3** con `−500`; el de 16 px, de 6 a **177** con `+500`; el centro de la
+  nube, (−4, 2) con y sin puntero. Con el `src/weparticles.c` de `main` y el
+  `.psys` en su formato: **3384** partículas en el círculo de 48 px con
+  `−500`, 6 en el de 16 con `+500`, y el centro a 104 px; falla en los tres
+  puntos.
+- **Los `.psys` y los planes de las 129**, `main` contra la rama: cambian
+  **172 líneas en 39 escenas**, todas `oper controlpointattract`; los planes,
+  idénticos.
+- **La luz de las 39** (la medida de `test_luminancia.py`, sin puntero):
+  **0 regresiones**, 36 idénticas. `2930166418` +0,12 %, `2637739953` +0,39 % y
+  `3219398263` 75,01 → 77,83 (+3,8 %): sus tres `magic_vortex_1` —un preset de
+  WE con `scale +1200, threshold 99999`— no hacían nada con la regla vieja,
+  que solo actuaba a más de 99999 px, y ahora sus estelas convergen hacia el
+  centro del vórtice. No hay con qué contrastarlo en imagen: el preview de la
+  escena es un JPG fijo sin partículas y la muestra del preset no trae
+  preview.
+- **Karma con el puntero** (`--puntero 0.62 0.55`, `t = 8`): en `main`, una
+  bola verde de luciérnagas sobre el cursor; en la rama, ninguna junto a él y
+  el resto repartidas por la escena.
+- `test_weparticles.py` y `test_werender.py` pasan; `make glexec` y
+  `make build` sin avisos.
+
+### Lo que queda
+
+- **El tiempo de la atracción y del `drag`.** WE los integra con
+  `t = dt · min(0,025 / F, 1)^0,7`, y `F = [sistema+0x14c]` no se ha
+  identificado: aquí se usa `dt`, que es lo mismo si `F ≤ 0,025`. Tampoco el
+  `[sistema+0x148]` que parte el paso en dos.
+- **El `drag` de `movement` es lineal en WE**: `vel · (1 − min(drag · t,
+  0,9999999))` (`0x14023fe65..0x14023fe93`); aquí es `exp(−drag · dt)`. A 60 fps
+  y `drag 2,5` difieren en menos de un 0,1 % por paso.
+- **`flags & 1` (borrar al pasar a menos de `deletethreshold`)** y el `offset`
+  no se implementan: ningún uso del corpus declara `flags`, y el `offset` no lo
+  usa el operador.

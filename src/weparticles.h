@@ -114,7 +114,7 @@ void we_psys_seguir(WeParticleSystem *hijo, WeParticleSystem *padre, int modo,
  * `xyz` a NULL dice que AHORA MISMO no hay puntero ---el raton no esta sobre
  * el fondo, o no se ha movido nunca desde que arranco--- y entonces los
  * operadores que tiran de un punto atado al cursor se quedan quietos. Es el
- * estado por defecto: un sistema recien cargado no atrae hacia ninguna parte
+ * estado por defecto: un sistema recien cargado no empuja ni atrae nada
  * hasta que alguien diga donde esta el raton. */
 void we_psys_puntero(WeParticleSystem *s, const float *xyz);
 

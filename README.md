@@ -290,8 +290,8 @@ Limitaciones conocidas:
   sostiene (57 de cada 60 fotogramas), pero cuesta un núcleo. Y su pista de
   audio no suena.
 - El **puntero llega a la escena**: los efectos que lo leen —el parallax por
-  mapa de profundidad, la ondulación del cursor— y las partículas que lo
-  persiguen se mueven con el ratón, en tiempo real. La posición la da **KWin**
+  mapa de profundidad, la ondulación del cursor— y las partículas atadas a él
+  se mueven con el ratón, en tiempo real. La posición la da **KWin**
   (el cursor global, como en Wallpaper Engine), así que el fondo la sigue
   también por debajo de las ventanas y del panel; sin KWin, solo mientras el
   ratón está sobre el fondo.
@@ -304,10 +304,10 @@ Limitaciones conocidas:
   traiga alguna se dibuja plana entera —iluminar a medias la deja más oscura
   que no iluminarla—.
 - Las partículas se simulan (821 de los 823 sistemas del corpus), estelas
-  incluidas, y con el vocabulario del formato cubierto entero. Los sistemas que
-  persiguen al ratón —123, en 46 escenas— lo persiguen de verdad; sin ratón
-  sobre el fondo no atraen hacia ninguna parte, que es lo que hace WE cuando el
-  puntero se va. Queda un cabo medido y sin cerrar: 25 emisores del corpus
+  incluidas, y con el vocabulario del formato cubierto entero. Los sistemas
+  atados al ratón —123, en 46 escenas— reaccionan a él con la regla leída en
+  el motor de WE: casi todos se apartan a su paso; sin ratón sobre el fondo no
+  hacen nada. Queda un cabo medido y sin cerrar: 25 emisores del corpus
   llevan `flags: 2` y 23 de ellos están en sistemas que ya siguen al cursor
   —apunta a «emite donde el ratón», pero no está comprobado—, así que hoy
   emiten desde el origen del sistema.
