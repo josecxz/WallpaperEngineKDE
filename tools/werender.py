@@ -271,6 +271,37 @@ def _escapa(s: str) -> str:
             .replace("\n", "\\n") or "\\s")
 
 
+def lineas_de_reloj(mid: int, fmt, r) -> list[str]:
+    """Las directivas de una capa de reloj; las lee `we_reloj_linea` en
+    `src/wereloj.c`. Las usa `_emit_reloj` y la prueba del contrato
+    (`tools/test_wereloj.py`), que así no lleva una copia que se desfase."""
+    alin = {"left": 0, "top": 0, "center": 1, "right": 2, "bottom": 2}
+    lineas = [
+        f"reloj {mid} {fmt.periodo:g} {r.caja[0]:g} {r.caja[1]:g} "
+        f"{r.pad[0]:g} {r.pad[1]:g} "
+        f"{alin.get(r.halign, 1)} {alin.get(r.valign, 1)} "
+        f"{r.u:.9g} {r.alto_linea:.9g} {r.max_glifos} {r.espaciado:.9g}",
+        # El espaciado va el ULTIMO: solo pinta en un reloj de varias lineas, y
+        # un ejecutor anterior lee los diez primeros y no ve el resto.
+        f"relojfmt {mid} {_escapa(fmt.plantilla)}",
+    ]
+    for codigo, tabla in fmt.tablas.items():
+        palabras = " ".join(_escapa(x) for x in tabla)
+        lineas.append(f"relojtab {mid} {codigo} {len(tabla)} {palabras}")
+    for g in r.glifos:
+        lineas.append(
+            f"relojglifo {mid} {g.cp} {g.avance:.6g} "
+            + " ".join(f"{x:.6g}" for x in g.ink)
+            + " " + " ".join(f"{x:.9g}" for x in g.uv))
+    # El kerning va en una linea por par y aparte, por lo mismo que el
+    # espaciado: un ejecutor anterior no la entiende y la salta, y dibuja como
+    # antes. Los pares son multiplos de 1/64 de pixel; con nueve cifras viajan
+    # exactos.
+    for (a, b), dx in sorted(r.kern.items()):
+        lineas.append(f"relojkern {mid} {a} {b} {dx:.9g}")
+    return lineas
+
+
 def fotogramas_de_hoja(frames: list[dict], ancho: float, alto: float,
                        cuantos: int) -> list[list[float]]:
     """Los `cuantos` primeros fotogramas de `tex.frames` como los dos uniforms
@@ -2219,23 +2250,7 @@ class Renderer:
         self.lines.append(f"mesh {mid} {path} {verts.shape[0]} {idx.size}")
         self.meshes[id(obj)] = mid
 
-        alin = {"left": 0, "top": 0, "center": 1, "right": 2, "bottom": 2}
-        self.lines.append(
-            f"reloj {mid} {fmt.periodo:g} {r.caja[0]:g} {r.caja[1]:g} "
-            f"{r.pad[0]:g} {r.pad[1]:g} "
-            f"{alin.get(r.halign, 1)} {alin.get(r.valign, 1)} "
-            f"{r.u:.9g} {r.alto_linea:.9g} {max_glifos} {r.espaciado:.9g}")
-        # El espaciado va el ULTIMO: solo pinta en un reloj de varias lineas, y
-        # un ejecutor anterior lee los diez primeros y no ve el resto.
-        self.lines.append(f"relojfmt {mid} {_escapa(fmt.plantilla)}")
-        for codigo, tabla in fmt.tablas.items():
-            palabras = " ".join(_escapa(x) for x in tabla)
-            self.lines.append(f"relojtab {mid} {codigo} {len(tabla)} {palabras}")
-        for g in r.glifos:
-            self.lines.append(
-                f"relojglifo {mid} {g.cp} {g.avance:.6g} "
-                + " ".join(f"{x:.6g}" for x in g.ink)
-                + " " + " ".join(f"{x:.9g}" for x in g.uv))
+        self.lines.extend(lineas_de_reloj(mid, fmt, r))
 
         # El margen se mide sobre el peor caso, no sobre la hora de ahora: a
         # las 11:11 la tinta ocupa mucho menos que a las 08:38, y el buffer se

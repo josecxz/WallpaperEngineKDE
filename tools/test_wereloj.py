@@ -18,6 +18,10 @@ esta prueba las compara sobre el corpus entero:
      plantilla, al principio y dentro de una tabla, con las tres alineaciones
      y espaciado---, porque en el corpus solo hay una capa así y solo se parte
      en dos los sábados.
+  5. Un reloj del corpus con pares de kerning distintos de cero, a una hora
+     que los usa, a 1e-4 y con las dos locales: el par viaja en su propia
+     línea (`relojkern`) y es lo que el C suma de más. Y las capas del corpus
+     con pares, contra los números del plan y al margen del float del C.
 
 Uso:
     python3 tools/test_wereloj.py
@@ -25,7 +29,9 @@ Uso:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
+import io
 import json
 import subprocess
 import sys
@@ -33,6 +39,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from PIL import ImageFont
 
 sys.path.insert(0, str(Path(__file__).parent))
 import pkg_inspect
@@ -125,30 +132,15 @@ def compila(tmp: Path) -> Path:
 def lineas_del_plan(mid: int, fmt, r) -> list[str]:
     """Las mismas directivas que escribe `werender._emit_reloj`."""
     import werender
-    alin = {"left": 0, "top": 0, "center": 1, "right": 2, "bottom": 2}
-    lineas = [
-        f"reloj {mid} {fmt.periodo:g} {r.caja[0]:g} {r.caja[1]:g} "
-        f"{r.pad[0]:g} {r.pad[1]:g} "
-        f"{alin.get(r.halign, 1)} {alin.get(r.valign, 1)} "
-        f"{r.u:.9g} {r.alto_linea:.9g} {r.max_glifos} {r.espaciado:.9g}",
-        f"relojfmt {mid} {werender._escapa(fmt.plantilla)}",
-    ]
-    for codigo, tabla in fmt.tablas.items():
-        palabras = " ".join(werender._escapa(x) for x in tabla)
-        lineas.append(f"relojtab {mid} {codigo} {len(tabla)} {palabras}")
-    for g in r.glifos:
-        lineas.append(
-            f"relojglifo {mid} {g.cp} {g.avance:.6g} "
-            + " ".join(f"{x:.6g}" for x in g.ink)
-            + " " + " ".join(f"{x:.9g}" for x in g.uv))
-    return lineas
+    return werender.lineas_de_reloj(mid, fmt, r)
 
 
-def capas_de_reloj():
-    """Todas las capas del corpus cuyo script se traduce a un formato."""
+def capas_de_reloj(dirs=None):
+    """Todas las capas del corpus cuyo script se traduce a un formato, o solo
+    las de las escenas de `dirs`."""
     ws = Path(wepaths.we_workshop())
     we = Path(wepaths.we_assets())
-    for d in sorted(ws.iterdir()):
+    for d in sorted(dirs if dirs is not None else ws.iterdir()):
         pkg = d / "scene.pkg"
         if not pkg.is_file():
             continue
@@ -200,21 +192,47 @@ def _desescapa(s: str) -> str:
     return "".join(salida)
 
 
+def reloj_del_plan(r: wetext.Reloj, lineas: list[str]) -> wetext.Reloj:
+    """El mismo reloj con los números tal como viajan en el plan, que es lo
+    que lee el C: el avance y la tinta van con seis cifras. Comparar contra
+    esto deja fuera el redondeo del plan y deja solo la cuenta."""
+    glifos, kern = [], {}
+    caja, pad, u, alto, esp = r.caja, r.pad, r.u, r.alto_linea, r.espaciado
+    for x in lineas:
+        t = x.split()
+        if t[0] == "reloj":
+            v = [float(y) for y in t[2:]]
+            caja, pad, u, alto, esp = (v[1], v[2]), (v[3], v[4]), v[7], v[8], v[10]
+        elif t[0] == "relojglifo":
+            v = [float(y) for y in t[2:]]
+            glifos.append(wetext.Glifo(int(v[0]), v[1], tuple(v[2:6]),
+                                       tuple(v[6:10])))
+        elif t[0] == "relojkern":
+            kern[(int(t[2]), int(t[3]))] = float(t[4])
+    return dataclasses.replace(r, glifos=glifos, kern=kern, caja=caja,
+                               pad=pad, u=u, alto_linea=alto, espaciado=esp)
+
+
 def compara(exe: Path, plan: Path, fmt, r, etq: str,
-            fallos: list[str]) -> int:
+            fallos: list[str], instantes=INSTANTES,
+            tope: float | None = 0.01) -> int:
     """Python contra C para un reloj ya escrito en `plan`, con las dos
-    locales. Devuelve 1 si también coincidió con `es_ES`."""
+    locales. Devuelve 1 si también coincidió con `es_ES`.
+
+    Con `tope=None` el margen es el del float del C: 1e-4, o 8 ulp de float32
+    a la magnitud del vértice si es mayor ---hay capas a 2400 unidades del
+    centro, donde un ulp ya son 2,4e-4---."""
     for locale in ("C", "es_ES.UTF-8"):
         # `es_ES` es la que hereda el escritorio y la que rompe `strtof`.
         entrada = "\n".join(
-            str(int(t.timestamp())) for t in INSTANTES) + "\n"
+            str(int(t.timestamp())) for t in instantes) + "\n"
         p = subprocess.run([str(exe), str(plan), locale],
                            input=entrada, capture_output=True, text=True)
         if p.returncode:
             fallos.append(f"{etq} [{locale}]: el arnés falla")
             return 0
         salida = p.stdout.splitlines()
-        for k, t in enumerate(INSTANTES):
+        for k, t in enumerate(instantes):
             esperado = fmt.render(t)
             dado = _desescapa(salida[2 * k][len("texto "):])
             if dado != esperado:
@@ -229,7 +247,9 @@ def compara(exe: Path, plan: Path, fmt, r, etq: str,
                 fallos.append(f"{etq} [{locale}]: {c.shape} != {py.shape}")
                 return 0
             peor = float(np.abs(c - py).max())
-            if peor > 0.01:
+            margen = tope if tope is not None else max(
+                1e-4, 8 * float(np.spacing(np.float32(np.abs(py[:, :2]).max()))))
+            if peor > margen:
                 fallos.append(
                     f"{etq} [{locale}] {t}: vértices difieren en {peor:.4f}")
                 return 0
@@ -290,9 +310,66 @@ def contrato_de_renglones(exe: Path, tmp: Path, fallos: list[str]) -> int:
     return hechos
 
 
+# El kerning con una fuente de verdad: la del reloj de `3029745918` (capa 90),
+# en la que «04» mide 258,8 px con raqm y 271 glifo a glifo a 200 px de em
+# (NOTAS.md). Lo que se prueba no es la escena sino que un par distinto de
+# cero llega al C y lo mueve igual que a Python; si la escena no está, falla.
+KERN_ESCENA, KERN_CAPA = "3029745918", 90
+KERN_INSTANTE = dt.datetime(2026, 10, 12, 4, 42, 0)
+
+
+def contrato_de_kerning(exe: Path, tmp: Path, fallos: list[str]) -> int:
+    """Un reloj con pares distintos de cero, a una hora en la que el renglón
+    los usa. Antes de comparar con el C se comprueba que los pares de verdad
+    mueven la tinta y que el renglón mide lo que mide raqm; luego, los
+    vértices del C contra los de Python a 1e-4, con las dos locales."""
+    d = Path(wepaths.we_workshop()) / KERN_ESCENA
+    capa = next(((o, fmt, res) for _, o, fmt, res in capas_de_reloj([d])
+                 if o.get("id") == KERN_CAPA), None)
+    etq = f"kerning {KERN_ESCENA}/{KERN_CAPA}"
+    if capa is None:
+        fallos.append(f"{etq}: no está en el corpus")
+        return 0
+    obj, fmt, res = capa
+    r = wetext.disponer_reloj(res, obj, fmt.alfabeto, fmt.max_longitud(),
+                              0.5, cadenas=fmt.cadenas())
+    texto = fmt.render(KERN_INSTANTE)
+    usados = [(ord(a), ord(b)) for a, b in zip(texto, texto[1:])
+              if (ord(a), ord(b)) in r.kern]
+    if not usados:
+        fallos.append(f"{etq}: {texto!r} no usa ningún par")
+        return 0
+    con = wetext.quads_de_reloj(r, texto)
+    sin = wetext.quads_de_reloj(dataclasses.replace(r, kern={}), texto)
+    if float(np.abs(con - sin).max()) < 1e-3:
+        fallos.append(f"{etq}: los pares no mueven nada")
+        return 0
+    em = wetext._numeros(obj.get("pointsize"), 1, 0.0)[0] * wetext.UNIDADES_POR_PUNTO
+    px = int(round(em / r.u))
+    font = ImageFont.truetype(
+        io.BytesIO(wetext.resolver_fuente(res, obj.get("font"))), px)
+    _, ancho = wetext._plumas(texto, {g.cp: g.avance for g in r.glifos}, r.kern)
+    if abs(ancho - font.getlength(texto)) / px > 0.01:
+        fallos.append(f"{etq}: {texto!r} mide {ancho} y raqm {font.getlength(texto)}")
+        return 0
+    plan = tmp / "kerning.txt"
+    lineas = lineas_del_plan(0, fmt, r)
+    if sum(x.startswith("relojkern ") for x in lineas) != len(r.kern):
+        fallos.append(f"{etq}: el plan no lleva los {len(r.kern)} pares")
+        return 0
+    plan.write_text("\n".join(lineas) + "\n")
+    r = reloj_del_plan(r, lineas)
+    print(f"  {etq}: {texto!r}, {len(r.kern)} pares en el alfabeto, "
+          f"{len(usados)} en el renglón; mueven la tinta "
+          f"{float(np.abs(con - sin).max()):.3f} unidades")
+    return compara(exe, plan, fmt, r, etq, fallos,
+                   [KERN_INSTANTE] + INSTANTES, 1e-4)
+
+
 def main() -> int:
     fallos: list[str] = []
     con_locale = 0
+    con_pares = 0
     n_capas = 0
     renglones = 0
     escenas = set()
@@ -301,6 +378,7 @@ def main() -> int:
         tmp = Path(td)
         exe = compila(tmp)
         sinteticos = contrato_de_renglones(exe, tmp, fallos)
+        kerning = contrato_de_kerning(exe, tmp, fallos)
         for wid, obj, fmt, res in capas_de_reloj():
             n_capas += 1
             escenas.add(wid)
@@ -319,8 +397,17 @@ def main() -> int:
                 renglones += 1
 
             plan = tmp / "reloj.txt"
-            plan.write_text("\n".join(lineas_del_plan(0, fmt, r)) + "\n")
-            con_locale += compara(exe, plan, fmt, r, etq, fallos)
+            lineas = lineas_del_plan(0, fmt, r)
+            plan.write_text("\n".join(lineas) + "\n")
+            # Con pares, más fino y contra lo que lleva el plan: el kerning es
+            # lo único que el C suma de más, y el par más pequeño es 1/64 de
+            # píxel, que a 0,01 de margen podría no verse.
+            if r.kern:
+                con_pares += 1
+                con_locale += compara(exe, plan, fmt, reloj_del_plan(r, lineas),
+                                      etq, fallos, tope=None)
+            else:
+                con_locale += compara(exe, plan, fmt, r, etq, fallos)
 
     print("── relojes del corpus ──")
     print(f"  escenas con reloj    {len(escenas)}")
@@ -328,6 +415,8 @@ def main() -> int:
     print(f"  con la locale es_ES  {con_locale}")
     print(f"  con varios renglones {renglones}")
     print(f"  sintéticos con \\n    {sinteticos} de 5")
+    print(f"  con kerning (al ulp) {con_pares}")
+    print(f"  caso de kerning      {kerning} de 1")
     if fallos:
         print(f"\nFALLO: {len(fallos)} discrepancias")
         for f in fallos[:20]:

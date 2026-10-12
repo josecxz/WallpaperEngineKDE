@@ -39,7 +39,7 @@ import io
 import subprocess
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -400,10 +400,10 @@ def disponer(res: AssetResolver, obj: dict,
 # que es quien deduce la plantilla, y `src/wereloj.c`, que es quien la rellena.
 #
 # Se rasteriza glifo a glifo y no por línea, al revés que `disponer`: con la
-# cadena cambiando no hay línea que rasterizar. Se pierde el kerning, y con
-# dígitos y dos puntos no se nota ---las cifras de una fuente de reloj son
-# tabulares--- pero conviene saberlo si algún día se ve un nombre de mes
-# apretado.
+# cadena cambiando no hay línea que rasterizar. El kerning no se pierde: se
+# mide par a par sobre el alfabeto (`_pares_del_alfabeto`) y la pluma lo suma
+# entre glifo y glifo. Con cifras sí se nota ---el `01:24` de `3285617191` se
+# quedaba 0,31 em más ancho que en la ruta estática---, ver NOTAS.md.
 
 
 @dataclass
@@ -432,6 +432,9 @@ class Reloj:
     # `spacing` vertical que suma `disponer`; con un reloj de una línea no
     # pinta nada.
     espaciado: float = 0.0
+    # El kerning: lo que se suma a la pluma entre el glifo `a` y el `b`, en px
+    # del atlas, por pares de puntos de código. Solo los que no son cero.
+    kern: dict[tuple[int, int], float] = field(default_factory=dict)
 
 
 def _metricas_del_alfabeto(font, alfabeto: str) -> tuple[list[Glifo], list[Image.Image]]:
@@ -464,6 +467,55 @@ def _metricas_del_alfabeto(font, alfabeto: str) -> tuple[list[Glifo], list[Image
     return glifos, imgs
 
 
+def _pares_del_alfabeto(font, alfabeto: str) -> dict[tuple[int, int], float]:
+    """El kerning de cada par del alfabeto, en px del atlas.
+
+    Es lo que HarfBuzz le quita o le pone al par cuando le da forma junto
+    ---`getlength(ab) - getlength(a) - getlength(b)`---, que es lo que la ruta
+    estática aplica al rasterizar la línea entera. Con la fuente y el px del
+    atlas: las dos cosas cambian el número. Solo reproduce el ajuste de pares;
+    una ligadura o un ajuste que mire más de dos glifos no cabe aquí, y en el
+    corpus no hay ninguno en lo que escriben los relojes (NOTAS.md).
+    """
+    solos: dict[str, float] = {}
+    for c in alfabeto:
+        try:
+            solos[c] = float(font.getlength(c))
+        except Exception:              # el que no se modela no lleva pares
+            continue
+    pares: dict[tuple[int, int], float] = {}
+    for a, la in solos.items():
+        for b, lb in solos.items():
+            try:
+                k = float(font.getlength(a + b)) - la - lb
+            except Exception:
+                continue
+            if k != 0.0:
+                pares[(ord(a), ord(b))] = k
+    return pares
+
+
+def _plumas(renglon: str, avances: dict[int, float],
+            kern: dict[tuple[int, int], float]) -> tuple[list[tuple[int, float]], float]:
+    """Dónde cae el origen de cada glifo de un renglón y cuánto avanza el
+    renglón entero, en px del atlas. Los caracteres sin avance conocido se
+    saltan, y el par se forma con el anterior que sí lo tiene: es lo mismo que
+    hace `src/wereloj.c`."""
+    puestos: list[tuple[int, float]] = []
+    pluma = 0.0
+    previo = None
+    for c in renglon:
+        cp = ord(c)
+        if cp not in avances:
+            continue
+        if previo is not None:
+            pluma += kern.get((previo, cp), 0.0)
+        puestos.append((cp, pluma))
+        pluma += avances[cp]
+        previo = cp
+    return puestos, pluma
+
+
 def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
                    max_glifos: int, px_por_unidad: float = 1.0, *,
                    cadenas: Iterable[str]) -> Reloj | None:
@@ -473,7 +525,8 @@ def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
     `Formato.cadenas` ---lo que la plantilla puede escribir--- y `max_glifos`
     de la más larga. El tamaño de la em y la fuente salen igual que en
     `disponer`, y tienen que hacerlo: las dos rutas dibujan en el mismo
-    espacio. El tope de ancho no: se mide como dibuja el reloj, glifo a glifo.
+    espacio. El tope de ancho se mide como dibuja el reloj: glifo a glifo con
+    el kerning de cada par, que es lo mismo que daría `getlength` del renglón.
     """
     puntos = _numeros(obj.get("pointsize"), 1, 0.0)[0]
     if puntos <= 0 or not alfabeto:
@@ -489,20 +542,22 @@ def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
     # El tope de ancho del atlas se mide sobre el RENGLÓN más largo que la
     # plantilla puede escribir, no sobre el atlas: el atlas de un alfabeto se
     # empaqueta en rejilla y no se acerca al tope, pero el renglón sí puede
-    # pasarse y hay que rebajar el tamaño igual que hace `disponer`. Se suman
-    # los avances glifo a glifo, que es como `quads_de_reloj` pone la pluma,
-    # con la fuente al px de partida, que es el que luego se rebaja. Antes se
+    # pasarse y hay que rebajar el tamaño igual que hace `disponer`. Se pone
+    # la pluma como la pone `quads_de_reloj` ---avances y pares---, con la
+    # fuente al px de partida, que es el que luego se rebaja. Antes se
     # estimaba con el glifo más ancho por el número de glifos, y con letras
     # eso cuenta una `W` por cada una: la capa de los días de `2946362143`
     # quedaba a un tercio de la em que le da la ruta estática.
-    avances = {c: float(font.getlength(c)) for c in alfabeto}
-    ancho_linea = max((sum(avances.get(c, 0.0) for c in renglon)
+    avances = {ord(c): float(font.getlength(c)) for c in alfabeto}
+    pares = _pares_del_alfabeto(font, alfabeto)
+    ancho_linea = max((_plumas(renglon, avances, pares)[1]
                        for s in cadenas for renglon in s.split("\n")),
                       default=0.0)
     if ancho_linea > ANCHO_ATLAS_MAX:
         px = max(PX_MIN, int(px * ANCHO_ATLAS_MAX / ancho_linea))
         font = ImageFont.truetype(io.BytesIO(blob), px)
         u = em / px
+        pares = None
 
     # Y el de alto, sobre el atlas ya rasterizado: la columna es la suma de
     # los altos de los glifos, que no escalan del todo en proporción ---el
@@ -518,6 +573,12 @@ def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
         px = max(PX_MIN, min(px - 1, int(px * ALTO_ATLAS_MAX / ah)))
         font = ImageFont.truetype(io.BytesIO(blob), px)
         u = em / px
+        pares = None
+    # Los pares, al px que se queda: si algún tope lo ha rebajado, los de
+    # arriba eran de otro tamaño y no escalan en proporción ---HarfBuzz
+    # redondea a 1/64 de píxel---.
+    if pares is None:
+        pares = _pares_del_alfabeto(font, alfabeto)
 
     # Rejilla de una columna: es el mismo empaquetado que usa `disponer` para
     # sus líneas y no hace falta más --- un alfabeto de reloj son once glifos,
@@ -538,7 +599,8 @@ def disponer_reloj(res: AssetResolver, obj: dict, alfabeto: str,
                  halign=str(obj.get("horizontalalign") or "center"),
                  valign=str(obj.get("verticalalign") or "center"),
                  max_glifos=max_glifos,
-                 espaciado=_numeros(obj.get("spacing"), 2, 0.0)[1] / u)
+                 espaciado=_numeros(obj.get("spacing"), 2, 0.0)[1] / u,
+                 kern=pares)
 
 
 def quads_de_reloj(r: Reloj, texto: str) -> np.ndarray:
@@ -569,11 +631,13 @@ def quads_de_reloj(r: Reloj, texto: str) -> np.ndarray:
     else:
         y_bloque = (util_h / r.u - bloque_h) / 2.0
 
+    avances = {g.cp: g.avance for g in r.glifos}
     verts = np.zeros((4 * r.max_glifos, 5), dtype="<f4")
     n = 0
     for i, renglon in enumerate(renglones):
-        glifos = [tabla[ord(c)] for c in renglon if ord(c) in tabla]
-        avance = sum(g.avance for g in glifos)
+        # La pluma de cada glifo, con el kerning de cada par ya sumado, y lo
+        # que avanza el renglón entero, que es lo que mide la alineación.
+        puestos, avance = _plumas(renglon, avances, r.kern)
         if "left" in r.halign:
             x_linea = 0.0
         elif "right" in r.halign:
@@ -582,8 +646,8 @@ def quads_de_reloj(r: Reloj, texto: str) -> np.ndarray:
             x_linea = (util_w / r.u - avance) / 2.0
         y_linea = y_bloque + i * (r.alto_linea + r.espaciado)
 
-        pluma = 0.0
-        for g in glifos:
+        for cp, pluma in puestos:
+            g = tabla[cp]
             if g.ink[2] > g.ink[0] and n < r.max_glifos:
                 x_a = (x_linea + pluma + g.ink[0]) * r.u
                 x_b = (x_linea + pluma + g.ink[2]) * r.u
@@ -599,7 +663,6 @@ def quads_de_reloj(r: Reloj, texto: str) -> np.ndarray:
                         (X1, Y1, u1, 1.0 - v1), (X0, Y1, u0, 1.0 - v1))):
                     verts[4 * n + j] = (x, yv, 0.0, tu, tv)
                 n += 1
-            pluma += g.avance
     return verts
 
 
