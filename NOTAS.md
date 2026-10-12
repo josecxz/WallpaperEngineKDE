@@ -8656,3 +8656,80 @@ Todo con los scripts de `medidas/` de la ejecución 20261011-140915.
   después de `uniforms_de_tinte` y los pisa. Con `VERSION` ya no muerde en
   estas escenas, pero las capas de `genericimage2` sin él lo siguen teniendo.
 - **`setFrame` movido por clics** (`3238423642`, `3597772384`), como antes.
+
+## Los puntos de un efecto van en la v de WE: la espiral de dragones de Karma
+
+En Dragonmancer Karma (`2637739953`) una espiral de dragones tiene que girar
+sobre sí misma encima de la cabeza del personaje, y aquí orbitaba por media
+pantalla. La capa `drasontico` es una imagen de 2560x2000 con la espiral
+pequeña, centrada en (0,39, 0,23) de la capa, y un `spin` sin máscara cuyo
+`center` es justo ese punto: girando sobre él, la espiral no se desplaza.
+
+El plan llevaba `g_SpinCenter 0.394932 0.231605`, el valor de `scene.json`
+tal cual. Pero ese número está en las coordenadas de textura de WE, con la v
+hacia abajo, y las nuestras van al revés: la textura se sube volteada y el
+quad lleva la v hacia arriba (lo mismo que obligó a voltear los fotogramas
+de una hoja, `volteo_de_hoja`). Leído con nuestra v, el centro caía a 0,23
+del borde de **abajo**, y la espiral, que está arriba, daba vueltas a su
+alrededor. Con el plan editado a mano a `0.768395` gira en su sitio en los
+instantes 0, 3, 6 y 12 s.
+
+### Lo que cambia
+
+- **`tools/werender.py`**: en el bucle de constantes del material, un uniform
+  de dos componentes con `"position": true` se escribe con `v' = 1 − v`.
+  Es la marca con la que el editor de WE dibuja un punto arrastrable sobre la
+  capa, y en los efectos de WE se usa siempre contra `v_TexCoord`: los
+  centros de `spin`, `twirl`, `fisheye`, `godrays`, `blurradial` y
+  `chromaticaberration`.
+- **`es_punto`**: la marca no basta. Entre los assets y las 129 escenas hay
+  21 uniforms con ella, en 11 shaders, y uno no es un punto: `u_FixedSize`
+  de `test_shader.frag` (un shader del Workshop que traen 4 escenas) es una
+  proporción, `u_FixedSize.x / u_FixedSize.y`; volteado, su `1 1` pasa a
+  `1 0` y divide por cero. Los otros 20 se usan al menos una vez como
+  vector entero —restados a una coordenada, pasados a una función, como
+  coordenada de muestreo en `coc.frag`, o por un `#define` en
+  `auto_sway`—, y `u_FixedSize` solo por componentes. Se voltea lo que se
+  usa entero al menos una vez, en el `.vert` o en el `.frag`; `fisheye` usa
+  su centro de las dos formas y es un punto.
+
+Solo es Python: los ejecutores leen el uniform del plan y no saben de dónde
+viene.
+
+### Lo que se descartó
+
+- **Voltear todo `"position": true`**: es la primera versión, y rompe las
+  3 escenas en las que `u_FixedSize` vale `1 1`.
+- **Separar por la `label`**: `ui_editor_properties_center` la llevan casi
+  todos los puntos, pero el `u_Center` de `chromaticaberration`, el
+  `g_Center` del `godrays` antiguo de 5 escenas y el `u_focusPoint` de `coc`
+  son puntos sin `label`.
+
+### Lo medido
+
+- **Los planes** de las 129, antes y después, comparando las líneas de
+  uniforms, programas y pases: cambian **15** escenas y **54** líneas, todas
+  centros (`g_Center` 20, `g_SpinCenter` 9, `g_SpinCenter1..5` 25). El
+  `u_FixedSize 1 1` de `3237641967`, `3238423642` y `3555933181` no cambia.
+- **La luz** de las 15, con la medida de `test_luminancia.py` (6 fotogramas,
+  el driver por defecto de los dos lados), desactivando el volteo para el
+  «antes»: **0 regresiones**. Lo que más se mueve: `3362719513` 45,81 →
+  49,95, `2128224409` 65,67 → 70,05, `2645037214` 72,70 → 66,64 y
+  `2637739953` 71,66 → 69,65; las demás, menos de un 2 %.
+- **`2645037214`**, la que más baja, a ojo: sus tres `godrays` tienen el
+  centro en (0,83, 0,79), (1, 0) y (0,21, 0,76), que en la imagen son el
+  farol de abajo a la derecha, la luz de la esquina de arriba y el orbe de
+  la mano. Antes los rayos salían de la mitad contraria y lavaban el fondo
+  de bruma; ahora el orbe y el farol brillan y el fondo queda más oscuro.
+  `3362719513` y `2128224409` suben donde el preview tiene la luz, arriba a
+  la izquierda.
+- **`test_werender.py`** pasa. La pasada entera de `test_luminancia.py`
+  sobre las 129 se paró a medias y no hay cifra.
+
+### Lo que queda
+
+- **El sentido del giro.** Al voltear el espacio, el mismo ángulo gira al
+  revés: con este arreglo la espiral está donde debe, pero puede girar en
+  sentido contrario al de WE. El `preview.gif` (200x200) no deja decidirlo, y
+  la misma pregunta vale para cualquier ángulo de un efecto (las
+  direcciones de `waterwaves`, `foliagesway`…), no solo para el `spin`.
