@@ -110,12 +110,14 @@ def main() -> int:
                 p.vert, p.frag, sresolver, p.combos)
             varyings = weshader.varyings_de_pase(
                 p.vert, p.frag, sresolver, combos_v, combos_f)
+            directivas = weshader.directivas_de_pase(p.vert, p.frag, sresolver)
             par: list[Path] = []
             for stage, src, cmb in (("vert", p.vert, combos_v),
                                     ("frag", p.frag, combos_f)):
                 try:
                     out = weshader.translate(src, stage, sresolver,
-                                             combos=cmb, varyings=varyings)
+                                             combos=cmb, varyings=varyings,
+                                             directivas=directivas)
                 except Exception as e:
                     stats["traduccion_err"] += 1
                     unresolved[f"translate {p.shader}.{stage}: {e}"[:80]] += 1

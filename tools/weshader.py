@@ -221,16 +221,40 @@ def combos_de_pase(fuente_v: str, fuente_f: str, resolver,
     texto_v, combos_v = declarados(fuente_v)
     texto_f, combos_f = declarados(fuente_f)
 
-    for texto, propios, ajenos in ((texto_v, combos_v, combos_f),
-                                   (texto_f, combos_f, combos_v)):
+    # Los de `// [COMBO]` se prestan tambien a la etapa que solo pregunta si
+    # existen (`#ifndef AUDIOPROCESSING` en la copia vieja de `pulse`): WE los
+    # define siempre, ver `combos_de_directiva`. Los de un sampler no, porque
+    # alli solo existen si el slot esta enlazado y eso ya lo trae `material`.
+    directivas_v = combos_de_directiva(texto_v)
+    directivas_f = combos_de_directiva(texto_f)
+    for texto, propios, ajenos, directivas in (
+            (texto_v, combos_v, combos_f, directivas_f),
+            (texto_f, combos_f, combos_v, directivas_v)):
         for nombre in undefined_conditionals(texto, set(propios)):
             if nombre in ajenos:
                 propios[nombre] = ajenos[nombre]
+        preguntados = set(IFDEF_RE.findall(texto)) | set(DEFINED_RE.findall(texto))
+        for nombre in preguntados & directivas:
+            propios.setdefault(nombre, ajenos[nombre])
 
     mat = material or {}
     combos_v.update(mat)
     combos_f.update(mat)
     return combos_v, combos_f
+
+
+def directivas_de_pase(fuente_v: str, fuente_f: str, resolver) -> set[str]:
+    """Los combos que el programa declara con `// [COMBO]`, en cualquiera de
+    sus dos etapas. Ver [[combos_de_directiva]]."""
+    nombres: set[str] = set()
+    for fuente in (fuente_v, fuente_f):
+        texto = normalise_newlines(fuente)
+        try:
+            texto = resolve_includes(texto, resolver)
+        except ShaderError:
+            pass
+        nombres |= combos_de_directiva(texto)
+    return nombres
 
 
 _VARYING_DECL_RE = re.compile(
@@ -405,6 +429,28 @@ def parse_combos(src: str) -> dict[str, object]:
     for meta in parse_uniform_meta(src).values():
         if "combo" in meta:
             out.setdefault(meta["combo"], 0)
+    return out
+
+
+def combos_de_directiva(src: str) -> set[str]:
+    """Los combos declarados con `// [COMBO]`, sin los que trae un sampler.
+
+    WE define SIEMPRE los de directiva, tambien a 0: la copia vieja de `pulse`
+    que traen algunas escenas pregunta `#ifndef AUDIOPROCESSING` en el
+    fragmento ---combo que declara el vertice, default 0--- y dentro usa
+    uniforms que solo declara el vertice. Si WE no lo definiera, esa rama
+    viviria y el shader no compilaria tampoco alli. Los de sampler
+    (`NORMALMAP`, `MASK`) son otra cosa: solo existen si el slot esta
+    enlazado, y `generic4.frag` los pregunta con `#ifdef`.
+    """
+    out: set[str] = set()
+    for m in COMBO_RE.finditer(src):
+        try:
+            d = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            continue
+        if "combo" in d:
+            out.add(d["combo"])
     return out
 
 
@@ -1515,7 +1561,8 @@ def translate(src: str,
               resolver: Resolver,
               combos: dict[str, object] | None = None,
               target: str = DEFAULT_TARGET,
-              varyings: dict[str, str] | None = None) -> str:
+              varyings: dict[str, str] | None = None,
+              directivas: set[str] | None = None) -> str:
     """Traduce un shader de WE a GLSL compilable.
 
     stage: "vert" o "frag".
@@ -1523,6 +1570,8 @@ def translate(src: str,
     target: "gl330" (por defecto) o "es320". Ver TARGETS.
     varyings: tipos que hay que forzar para que las dos etapas casen; los
         calcula `varyings_de_pase`, que es quien ve las dos fuentes.
+    directivas: los combos de `// [COMBO]` de la OTRA etapa
+        (`directivas_de_pase`); los de esta se leen aqui.
     """
     if stage not in ("vert", "frag"):
         raise ShaderError(f"etapa desconocida: {stage!r}")
@@ -1535,6 +1584,7 @@ def translate(src: str,
     # quitarlos. Y hay que mirar tambien dentro de los headers incluidos.
     values = parse_combos(expanded)
     values.update(combos or {})
+    fijos = combos_de_directiva(expanded) | set(directivas or ())
 
     body = _strip_comments(expanded)
     body = forzar_varyings(body, varyings or {})
@@ -1585,13 +1635,17 @@ def translate(src: str,
     # Muchos se usan ademas como valor dentro del codigo -- ApplyBlending(
     # BLENDMODE, ...) -- y ahi quitar el #define deja un identificador sin
     # declarar. Hay que mirar como lo pregunta cada shader, no decidirlo global.
+    #
+    # Y solo vale para los combos que WE define a demanda (los de un sampler,
+    # los del motor): los de `// [COMBO]` los define siempre, a 0 incluido
+    # (ver `combos_de_directiva`).
     if target == "es320":
         for name in undefined_conditionals(body, set(values)):
             values.setdefault(name, 0)
     else:
         ifdef_only = set(IFDEF_RE.findall(body)) | set(DEFINED_RE.findall(body))
         values = {k: v for k, v in values.items()
-                  if v not in (0, False) or k not in ifdef_only}
+                  if v not in (0, False) or k not in ifdef_only or k in fijos}
 
     # Lo que no sabemos traducir solo importa si se va a compilar. La revision
     # va aqui, y no antes, porque necesita `values` ya cerrado: es el juego de

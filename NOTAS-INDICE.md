@@ -69,6 +69,11 @@ make indice                       # reescribe los números desde NOTAS.md
 - `4899` **El personaje calvo: el rig tenía un bloque con nombres que nadie leía** — `attachment` cuelga una capa de un hueso del padre; el nombre está en el bloque `MDAT`, que se saltaba entero.
 - `4921` **Dónde estaba el nombre** — el campo de texto del hueso son los límites de la articulación; el formato de `MDAT` y por qué el recuento es u16.
 - `4956` **Por qué no basta con hornearlo** — el hueso se mueve hasta 285 px, así que los ejecutores rehacen la traslación por fotograma.
+- `9870` **La Vi sin piernas: tres lectores que se quedaban cortos** — `3047352572`: un rectángulo negro, piezas sueltas y un pase perdido; tres arreglos de lectura y la cabeza, que queda abierta.
+- `9878` **1. El rectángulo negro: un `.mdl` sin esqueleto** — el formato `0x0000000f` es `0x0180000f` sin huesos ni pesos: 12 campos por vértice.
+- `9892` **2. Las piezas sueltas: la cola de cada animación crece con la versión** — 4, 9, 10, 34 y 35 bytes según el `MDLA`; y la animación la elige `animationlayers` por su identificador, no `anims[0]`.
+- `9916` **3. Un pase que no compilaba: los combos de `// [COMBO]` existen siempre** — la copia vieja de `pulse` pregunta `#ifndef AUDIOPROCESSING`; WE define los de directiva a 0, los de sampler no.
+- `9932` **Lo que NO se arregló: la cabeza** — efectos antes o después de deformar: la Vi pide después y la cabeza del dragón antes; se deja como estaba.
 
 ## Vídeo
 
