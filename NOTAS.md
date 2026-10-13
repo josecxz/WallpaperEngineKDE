@@ -9397,7 +9397,7 @@ Las tres piezas de un reloj, para un ángulo:
   fotograma.
 
 **El giro es el del ángulo estático, deformación incluida.**
-`object_mvp` escribe la colocación como R(ángulo) · E, con E la semiextensión
+~~`object_mvp` escribe la colocación como R(ángulo) · E, con E la semiextensión
 **ya en clip**. Con un lienzo no cuadrado eso estira en x por ancho/alto
 cualquier capa girada que no esté a 0 o 180°: a las 03:00 la aguja de las
 horas, horizontal, sale 16/9 más larga y 9/16 más fina. `we_giro_coloca` hace
@@ -9406,7 +9406,10 @@ R(Δ) · (lo horneado), que da exactamente lo que daría hornear ese ángulo en
 de las agujas: son **63 capas de imagen o texto con ángulo propio que no es
 múltiplo de π, en 22 escenas** de lienzo no cuadrado (`fidelidad_giro.py`),
 y arreglarlo cambia sus planes. Cuando se haga, son dos sitios a la vez:
-`object_mvp` y `we_giro_coloca`.
+`object_mvp` y `we_giro_coloca`.~~ Hecho, en los dos sitios a la vez: ver
+[las capas giradas giran en píxeles del
+lienzo](#las-capas-giradas-giran-en-píxeles-del-lienzo-object_mvp-y-we_giro_coloca).
+El giro por hora sigue siendo el del ángulo estático, ahora sin deformar.
 
 ### Lo que se descartó
 
@@ -9476,8 +9479,10 @@ la tarea.
 
 ### Lo que queda
 
-- **La deformación del ángulo estático**: las 63 capas en 22 escenas de
-  arriba, y las agujas con ellas.
+- ~~**La deformación del ángulo estático**: las 63 capas en 22 escenas de
+  arriba, y las agujas con ellas.~~ Hecho: [las capas giradas giran en
+  píxeles del
+  lienzo](#las-capas-giradas-giran-en-píxeles-del-lienzo-object_mvp-y-we_giro_coloca).
 - **Los otros cuatro scripts de `angles`**: el seno de `engine.runtime`
   (`3050043876`) es el siguiente; `import`, el `origin` movido, el
   deslizador y los clics no.
@@ -9490,3 +9495,117 @@ la tarea.
   capa con giro y los uniforms con la MVP del objeto
   (`g_EffectModelViewProjectionMatrix`, la luz). Ninguna de las tres agujas
   tiene hijos ni los lee.
+
+## Las capas giradas giran en píxeles del lienzo: `object_mvp` y `we_giro_coloca`
+
+**El síntoma**: en un lienzo no cuadrado, toda capa de imagen o de texto con
+un ángulo que no fuera múltiplo de π salía estirada en x por ancho/alto y
+cizallada. Se veía en la aguja de las horas de `2396319149` (lienzo de
+3840x2160) a las 03:00, horizontal: 16/9 más larga y 9/16 más fina que su
+`size · scale`. Lo dejó apuntado [la tarea de las
+agujas](#las-agujas-de-un-reloj-analógico-angles-con-enginetimeofday), que
+para no separarse de su oráculo giraba igual de mal.
+
+**La causa**: `object_mvp` devolvía [[sx·c, −sy·s], [sx·s, sy·c]] con
+sx = 2hx/w y sy = 2hy/h, que es R(ángulo) · D · E: gira **después** de pasar a
+clip. WE gira en el mundo —píxeles del lienzo— y proyecta después, D · R · E
+con D = diag(2/w, 2/h). Es lo que ya hacían `object_world` (la luz) y
+`particle_mvp`; `object_mvp` era la única de las tres que no.
+
+### Lo que cambia
+
+- **`object_mvp`** escribe D · R · diag(hx, hy):
+  [[2hx·c/w, −2hy·s/w], [2hx·s/h, 2hy·c/h]]. Vale también para el camino de
+  `mesh` y para los `composelayer`, que muestrean por la MVP. La traslación
+  no cambia: el `origin` de un hijo ya lo gira el padre en píxeles en
+  `transform_absoluto`, y la 2x2 del `anclaje` ya iba en píxeles.
+- **`vp_de(mvp, mundo)`**, la `g_ViewProjectionMatrix` de una capa iluminada,
+  sale ahora la ortográfica del lienzo para cualquier capa, girada o no; antes
+  una girada llevaba una VP con cizalla.
+- **`we_giro_coloca`** (`src/wegiro.c`) gira por Δ en píxeles:
+  m' = D · R(Δ) · D⁻¹ · m. De D solo queda el cociente w/h, así que la firma
+  gana un `double aspecto` que los dos ejecutores sacan de los dos enteros de
+  la línea `canvas` que ya leían (`glexec.c`, `canvas_w / canvas_h`;
+  `glexecutor.cpp`, `m_canvasW / m_canvasH`). No se lee ningún número nuevo
+  del plan, así que no hay nada nuevo que sujetar a la locale.
+- `object_mvp` también da el `g_EffectModelViewProjectionMatrix` de los pases
+  de un **sistema de partículas** girado (con el lienzo como `size`, porque
+  la partícula no lo tiene), y ese uniform cambia con el resto. Es inerte: el
+  único shader de WE que lo declara es `effectcomposebackground.vert`, y en
+  ninguno de esos pases el programa lo declara, así que GL no le da sitio y
+  el ejecutor no lo sube. La colocación de las partículas, `particle_mvp`, ya
+  giraba en píxeles y no se toca.
+
+### Lo que se descartó
+
+- **Girar en píxeles solo las agujas**, como ya decía la tarea de las agujas:
+  serían las únicas sin deformar y dejarían de dar lo mismo que el `angles`
+  estático.
+- **Pasarle a `we_giro_coloca` ancho y alto por la línea `giro`**: es un
+  número más que leer del plan con la locale sujeta, y repite lo que ya dice
+  `canvas`.
+- **Dejarle a las partículas el `g_EffectModelViewProjectionMatrix` de antes**
+  para que sus planes no cambien: sería conservar la fórmula mala a propósito
+  en un uniform que nadie lee.
+
+### Lo medido
+
+Con Mesa; los scripts están en la carpeta de medidas de la tarea. **La
+biblioteca de Steam pasó de 129 a 133 escenas mientras se hacía** (cuatro
+descargadas a la vez); las medidas que cuentan escenas usan las 129 de antes
+(`corpus129.txt`, las de la pasada de luz de main de la tarea de las agujas).
+De las cuatro nuevas, `3047352572`, `3210875135` y `3810943704` también
+tienen capas giradas.
+
+- **Las matrices** (`tools/test_werender.py`, `prueba_giro_en_pixeles`): una
+  capa de 100x100 a 90° y a 30° en 1920x1080 tiene las columnas de su parte
+  lineal, devueltas a píxeles, de **50 y 50 px y producto 0**, y su VP
+  deducida es la ortográfica. Sobre las 129
+  (`mvp_corpus129.py`): **722 capas** de imagen o texto, como quad y como
+  malla, con `object_mvp` a **4,4e-16** como mucho de ortográfica ·
+  `object_world`; **63 de ellas giradas en 22 escenas** de lienzo no
+  cuadrado, el censo de la tarea.
+- **El módulo C** (`tools/test_giro.py`, ampliado): las tres líneas `giro` de
+  `2396319149` y una sintética con decimales —ahora sobre una capa no
+  cuadrada de 512,5x128,25 con su ángulo `base` horneado—, en 174 `tod`, en
+  el lienzo de la escena, en 1920x1080 y en 1000x1000, en `C` y en
+  `es_ES.UTF-8`: `we_giro_coloca` queda a **4,1e-8 como mucho** de
+  `object_mvp` con el ángulo puesto en `angles`.
+- **Los planes** (`planes_vs_main.py`, las 129 contra `be91dfd` con
+  `git archive`, hora congelada, todos los ficheros byte a byte): **46
+  idénticas** y 83 con `plan.txt` distinto, siempre con las mismas líneas en
+  el mismo orden. Las que cambian alguna colocación son **las 22 del censo**,
+  y solo en líneas `object` y matrices de colocación de 66 bloques girados
+  (|sin| > 1e-6 en main); son más que las 63 capas porque cuentan también
+  colocaciones de capas que no son de imagen ni de texto. Las otras 61
+  solo cambian líneas inertes: `g_EffectModelViewProjectionMatrix` de
+  partículas en pases que no lo declaran, 567 entre las 83.
+- **La aguja en el PNG** (`aguja_en_pixeles.py`, 3840x2160, `--time 4`): con
+  la cobertura de la aguja de las horas (con ella frente a sin ella), largo
+  como √12 · σ y ancho como área / largo, contra su textura por
+  `size · scale`, que da 73,08 x 3,480 px. A las 03:00 mide **73,00 x 3,490
+  px (−0,11 % y +0,28 %)** con el eje largo en x; a las 12:00, 72,99 x 3,484.
+  En main, a las 03:00, 129,71 x 1,828 px: +77,5 %, el 16/9.
+- **Fidelidad** (`fidelidad_giro.py` de la tarea de las agujas): el giro por
+  hora contra el `angles` estático da **0,0000 de 255** de media por canal a
+  las 03:00:00 y a las 10:10:30, con un máximo de 0.
+- **La luz** (`test_luminancia.py` con Mesa y bajo el cerrojo, main con su
+  propio `glexec`; `luz_compara.py`): 129/129 renderizan en las dos, **0
+  regresiones, 0 apagadas**. Fuera del censo se mueven 7 escenas, la que más
+  0,04 de 255: el vaivén entre pasadas (sus planes son idénticos o solo
+  cambian líneas inertes). Dentro, se mueven 12; la que más, `3521337568`,
+  64,28 → 65,02.
+- **El reparto** (`reparto_y_avisos.py`): la firma de `src/wegiro.h` lleva
+  `double aspecto` y `glexec.c` y `glexecutor.cpp` llaman a `we_giro_coloca`
+  con cuatro argumentos. `make build`, `make glexec` y `make psysprobe` desde
+  cero: el mismo único aviso en main y en la rama, **0 nuevos**.
+- `test_werender.py`, `test_wereloj.py`, `test_giro.py`, `test_wescript.py`
+  y `test_hoja.py` pasan.
+
+### Lo que queda
+
+- **Si algún autor compensó la deformación** a mano —una capa que se veía
+  «bien» girada en clip—, ahora se verá como en WE. No se ha visto ninguna,
+  pero tampoco se ha mirado una a una contra WE.
+- **Qué pone WE en `g_EffectModelViewProjectionMatrix` de una partícula**:
+  nadie lo lee hoy, así que no se ha buscado.

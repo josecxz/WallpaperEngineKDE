@@ -1032,7 +1032,9 @@ int main(int argc, char **argv)
             if (we_giro_linea(&g, line + 4)) {
                 const double hora = g.con_hora ? g.hora
                                                : we_hora_del_dia(time(NULL), 0);
-                we_giro_coloca(&g, we_giro_grados(&g, hora), obj_mvp);
+                we_giro_coloca(&g, we_giro_grados(&g, hora),
+                               (double)canvas_w / (canvas_h > 0 ? canvas_h : 1),
+                               obj_mvp);
             }
         } else if (strcmp(kw, "parallax") == 0 && !in_pass) {
             /* `parallax <retardo> <influencia>`. El retardo no pinta nada

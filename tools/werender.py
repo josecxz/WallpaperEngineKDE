@@ -419,14 +419,18 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
     """
     w, h = canvas
     hx, hy, ax, ay, c, s, _ = _colocacion(obj, canvas, mesh, por_id)
-    sx, sy = 2.0 * hx / w, 2.0 * hy / h
     tx = 2.0 * ax / w - 1.0
     ty = 2.0 * ay / h - 1.0
-    # Rotacion en Z antes de la escala; los angulos vienen en radianes.
-    return [ sx * c, -sy * s, 0.0, tx,
-             sx * s,  sy * c, 0.0, ty,
-             0.0,     0.0,    1.0, 0.0,
-             0.0,     0.0,    0.0, 1.0]
+    # El giro va en PIXELES del lienzo y despues se pasa a clip: es
+    # D · R · diag(hx, hy), con D = diag(2/w, 2/h), lo mismo que
+    # `object_world` y `particle_mvp`. Girar ya en clip, R · D · diag(hx, hy),
+    # estiraba en x por ancho/alto cualquier capa girada que no estuviera a 0
+    # o 180 grados de un lienzo no cuadrado, y ademas la cizallaba. Los
+    # angulos vienen en radianes.
+    return [2.0 * hx * c / w, -2.0 * hy * s / w, 0.0, tx,
+            2.0 * hx * s / h,  2.0 * hy * c / h, 0.0, ty,
+            0.0,               0.0,              1.0, 0.0,
+            0.0,               0.0,              0.0, 1.0]
 
 
 def _es_composelayer(obj) -> bool:
@@ -831,6 +835,11 @@ def vp_de(mvp: list[float], mundo: list[float]) -> list[float]:
     `MVP = VP * Mundo`, la que falta es `MVP * Mundo^-1`. Sale exacta para
     cualquier tipo de pase ---capa, malla o particula--- sin distinguir casos, y
     por construccion el triangulo acaba en el mismo sitio que sin luces.
+
+    Para una capa sale la ortografica del lienzo, girada o no: `object_mvp`
+    gira en pixeles, como `object_world`, y lo unico que las separa es el paso
+    a clip. Cuando la MVP giraba ya en clip, una capa iluminada girada llevaba
+    aqui una VP con cizalla.
     """
     try:
         w = np.linalg.inv(np.array(mundo, dtype=np.float64).reshape(4, 4))

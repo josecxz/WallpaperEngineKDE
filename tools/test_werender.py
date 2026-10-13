@@ -102,6 +102,108 @@ def prueba_vp_reconstruye_la_mvp(fallos: list[str]) -> None:
         fallos.append("particulas: VP * Mundo no reproduce la MVP")
 
 
+def _orto(canvas: tuple[int, int]) -> np.ndarray:
+    """Pixeles del lienzo -> clip, la proyeccion ortografica de la escena. La
+    z se queda a cero: la MVP de una capa aplana la profundidad del `origin`
+    (la prueba de profundidad esta apagada en todo el motor), y es la de mundo
+    la que la lleva, para la luz."""
+    w, h = canvas
+    return np.array([[2.0 / w, 0.0, 0.0, -1.0],
+                     [0.0, 2.0 / h, 0.0, -1.0],
+                     [0.0, 0.0, 1.0, 0.0],
+                     [0.0, 0.0, 0.0, 1.0]])
+
+
+def _mvp_frente_a_mundo(obj, canvas, malla, por_id=None) -> float:
+    """Lo que mas se separa un elemento de `object_mvp` de `orto · object_world`."""
+    mvp = np.array(werender.object_mvp(obj, canvas, mesh=malla,
+                                       por_id=por_id)).reshape(4, 4)
+    mundo = np.array(werender.object_world(obj, canvas, mesh=malla,
+                                           por_id=por_id)).reshape(4, 4)
+    mundo[2, 3] = 0.0       # la z del `origin`, ver `_orto`
+    return float(np.abs(mvp - _orto(canvas) @ mundo).max())
+
+
+def prueba_giro_en_pixeles(fallos: list[str]) -> None:
+    """Una capa girada gira en PIXELES del lienzo, y despues se proyecta.
+
+    `object_mvp` giraba ya en clip ---R · D · E en vez de D · R · E, con
+    D = diag(2/w, 2/h)---, asi que en un lienzo no cuadrado una capa girada
+    que no estuviera a 0 o 180 grados salia estirada en x por ancho/alto y
+    cizallada: la aguja de las horas de 2396319149, horizontal a las 03:00,
+    16/9 mas larga y 9/16 mas fina. `object_world` (la luz) y `particle_mvp`
+    ya giraban en pixeles; las tres tienen que dar la misma colocacion.
+
+    En sintetico, una capa de 100x100 girada sigue ocupando 100x100 px: las
+    columnas de la parte lineal, devueltas a pixeles, miden 50 (la
+    semiextension) y son perpendiculares. En el corpus, cada capa de imagen o
+    de texto de las 129 escenas, como malla y como quad, da la misma MVP que
+    la ortografica por la de mundo.
+    """
+    lienzo = (1920, 1080)
+    for grados in (90.0, 30.0):
+        obj = _objeto(origin="700 300 0", size="100 100",
+                      angles=f"0 0 {math.radians(grados)!r}")
+        m = np.array(werender.object_mvp(obj, lienzo)).reshape(4, 4)
+        px = np.diag([lienzo[0] / 2.0, lienzo[1] / 2.0]) @ m[:2, :2]
+        normas = np.linalg.norm(px, axis=0)
+        cruce = float(px[:, 0] @ px[:, 1])
+        if np.abs(normas - 50.0).max() > 1e-9 or abs(cruce) > 1e-9:
+            fallos.append(f"capa de 100x100 a {grados} grados en 1920x1080: "
+                          f"columnas de {normas} px, producto {cruce:.3g}")
+        print(f"    100x100 a {grados:g} grados en 1920x1080: columnas de "
+              f"{normas[0]:.12g} y {normas[1]:.12g} px, producto {cruce:.3g}")
+        peor = _mvp_frente_a_mundo(obj, lienzo, False)
+        if peor > 1e-9:
+            fallos.append(f"capa de 100x100 a {grados} grados: MVP a {peor:.3g} "
+                          "de orto * mundo")
+        # Y la VP que se deduce para una capa iluminada es la ortografica pura.
+        vp = np.array(werender.vp_de(werender.object_mvp(obj, lienzo),
+                                     werender.object_world(obj, lienzo))).reshape(4, 4)
+        if np.abs(vp - _orto(lienzo)).max() > 1e-9:
+            fallos.append(f"capa de 100x100 a {grados} grados: la VP no es la "
+                          "ortografica del lienzo")
+
+    import wepaths
+    capas = giradas = 0
+    escenas_giradas: set[str] = set()
+    peor = 0.0
+    for d in sorted(wepaths.we_workshop().iterdir()):
+        if not (d / "scene.pkg").is_file():
+            continue
+        try:
+            res = wescene.AssetResolver.for_wallpaper(d, wepaths.we_assets())
+            sc = wescene.load_scene(res)
+        except Exception:
+            continue
+        proj = sc.general.get("orthogonalprojection")
+        lz = ((int(werender._floats(proj.get("width", 1920))[0]),
+               int(werender._floats(proj.get("height", 1080))[0]))
+              if isinstance(proj, dict) else (1920, 1080))
+        por_id = {o.raw.get("id"): o for o in sc.objects}
+        for o in sc.objects:
+            if o.kind not in ("image", "text") or not o.passes:
+                continue
+            if o.raw.get("_passthrough") and not werender._es_composelayer(o):
+                continue
+            for malla in (False, True):
+                e = _mvp_frente_a_mundo(o, lz, malla, por_id)
+                peor = max(peor, e)
+                if e > 1e-6:
+                    fallos.append(f"{d.name} {o.name!r} (malla {malla}): MVP a "
+                                  f"{e:.3g} de orto * mundo")
+            capas += 1
+            _, _, ang = werender.transform_absoluto(o, por_id)
+            if lz[0] != lz[1] and abs(math.sin(ang[2])) > 1e-6:
+                giradas += 1
+                escenas_giradas.add(d.name)
+    print(f"    corpus: {capas} capas de imagen o texto, peor elemento a "
+          f"{peor:.3g} de orto * mundo; giradas en lienzo no cuadrado: "
+          f"{giradas} en {len(escenas_giradas)} escenas")
+    if capas == 0:
+        fallos.append("giro en pixeles: no se ha leido ninguna capa del corpus")
+
+
 def prueba_normales_ortonormal(fallos: list[str]) -> None:
     """La matriz de normales conserva longitudes y deja quieta una capa plana."""
     for ang in (0.0, 0.7, -2.1, math.pi):
@@ -778,7 +880,8 @@ def prueba_particulas_en_perspectiva(fallos: list[str]) -> None:
 
 def main() -> int:
     fallos: list[str] = []
-    for prueba in (prueba_vp_reconstruye_la_mvp, prueba_normales_ortonormal,
+    for prueba in (prueba_vp_reconstruye_la_mvp, prueba_giro_en_pixeles,
+                   prueba_normales_ortonormal,
                    prueba_luces, prueba_empaquetado,
                    prueba_sampler_por_defecto, prueba_niveles_mipmap,
                    prueba_valor_de_usuario, prueba_curva_de_animacion,

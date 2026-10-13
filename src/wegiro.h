@@ -52,8 +52,11 @@ double we_hora_del_dia(time_t segundos, long nanosegundos);
  * `object_mvp`) para que lleve el ángulo `grados` en vez de `base`. Solo
  * cambia la parte lineal 2x2: la traslación ---el `origin`, y lo que sumen
  * después el parallax o el temblor--- se queda, así que gira sobre el
- * `origin` de la capa. */
-void we_giro_coloca(const WeGiro *g, double grados, float m[16]);
+ * `origin` de la capa. El giro es en píxeles del lienzo, como el de
+ * `object_mvp`, y para eso pide `aspecto`, el ancho entre el alto del lienzo
+ * (los dos enteros de la línea `canvas`). */
+void we_giro_coloca(const WeGiro *g, double grados, double aspecto,
+                    float m[16]);
 
 #ifdef __cplusplus
 }
