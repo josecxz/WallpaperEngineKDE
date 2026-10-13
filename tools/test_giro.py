@@ -34,6 +34,26 @@ las tres líneas `giro` del plan de `2396319149` (las agujas 362, 368 y 371):
   5. Que `tools/glexec.c` y `src/glexecutor.cpp` llaman los dos a
      `we_giro_linea`, `we_giro_grados` y `we_giro_coloca`.
 
+Y el vaivén, un `angles` o un `origin` que oscila con `engine.runtime`
+(`wescript.vaiven_de`, la línea `vaiven`, `we_vaiven_*` en el mismo módulo),
+con las dos líneas `vaiven` de los planes de `3050043876` (capa 338,
+`angles`) y `3521337568` (capa 222, `origin`):
+
+  6. Que `we_vaiven_valor` da lo mismo que `wescript.valor_del_vaiven` con la
+     forma deducida, y que el propio script evaluado por el intérprete, a
+     1e-5, en 1201 tiempos de [0, 600] s, leyendo la línea en `C` y en
+     `es_ES.UTF-8`; también una sintética con decimales en todos los campos.
+  7. Que `we_vaiven_coloca`, sobre la colocación que `object_mvp` hornea con
+     el `value`, da la de `object_mvp` con el valor de ese instante puesto en
+     el campo, a 1e-6: el giro en píxeles del lienzo en `angles`, y en
+     `origin` la traslación, con el signo de y del lienzo. Las dos con el
+     parallax de cámara en reposo de la escena (`parallax_de_camara`), que
+     sale del `origin` y en `3521337568` hace que la capa se mueva 1,025
+     veces el vaivén. Para que el caso discrimine, la misma línea con los
+     ejes sin ese 1 + k tiene que separarse más de 1e-6.
+  8. Que una línea con `@TIME@` sin poner se lee igual, sin tiempo, y que
+     los dos ejecutores llaman a `we_vaiven_linea` y `we_vaiven_coloca`.
+
 Uso:
     python3 tools/test_giro.py
 """
@@ -78,8 +98,47 @@ ARNES = r"""
  * argv[2]. Por la entrada, `<tod> <m0> <m1> <m4> <m5>`; por la salida, una
  * primera línea con el lienzo que se leyó y después los grados y la parte
  * lineal girada. */
+/* `vaiven <fichero> <locale>`: la línea `vaiven` del fichero se LEE en esa
+ * locale. Sale una primera línea con lo leído y, por cada petición
+ * `<t> <m0> <m1> <m3> <m4> <m5> <m7>`, el valor y esas seis de la colocación
+ * después de `we_vaiven_coloca`. */
+static int vaiven(const char *fichero, const char *loc)
+{
+    if (!setlocale(LC_ALL, loc))
+        return 4;
+    FILE *f = fopen(fichero, "r");
+    if (!f) return 2;
+    char linea[1024];
+    if (!fgets(linea, sizeof linea, f)) return 2;
+    fclose(f);
+    WeVaiven v;
+    if (!we_vaiven_linea(&v, linea + 6)) {
+        printf("no la lee\n");
+        return 3;
+    }
+    setlocale(LC_ALL, "C");
+    printf("leida %d %.17g %.17g %.17g %.17g %.17g %d %.17g %.17g %.17g\n",
+           v.angulo, v.k, v.a, v.w, v.fase, v.base, v.con_tiempo, v.t,
+           v.p[0], v.p[1]);
+    char pet[512];
+    while (fgets(pet, sizeof pet, stdin)) {
+        double t;
+        float m[16] = {0};
+        if (sscanf(pet, "%lf %f %f %f %f %f %f", &t, m + 0, m + 1, m + 3,
+                   m + 4, m + 5, m + 7) != 7)
+            continue;
+        const double valor = we_vaiven_valor(&v, t);
+        we_vaiven_coloca(&v, t, m);
+        printf("%.17g %.9g %.9g %.9g %.9g %.9g %.9g\n", valor, m[0], m[1],
+               m[3], m[4], m[5], m[7]);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc > 3 && strcmp(argv[1], "vaiven") == 0)
+        return vaiven(argv[2], argv[3]);
     if (argc > 2 && !setlocale(LC_ALL, argv[2]))
         return 4;
     if (strcmp(argv[1], "-") == 0) {
@@ -209,6 +268,174 @@ def gira_en_pixeles(m: list[float], grados: float, aspecto: float) -> list[float
             s * k * m[0] + c * m[2], s * k * m[1] + c * m[3]]
 
 
+# Las capas con vaivén del corpus: escena, capa y campo.
+VAIVENES = (("3050043876", 338, "angles"), ("3521337568", 222, "origin"))
+TOL_VAIVEN = 1e-5
+
+
+def tiempos() -> list[float]:
+    """1201 `runtime` en [0, 600] s, uno cada medio segundo."""
+    return [k * 0.5 for k in range(1201)]
+
+
+def quieta(raw: dict) -> dict:
+    """La capa con cada campo con script cambiado por su `value`: lo que
+    hornea el plan."""
+    return {k: (v["value"] if isinstance(v, dict) and "script" in v else v)
+            for k, v in raw.items()}
+
+
+def con_paralaje(raw: dict, general: dict, lienzo) -> dict:
+    """La capa con el parallax de cámara en reposo de la escena puesto, como
+    lo pone `werender` al cargarla: sale de su `origin`."""
+    from types import SimpleNamespace
+    werender.parallax_de_camara(SimpleNamespace(
+        general=general, properties={}, objects=[_Capa(raw)]), lienzo)
+    return raw
+
+
+def con_valor(raw: dict, campo: str, i: int, valor: float) -> dict:
+    """La capa quieta con la componente `i` de `campo` puesta a `valor`, en
+    las unidades del script (grados en `angles`, pasados a radianes)."""
+    q = quieta(raw)
+    v = [float(x) for x in str(q[campo]).split()]
+    v = (v + [0.0, 0.0, 0.0])[:3]
+    v[i] = math.radians(valor) if campo == "angles" else valor
+    q[campo] = " ".join(repr(x) for x in v)
+    return q
+
+
+def _compara_vaiven(exe: Path, tmp: Path, linea: str, lienzo, base, nombre,
+                    valor_py, valor_script, raw_en) -> list[str]:
+    """Pasa por el arnés la línea `vaiven` y la colocación `base` en `C` y en
+    `es_ES.UTF-8`; compara el valor con `valor_py(t)` y `valor_script(t)` y
+    la colocación con `object_mvp` de `raw_en(valor)`."""
+    fallos = []
+    ts = tiempos()
+    (tmp / "vaiven.txt").write_text(linea + "\n")
+    idx = (0, 1, 3, 4, 5, 7)
+    entrada = "".join(f"{t!r} " + " ".join(repr(base[i]) for i in idx) + "\n"
+                      for t in ts)
+    for locale in ("C", "es_ES.UTF-8"):
+        r = subprocess.run([str(exe), "vaiven", str(tmp / "vaiven.txt"), locale],
+                           input=entrada, capture_output=True, text=True)
+        salida = r.stdout.splitlines()
+        peor_py = peor_js = peor_m = 1.0
+        if not r.returncode and len(salida) == len(ts) + 1:
+            peor_py = peor_js = peor_m = 0.0
+            for t, l in zip(ts, salida[1:]):
+                v, *m = (float(x) for x in l.split())
+                peor_py = max(peor_py, abs(v - valor_py(t)))
+                if valor_script is not None:
+                    peor_js = max(peor_js, abs(v - valor_script(t)))
+                esp = werender.object_mvp(_Capa(raw_en(v)), lienzo)
+                peor_m = max(peor_m, max(abs(a - esp[i]) for a, i in zip(m, idx)))
+        ok = (len(ts) >= 1000 and peor_py <= TOL_VAIVEN and peor_js <= TOL_VAIVEN
+              and peor_m <= TOL_MATRIZ)
+        print(f"  {'ok' if ok else 'MAL':3} {nombre} [{locale:11}] {len(ts)} t: "
+              f"valor a {peor_py:.3g} de Python y "
+              + (f"a {peor_js:.3g} del script, " if valor_script else "sin script, ")
+              + f"matriz a {peor_m:.3g} de object_mvp")
+        if not ok:
+            fallos.append(f"vaiven {nombre} [{locale}]: {salida[:1]}, valor "
+                          f"{peor_py:.3g}/{peor_js:.3g}, matriz {peor_m:.3g}")
+    return fallos
+
+
+def _sin_parallax_en_reposo(raw, general, lienzo, base, i, forma,
+                            linea: str) -> list[str]:
+    """Lo que se separaría de `object_mvp` la línea `vaiven origin` con los
+    ejes sin el 1 + k del parallax en reposo de una raíz, la cuenta de
+    `we_vaiven_coloca` hecha aquí: en clip y en unidades de lienzo. Para que
+    el caso discrimine tiene que pasar de 1e-6."""
+    k = con_paralaje(quieta(raw), general, lienzo).get("_paralaje_k") or [0.0, 0.0]
+    ex, ey = (float(x) for x in linea.split()[-2:])
+    ex, ey = ex / (1.0 + k[0]), ey / (1.0 + k[1])
+    b0 = forma[0]
+    peor = peor_u = 0.0
+    for t in tiempos():
+        v = wescript.valor_del_vaiven(forma, t)
+        esp = werender.object_mvp(_Capa(con_paralaje(con_valor(raw, "origin", i, v),
+                                                     general, lienzo)), lienzo)
+        dado = (base[3] + ex * (v - b0), base[7] + ey * (v - b0))
+        sep = max(abs(dado[0] - esp[3]), abs(dado[1] - esp[7]))
+        peor = max(peor, sep)
+        peor_u = max(peor_u, abs(dado[0] - esp[3]) * lienzo[0] / 2.0,
+                     abs(dado[1] - esp[7]) * lienzo[1] / 2.0)
+    print(f"      sin el 1 + k del parallax en reposo (k = {k[0]:g}, {k[1]:g}) se "
+          f"separaría {peor:.3g} en clip, {peor_u:.3g} unidades de lienzo")
+    if peor <= TOL_MATRIZ:
+        return ["vaiven origin: sin el 1 + k no se separa; el caso no discrimina"]
+    return []
+
+
+def prueba_vaiven(exe: Path, tmp: Path) -> list[str]:
+    fallos: list[str] = []
+    for escena, capa, campo in VAIVENES:
+        d = Path(wepaths.we_workshop()) / escena
+        _, ents = pkg_inspect.read_pkg(str(d / "scene.pkg"))
+        sj = json.loads(next(e for e in ents if e["name"] == "scene.json")["data"])
+        raw = next(o for o in sj["objects"] if o.get("id") == capa)
+        lienzo = (int(sj["general"]["orthogonalprojection"]["width"]),
+                  int(sj["general"]["orthogonalprojection"]["height"]))
+        werender.emit_plan(d, tmp / f"plan_{escena}", ruta_final=Path("/PLAN"))
+        plan = (tmp / f"plan_{escena}" / "plan.txt").read_text().splitlines()
+        lineas = [l for l in plan if l.startswith("vaiven ")]
+        formas = wescript.vaiven_de(raw, campo)
+        print(f"── vaiven de {escena}/{capa} ({campo}): {lineas}, forma {formas} ──")
+        if len(lineas) != 1 or not formas or len(formas) != 1:
+            fallos.append(f"{escena}: {len(lineas)} líneas vaiven, formas {formas}")
+            continue
+        i, forma = formas[0]
+        props = raw[campo].get("scriptproperties") or {}
+        ip = wescript.Interprete(raw[campo]["script"], props)
+        entrada = [float(x) for x in str(raw[campo]["value"]).split()]
+        if campo == "angles":
+            entrada = [math.degrees(x) for x in entrada]
+        entrada = (entrada + [0.0, 0.0, 0.0])[:3]
+        general = sj["general"]
+        base = werender.object_mvp(
+            _Capa(con_paralaje(quieta(raw), general, lienzo)), lienzo)
+        fallos += _compara_vaiven(
+            exe, tmp, lineas[0].replace("@TIME@", "0"), lienzo, base,
+            f"{escena}/{capa}", lambda t: wescript.valor_del_vaiven(forma, t),
+            lambda t: ip.vector_en(t, entrada)[i],
+            lambda v: con_paralaje(con_valor(raw, campo, i, v), general, lienzo))
+        if campo == "origin":
+            fallos += _sin_parallax_en_reposo(raw, general, lienzo, base, i, forma,
+                                              lineas[0])
+
+    # Con decimales en todo, que es donde muerde la locale. Una capa
+    # sintética no cuadrada, con el ángulo ya horneado y un lienzo 16:9.
+    lz = (1920, 1080)
+    sint = {"origin": "700.25 300.5 0", "size": "512.5 128.25",
+            "scale": "1.25 0.75 1", "angles": f"0 0 {math.radians(12.5)!r}"}
+    forma = (12.5, 2.75, 0.625, 0.375)
+    base = werender.object_mvp(_Capa(sint), lz)
+    fallos += _compara_vaiven(
+        exe, tmp, f"vaiven angles 12.5 2.75 0.625 0.375 12.5 4.25 {lz[0]} {lz[1]}",
+        lz, base, "angles con decimales",
+        lambda t: wescript.valor_del_vaiven(forma, t), None,
+        lambda v: dict(sint, angles=f"0 0 {math.radians(v)!r}"))
+    forma = (300.5, 7.25, 1.5, -0.5)
+    fallos += _compara_vaiven(
+        exe, tmp, f"vaiven origin 300.5 7.25 1.5 -0.5 300.5 4.25 0 {2.0 / lz[1]!r}",
+        lz, base, "origin con decimales",
+        lambda t: wescript.valor_del_vaiven(forma, t), None,
+        lambda v: dict(sint, origin=f"700.25 {v!r} 0"))
+
+    # Con `@TIME@` sin poner: se lee sin tiempo y con lo de detrás.
+    (tmp / "vaiven.txt").write_text("vaiven origin 1.5 2.5 0.5 0 1.5 @TIME@ 0.25 0.5\n")
+    r = subprocess.run([str(exe), "vaiven", str(tmp / "vaiven.txt"), "es_ES.UTF-8"],
+                       input="", capture_output=True, text=True)
+    ok = r.returncode == 0 and r.stdout.split()[1:] == \
+        "0 1.5 2.5 0.5 0 1.5 0 0 0.25 0.5".split()
+    print(f"  {'ok' if ok else 'MAL':3} línea con @TIME@: {r.stdout.strip() or r.returncode}")
+    if not ok:
+        fallos.append(f"la línea con @TIME@ da {r.stdout.strip() or r.returncode}")
+    return fallos
+
+
 def main() -> int:
     fallos: list[str] = []
     d = Path(wepaths.we_workshop()) / ESCENA
@@ -334,16 +561,19 @@ def main() -> int:
             print(f"  {'ok' if ok else 'MAL':3} TZ={tz:10} {dados}")
             if not ok:
                 fallos.append(f"we_hora_del_dia con TZ={tz}: {dados} y {esperados}")
+
+        fallos += prueba_vaiven(exe, tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("── los dos ejecutores ──")
     for f in ("tools/glexec.c", "src/glexecutor.cpp"):
         texto = (RAIZ / f).read_text()
-        faltan = [fn for fn in ("we_giro_linea", "we_giro_grados", "we_giro_coloca")
+        faltan = [fn for fn in ("we_giro_linea", "we_giro_grados", "we_giro_coloca",
+                                "we_vaiven_linea", "we_vaiven_coloca")
                   if f"{fn}(" not in texto]
         print(f"  {'ok' if not faltan else 'MAL':3} {f}: "
-              f"{'llama a las tres' if not faltan else 'no llama a ' + str(faltan)}")
+              f"{'llama a las cinco' if not faltan else 'no llama a ' + str(faltan)}")
         if faltan:
             fallos.append(f"{f} no llama a {faltan}")
 

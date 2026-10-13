@@ -64,6 +64,49 @@ double we_hora_del_dia(time_t segundos, long nanosegundos);
  * como se horneó esa colocación. */
 void we_giro_coloca(const WeGiro *g, double grados, float m[16]);
 
+/* Un campo que oscila con el tiempo de escena: el vaivén.
+ *
+ * Cuando el `update` del `angles` o del `origin` de una capa solo depende de
+ * `engine.runtime`, `tools/wescript.py` (`vaiven_de`) reduce cada componente
+ * que cambia a
+ *
+ *     v = k + a · sin(w · t + fase)        con t en segundos de escena
+ *
+ * en las unidades del script, y `tools/werender.py` escribe detrás del
+ * `object` de la capa, una por componente,
+ *
+ *   vaiven angles <k> <a> <w> <fase> <base> <t> <ancho> <alto>
+ *   vaiven origin <k> <a> <w> <fase> <base> <t> <ex> <ey>
+ *
+ * `base` es lo que ya lleva horneado la colocación: el ángulo propio en
+ * grados, o esa componente del `origin` en unidades de lienzo. `t` es el
+ * marcador `@TIME@`; offline lo pone `werender`, en vivo no se lee y vale el
+ * tiempo que el ejecutor da a `g_Time`. Detrás, en `angles`, el lienzo de la
+ * escena en el que se gira, como en `giro`; en `origin`, lo que se mueve en
+ * clip la traslación por cada unidad de esa componente. */
+typedef struct {
+    int angulo;         /* 1 en `angles` (la z), 0 en `origin` */
+    double k, a, w, fase;
+    double base;
+    double t;           /* el del plan, si `con_tiempo` */
+    int con_tiempo;
+    double p[2];        /* `angles`: ancho y alto; `origin`: ex y ey */
+} WeVaiven;
+
+/* Lee lo que va detrás de `vaiven`, con la locale numérica sujeta a `C`.
+ * Devuelve 1 si entendió el campo, los cinco números y lo de detrás; el
+ * tiempo puede llegar como `@TIME@` sin sustituir, y deja `con_tiempo` a 0. */
+int we_vaiven_linea(WeVaiven *v, const char *resto);
+
+/* `k + a · sin(w · t + fase)`. Es la cuenta de `wescript.valor_del_vaiven`. */
+double we_vaiven_valor(const WeVaiven *v, double t);
+
+/* Lleva la colocación `m` del `object` del valor horneado al del instante
+ * `t`. En `angles` gira la parte lineal con `we_giro_coloca`, en píxeles del
+ * lienzo y sobre el `origin`; en `origin` suma a la traslación lo que se haya
+ * movido la componente. */
+void we_vaiven_coloca(const WeVaiven *v, double t, float m[16]);
+
 #ifdef __cplusplus
 }
 #endif

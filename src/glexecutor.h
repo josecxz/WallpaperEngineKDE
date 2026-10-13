@@ -230,6 +230,10 @@ private:
         // de `src/wegiro.c`, que gira `placement` cada fotograma.
         bool tieneGiro = false;
         WeGiro giro{};
+        // Su `angles` o su `origin` oscila con el tiempo (lineas `vaiven`, una
+        // por componente): `src/wegiro.c` lleva `placement` al de cada
+        // fotograma.
+        QVector<WeVaiven> vaivenes;
         // Pass
         QString vert, frag;             // solo hasta initialize()
         QString targetName;             // idem

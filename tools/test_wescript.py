@@ -29,6 +29,17 @@ dice JS en cada caso, escrito a mano y pequeño:
      `2396319149` (362, 368 y 371), y en ellas la forma da lo que el
      intérprete, a 1e-6 grados, en más de 2000 `tod` que incluyen 0, 0,5, los
      cambios de minuto y de hora y 0,999999.
+  7. `Math.sin` y `Math.cos`, y `engine.runtime` cuando quien evalúa lo da
+     (`vector_en`); en un texto sigue siendo un ScriptError. Un script de
+     `angles` o de `origin` que oscila con él: la forma
+     `K + A · sin(ω · t + φ)` en sintéticos ---con seno, con coseno y fase,
+     con producto de los dos, con ω negativa---, y ninguna cuando suma dos
+     senos, lee el `value`, lee la hora, toca una componente que no es suya,
+     no es periódico o no cambia. Sobre el corpus, de todos los scripts de
+     `angles` y `origin` la dan exactamente `3050043876`/338 (`angles`,
+     0 + 3·sin(1·t)) y `3521337568`/222 (`origin`, y = 992.82019 +
+     10·sin(1·t)), y la forma da lo que el intérprete a 1e-6 en 2400 tiempos
+     de [0, 600] s que no son los de la aceptación.
 
 Uso:
     python3 tools/test_wescript.py
@@ -83,6 +94,10 @@ SINTETICOS = [
      "return [pad(t.getHours()), pad(t.getMinutes()), null].filter(Boolean).join(':');",
      "17:38"),
     ("engine.timeOfDay", "return Math.round(engine.timeOfDay * 86400);", "63485"),
+    ("Math.sin", "return [Math.sin(0), Math.round(Math.sin(1.5707963267948966) * 1000)].join(',');",
+     "0,1000"),
+    ("Math.cos", "return [Math.cos(0), Math.round(Math.cos(3.141592653589793) * 10)].join(',');",
+     "1,-10"),
 ]
 
 # Scripts cuya salida depende del motor: tienen que lanzar.
@@ -199,6 +214,98 @@ GIROS = [
     ("no es una recta", "value.z = Math.sqrt(engine.timeOfDay) * 360; return value;", None),
     ("un Vec3 nuevo", "return new Vec3(0, 0, scriptProperties.r);", None),
 ]
+
+def vaiven(cuerpo: str, campo: str = "origin", modulo: str = ""):
+    """Las formas de un `update` sintético en `campo`, guardado a 10 20 0,
+    con `modulo` delante en el cuerpo del módulo."""
+    return wescript.vaiven_de({campo: {
+        "script": f"{modulo} export function update(value) {{ {cuerpo} }}",
+        "value": "10.00000 20.00000 0.00000"}}, campo)
+
+
+VAIVENES = [
+    # (qué, campo, cuerpo de update, las formas que tienen que salir)
+    ("seno en y", "origin",
+     "value.y = 992.82019 + (Math.sin(engine.runtime * 1) * 10); return value;",
+     [(1, (992.82019, 10.0, 1.0, 0.0))]),
+    ("coseno con fase", "origin",
+     "value.x = 5 + Math.cos(engine.runtime * 2.5 + 1) * 7; return value;",
+     [(0, (5.0, 7.0, 2.5, 1.0 + 1.5707963267948966))]),
+    ("x e y a la vez", "origin",
+     "let t = engine.runtime; return {x: 3 + Math.sin(t * 0.5) * 2,"
+     " y: Math.cos(t * 0.25) * 4, z: value.z};",
+     [(0, (3.0, 2.0, 0.5, 0.0)), (1, (0.0, 4.0, 0.25, 1.5707963267948966))]),
+    ("producto de seno y coseno", "origin",
+     "value.x = Math.sin(engine.runtime * 0.3) * Math.cos(engine.runtime * 0.3);"
+     "return value;", [(0, (0.0, 0.5, 0.6, 0.0))]),
+    ("ω negativa", "origin",
+     "value.y = Math.sin(-engine.runtime * 40) * 2; return value;", None),
+    ("balanceo en angles", "angles",
+     "value.z = 0 + (Math.sin(engine.runtime * 1) * 3); return value;",
+     [(2, (0.0, 3.0, 1.0, 0.0))]),
+    ("dos senos", "origin",
+     "value.y = Math.sin(engine.runtime) + Math.sin(2 * engine.runtime); return value;", None),
+    ("lee el value", "origin",
+     "value.y = value.y + Math.sin(engine.runtime); return value;", None),
+    ("lee la hora", "origin",
+     "value.y = Math.sin(engine.runtime + new Date().getSeconds()); return value;", None),
+    ("lee timeOfDay", "origin",
+     "value.y = Math.sin(engine.runtime) * engine.timeOfDay; return value;", None),
+    ("la z de origin", "origin",
+     "value.z = Math.sin(engine.runtime); return value;", None),
+    ("la x de angles", "angles",
+     "value.x = Math.sin(engine.runtime); return value;", None),
+    ("no es periódico", "origin",
+     "value.y = Math.sin(engine.runtime * engine.runtime); return value;", None),
+    ("una recta", "origin", "value.y = engine.runtime * 3; return value;", None),
+    ("siempre el mismo", "origin", "value.y = 3; return value;", None),
+    ("no devuelve", "origin", "value.y = Math.sin(engine.runtime);", None),
+]
+
+# Las capas del corpus que pueden dar vaivén: escena, capa y campo.
+VAIVENES_CORPUS = {("3050043876", 338, "angles"), ("3521337568", 222, "origin")}
+
+
+def vaivenes_del_corpus(fallos: list[str]) -> None:
+    """Los scripts de `angles` y `origin` del corpus: quién da vaivén y si es
+    exacto, en 2400 tiempos que no son los de `_tiempos_de_prueba`."""
+    import math
+    vistos, aceptados = 0, []
+    for d in sorted(wepaths.we_workshop().iterdir()):
+        p = d / "scene.pkg"
+        if not p.is_file():
+            continue
+        _, ents = pkg_inspect.read_pkg(str(p))
+        sj = [e for e in ents if e["name"] == "scene.json"]
+        s = json.loads(sj[0]["data"]) if sj else {}
+        for o in s.get("objects") or []:
+            for campo in ("angles", "origin"):
+                a = o.get(campo) if isinstance(o, dict) else None
+                if not (isinstance(a, dict) and isinstance(a.get("script"), str)):
+                    continue
+                vistos += 1
+                formas = wescript.vaiven_de(o, campo)
+                if formas is None:
+                    continue
+                aceptados.append((d.name, o.get("id"), campo))
+                props = {k: (v.get("value") if isinstance(v, dict) else v)
+                         for k, v in (a.get("scriptproperties") or {}).items()}
+                ip = wescript.Interprete(a["script"], props)
+                v = [float(x) for x in a["value"].split()]
+                if campo == "angles":
+                    v = [math.degrees(x) for x in v]
+                ts = [0.1234 + k * 0.25 for k in range(2400)]
+                peor = max(abs(wescript.valor_del_vaiven(f, t) - ip.vector_en(t, v)[i])
+                           for t in ts for i, f in formas)
+                ok = peor <= 1e-6
+                print(f"  {'ok' if ok else 'MAL':3} {d.name} {o.get('id'):>5} {campo} "
+                      f"{formas}: {len(ts)} t, error máximo {peor:.3g}")
+                if not ok:
+                    fallos.append(f"vaiven {d.name} {o.get('id')}: error {peor:.3g}")
+    print(f"  scripts de angles y origin: {vistos}, con vaivén: {sorted(aceptados)}")
+    if set(aceptados) != VAIVENES_CORPUS or len(aceptados) != 2:
+        fallos.append(f"vaivenes del corpus: aceptados {aceptados}")
+
 
 # Las agujas del corpus: lo único que la forma puede aceptar.
 AGUJAS = {("2396319149", 362), ("2396319149", 368), ("2396319149", 371)}
@@ -321,6 +428,41 @@ def main() -> int:
         if not ok:
             fallos.append(f"giro {que}: {r} y tenía que ser {espera}")
     giros_del_corpus(fallos)
+
+    print("── vaivén con engine.runtime ──")
+    ip = wescript.Interprete(
+        "export function update(value) { value.x = engine.runtime; return value; }", {})
+    r = ip.vector_en(2.5, [1.0, 2.0, 3.0])
+    print(f"  {'ok' if r == [2.5, 2.0, 3.0] else 'MAL':3} {'engine.runtime con vector_en':32} {r}")
+    if r != [2.5, 2.0, 3.0]:
+        fallos.append(f"engine.runtime con vector_en: {r}")
+    for que, campo, cuerpo, espera in VAIVENES:
+        r = vaiven(cuerpo, campo)
+        ok = (r == espera if espera is None or r is None else
+              len(r) == len(espera) and all(
+                  i == j and all(abs(x - y) <= 1e-9 for x, y in zip(f, g))
+                  for (i, f), (j, g) in zip(r, espera)))
+        # Con ω negativa la forma sale con ω positiva y la fase de ±π; lo que
+        # cuenta es que exista y dé el script, y eso lo mira el corpus.
+        if que == "ω negativa":
+            ok = r is not None and len(r) == 1 and abs(r[0][1][2] - 40.0) <= 1e-9 \
+                and abs(abs(r[0][1][3]) - 3.141592653589793) <= 1e-9
+        print(f"  {'ok' if ok else 'MAL':3} {que:32} {r}")
+        if not ok:
+            fallos.append(f"vaiven {que}: {r} y tenía que ser {espera}")
+    # Con cuentas propias: la x alterna con cada llamada, aunque la y sea un
+    # seno limpio. Sin `let n` en el módulo ni siquiera llegaría a evaluarse.
+    r = vaiven("n = n + 1; value.y = Math.sin(engine.runtime); value.x = n % 2;"
+               "return value;", modulo="let n = 0;")
+    print(f"  {'ok' if r is None else 'MAL':3} {'cuenta llamadas':32} {r}")
+    if r is not None:
+        fallos.append(f"vaiven cuenta llamadas: {r}")
+    r = vaiven("n = n + 1; value.y = Math.sin(engine.runtime) + (n > 3000 ? 1 : 0);"
+               "return value;", modulo="let n = 0;")
+    print(f"  {'ok' if r is None else 'MAL':3} {'cambia tras muchas llamadas':32} {r}")
+    if r is not None:
+        fallos.append(f"vaiven cambia tras muchas llamadas: {r}")
+    vaivenes_del_corpus(fallos)
 
     print("── capas del corpus con engine ──")
     con, sin = corpus(fallos)
