@@ -74,6 +74,11 @@ make indice                       # reescribe los números desde NOTAS.md
 - `9892` **2. Las piezas sueltas: la cola de cada animación crece con la versión** — 4, 9, 10, 34 y 35 bytes según el `MDLA`; y la animación la elige `animationlayers` por su identificador, no `anims[0]`.
 - `9916` **3. Un pase que no compilaba: los combos de `// [COMBO]` existen siempre** — la copia vieja de `pulse` pregunta `#ifndef AUDIOPROCESSING`; WE define los de directiva a 0, los de sampler no.
 - `9932` **Lo que NO se arregló: la cabeza** — efectos antes o después de deformar: la Vi pide después y la cabeza del dragón antes; se deja como estaba.
+- `10001` **La cabeza de la Vi: los efectos de un puppet van sobre la textura y se deforma al final** — las máscaras de la Vi y del dragón solo tienen sentido sobre la textura; un pase final deforma la malla.
+- `10009` **Lo que lo decide: qué tapa cada máscara en la textura** — la de la Vi, la cabeza pintada en el cuerpo; la del dragón, un párpado suelto salvo el ojo.
+- `10029` **Por qué la primera prueba pareció decir lo contrario** — el pase final sin mezcla: un párpado transparente sobrescribía la cabeza del dragón.
+- `10043` **El binario no lo resolvía** — `_rt_imageLayerAlbedo_` es del camino de la iluminación, no del orden de efectos y deformación.
+- `10053` **El reparto** — solo `werender`: malla en reposo en el pase base y un `passthrough` con la mezcla del pase base al final.
 
 ## Vídeo
 

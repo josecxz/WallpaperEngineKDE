@@ -1584,6 +1584,9 @@ class Renderer:
         self.meshes: dict[int, int] = {}
         # Margen de render por objeto; ver _emit_mesh.
         self.margins: dict[int, float] = {}
+        # Malla deformada que dibuja el pase final de un puppet con efectos;
+        # ver `_emit_mesh` y `_emit_deformacion`.
+        self.mallas_finales: dict[int, int] = {}
         # DOS cosas distintas que hasta ahora eran el mismo numero:
         #
         #   `canvas`  el sistema de medida de la ESCENA. Donde esta cada capa,
@@ -2329,27 +2332,99 @@ class Renderer:
         inter[:, 4] = 1.0 - m.uvs[:, 1]
         idx = np.asarray(m.indices, dtype="<u2")
 
+        anim = self._mesh_anim(m, blob, rel, obj.raw)
+        # Margen con que se renderiza esta capa: cuanto hay que agrandar su
+        # rectangulo para que quepa la malla deformada, con un 5% de holgura.
+        # 1.0 si no se sale, para no cambiar nada donde no hace falta.
+        margen = 1.0
+        sw, sh = layer_size(obj, self.canvas)
+        if anim:
+            margen = max(1.0, 2.0 * anim.extent[0] / sw, 2.0 * anim.extent[1] / sh) * 1.05
+        self.margins[id(obj)] = margen
+
+        # WE pasa los efectos de un puppet sobre la imagen SIN deformar y
+        # deforma al final: las mascaras estan pintadas sobre la textura. En
+        # `3047352572` la del `opacity` de la Vi tapa la cabeza pintada en el
+        # cuerpo, donde la animacion lleva la cabeza recortada aparte, y la de
+        # la cabeza del dragon tapa un parpado suelto salvo el ojo. Deformando
+        # antes, la mascara borraba la cabeza de la Vi. Con efectos, el pase
+        # base dibuja la malla en reposo ---que es la textura tal cual: en
+        # reposo, posicion = (uv - 0,5) * tamano--- y un pase final la deforma
+        # muestreando lo que dejan los efectos (`_emit_deformacion`). Sin
+        # efectos da lo mismo y no cambia nada.
+        reposo = np.asarray(m.positions, dtype=np.float64)
+        deformada = anim is not None or not np.array_equal(pos, reposo)
+        con_efectos = any(p.stage != "base" and not p.command for p in obj.passes)
+        if deformada and con_efectos:
+            inter[:, 0:3] = reposo
+            self.meshes[id(obj)] = self._escribe_malla(inter, idx, None)
+            # La UV del pase final es donde quedo cada vertice EN REPOSO dentro
+            # del buffer del objeto, margen incluido: la misma cuenta que hace
+            # la MVP del pase base, `2 / (lado * margen)`, pasada a [0, 1].
+            final = inter.copy()
+            final[:, 0:3] = pos
+            final[:, 3] = 0.5 + reposo[:, 0] / (sw * margen)
+            final[:, 4] = 0.5 + reposo[:, 1] / (sh * margen)
+            self.mallas_finales[id(obj)] = self._escribe_malla(final, idx, anim)
+        else:
+            self.meshes[id(obj)] = self._escribe_malla(inter, idx, anim)
+        self.stats["puppet"] += 1
+
+    def _escribe_malla(self, inter: np.ndarray, idx: np.ndarray,
+                       anim: "MeshAnim | None") -> int:
+        """Vuelca una malla con su bloque de animacion y la declara en el plan."""
         mid = len(self.mesh_files)
         path = self.tmp / f"mesh{mid:03d}.bin"
-        anim = self._mesh_anim(m, blob, rel, obj.raw)
         with open(path, "wb") as fh:
-            fh.write(inter.tobytes())
+            fh.write(inter.astype("<f4").tobytes())
             fh.write(idx.tobytes())
             for parte in anim.blocks if anim else ():
                 fh.write(parte)
         self.mesh_files.append(path)
         cola = f" {anim.bones} {anim.keys} {anim.duration:.6f}" if anim else ""
-        self.lines.append(f"mesh {mid} {path} {m.vertex_count} {idx.size}{cola}")
-        self.meshes[id(obj)] = mid
-        # Margen con que se renderiza esta capa: cuanto hay que agrandar su
-        # rectangulo para que quepa la malla deformada, con un 5% de holgura.
-        # 1.0 si no se sale, para no cambiar nada donde no hace falta.
-        margen = 1.0
-        if anim:
-            sw, sh = layer_size(obj, self.canvas)
-            margen = max(1.0, 2.0 * anim.extent[0] / sw, 2.0 * anim.extent[1] / sh) * 1.05
-        self.margins[id(obj)] = margen
-        self.stats["puppet"] += 1
+        self.lines.append(f"mesh {mid} {path} {inter.shape[0]} {idx.size}{cola}")
+        return mid
+
+    def _emit_deformacion(self, obj, sresolver, canvas: tuple[int, int]) -> None:
+        """El pase final de un puppet con efectos: la malla deformada,
+        muestreando el buffer del objeto que dejaron los efectos. Ver
+        `_emit_mesh`. Un `passthrough` de WE con `TRANSFORM` y la misma MVP que
+        el pase base.
+
+        Con la MEZCLA del pase base, no `none`: las piezas de un puppet se
+        solapan al animarse, y una que la mascara dejo transparente borraria lo
+        que tiene debajo. Es el parpado del dragon de `3047352572`, que la
+        animacion pone sobre la cabeza: con `none` se llevaba la cabeza entera
+        y dejaba solo el ojo. El destino se limpia antes de cada pase, asi que
+        es el mismo caso que el pase base de siempre, que tambien dibuja
+        translucido sobre el buffer vacio."""
+        mid = self.mallas_finales[id(obj)]
+        n = self.stats["pases"]
+        vp = self.tmp / f"p{n:03d}.vert"
+        fp = self.tmp / f"p{n:03d}.frag"
+        vp.write_text(weshader.translate(
+            sresolver.read("passthrough.vert"), "vert", sresolver,
+            combos={"TRANSFORM": 1}, varyings={}))
+        fp.write_text(weshader.translate(
+            sresolver.read("passthrough.frag"), "frag", sresolver,
+            combos={}, varyings={}))
+        sw, sh = layer_size(obj, canvas)
+        mg = self.margins.get(id(obj), 1.0)
+        mvp = [2.0 / (sw * mg), 0, 0, 0,  0, 2.0 / (sh * mg), 0, 0,
+               0, 0, 1, 0,  0, 0, 0, 1]
+        base = next((p for p in obj.passes if p.stage == "base"), None)
+        self.body.append("pass")
+        self.body.append(f"prog {vp} {fp}")
+        self.body.append("target SCREEN")
+        self.body.append(f"blend {base.blending if base else 'translucent'}")
+        self.body.append("sampler g_Texture0 prev")
+        self.body.append(f"mesh {mid}")
+        self.body.append("umat4 g_ModelViewProjectionMatrix " +
+                         " ".join(f"{x:.6g}" for x in mvp))
+        self.body.append("endpass")
+        self.stats["pases"] += 1
+        self.stats["puppet_deformado_al_final"] = (
+            self.stats.get("puppet_deformado_al_final", 0) + 1)
 
     def _emit_text(self, obj) -> None:
         """Rasteriza la capa de texto y la sube como atlas + quads.
@@ -3675,6 +3750,9 @@ class Renderer:
                 if max_passes is not None and self.stats["pases"] >= max_passes:
                     break
                 self.emit_pass(p, sresolver, canvas, obj)
+            if id(obj) in self.mallas_finales and not only_base \
+                    and (max_passes is None or self.stats["pases"] < max_passes):
+                self._emit_deformacion(obj, sresolver, canvas)
             # Ya dibujado el objeto entero, su compuesto se vuelca a los
             # buffers con nombre que otra capa va a muestrear.
             for nombre in buffers:

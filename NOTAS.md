@@ -9931,6 +9931,10 @@ directiva ya no se aplica (`combos_de_directiva`, `directivas_de_pase`).
 
 ### Lo que NO se arregló: la cabeza
 
+**Resuelto después** en [La cabeza de la Vi](#la-cabeza-de-la-vi-los-efectos-de-un-puppet-van-sobre-la-textura-y-se-deforma-al-final):
+la cabeza del dragón no contradecía nada, el pase final se la comía por
+dibujar sin mezcla. Lo de abajo es el razonamiento de entonces.
+
 Con los tres arreglos la Vi tiene cuerpo, piernas y brazos en su sitio, pero
 **sigue sin cabeza**. La máscara de su `opacity` tiene una mancha justo donde
 la animación lleva la cabeza recortada aparte: en el espacio de la textura,
@@ -9985,10 +9989,113 @@ junto a `BLENDROWCOUNT` y `materials/util/fullscreenlayer.json`
 
 ### Lo que queda
 
-- **La cabeza de la Vi y el orden efectos/deformación** de un puppet, arriba.
+- ~~**La cabeza de la Vi y el orden efectos/deformación** de un puppet, arriba.~~
+  Hecho en la sección siguiente.
 - **Mezclar las capas de animación**: `blend`, `additive` y `rate` de cada
   una de `animationlayers`; hoy se reproduce solo la primera visible.
 - **La cola de `MDLA0006` cuando no va a cero** (2 de 37) y el `0006` cuyo
   esqueleto no se lee.
 - La mancha negra con forma de espada de `3097749052` ya estaba en `main`; no
   se ha mirado.
+
+## La cabeza de la Vi: los efectos de un puppet van sobre la textura y se deforma al final
+
+La sección anterior dejó a la Vi de `3047352572` sin cabeza y abierta la
+pregunta de en qué espacio aplica WE los efectos de una capa con puppet. La
+respuesta es **sobre la textura sin deformar**, y la deformación va al
+final. El aparente contraejemplo, la cabeza del dragón, era un fallo de la
+prueba.
+
+### Lo que lo decide: qué tapa cada máscara en la textura
+
+Puestas las texturas al lado de sus máscaras de `opacity`, las dos cuentan
+lo mismo:
+
+- **La Vi**: la textura es un atlas de piezas —cuerpo con una cabeza
+  pintada, y aparte la cabeza, el pelo y las manos recortadas— y la mancha
+  de la máscara cae, en coordenadas de textura, justo sobre la cabeza
+  pintada del cuerpo, en (0,47, 0,37). La animación lleva la cabeza
+  recortada exactamente ahí. Deformando antes de los efectos, la máscara
+  borra las dos.
+- **La cabeza del dragón** (capa 100): arriba a la derecha de su textura
+  hay una pieza suelta pequeña, un párpado con el ojo, y la máscara la tapa
+  entera salvo un punto: el ojo. La animación pone esa pieza sobre la cabeza
+  grande.
+
+Las dos máscaras son de autor pintando sobre la textura. En el espacio
+deformado no tienen sentido: la de la Vi le quitaría la cabeza y la del
+dragón taparía una esquina vacía.
+
+### Por qué la primera prueba pareció decir lo contrario
+
+El pase final dibujaba la malla deformada con `blend none`. Las piezas de
+un puppet se solapan al animarse, y el párpado —que la máscara deja
+transparente salvo el ojo— se dibuja encima de la cabeza grande: sin
+mezcla, sus triángulos **sobrescribían** la cabeza con alfa 0 y quedaba
+solo el ojo. Con la mezcla del pase base (`translucent`), lo transparente no
+borra lo que hay debajo y la cabeza del dragón sale entera. Es el mismo caso
+que el pase base de siempre, que también dibuja translúcido sobre el buffer
+vacío del objeto.
+
+La pista de la posición vino del usuario: la cabeza «desaparecía», no se
+dibujaba mal, y eso es lo que hace una pieza que tapa a otra.
+
+### El binario no lo resolvía
+
+`_rt_imageLayerAlbedo_` (`0x140209fe7`), que parecía el buffer de una capa
+antes de deformarla, es del camino de la iluminación: se crea con los bits
+`0x18` de las banderas del material (`0x140209616`, `0x14020962d`) junto a
+`PRELIGHTING` y `materials/util/fullscreenlayer.json`, que es un
+`passthrough`. No se ha encontrado en el binario dónde se ordenan efectos y
+deformación; lo que se tiene es que las máscaras del corpus solo tienen
+sentido en el espacio de la textura.
+
+### El reparto
+
+Solo `werender.py`, sin tocar los ejecutores, que ya admiten una malla en
+cualquier pase, limpian el destino antes de cada uno y arrancan cada objeto
+transparente —el `copybackground` lo ignoran los dos—:
+
+- `_emit_mesh`: si el puppet se deforma y la capa tiene efectos, el pase base
+  dibuja la malla **en reposo**, sin animación. En reposo la malla es la
+  textura tal cual: posición = (uv − 0,5) · tamaño con residuo 0 en las 8
+  mallas de la escena. Una segunda malla lleva la animación y, de UV, dónde
+  quedó cada vértice en reposo dentro del buffer, margen incluido.
+- `_emit_deformacion`: tras el último efecto, un `passthrough` de WE con
+  `TRANSFORM`, la MVP del pase base, `prev` en `g_Texture0` y la mezcla del
+  pase base.
+- Sin efectos no cambia nada: se sigue deformando en el pase base.
+
+Una consecuencia: lo que un efecto pinta **fuera** de los triángulos de la
+malla —un rayo, un resplandor— se recorta en el pase final. Si WE deforma al
+final, allí pasa lo mismo.
+
+### Lo medido
+
+- **Planes** contra `main`: 111 de 133 idénticas byte a byte; cambian las
+  22 escenas con un puppet animado que lleva efectos. Renders a 960x540 con
+  Mesa a `--time 2`: la que más, `2406504988`, 3,43 de 255 de media, en la
+  esfera de cristal, que sale algo más apagada y no se aleja de la vista
+  previa (dos pasadas de `main` dan 0, así que no es ruido); `3047352572`
+  2,97; `3082427731` 1,85; `3050043876` 1,7; las otras 18, menos de 0,6.
+- **La Vi** sale con cabeza y la escena se parece a la vista previa; la
+  cabeza del dragón aislada sale entera.
+- **La luz** (`test_luminancia.py` con Mesa, `--guardar` en `main` y
+  `--referencia` en la rama): 133/133 renderizan, **0 regresiones, 0
+  apagadas**; la sospechosa es la misma que en `main`. `3047352572` 48,32 →
+  46,82; `2406504988` 108,70 → 105,47, con su vista previa en 111,48: se
+  aleja un poco, es la esfera más apagada de arriba; `3082427731` 75,51 →
+  75,57; `3050043876` 41,69 → 41,79.
+- `test_wemdl.py`, `test_werender.py`, `test_wereloj.py`,
+  `test_weparticles.py`, `test_wescript.py`, `test_hoja.py` y
+  `test_giro.py` pasan.
+
+### Lo que queda
+
+- **El rectángulo pálido de la cabeza del dragón en la escena completa.**
+  Aislada sale bien; con el resto de capas, en su sitio hay un cuadro claro.
+  Ya pasaba en `main` y es de la composición, no del puppet.
+- **`3050043876`** sigue con una franja negra sobre los ojos que la vista
+  previa no tiene, igual en `main` y en la rama.
+- **Leer en el binario** dónde se ordenan efectos y deformación, para
+  tenerlo por el motor y no por las máscaras.
