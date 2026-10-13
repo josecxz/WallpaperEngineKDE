@@ -822,9 +822,9 @@ MEZCLA_AL_COMPONER = {
 TIEMPO_EN_REPOSO = 3600.0
 
 # Con que cae la luz entre su origen y su radio: `saturate(1 - d/radio)` elevado
-# a esto. Sale de la generacion anterior de shaders, que atenua el difuso con
-# `lightAttn * lightAttn`. No esta en el formato de escena, asi que es un valor
-# por defecto, no un dato leido.
+# a esto. Lo declara la luz en `exponent` (ver `luces_de_escena`); este es el
+# valor para las que no lo traen, de la generacion anterior de shaders, que
+# atenua el difuso con `lightAttn * lightAttn`.
 EXPONENTE_POR_DEFECTO = 2.0
 
 
@@ -1027,6 +1027,7 @@ class Luz(NamedTuple):
     color: list[float]          # color * intensidad, sin el radio
     radio: float
     extremo: list[float]        # el otro extremo del segmento, solo en `tube`
+    exponente: float = EXPONENTE_POR_DEFECTO   # el del decaimiento, `exponent`
 
 
 def luces_de_escena(scene, por_id: dict | None = None) -> list[Luz]:
@@ -1044,10 +1045,13 @@ def luces_de_escena(scene, por_id: dict | None = None) -> list[Luz]:
     que no lo usan, con su valor por defecto (200, 0, 0), asi que aparece
     identico en la `lpoint` de la misma escena.
 
-    El exponente no sale del `scene.json` ---ninguna de las 9 luces del corpus
-    lo declara, y el campo `exponent` del formato es de color, no de luces---
-    y por el camino nuevo no existe: `ComputePBRLight` atenua con `1 / d^2` y
-    punto. Solo lo lleva el camino viejo, en `EXPONENTE_POR_DEFECTO`.
+    **El exponente del decaimiento es `exponent`**, un campo de la luz: el
+    lector de WE lo registra como `float` en `[luz+0x2e8]`, justo detras de
+    `radius` (`0x14025dcda`, `0x14025dd83`), y el modulo `LightingV1` que genera
+    lo manda en el `.w` del origen. Solo lo declaran las 3 luces de
+    `3210875135` (1,06); las otras 9 del corpus no, y se quedan con
+    `EXPONENTE_POR_DEFECTO`. `genericimage3` no lo lee: atenua con
+    `1 / d^2` y punto.
     """
     fuera: list[Luz] = []
     for obj in scene.objects:
@@ -1075,9 +1079,10 @@ def luces_de_escena(scene, por_id: dict | None = None) -> list[Luz]:
         lx, ly = cp[0] * esc[0], cp[1] * esc[1]
         extremo = [org[0] + lx * c - ly * sn, org[1] + lx * sn + ly * c,
                    org[2] + cp[2] * esc[2]]
+        expo = (_floats(obj.raw.get("exponent")) + [EXPONENTE_POR_DEFECTO])[0]
         fuera.append(Luz(tipo, [org[0], org[1], org[2]],
                          [col[0] * ints, col[1] * ints, col[2] * ints], radio,
-                         extremo))
+                         extremo, expo))
     return fuera[:MAX_LUCES]
 
 
@@ -2731,7 +2736,8 @@ class Renderer:
         # porque el ambiente oscurece la capa contando con que las luces
         # devuelvan lo que quita.
         clases = set(self.por_clase)
-        moderno = "LIGHTS_POINT" in fuente_f
+        # `LightingV1` lo inyecta `weshader` con esa misma interfaz por clase.
+        moderno = "LIGHTS_POINT" in fuente_f or "LightingV1" in fuente_f
         soportadas = set(CLASES_DE_LUZ) if moderno else {"point"}
         combos["LIGHTING"] = 1 if (self.luces and obj is not None
                                    and combos.get("LIGHTING")
@@ -3178,8 +3184,6 @@ class Renderer:
                 self.body.append(f"u4f g_LightsColorRadius[{i}] "
                                  + " ".join(f"{x:.6g}" for x in col)
                                  + f" {radio:.6g}")
-                self.body.append(f"u1f g_LightsExponent[{i}] "
-                                 f"{EXPONENTE_POR_DEFECTO:.6g}")
             # La otra forma de mandar los mismos colores. No es alternativa a
             # la de arriba: cada generacion de shaders lee una, y un pase puede
             # necesitar las dos ---el vertice saca las direcciones de
@@ -3204,14 +3208,16 @@ class Renderer:
                         # puntual: es su propio caso `v == 0`.
                         self.body.append(f"u4f {prefijo}_OriginA[{i}] "
                                          + " ".join(f"{x:.6g}" for x in lz.origen)
-                                         + " 0")
+                                         + f" {lz.exponente:.6g}")
                         self.body.append(f"u4f {prefijo}_OriginB[{i}] "
                                          + " ".join(f"{x:.6g}" for x in lz.extremo)
                                          + " 0")
                     else:
+                        # El `.w` es el exponente: lo lee `LightingV1`
+                        # (`weshader`); `genericimage3` no lo mira.
                         self.body.append(f"u4f {prefijo}_Origin[{i}] "
                                          + " ".join(f"{x:.6g}" for x in lz.origen)
-                                         + " 0")
+                                         + f" {lz.exponente:.6g}")
         self.body.append("u1f g_Time @TIME@")
         # La proporcion sale del lienzo de la ESCENA, no de los pixeles de
         # dibujo: el redondeo a entero de estos ultimos la movería, y hay
@@ -3583,6 +3589,17 @@ class Renderer:
         self.ambiente = amb
         self.cielo = (_floats(general.get("skylightcolor")) + amb)[:3]
         self.lines.append(f"canvas {self.pixeles[0]} {self.pixeles[1]}")
+        # Con que color, OPACO, empieza cada fotograma: el `clearcolor` de la
+        # escena, salvo que `clearenabled` lo apague. Antes se empezaba en
+        # (0, 0, 0, 0), y no era solo el color de lo que ninguna capa cubre:
+        # el alfa del fotograma quedaba por debajo de 1 alli donde solo hay
+        # capas translucidas, y los efectos que leen la escena y dividen por su
+        # alfa ---el `blur` a pantalla completa de `3210875135`, que hace
+        # `rgb / a`--- convertian el borde de cada sprite de particula en un
+        # cuadrado. Con el fondo opaco el alfa vale 1 y la division no hace nada.
+        if general.get("clearenabled", True) is not False:
+            fondo = (_floats(general.get("clearcolor")) + [0.0, 0.0, 0.0])[:3]
+            self.lines.append("clear " + " ".join(f"{x:.6g}" for x in fondo))
         # Instante al que deformar las mallas. Solo lo usa glexec, que no
         # tiene reloj propio: el motor en vivo pasa su tiempo real.
         self.lines.append(f"meshtime {self.time:.6f}")

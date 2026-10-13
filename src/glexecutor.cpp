@@ -157,6 +157,8 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
     // siguiente heredaria el temblor de la anterior.
     m_hayTemblor = false;
     m_temblorDelta[0] = m_temblorDelta[1] = 0.0f;
+    // Igual con el fondo: un plan de video no trae `clear`.
+    m_fondo[0] = m_fondo[1] = m_fondo[2] = m_fondo[3] = 0.0f;
 
     QTextStream in(&f);
     Op cur;
@@ -174,6 +176,12 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
         } else if (kw == QLatin1String("canvas") && tok.size() >= 3) {
             m_canvasW = tok[1].toInt();
             m_canvasH = tok[2].toInt();
+        } else if (kw == QLatin1String("clear") && tok.size() >= 4) {
+            // El `clearcolor` de la escena, opaco; ver werender. `toFloat` de
+            // QString no mira la locale.
+            for (int i = 0; i < 3; ++i)
+                m_fondo[i] = tok[i + 1].toFloat();
+            m_fondo[3] = 1.0f;
         } else if (kw == QLatin1String("tex") && tok.size() >= 5) {
             TexSpec t;
             t.path = tok[2];
@@ -1439,7 +1447,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     // al anterior: solo se veia la ultima capa.
     glBindFramebuffer(GL_FRAMEBUFFER, m_scene.fbo);
     glViewport(0, 0, m_scene.w, m_scene.h);
-    glClearColor(0, 0, 0, 0);
+    glClearColor(m_fondo[0], m_fondo[1], m_fondo[2], m_fondo[3]);
     glClear(GL_COLOR_BUFFER_BIT);
     m_objectOpen = false;
     if (!m_hasObjectMarks) {
