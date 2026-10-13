@@ -3873,7 +3873,12 @@ Por orden de lo que más se nota:
    cuyo fotograma elige la
    hora](#una-hoja-de-sprites-cuyo-fotograma-elige-la-hora-el-indicador-ampm)—.
    **Pendiente**: reproducir por `frame_time` las 56 capas con hoja animada, y
-   el resto de campos con script.
+   el resto de campos con script. **Empezado** también `angles`: las tres
+   agujas de `2396319149`, cuyo script solo lee `engine.timeOfDay` —ver [Las
+   agujas de un reloj
+   analógico](#las-agujas-de-un-reloj-analógico-angles-con-enginetimeofday)—;
+   los otros 4 scripts de `angles`, y `origin` (54 en 11 escenas), `scale` (78
+   en 8), `alpha` (34 en 3) y `color` (31 en 5), siguen con su `value`.
 4. ~~Reproducir vídeo~~ **hecho**: `src/wevideo.c` lo decodifica con libav y lo
    comparten los dos ejecutores; las 3 escenas con textura de vídeo se mueven y
    los 15 wallpapers de tipo vídeo entran en la biblioteca —ver [Vídeo de
@@ -9319,3 +9324,169 @@ Todo con los scripts de `medidas/` de la ejecución 20261012-144158.
   tope de cada instancia sale de repartirlo. Con 350 instancias, cualquier
   preset de más de 23 se quedaría corto. En el corpus no pasa: el mayor es
   `Flare_Smoke`, 10 × 500.
+
+## Las agujas de un reloj analógico: `angles` con `engine.timeOfDay`
+
+**El síntoma.** En `2396319149` (Cyberpunk Fantasy) hay un reloj analógico: la
+esfera `clockface5` (341) y tres agujas, `hour` (362), `minute` (368) y
+`seconds` (371), con el `origin` en el centro de la esfera (2285, 1692 del
+lienzo de 3840x2160). Cada aguja lleva un script en `angles`:
+
+```js
+value.z = engine.timeOfDay * -720;                    // hour
+value.z = ((engine.timeOfDay * 24) % 1) * -360;       // minute
+value.z = ((engine.timeOfDay * 1440) % 1) * -360;     // seconds
+```
+
+y se dibujaban con el `value` guardado, `0 0 0`: el reloj marcaba siempre las
+12:00. El intérprete de `wescript` rechazaba `engine.timeOfDay` como cualquier
+miembro de `engine` que no fuera `registerAsset`.
+
+**El censo** (`censo_scripts.py`, sobre las 129): 7 scripts en `angles`, en 5
+escenas. Además de las tres agujas:
+
+- `3050043876` 338: `Math.sin(engine.runtime) * 3`, un balanceo con el
+  tiempo de escena. Sería el segundo trozo, con otra forma (y `Math.sin`, que
+  el intérprete no tiene).
+- `2637739953` 2548: `import * as WEMath` y además reescribe
+  `thisLayer.origin` para girar alrededor de otro punto.
+- `3577990983` 203: devuelve `new Vec3(0, 0, scriptProperties.rotationZ)`,
+  un deslizador de usuario.
+- `3597772384` 525: clics y `localStorage`; su `update` no devuelve nada.
+
+De `engine.timeOfDay` solo hay usos en `angles`: ningún script de texto lo
+lee, así que darlo no cambia ningún reloj de texto.
+
+### Lo que cambia
+
+Las tres piezas de un reloj, para un ángulo:
+
+- **`tools/wescript.py`**: `engine.timeOfDay` es la hora local como fracción
+  del día, sacada del mismo instante que `new Date()`. `giro_por_hora(obj)`
+  evalúa el `update` del `angles` y lo reduce a **`z = A · frac(B · tod) + C`**
+  en grados (`A · tod + C` es el caso B = 1). La deducción lee la recta del
+  principio —C en 0, la pendiente con un paso de 1e-6— y busca partiendo por
+  la mitad dónde se rompe, que es 1/B. Lo que da la garantía es la
+  comprobación, como en `formato_de`: en ~4900 `tod` (una rejilla de 2000, cada
+  cambio de minuto y de hora y 1e-9 antes, 0,5 y 0,999999) la forma tiene que
+  dar lo que el script a 1e-6 grados. Con otro `value` de entrada tiene que dar
+  lo mismo, porque en WE `value` es lo del fotograma anterior y un script que
+  lo lea acumula. Lo que devuelve otra cosa que el `Vec3` con `x` e `y`
+  intactas, o no depende de la hora, no da forma.
+- **`tools/werender.py`**: detrás del `object` de la capa escribe
+  `giro <A> <B> <C> <base> @HORA@`, con `base` el ángulo propio que ya lleva
+  la colocación horneada. **Unidades**: el script trabaja en grados (el
+  `rad2deg` de `2637739953`) y `scene.json` en radianes (`object_mvp` hace
+  `cos(angles[2])`). El `value` entra al script pasado a grados, y `base` va en
+  grados. Sin giro, como antes, quedan una partícula (su ángulo va en la matriz
+  del sistema), una `passthrough` y una capa de la que cuelga otra, porque el
+  `origin` del hijo gira con el padre y eso el ejecutor no lo rehace.
+  `_fotograma` pone `@HORA@`: la de ahora, o la de **`--hora HH:MM:SS`**, que
+  es opción de `werender` y no de `wectl`. Solo la miran las agujas; los
+  relojes de texto y las hojas por hora siguen con el `time()` del ejecutor.
+- **`src/wegiro.c`**, fichero nuevo que enlazan los dos ejecutores (no va en
+  `wereloj.c` porque `test_wereloj.py` y `test_hoja.py` lo compilan sin
+  `-lm`): `we_giro_linea` lee la línea con la locale numérica sujeta a `C`,
+  `we_giro_grados` hace la cuenta con el mismo `fmod` que
+  `wescript.grados_del_giro`, `we_hora_del_dia` saca `tod` de `localtime_r`
+  con la fracción de segundo, y `we_giro_coloca` gira la parte lineal de la
+  colocación por `grados − base`. La traslación no se toca, así que gira sobre
+  el `origin` y lo que sumen después el anclaje, el parallax o el temblor se
+  compone igual. `tools/glexec.c` usa la hora del plan (o la de ahora si llega
+  `@HORA@` sin poner); `src/glexecutor.cpp` saca una con `clock_gettime` por
+  fotograma.
+
+**El giro es el del ángulo estático, deformación incluida.**
+`object_mvp` escribe la colocación como R(ángulo) · E, con E la semiextensión
+**ya en clip**. Con un lienzo no cuadrado eso estira en x por ancho/alto
+cualquier capa girada que no esté a 0 o 180°: a las 03:00 la aguja de las
+horas, horizontal, sale 16/9 más larga y 9/16 más fina. `we_giro_coloca` hace
+R(Δ) · (lo horneado), que da exactamente lo que daría hornear ese ángulo en
+`angles`, y eso es lo que mide el oráculo. No se arregla aquí porque no es
+de las agujas: son **63 capas de imagen o texto con ángulo propio que no es
+múltiplo de π, en 22 escenas** de lienzo no cuadrado (`fidelidad_giro.py`),
+y arreglarlo cambia sus planes. Cuando se haga, son dos sitios a la vez:
+`object_mvp` y `we_giro_coloca`.
+
+### Lo que se descartó
+
+- **Reconocer el script por su texto** (`engine.timeOfDay * N`). La forma
+  sale de evaluarlo; `let t = engine.timeOfDay; value.z = (t * 2 % 1) * 180`
+  da la suya igual (`test_wescript.py`).
+- **Girar en píxeles de lienzo solo las agujas.** Serían las únicas capas
+  giradas sin deformar, y dejarían de dar lo mismo que el `angles` estático,
+  que es su oráculo. Girar en el espacio del quad (E · R) tampoco: solo es
+  correcto con una capa cuadrada, como las agujas.
+- **Dar `timeOfDay` solo a los scripts de `angles`.** Es la hora, y para un
+  texto vale lo mismo que `new Date()`. No cambia ningún reloj: el
+  `engine["timeOfDay"]` de los rechazos de `test_wescript.py` pasa a ser un
+  sintético que da 63485 s a las 17:38:05, y su sitio entre los rechazos lo
+  ocupa `engine["runtime"]`.
+
+### Lo medido
+
+Todo con Mesa y la hora fija; los scripts están en la carpeta de medidas de
+la tarea.
+
+- **El reconocedor sobre el corpus** (`giros_corpus.py`): de los 7 scripts de
+  `angles` acepta exactamente 362, 368 y 371 de `2396319149` —(−720, 1, 0),
+  (−360, 24, 0) y (−360, 1440, 0)— y da None en `3050043876`, `2637739953`,
+  `3577990983` y `3597772384`.
+- **Su exactitud** (`tools/test_wescript.py`): en las tres, la forma y el
+  `update` del intérprete difieren **0 grados** en 7200 `tod` que no son los
+  de la aceptación (uno cada 24 s y cada cambio de minuto y de hora con 1e-8 a
+  cada lado, 0, 0,5 y 0,999999). En sintéticos dan forma la de las horas, la
+  de los minutos, una con desplazamiento y una con variable; no la dan
+  `engine.runtime`, leer el `value`, una hora en minutos enteros, un valor
+  fijo, no devolver, tocar la `x`, una raíz cuadrada ni un `Vec3` nuevo.
+- **Los planes** (`planes_vs_main.py todas`, `emit_plan` de las 129 con la
+  base sacada por `git archive`, rutas normalizadas, hora de pared congelada y
+  todos los ficheros comparados byte a byte): **128/128 idénticas** fuera de
+  `2396319149`, y en ella solo cambia `plan.txt`. Su `diff`
+  (`planes_vs_main.py diff`): tres líneas añadidas, ninguna quitada, cada
+  una justo detrás de un `object`: `giro -720 1 0 0 @HORA@`,
+  `giro -360 24 0 0 @HORA@` y `giro -360 1440 0 0 @HORA@`.
+- **El módulo C** (`tools/test_giro.py`, que compila `src/wegiro.c` sin
+  avisos): con las tres líneas del plan, en 174 `tod` por aguja, en `C` y en
+  `es_ES.UTF-8`, `we_giro_grados` queda a 0 grados de Python y
+  `we_giro_coloca` a menos de 1e-8 de `object_mvp` con el ángulo puesto en
+  `angles`. Las tres líneas solo traen enteros, así que también una sintética
+  con decimales en los cinco campos, que también queda a 0 en `es_ES`, donde
+  `strtod("0.5")` sin guarda da 0. `we_hora_del_dia` da la hora local con
+  `TZ=UTC` y `TZ=Etc/GMT-2` a 1e-12.
+- **El reparto** (`reparto_y_avisos.py`): `glexec.c` y `glexecutor.cpp`
+  llaman los dos a `we_giro_linea`, `we_giro_grados` y `we_giro_coloca`, y el
+  `Makefile` enlaza `src/wegiro.c` en los dos. `make build`, `make glexec` y
+  `make psysprobe` desde cero dan en main y en la rama el mismo único aviso,
+  `GL_GLEXT_VERSION` redefinido en una cabecera de Qt: **0 avisos nuevos**.
+- **Fidelidad** (`fidelidad_giro.py`): la referencia es la misma escena con
+  el script quitado y `angles` estático igual a lo que devuelve el `update` a
+  esa hora, en radianes. En el recorte del reloj (centro ±150 px, 300x300), la
+  media de |diferencia| por canal es **0,0000 de 255 a las 03:00:00 y 0,0001
+  a las 10:10:30**, con un máximo de 0 y de 1.
+- **Se mueven** (`agujas_se_mueven.py`, cada árbol con su `glexec`): suma de
+  |diferencia| en el recorte entre las 03:00:00 y las 09:00:00, **0 en main y
+  42193 en la rama**; dos pasadas de main a la misma hora, 0.
+- **La luz** (`test_luminancia.py` con Mesa y bajo el cerrojo, `luz_main.json`
+  y `luz_rama.json`; `luz_compara.py` reanaliza con `--desde`): 129/129
+  renderizan, **0 apagadas, 0 regresiones**. `2396319149` 96,87 → 96,87; se
+  mueven 14 escenas, la que más 0,17.
+- `test_wescript.py`, `test_wereloj.py`, `test_werender.py` y `test_hoja.py`
+  pasan.
+
+### Lo que queda
+
+- **La deformación del ángulo estático**: las 63 capas en 22 escenas de
+  arriba, y las agujas con ellas.
+- **Los otros cuatro scripts de `angles`**: el seno de `engine.runtime`
+  (`3050043876`) es el siguiente; `import`, el `origin` movido, el
+  deslizador y los clics no.
+- **Sin leer en el motor**: si `engine.timeOfDay` lleva la fracción de
+  segundo —aquí sí, y la aguja de los segundos va continua; si WE la da en
+  segundos enteros, allí va a saltos— y si el `value` que recibe `update` es
+  lo devuelto en el fotograma anterior. Lo segundo solo decide qué se
+  rechaza.
+- **Lo que gira con la capa sin pasar por la colocación**: los hijos de una
+  capa con giro y los uniforms con la MVP del objeto
+  (`g_EffectModelViewProjectionMatrix`, la luz). Ninguna de las tres agujas
+  tiene hijos ni los lee.
