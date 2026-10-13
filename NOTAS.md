@@ -9866,3 +9866,129 @@ durante la tarea del giro en píxeles), y las medidas pasan por todas.
   iluminada, se separaría.
 - **Sin leer en el motor**: si `engine.runtime` empieza en 0 al arrancar el
   fondo, como aquí `g_Time`. Si no, cambia la fase, no la forma.
+
+## La Vi sin piernas: tres lectores que se quedaban cortos
+
+En `3047352572` (Cyberpunk 2077 – Phantom Liberty) el personaje salía
+desmontado: cabeza, pelo y manos flotando sueltas como en un atlas, el
+cuerpo sin cabeza y, encima de todo, un rectángulo negro de lado a lado que
+tapaba las piernas. Parecía un fallo de la marioneta y eran tres, ninguno de
+la marioneta en sí.
+
+### 1. El rectángulo negro: un `.mdl` sin esqueleto
+
+Era la capa de las lámparas (`Lambs_puppet.mdl`). Su puppet solo recorta: la
+textura tiene el fondo negro opaco y la silueta la da la malla. `wemdl` la
+rechazaba —«campo de formato desconocido 0xf»— y la capa caía al quad entero.
+
+Los bits `0x01800000` del campo de formato son los de los huesos: el
+`0x0180000f` de 40 mallas del corpus es `0x0000000f` más 4 índices y 4 pesos.
+Sin ellos el vértice tiene 12 campos —posición, normal (0,0,1), tangente
+(1,0,0,1) y UV— y lo comprueban las mismas pruebas que fijaron los otros
+formatos: z a cero en los 280 vértices, UV en [0,1], los índices en rango y
+el fichero acabando tras los índices, sin `MDLS`. La constante de cabecera
+lleva el mismo bit (`0x09` frente a `0x01800009`).
+
+### 2. Las piezas sueltas: la cola de cada animación crece con la versión
+
+La Vi trae tres animaciones en un `MDLA0004` y la lectura se rompía en la
+segunda («pista 0 de 98426368 b no es múltiplo de 36»), así que no se animaba
+nada. Tras las pistas de cada animación hay una cola que no eran 4 bytes
+fijos: siguiendo la cadena por todo el corpus, son **4 en `MDLA0001`, 9 en
+`0003`, 10 en `0004`, 34 en `0005` y 35 en `0006`**, todas a cero. Con esos
+tamaños, todas las animaciones de 0001, 0003, 0004 y 0005 cuadran (pistas ==
+huesos, `fotogramas + 1` claves) y el bloque acaba a un byte del final del
+fichero. En `0006`, 2 de 37 colas traen datos que no se saben leer.
+
+Desde `MDLA0003`, con 4 bytes la segunda animación y las siguientes salían
+como basura —nombre vacío, cero pistas— **sin que nada fallara**, porque solo
+se usaba la primera. Ahora una animación que no cuadra después de la primera
+corta la lista en vez de tumbar el puppet entero.
+
+Y por eso mismo nadie miraba cuál se reproducía: era siempre `anims[0]`.
+`animationlayers` de `scene.json` la elige por su `animation`, que es el
+identificador que el `MDLA` guarda al principio de cada una (la Vi pide la
+1307, la segunda). Se toma la primera capa de animación visible; mezclar
+varias —en `3097749052` y en Lucy (`3521337568`) son aditivas y con `rate`
+distinto— no está hecho. Antes tampoco: allí `anims[0]` muchas veces no era
+ninguna de las pedidas.
+
+### 3. Un pase que no compilaba: los combos de `// [COMBO]` existen siempre
+
+La escena trae una copia vieja de `pulse` cuyo fragmento pregunta
+`#ifndef AUDIOPROCESSING` y dentro usa `g_PulseThresholds` y compañía, que
+solo declara el vértice. `AUDIOPROCESSING` es un `[COMBO]` del vértice con
+default 0. Para que esa copia compilara en WE, el combo tiene que estar
+DEFINIDO en el fragmento, a 0: WE define siempre los de directiva.
+
+Aquí fallaban dos cosas: `combos_de_pase` solo prestaba a la otra etapa lo
+que se consulta en un `#if`, no en un `#ifdef`; y `translate` omite un combo
+a 0 que solo se pregunta con `#ifdef`, la regla del `BONECOUNT` de
+`genericimage2`. Esa regla sigue valiendo para los combos de un sampler
+(`NORMALMAP`, `MASK`), que solo existen si el slot está enlazado: son los
+únicos `#ifdef` sobre combos propios en los shaders de WE. Para los de
+directiva ya no se aplica (`combos_de_directiva`, `directivas_de_pase`).
+
+### Lo que NO se arregló: la cabeza
+
+Con los tres arreglos la Vi tiene cuerpo, piernas y brazos en su sitio, pero
+**sigue sin cabeza**. La máscara de su `opacity` tiene una mancha justo donde
+la animación lleva la cabeza recortada aparte: en el espacio de la textura,
+tapa la cabeza pintada en el cuerpo, y la vista previa de la escena tiene
+cara. Eso pide que WE pase los efectos de un puppet sobre la imagen **sin
+deformar** y deforme al final.
+
+Se probó así: el pase base dibuja la malla en reposo —que coincide con el
+espacio de la textura con residuo 0 en las 8 mallas de la escena— y un
+`passthrough` con `TRANSFORM` dibuja al final la malla animada muestreando lo
+que dejan los efectos, sin tocar los ejecutores. La Vi sale con cabeza. Pero
+la cabeza del dragón de la misma escena (capa 100) desaparece: su máscara
+tapa la cabeza en el espacio de la textura salvo el ojo, y solo deformando
+**antes** queda a la vista como en la vista previa. Ninguna clave de
+`scene.json`, del modelo ni del efecto distingue las dos capas: las dos usan
+`effects/opacity/effect.json`. Y la vista previa tampoco es un oráculo seguro:
+en ella las lámparas brillan y aquí son negras.
+
+Se deja como estaba (deformar antes), que es lo que ya hacían las otras 132
+escenas. Lo que lo decidiría es el orden en `wallpaper64.exe`: allí están
+`_rt_imageLayerAlbedo_` y `_rt_imageLayerComposite_`, pero el primero aparece
+junto a `BLENDROWCOUNT` y `materials/util/fullscreenlayer.json`
+(`0x140209fe7`), no en el camino de un puppet.
+
+### Lo medido
+
+- **Planes**, `emit_plan` de las 133 escenas de la biblioteca con la hora
+  congelada, contra `main`: **128 idénticas byte a byte** y cambian 5:
+  - `3047352572`: las lámparas con malla, la Vi animada y el `pulse`.
+  - `3082427731`: 5 pases de la copia vieja de `pulse` que se perdían y dos
+    puppets con dos animaciones (`MDLA0004`) que ahora se animan. Es la que
+    más cambia (9,5 de 255 de media) y se acerca a la vista previa: la llama
+    sale de la mano y se le ve la cara.
+  - `3097749052`: 1 pase de `pulse` recuperado y la animación pedida en 6
+    puppets de capas aditivas; 0,93 de 255.
+  - `2023867163`: su `MDLA0002` ya se lee y la marioneta se anima; 2,1.
+  - `3521337568`: Lucy elige la animación pedida; 0,05.
+- **Las animaciones del corpus**: de 5 puppets con el `MDLA` ilegible a 1.
+  Tres eran la cola de `0004`; el `0002` de `2023867163` se lee porque una
+  animación posterior que no cuadra ya no tumba la primera; el que queda es
+  un `0006` que falla antes, en el esqueleto (un hueso con matriz de
+  16384 b). Las de `0005` y `0006` con varias animaciones ya no traen
+  entradas basura.
+- `test_wemdl.py`, `test_werender.py`, `test_wereloj.py`,
+  `test_weparticles.py`, `test_wescript.py`, `test_hoja.py` y
+  `test_giro.py` pasan. `test_wescene.py`: 616/618 variantes y 307/309
+  pares en los dos drivers, lo mismo que `main`; ahora traduce con las
+  directivas, como `werender`. `test_weshader.py` pasa.
+- **La luz** (`test_luminancia.py` con Mesa: `--guardar` en el árbol de
+  `main` y `--referencia` en la rama): 133/133 renderizan, **0 regresiones,
+  0 apagadas**. La única sospechosa, `3459506773`, lo es igual en `main`.
+
+### Lo que queda
+
+- **La cabeza de la Vi y el orden efectos/deformación** de un puppet, arriba.
+- **Mezclar las capas de animación**: `blend`, `additive` y `rate` de cada
+  una de `animationlayers`; hoy se reproduce solo la primera visible.
+- **La cola de `MDLA0006` cuando no va a cero** (2 de 37) y el `0006` cuyo
+  esqueleto no se lee.
+- La mancha negra con forma de espada de `3097749052` ya estaba en `main`; no
+  se ha mirado.
