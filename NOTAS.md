@@ -9743,15 +9743,18 @@ la colocación no cambia ni en un bit y el render a `--time 0` es el de main.
   píxeles del lienzo con la `base` horneada; inventar otra conversión
   arriesgaba que el balanceo y el ángulo estático dejaran de coincidir.
 - **Sumar el vaivén al `origin` a secas**, que fue el primer intento. Contra
-  el oráculo estático (`fidelidad_vaiven.py`, abajo) el giro daba 0 píxeles
-  pero el `origin` 92406 a t = π/2, con un máximo de 13 de 255: la capa se
-  quedaba 0,25 unidades corta, el 2,5 % del parallax en reposo de la raíz.
+  el oráculo estático (`fidelidad_vaiven.py --sin-k`, que quita el 1 + k
+  solo al escribir la línea `vaiven`) el `origin` de `3521337568` da 92406
+  píxeles distintos a t = π/2, con un máximo de 13 de 255: la capa se queda
+  0,25 unidades corta (`test_giro.py`, «sin el 1 + k … se separaría»), el
+  2,5 % del parallax en reposo de la raíz.
 - **Mover también el `g_EffectModelViewProjectionMatrix`** de los pases de
   la capa con la misma cuenta, en los dos ejecutores. Es la colocación
   horneada, y en `3521337568` 222 lo declara el último pase de sus efectos
-  (el que compone con el fondo por `v_ScreenCoord`). Se probó, y contra el
-  oráculo estático da 0 píxeles con él movido y con él sin mover: aquí es
-  inerte. Se quitó para no dejar en los ejecutores código que nada ejercita.
+  (el que compone con el fondo por `v_ScreenCoord`). Se probó y se quitó:
+  sin moverlo, contra el oráculo estático la escena da 0 píxeles distintos
+  (`fidelidad_vaiven.py`), así que aquí es inerte, y no se deja en los
+  ejecutores código que nada ejercita.
 
 ### Lo medido
 
@@ -9789,8 +9792,8 @@ durante la tarea del giro en píxeles), y las medidas pasan por todas.
 - **Los renders** (`renders_vaiven.py`, `obj/glexec` de la rama y el de
   main construido en su `git archive`). Las dos escenas se mueven enteras
   con el tiempo también en main —agua, partículas, efectos con `g_Time`, el
-  bloom—: entre t = 0 y t = π/2 cambian 1,98 y 6,96 millones de píxeles en
-  main. Por eso lo del vaivén se aísla de dos maneras: la escena entera de la
+  bloom—: entre t = 0 y t = π/2 cambian 1976280 y 6957145 píxeles de
+  8294400 en main (`renders_vaiven.py` f y g, «main entre t=0 y …»). Por eso lo del vaivén se aísla de dos maneras: la escena entera de la
   rama frente a la de main **al mismo tiempo**, y la escena cargada con solo
   la capa y `--only-base` (sin sus efectos ni bloom), donde sí se comparan
   dos tiempos.
@@ -9822,9 +9825,10 @@ durante la tarea del giro en píxeles), y las medidas pasan por todas.
   de [0, 600] s, en `C` y en `es_ES.UTF-8`, `we_vaiven_valor` queda a **0**
   de `wescript.valor_del_vaiven` y del script evaluado, y `we_vaiven_coloca`
   a **2,3e-8 como mucho** de `object_mvp` con el valor del instante puesto en
-  el campo (y el parallax en reposo recalculado con él; sin el 1 + k la de
-  `3521337568` se separaría 2,3e-4). Una línea con `@TIME@` sin poner se lee sin tiempo y con lo de
-  detrás.
+  el campo (y el parallax en reposo recalculado con él). Sin el 1 + k, la
+  línea de `3521337568` se separaría **2,31e-4 en clip, 0,25 unidades de
+  lienzo** (lo imprime el propio test, que exige que pase de 1e-6). Una
+  línea con `@TIME@` sin poner se lee sin tiempo y con lo de detrás.
 - **El reparto** (`reparto_y_avisos.py`): `glexec.c` y `glexecutor.cpp`
   llaman a `we_vaiven_linea` y a `we_vaiven_coloca` con los tres argumentos
   de su firma, y el `Makefile` enlaza `src/wegiro.c` en los dos. `make
@@ -9835,7 +9839,7 @@ durante la tarea del giro en píxeles), y las medidas pasan por todas.
   reanaliza con `--desde`): 133/133 renderizan en las dos, **0 regresiones,
   0 apagadas**. `3050043876` 41,69 → 41,69 y `3521337568` 65,03 → 65,03; se
   mueven 13 escenas de planes idénticos byte a byte, la que más
-  `2864255069`, 0,49 de 255: tiene tres relojes de texto y
+  `2864255069`, 0,49 de 255: tiene tres capas de texto que dan la hora y
   `test_luminancia` no congela la hora, así que entre las dos pasadas
   cambian los dígitos.
 - `test_wescript.py`, `test_giro.py`, `test_werender.py`, `test_wereloj.py`,
@@ -9852,8 +9856,8 @@ durante la tarea del giro en píxeles), y las medidas pasan por todas.
 - **El pivote de una capa con `alignment`**: `3050043876` 338 dice `top`, y
   `object_mvp` la gira —estática o con vaivén— sobre el centro del quad, con
   el desplazamiento del `alignment` sin girar. Si WE gira sobre el `origin`
-  (el borde de arriba, que es como se balancearía un parche colgado), con 3°
-  el centro se iría ~17 px. No está leído en el motor y no es de este
+  (el borde de arriba, que es como se balancearía un parche colgado), el
+  centro del quad también se desplazaría al balancearse. No está leído en el motor y no es de este
   trozo: cambia por igual el ángulo estático.
 - **Lo que no pasa por la colocación**: los uniforms con la MVP del objeto
   (`g_EffectModelViewProjectionMatrix`, la luz) se quedan con el `value`,

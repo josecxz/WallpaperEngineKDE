@@ -49,7 +49,8 @@ con las dos líneas `vaiven` de los planes de `3050043876` (capa 338,
      `origin` la traslación, con el signo de y del lienzo. Las dos con el
      parallax de cámara en reposo de la escena (`parallax_de_camara`), que
      sale del `origin` y en `3521337568` hace que la capa se mueva 1,025
-     veces el vaivén.
+     veces el vaivén. Para que el caso discrimine, la misma línea con los
+     ejes sin ese 1 + k tiene que separarse más de 1e-6.
   8. Que una línea con `@TIME@` sin poner se lee igual, sin tiempo, y que
      los dos ejecutores llaman a `we_vaiven_linea` y `we_vaiven_coloca`.
 
@@ -341,6 +342,33 @@ def _compara_vaiven(exe: Path, tmp: Path, linea: str, lienzo, base, nombre,
     return fallos
 
 
+def _sin_parallax_en_reposo(raw, general, lienzo, base, i, forma,
+                            linea: str) -> list[str]:
+    """Lo que se separaría de `object_mvp` la línea `vaiven origin` con los
+    ejes sin el 1 + k del parallax en reposo de una raíz, la cuenta de
+    `we_vaiven_coloca` hecha aquí: en clip y en unidades de lienzo. Para que
+    el caso discrimine tiene que pasar de 1e-6."""
+    k = con_paralaje(quieta(raw), general, lienzo).get("_paralaje_k") or [0.0, 0.0]
+    ex, ey = (float(x) for x in linea.split()[-2:])
+    ex, ey = ex / (1.0 + k[0]), ey / (1.0 + k[1])
+    b0 = forma[0]
+    peor = peor_u = 0.0
+    for t in tiempos():
+        v = wescript.valor_del_vaiven(forma, t)
+        esp = werender.object_mvp(_Capa(con_paralaje(con_valor(raw, "origin", i, v),
+                                                     general, lienzo)), lienzo)
+        dado = (base[3] + ex * (v - b0), base[7] + ey * (v - b0))
+        sep = max(abs(dado[0] - esp[3]), abs(dado[1] - esp[7]))
+        peor = max(peor, sep)
+        peor_u = max(peor_u, abs(dado[0] - esp[3]) * lienzo[0] / 2.0,
+                     abs(dado[1] - esp[7]) * lienzo[1] / 2.0)
+    print(f"      sin el 1 + k del parallax en reposo (k = {k[0]:g}, {k[1]:g}) se "
+          f"separaría {peor:.3g} en clip, {peor_u:.3g} unidades de lienzo")
+    if peor <= TOL_MATRIZ:
+        return ["vaiven origin: sin el 1 + k no se separa; el caso no discrimina"]
+    return []
+
+
 def prueba_vaiven(exe: Path, tmp: Path) -> list[str]:
     fallos: list[str] = []
     for escena, capa, campo in VAIVENES:
@@ -373,6 +401,9 @@ def prueba_vaiven(exe: Path, tmp: Path) -> list[str]:
             f"{escena}/{capa}", lambda t: wescript.valor_del_vaiven(forma, t),
             lambda t: ip.vector_en(t, entrada)[i],
             lambda v: con_paralaje(con_valor(raw, campo, i, v), general, lienzo))
+        if campo == "origin":
+            fallos += _sin_parallax_en_reposo(raw, general, lienzo, base, i, forma,
+                                              lineas[0])
 
     # Con decimales en todo, que es donde muerde la locale. Una capa
     # sintética no cuadrada, con el ángulo ya horneado y un lienzo 16:9.

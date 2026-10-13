@@ -439,8 +439,8 @@ make indice                       # reescribe los números desde NOTAS.md
 - `9642` **Un campo que oscila con `engine.runtime`: el vaivén de `angles` y de `origin`** — `wescript` da `Math.sin`, `Math.cos` y `engine.runtime`, y `vaiven_de` reduce cada componente a `K + A · sin(ω · t + φ)` y lo comprueba evaluándolo; la línea `vaiven` y `src/wegiro.c` mueven la colocación con el tiempo de `g_Time` en los dos ejecutores. Se balancea el parche de `3050043876` y sube y baja el gotero de `3521337568`; las dos capas con hijos de `3577990983` no.
 - `9675` **Lo que cambia** — `vector_en`, la ω por la identidad de `f(t ± h)`, la comprobación, la línea con los ejes de clip y el 1 + k del parallax en reposo de una raíz, y el giro con `we_giro_coloca`.
 - `9732` **Lo que se descartó** — reconocer el texto, mover también a los hijos, otra cuenta para el giro, sumar el `origin` sin el parallax en reposo (92406 píxeles contra el estático) y mover el `g_EffectModelViewProjectionMatrix`, inerte aquí.
-- `9756` **Lo medido** — 2 de 430 campos con forma, error 0; 131/133 planes idénticos y una línea añadida en cada una de las otras dos; 0 píxeles a t = 0 y contra el estático; 20,5 unidades y 3,00°; el C a 0 en `C` y `es_ES`; 0 regresiones de luz.
-- `9844` **Lo que queda** — las capas con hijos, el glitch y el `Math.random` de `engine.runtime`, el pivote de una capa con `alignment`, los uniforms con la MVP del objeto y el arranque de `engine.runtime`.
+- `9759` **Lo medido** — 2 de 430 campos con forma, error 0; 131/133 planes idénticos y una línea añadida en cada una de las otras dos; 0 píxeles a t = 0 y contra el estático; 20,5 unidades y 3,00°; el C a 0 en `C` y `es_ES`; 0 regresiones de luz.
+- `9848` **Lo que queda** — las capas con hijos, el glitch y el `Math.random` de `engine.runtime`, el pivote de una capa con `alignment`, los uniforms con la MVP del objeto y el arranque de `engine.runtime`.
 
 ## Inventario del formato: qué leemos y qué no
 
