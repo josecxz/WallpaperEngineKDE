@@ -95,9 +95,17 @@ HEADER_CONST = 12           # bytes constantes entre el magic y la ruta
 # que ser enteros pequenos, los pesos sumar 1 en todos los vertices, las UV
 # caer en [0,1] y la z ser cero. Con `0x0180000f` cuadran los 40 ficheros de
 # las tres versiones nuevas, y con `0x0181000e` los 2 restantes.
+#
+# Los bits `0x01800000` son los de los huesos: `0x0000000f` es la misma malla
+# que `0x0180000f` sin los 4 indices ni los 4 pesos, 12 campos ---posicion,
+# normal (0,0,1), tangente (1,0,0,1) y UV--- y sin esqueleto detras. Lo trae un
+# puppet que solo recorta y no se anima (las lamparas de `3047352572`); se
+# comprobo con las mismas pruebas: z a cero, UV en [0,1] e indices en rango.
+# Sin huesos, `None`: todos los vertices van al hueso 0 con peso 1.
 LAYOUTS = {
     0x0:        (13, 3, 7, 11),
     0x01800009: (13, 3, 7, 11),
+    0x0000000f: (12, None, None, 10),
     0x0180000f: (20, 10, 14, 18),
     0x0181000e: (21, 11, 15, 19),
 }
@@ -291,10 +299,11 @@ class Animation:
     """Animacion de huesos ya decodificada."""
 
     name: str
-    mode: str                  # "loop" en todo el corpus visto
+    mode: str                  # "loop" o "mirror"
     duration: float
     frames: int
     tracks: np.ndarray         # (huesos, fotogramas+1, 9) float32
+    ident: int = 0             # el `animation` de `animationlayers` en scene.json
 
     @property
     def positions(self) -> np.ndarray:
@@ -340,6 +349,14 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>",
     relleno del final y el bloque cuadra igual. Sin el, la segunda animacion
     arranca cuatro bytes antes y lee el cero de cierre como identificador.
 
+    Y la cola crece con la version: ver `COLA_ANIMACION`. Con los 4 bytes de
+    MDLA0001 en todas, desde MDLA0003 la segunda animacion y las siguientes
+    salian como basura ---nombre vacio, cero pistas--- sin que nada fallara,
+    porque solo se usaba la primera. Mordia en cuanto la capa pedia otra.
+    Una animacion que no cuadra despues de la primera corta la lista en vez de
+    tumbar el puppet entero: la cola de MDLA0006 no siempre va a cero y
+    no se sabe leer.
+
     Cada fotograma son 9 float: posicion(3), rotacion(3) y escala(3). Tres
     comprobaciones cruzadas lo sostienen, y ninguna sale del propio bloque:
 
@@ -373,32 +390,63 @@ def parse_animations(buf: bytes, pos: int, name: str = "<memoria>",
                        f"({resto} b sin identificar tras el esqueleto)")
     _total, count = struct.unpack_from("<II", buf, p)
     p += 8
+    try:
+        cola = COLA_ANIMACION.get(int(ver[4:]), 4)
+    except ValueError:
+        cola = 4
 
     anims: list[Animation] = []
     for i in range(count):
-        p += 8                                  # identificador + un u32 a 0
-        anim_name, p = _cstring(buf, p)
-        mode, p = _cstring(buf, p)
-        duration, frames, _z1, ntracks = struct.unpack_from("<fIII", buf, p)
-        p += 16
-
-        pistas = []
-        for k in range(ntracks):
-            _z2, tbytes = struct.unpack_from("<II", buf, p)
-            p += 8
-            if tbytes % 36:
-                raise MdlError(f"{name}: pista {k} de {tbytes} b no es multiplo de 36")
-            if p + tbytes > len(buf):
-                raise MdlError(f"{name}: la pista {k} de '{anim_name}' desborda el fichero")
-            pistas.append(np.frombuffer(buf, "<f4", tbytes // 4, p).reshape(-1, 9))
-            p += tbytes
-
-        p += 4                                  # cierre de la animacion
-
-        t = np.stack(pistas) if pistas else np.zeros((0, 0, 9), dtype="<f4")
-        anims.append(Animation(name=anim_name, mode=mode, duration=float(duration),
-                               frames=int(frames), tracks=t))
+        try:
+            a, p = _una_animacion(buf, p, name, bone_count if i else 0)
+        except (MdlError, struct.error):
+            if not anims:
+                raise
+            break
+        anims.append(a)
+        p += cola                               # cierre de la animacion
     return anims, p
+
+
+# Bytes que cierran cada animacion, por version del MDLA. Medido sobre el
+# corpus siguiendo la cadena: con estos tamanos todas las animaciones de
+# MDLA0001, 0003, 0004 y 0005 cuadran (pistas == huesos, `fotogramas + 1`
+# claves) y el bloque acaba a un byte del final del fichero; en todas esas
+# versiones la cola va entera a cero. En MDLA0006, 2 de 37 colas traen datos.
+COLA_ANIMACION = {1: 4, 2: 4, 3: 9, 4: 10, 5: 34, 6: 35}
+
+
+def _una_animacion(buf: bytes, p: int, name: str,
+                   bone_count: int) -> tuple[Animation, int]:
+    """Lee una animacion del MDLA sin su cola. Con `bone_count`, ademas exige
+    que cuadre con el esqueleto: es lo que delata una lectura desalineada."""
+    ident, _z0 = struct.unpack_from("<II", buf, p)
+    p += 8                                      # identificador + un u32 a 0
+    anim_name, p = _cstring(buf, p)
+    mode, p = _cstring(buf, p)
+    duration, frames, _z1, ntracks = struct.unpack_from("<fIII", buf, p)
+    p += 16
+    if bone_count and ntracks != bone_count:
+        raise MdlError(f"{name}: '{anim_name}' trae {ntracks} pistas y hay "
+                       f"{bone_count} huesos")
+
+    pistas = []
+    for k in range(ntracks):
+        _z2, tbytes = struct.unpack_from("<II", buf, p)
+        p += 8
+        if tbytes % 36:
+            raise MdlError(f"{name}: pista {k} de {tbytes} b no es multiplo de 36")
+        if bone_count and tbytes != 36 * (frames + 1):
+            raise MdlError(f"{name}: pista {k} de '{anim_name}' con {tbytes // 36} "
+                           f"claves para {frames} fotogramas")
+        if p + tbytes > len(buf):
+            raise MdlError(f"{name}: la pista {k} de '{anim_name}' desborda el fichero")
+        pistas.append(np.frombuffer(buf, "<f4", tbytes // 4, p).reshape(-1, 9))
+        p += tbytes
+
+    t = np.stack(pistas) if pistas else np.zeros((0, 0, 9), dtype="<f4")
+    return Animation(name=anim_name, mode=mode, duration=float(duration),
+                     frames=int(frames), tracks=t, ident=int(ident)), p
 
 
 def _cstring(buf: bytes, pos: int) -> tuple[str, int]:
@@ -459,13 +507,20 @@ def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
 
     pos = _saltar_hasta_bloque(buf, pos)
 
+    if off_hueso is None:
+        huesos = np.zeros((n, 4), dtype="<u4")
+        pesos = np.zeros((n, 4), dtype="<f4")
+        pesos[:, 0] = 1.0
+    else:
+        huesos = flat_u[:, off_hueso:off_hueso + 4]
+        pesos = flat_f[:, off_peso:off_peso + 4]
     return Mesh(
         version=version,
         material=material,
         positions=flat_f[:, 0:3],
         uvs=flat_f[:, off_uv:off_uv + 2],
-        bone_indices=flat_u[:, off_hueso:off_hueso + 4],
-        bone_weights=flat_f[:, off_peso:off_peso + 4],
+        bone_indices=huesos,
+        bone_weights=pesos,
         indices=indices,
         consumed=pos,
     )

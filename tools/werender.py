@@ -1461,7 +1461,34 @@ def _punto_animado(mats: np.ndarray, keys: int, duration: float,
             punto[0] * m[0, 1] + punto[1] * m[1, 1] + m[3, 1])
 
 
-def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
+def _animacion_de_capa(capa: dict | None, anims: list):
+    """La animacion del puppet que reproduce la capa.
+
+    La elige `animationlayers` de scene.json por su `animation`, que es el
+    identificador de la animacion en el MDLA; no tiene por que ser la primera
+    del fichero (la de la Vi de `3047352572` es la segunda de tres, y la
+    tercera deja las piezas en su sitio de reposo). Se toma la
+    primera capa de animacion visible: mezclar varias con su `blend` y su
+    `rate` no esta hecho. Sin capas, o si ninguna casa, la primera del MDLA,
+    que es lo que se hacia siempre.
+    """
+    for capa_anim in (capa or {}).get("animationlayers") or ():
+        if not isinstance(capa_anim, dict):
+            continue
+        visible = capa_anim.get("visible", True)
+        if isinstance(visible, dict):
+            visible = visible.get("value", True)
+        if not visible:
+            continue
+        a = next((a for a in anims if a.ident == capa_anim.get("animation")), None)
+        if a is not None:
+            return a
+        break
+    return anims[0]
+
+
+def _skin(mesh, blob: bytes, rel: str, stats, notes,
+          capa: dict | None = None) -> np.ndarray:
     """Deforma la malla por huesos en el instante WE_PUPPET_TIME.
 
     Es skinning en CPU, horneado a un tiempo fijo: sirve para comprobar que
@@ -1487,7 +1514,7 @@ def _skin(mesh, blob: bytes, rel: str, stats, notes) -> np.ndarray:
     if not anims:
         return np.asarray(mesh.positions, dtype=np.float64)
 
-    a = anims[0]
+    a = _animacion_de_capa(capa, anims)
     keys = a.tracks.shape[1]
     # El ultimo fotograma repite el primero para cerrar el bucle, asi que el
     # periodo son `keys - 1` intervalos. En `mirror` el periodo es el doble
@@ -2085,9 +2112,10 @@ class Renderer:
                 anims, _ = wemdl.parse_animations(blob, p, rel, len(bones))
             except wemdl.MdlError:
                 anims = []
-            if anims and int(anims[0].tracks.shape[1]) >= 2 and bones:
-                mats, keys = _pistas_de_huesos(bones, anims[0])
-                base = _punto_animado(mats, keys, anims[0].duration,
+            a = _animacion_de_capa(padre.raw, anims) if anims else None
+            if a is not None and int(a.tracks.shape[1]) >= 2 and bones:
+                mats, keys = _pistas_de_huesos(bones, a)
+                base = _punto_animado(mats, keys, a.duration,
                                       punto, att.bone, t)
                 seguible = congelado is None
 
@@ -2289,7 +2317,7 @@ class Renderer:
             self.notes.append(f"puppet sin malla ({rel}): {e}")
             return
 
-        pos = _skin(m, blob, rel, self.stats, self.notes)
+        pos = _skin(m, blob, rel, self.stats, self.notes, obj.raw)
 
         inter = np.empty((m.vertex_count, 5), dtype="<f4")
         inter[:, 0:3] = pos
@@ -2303,7 +2331,7 @@ class Renderer:
 
         mid = len(self.mesh_files)
         path = self.tmp / f"mesh{mid:03d}.bin"
-        anim = self._mesh_anim(m, blob, rel)
+        anim = self._mesh_anim(m, blob, rel, obj.raw)
         with open(path, "wb") as fh:
             fh.write(inter.tobytes())
             fh.write(idx.tobytes())
@@ -2477,7 +2505,8 @@ class Renderer:
         self.stats["reloj"] += 1
         return True
 
-    def _mesh_anim(self, m, blob: bytes, rel: str) -> MeshAnim | None:
+    def _mesh_anim(self, m, blob: bytes, rel: str,
+                   capa: dict | None = None) -> MeshAnim | None:
         """Empaqueta huesos y pistas para que el ejecutor deforme por fotograma.
 
         Devuelve None cuando no hay nada que animar, y tambien cuando el
@@ -2495,7 +2524,7 @@ class Renderer:
         if not bones or not anims:
             return None
 
-        a = anims[0]
+        a = _animacion_de_capa(capa, anims)
         keys = int(a.tracks.shape[1])
         nb = len(bones)
         if keys < 2 or nb == 0:
@@ -2729,11 +2758,14 @@ class Renderer:
             fuente_v, fuente_f, sresolver, combos)
         varyings = weshader.varyings_de_pase(
             fuente_v, fuente_f, sresolver, combos_v, combos_f)
+        directivas = weshader.directivas_de_pase(fuente_v, fuente_f, sresolver)
         try:
             vert = weshader.translate(fuente_v, "vert", sresolver,
-                                      combos=combos_v, varyings=varyings)
+                                      combos=combos_v, varyings=varyings,
+                                      directivas=directivas)
             frag = weshader.translate(fuente_f, "frag", sresolver,
-                                      combos=combos_f, varyings=varyings)
+                                      combos=combos_f, varyings=varyings,
+                                      directivas=directivas)
         except Exception:
             self.stats["sin_shader"] += 1
             return
