@@ -5,6 +5,7 @@
 #include <GL/glext.h>
 
 #include "glexecutor.h"
+#include "wegiro.h"
 #include "weparticles.h"
 #include "wereloj.h"
 #include "wetemblor.h"
@@ -307,6 +308,14 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
         } else if (kw == QLatin1String("tiembla") && !m_ops.isEmpty()
                    && m_ops.last().kind == Op::BeginObject) {
             m_ops.last().tiembla = true;
+        } else if (kw == QLatin1String("giro") && !m_ops.isEmpty()
+                   && m_ops.last().kind == Op::BeginObject) {
+            // El `angles` lo pone un script con la hora. Lo lee
+            // `src/wegiro.c`, el mismo modulo que usa `tools/glexec.c`; la
+            // hora del plan (`@HORA@`) no se mira, la da el reloj.
+            Op &op = m_ops.last();
+            const QByteArray resto = line.mid(kw.size()).toUtf8();
+            op.tieneGiro = we_giro_linea(&op.giro, resto.constData()) != 0;
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
             op.kind = Op::Copy;
@@ -1402,6 +1411,11 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     avanzaPuntero(m_tiempoPrevio >= 0.0f && time > m_tiempoPrevio
                   ? time - m_tiempoPrevio : 0.0f, viewW, viewH);
     m_tiempoPrevio = time;
+    // La hora que ven las agujas (`giro`): una por fotograma, con su
+    // fraccion de segundo, para que todas marquen el mismo instante.
+    timespec ahora{};
+    clock_gettime(CLOCK_REALTIME, &ahora);
+    const double horaDelDia = we_hora_del_dia(ahora.tv_sec, ahora.tv_nsec);
     skinMeshes(time);
     updateClocks();
     updateVideos(time);
@@ -1432,6 +1446,12 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             // componer, despues adoptar la del que empieza.
             beginObject();
             memcpy(m_placement, op.placement, sizeof m_placement);
+            // Una aguja: la colocacion del plan lleva el angulo guardado y
+            // esto la gira al de la hora. Va antes que lo que sigue, que solo
+            // mueve la traslacion.
+            if (op.tieneGiro)
+                we_giro_coloca(&op.giro, we_giro_grados(&op.giro, horaDelDia),
+                               m_placement);
             // Si la capa cuelga de un hueso, corregir lo que ese hueso se haya
             // movido desde el instante en que se horneo el plan. La malla ya
             // esta deformada para este fotograma ---`skinMeshes` va antes---,

@@ -23,6 +23,10 @@
 #include <QString>
 #include <QVector>
 
+// `WeGiro`, la forma de una capa que gira con la hora; la comparte el
+// ejecutor offline, como lo de abajo.
+#include "wegiro.h"
+
 // Los modos de hijo (`WE_HIJO_*`) que guarda `PsysPadre`.
 #include "weparticles.h"
 
@@ -222,6 +226,10 @@ private:
         // `camerashake` la mueve. No la llevan las `passthrough`, que leen el
         // fotograma ya movido; ver `temblor_de_camara` en werender.py.
         bool tiembla = false;
+        // Su `angles` lo pone un script con la hora (linea `giro`): la forma
+        // de `src/wegiro.c`, que gira `placement` cada fotograma.
+        bool tieneGiro = false;
+        WeGiro giro{};
         // Pass
         QString vert, frag;             // solo hasta initialize()
         QString targetName;             // idem

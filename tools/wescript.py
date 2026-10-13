@@ -613,7 +613,8 @@ class Objeto(dict):
 
 
 class Motor:
-    """`engine`, el objeto global de WE, con un único miembro: `registerAsset`.
+    """`engine`, el objeto global de WE, con dos miembros: `registerAsset` y
+    `timeOfDay`.
 
     Hay scripts que registran sus fuentes en el cuerpo del módulo
     ---`cachedFonts.push(engine.registerAsset(f))`--- y solo las usan en
@@ -622,6 +623,10 @@ class Motor:
     otro miembro (`frametime`, `registerAudioBuffers`...) sí hace que dependa,
     y sigue siendo un ScriptError: un `engine` que diera `undefined` a todo
     convertiría un contador de fps en un «reloj» que no cambia.
+
+    `timeOfDay` es la hora local como fracción del día, en [0, 1): lo que da
+    la hora, igual que `new Date()`, y por eso se lee del mismo instante. Lo
+    usan las agujas de un reloj analógico (`giro_por_hora`).
     """
 
 
@@ -804,6 +809,9 @@ class Interprete:
         self.fecha: dt.datetime = dt.datetime.now()
         # El último `setFrame` de la llamada en curso; ver `fotograma_en`.
         self.fotograma: float | None = None
+        # `engine.timeOfDay` exacto, si quien evalúa lo da; si no, sale de
+        # `fecha`. Ver `giro_en`.
+        self.hora_del_dia: float | None = None
         self.animacion = Animacion()
         self._prepara()
 
@@ -847,6 +855,31 @@ class Interprete:
         self.fotograma = None
         self.llama(f, [valor])
         return self.fotograma
+
+    def giro_en(self, tod: float, valor: list[float]) -> float | None:
+        """La `z` del `Vec3` que `update(value)` devuelve con `timeOfDay`
+        igual a `tod`, o None si no devuelve eso.
+
+        `value` llega como el objeto `{x, y, z}` de `valor`, nuevo en cada
+        llamada. Lo que el script devuelva en `x` e `y` tiene que ser lo que
+        recibió: aquí solo se gira la capa en su plano. `new Date()` da el
+        mismo instante que `tod`, en un día cualquiera, para que un script que
+        mezcle las dos lea una sola hora.
+        """
+        f = self.global_.vars.get("update")
+        if not isinstance(f, Funcion):
+            raise ScriptError("el script no exporta update()")
+        self.hora_del_dia = tod
+        self.fecha = dt.datetime(2026, 1, 5) + dt.timedelta(seconds=tod * 86400.0)
+        x, y, z = valor
+        r = self.llama(f, [Objeto({"x": x, "y": y, "z": z})])
+        if not isinstance(r, dict):
+            return None
+        rz = r.get("z")
+        if (isinstance(rz, bool) or not isinstance(rz, (int, float))
+                or r.get("x") != x or r.get("y") != y):
+            return None
+        return float(rz)
 
     # --- sentencias
     def ejecuta(self, s, a: Ambito):
@@ -1120,6 +1153,12 @@ class Interprete:
         if isinstance(obj, Motor):
             if clave == "registerAsset":
                 return ("__met_motor__", obj, clave)
+            if clave == "timeOfDay":
+                if self.hora_del_dia is not None:
+                    return self.hora_del_dia
+                d = self.fecha
+                return (d.hour * 3600 + d.minute * 60 + d.second
+                        + d.microsecond / 1e6) / 86400.0
             raise ScriptError(f"engine.{js_str(clave)}")
         if isinstance(obj, Recurso):
             raise ScriptError("propiedad de un recurso de engine")
@@ -1792,6 +1831,127 @@ def hoja_por_hora(obj: dict) -> list[int] | None:
     if not tablas or any(t != tablas[0] for t in tablas):
         return None
     return tablas[0]
+
+
+# ── el ángulo de una capa, elegido por la hora: las agujas de un reloj ──────
+#
+# Un script en `angles` cuyo `update` solo lee `engine.timeOfDay` es una aguja:
+# `value.z = ((engine.timeOfDay * 24) % 1) * -360` da la vuelta cada hora.
+# Lo que viaja en el plan no es el script sino su forma cerrada,
+#
+#     z = A · frac(B · tod) + C        (en GRADOS; tod en [0, 1))
+#
+# con `A · tod + C` como el caso de B = 1, y el ejecutor la evalúa con su
+# reloj. El script trabaja en grados ---el `rad2deg` de `2637739953` lo
+# dice--- y el `angles` de `scene.json` en radianes; quien pasa de unos a
+# otros es `werender`.
+
+def _tods_de_prueba() -> list[float]:
+    """Los ~4900 `timeOfDay` con los que se comprueba una forma: una rejilla
+    de 2000 en [0, 1), y a cada lado de cada cambio de minuto y de hora, que
+    es donde salta una aguja, más 0,5 y 0,999999."""
+    tods = {k / 2000.0 for k in range(2000)}
+    for m in range(1440):
+        tods.add(m / 1440.0)
+        tods.add(max(0.0, m / 1440.0 - 1e-9))
+    for h in range(24):
+        tods.add(h / 24.0)
+        tods.add(max(0.0, h / 24.0 - 1e-9))
+    tods.update({0.0, 0.5, 0.999999})
+    return sorted(tods)
+
+
+def grados_del_giro(forma: tuple[float, float, float], tod: float) -> float:
+    """`A · frac(B · tod) + C`. Es la cuenta que hace `we_giro_grados` en
+    `src/wereloj.c`, con el mismo `fmod` para que los dos den lo mismo."""
+    import math
+    a, b, c = forma
+    return a * math.fmod(b * tod, 1.0) + c
+
+
+def forma_del_giro(ip: Interprete, valor: list[float]
+                   ) -> tuple[float, float, float] | None:
+    """(A, B, C) del script, y solo si se comprueba.
+
+    Deducir es leer la recta del principio y dónde se rompe: C es lo que da
+    en 0, la pendiente sale de un paso de 1e-6, y el primer salto ---se busca
+    partiendo por la mitad entre el primer instante y 0,999999--- cae en
+    1/B. Sin salto, B es 1. A sale de la mitad del primer tramo, que es más
+    exacto que la pendiente partida por B.
+
+    La garantía no es eso sino la comprobación, como en `formato_de`: en los
+    `_tods_de_prueba` la forma tiene que dar lo que el script, a 1e-6 grados.
+    Y con otro `value` de entrada el script tiene que dar lo mismo: en WE
+    `value` es lo que devolvió el fotograma anterior, así que un script que
+    lo lea acumula y no depende solo de la hora. Lo que no lee ninguna hora
+    ---la misma `z` siempre--- no es una aguja.
+    """
+    import math
+    otro = [valor[0], valor[1], valor[2] + 37.0]
+
+    def z(t: float, entrada=valor) -> float:
+        r = ip.giro_en(t, entrada)
+        if r is None or not math.isfinite(r):
+            raise ScriptError("update no da un ángulo")
+        return r
+
+    try:
+        c = z(0.0)
+        paso = 1e-6
+        pendiente = (z(paso) - c) / paso
+        if pendiente == 0.0 or not math.isfinite(pendiente):
+            return None
+        umbral = 1e-6 * (1.0 + abs(pendiente))
+
+        def en_la_recta(t: float) -> bool:
+            return abs(z(t) - (c + pendiente * t)) <= umbral
+
+        b = 1.0
+        fin = 0.999999
+        if not en_la_recta(fin):
+            lo, hi = paso, fin
+            for _ in range(60):
+                medio = (lo + hi) / 2.0
+                if en_la_recta(medio):
+                    lo = medio
+                else:
+                    hi = medio
+            b = 1.0 / hi
+            if abs(b - round(b)) < 1e-6 * b:
+                b = float(round(b))
+        a = (z(0.5 / b) - c) / math.fmod(b * (0.5 / b), 1.0)
+        forma = (a, b, c + 0.0)          # sin el -0 de `-720 · 0`
+        for i, t in enumerate(_tods_de_prueba()):
+            if abs(grados_del_giro(forma, t) - z(t)) > 1e-6:
+                return None
+            if i % 50 == 0 and z(t, otro) != z(t):
+                return None
+    except Exception:
+        return None
+    return forma
+
+
+def giro_por_hora(obj: dict) -> tuple[float, float, float] | None:
+    """La forma (A, B, C) del `angles` de una capa, o None.
+
+    Solo el script del propio `angles`: lo que otro campo haga con
+    `thisLayer.angles` no se mira. El `value` guardado entra en GRADOS, que
+    es lo que el script ve.
+    """
+    import math
+    d = obj.get("angles")
+    if not isinstance(d, dict) or not isinstance(d.get("script"), str):
+        return None
+    props = d.get("scriptproperties")
+    props = {k: (v.get("value") if isinstance(v, dict) else v)
+             for k, v in props.items()} if isinstance(props, dict) else {}
+    try:
+        ip = Interprete(d["script"], props)
+        valor = [math.degrees(float(x)) for x in str(d.get("value") or "").split()]
+    except Exception:
+        return None
+    valor = (valor + [0.0, 0.0, 0.0])[:3]
+    return forma_del_giro(ip, valor)
 
 
 # ── barrido del corpus ──────────────────────────────────────────────────────

@@ -28,6 +28,7 @@
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
+ *   giro <a> <b> <c> <base> <hora>     el objeto gira con la hora (wegiro.h)
  *   pass                               abre un pase
  *     prog <vert> <frag>
  *     target <nombre|SCREEN>           SCREEN = buffer acumulado del objeto
@@ -56,6 +57,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "wegiro.h"
 #include "weparticles.h"
 #include "wereloj.h"
 #include "wetemblor.h"
@@ -1019,6 +1021,18 @@ int main(int argc, char **argv)
                     obj_mvp[3] += e00 * dx + e01 * dy;
                     obj_mvp[7] += e10 * dx + e11 * dy;
                 }
+            }
+        } else if (strcmp(kw, "giro") == 0 && !in_pass) {
+            /* El `angles` de la capa lo pone un script con la hora: el plan
+             * trae la colocacion con el angulo guardado y esto la rehace con
+             * el de la hora del plan, que `werender` fija con `--hora`. Sin
+             * ella (un plan de `--emit-plan`, con `@HORA@`), la de ahora,
+             * como los relojes de texto. */
+            WeGiro g;
+            if (we_giro_linea(&g, line + 4)) {
+                const double hora = g.con_hora ? g.hora
+                                               : we_hora_del_dia(time(NULL), 0);
+                we_giro_coloca(&g, we_giro_grados(&g, hora), obj_mvp);
             }
         } else if (strcmp(kw, "parallax") == 0 && !in_pass) {
             /* `parallax <retardo> <influencia>`. El retardo no pinta nada

@@ -61,7 +61,8 @@ scene.pkg ──pkg_inspect──┬─ .tex  ──wetex────┐  (IS_VI
                                     ├──── src/weparticles.c ────┤  (compartidos)
                                     ├──── src/wevideo.c ────────┤
                                     ├──── src/wereloj.c ────────┤
-                                    └──── src/wetemblor.c ──────┘
+                                    ├──── src/wetemblor.c ──────┤
+                                    └──── src/wegiro.c ─────────┘
 ```
 
 Un wallpaper de **tipo vídeo** (15 en la biblioteca) no pasa por el grafo: es un
@@ -75,10 +76,10 @@ ejecutan un plan ya resuelto. La implementación de referencia está en Python a
 propósito; `src/` es el port a C++ de lo mismo.
 
 **Regla de oro del reparto:** `glexec.c` y `glexecutor.cpp` enlazan **los
-mismos** `src/weparticles.c`, `src/wevideo.c`, `src/wereloj.c` y
-`src/wetemblor.c`. Si tocas la simulación, la decodificación de vídeo, la
-disposición de un reloj o el temblor de cámara, tocas los dos a la vez o
-divergen.
+mismos** `src/weparticles.c`, `src/wevideo.c`, `src/wereloj.c`,
+`src/wetemblor.c` y `src/wegiro.c`. Si tocas la simulación, la decodificación
+de vídeo, la disposición de un reloj, el temblor de cámara o el giro de una
+aguja, tocas los dos a la vez o divergen.
 
 ## Dónde vive cada cosa
 
@@ -103,6 +104,7 @@ divergen.
 | `src/wevideo.c` | decodificador libav, **compartido** por los dos ejecutores |
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
 | `src/wetemblor.c` | la curva de `camerashake`, **compartida** por los dos |
+| `src/wegiro.c` | el `angles` que pone la hora (agujas), **compartido** por los dos |
 | `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`) |
 
 ## Comandos
