@@ -17,13 +17,21 @@ las tres líneas `giro` del plan de `2396319149` (las agujas 362, 368 y 371):
   2. Que `we_giro_coloca`, sobre la colocación que `object_mvp` hornea con el
      `value` guardado, da la misma matriz que `object_mvp` con el ángulo de la
      hora puesto en `angles`, en radianes, a 1e-6: unidades, signo y eje. Las
-     dos giran en píxeles del lienzo, así que se prueba en el lienzo de la
-     escena y en otro 16:9 de 1920x1080, y en uno cuadrado; la línea con
-     decimales, sobre una capa sintética no cuadrada que ya trae su ángulo
-     `base`, donde girar en clip en vez de en píxeles da otra matriz.
-  3. Que `we_hora_del_dia` es la hora local como fracción del día, con su
+     dos giran en píxeles del lienzo, y el ejecutor lo saca de la propia línea
+     `giro`, así que se prueba con la línea del lienzo de la escena y con la
+     misma línea reescrita para otro 16:9 de 1920x1080 y uno cuadrado; la
+     línea con decimales, sobre una capa sintética no cuadrada que ya trae su
+     ángulo `base`, donde girar en clip en vez de en píxeles da otra matriz.
+  3. Que eso vale también con el plan emitido con `resolucion`, como el de
+     `wectl` en vivo: a 1920x1200 y a 1366x768 la línea `canvas` dice la
+     resolución de dibujo redondeada (2133x1200, 1366x768), cuya proporción
+     no es la del lienzo. Se toman las líneas `object` y `giro` del plan tal
+     cual, como los ejecutores, y el giro tiene que quedar a 1e-6 de
+     `object_mvp` en el lienzo de la ESCENA. Para que el caso discrimine, el
+     giro con la proporción de `canvas` tiene que separarse más de 1e-6.
+  4. Que `we_hora_del_dia` es la hora local como fracción del día, con su
      fracción de segundo, con `TZ=UTC` y con `TZ=Etc/GMT-2`.
-  4. Que `tools/glexec.c` y `src/glexecutor.cpp` llaman los dos a
+  5. Que `tools/glexec.c` y `src/glexecutor.cpp` llaman los dos a
      `we_giro_linea`, `we_giro_grados` y `we_giro_coloca`.
 
 Uso:
@@ -54,6 +62,8 @@ TOL_GRADOS = 1e-4
 TOL_MATRIZ = 1e-6
 # Lienzos donde se compara con `object_mvp`: el de la escena se añade delante.
 LIENZOS = ((1920, 1080), (1000, 1000))
+# Resoluciones de dibujo con las que se emite el plan, como lo emite `wectl`.
+RESOLUCIONES = ((1920, 1200), (1366, 768))
 
 ARNES = r"""
 #include <locale.h>
@@ -65,9 +75,9 @@ ARNES = r"""
 /* argv[1]: `-` para ver qué lee `strtod` de `0.5` en la locale de argv[2];
  * `hora` para pasar instantes `<segundos> <nanosegundos>` a fracción del día;
  * si no, un fichero con la línea `giro` del plan, que se LEE en la locale de
- * argv[2], y el ancho y el alto del lienzo en argv[3] y argv[4], enteros como
- * en la línea `canvas`. Por la entrada, `<tod> <m0> <m1> <m4> <m5>`; por la
- * salida, los grados y la parte lineal girada. */
+ * argv[2]. Por la entrada, `<tod> <m0> <m1> <m4> <m5>`; por la salida, una
+ * primera línea con el lienzo que se leyó y después los grados y la parte
+ * lineal girada. */
 int main(int argc, char **argv)
 {
     if (argc > 2 && !setlocale(LC_ALL, argv[2]))
@@ -85,8 +95,6 @@ int main(int argc, char **argv)
         }
         return 0;
     }
-    if (argc < 5) return 5;
-    const double aspecto = (double)atoi(argv[3]) / atoi(argv[4]);
     FILE *f = fopen(argv[1], "r");
     if (!f) return 2;
     char linea[1024];
@@ -102,13 +110,14 @@ int main(int argc, char **argv)
     /* Para leer las peticiones y escribir se vuelve a la locale C: si no, el
      * arnés leería y escribiría con coma y fallaría la prueba, no el módulo. */
     setlocale(LC_ALL, "C");
+    printf("lienzo %d %d\n", g.ancho, g.alto);
     while (fgets(pet, sizeof pet, stdin)) {
         double tod;
         float m[16] = {0};
         if (sscanf(pet, "%lf %f %f %f %f", &tod, m + 0, m + 1, m + 4, m + 5) != 5)
             continue;
         const double grados = we_giro_grados(&g, tod);
-        we_giro_coloca(&g, grados, aspecto, m);
+        we_giro_coloca(&g, grados, m);
         printf("%.17g %.9g %.9g %.9g %.9g\n", grados, m[0], m[1], m[4], m[5]);
     }
     return 0;
@@ -148,24 +157,32 @@ class _Capa:
         self.passes = []
 
 
-def _compara(exe: Path, linea: Path, lienzo: tuple[int, int], base: list[float],
-             nombre: str, grados_py, raw_girada) -> list[str]:
-    """Pasa por el arnés la colocación `base` en `lienzo`, en `C` y en
-    `es_ES.UTF-8`, y compara cada `tod` con lo que da Python: los grados con
-    `grados_py(tod)` y la matriz con `object_mvp` de `raw_girada(grados)`."""
+def con_lienzo(linea: str, lienzo: tuple[int, int]) -> str:
+    """La línea `giro` con otro lienzo de escena: los dos últimos campos."""
+    return " ".join(linea.split()[:-2] + [str(lienzo[0]), str(lienzo[1])])
+
+
+def _compara(exe: Path, tmp: Path, linea: str, lienzo: tuple[int, int],
+             base: list[float], nombre: str, grados_py, raw_girada) -> list[str]:
+    """Pasa por el arnés la línea `giro` y la colocación `base`, en `C` y en
+    `es_ES.UTF-8`, y compara cada `tod` con lo que da Python: el lienzo leído
+    con `lienzo`, los grados con `grados_py(tod)` y la matriz con `object_mvp`
+    de `raw_girada(grados)` en `lienzo`."""
     fallos = []
     ts = tods()
+    (tmp / "giro.txt").write_text(linea + "\n")
     entrada = "".join(f"{t!r} {base[0]!r} {base[1]!r} {base[4]!r} {base[5]!r}\n"
                       for t in ts)
     for locale in ("C", "es_ES.UTF-8"):
-        r = subprocess.run([str(exe), str(linea), locale, str(lienzo[0]),
-                            str(lienzo[1])],
+        r = subprocess.run([str(exe), str(tmp / "giro.txt"), locale],
                            input=entrada, capture_output=True, text=True)
         salida = r.stdout.splitlines()
+        leido = salida[0] if salida else ""
         peor_g = peor_m = 1.0
-        if not r.returncode and len(salida) == len(ts):
+        if (not r.returncode and len(salida) == len(ts) + 1
+                and leido == f"lienzo {lienzo[0]} {lienzo[1]}"):
             peor_g = peor_m = 0.0
-            for t, l in zip(ts, salida):
+            for t, l in zip(ts, salida[1:]):
                 g, *m = (float(x) for x in l.split())
                 peor_g = max(peor_g, abs(g - grados_py(t)))
                 esp = werender.object_mvp(_Capa(raw_girada(g)), lienzo)
@@ -173,13 +190,23 @@ def _compara(exe: Path, linea: Path, lienzo: tuple[int, int], base: list[float],
                                          zip(m, (esp[0], esp[1], esp[4], esp[5]))))
         ok = len(ts) >= 100 and peor_g <= TOL_GRADOS and peor_m <= TOL_MATRIZ
         lz = f"{lienzo[0]}x{lienzo[1]}"
-        print(f"  {'ok' if ok else 'MAL':3} {nombre} {lz:9} [{locale:11}] {len(ts)} tod: "
-              f"grados a {peor_g:.3g} de Python, matriz a {peor_m:.3g} de "
-              f"object_mvp")
+        print(f"  {'ok' if ok else 'MAL':3} {nombre} {lz:9} [{locale:11}] {len(ts)} tod, "
+              f"{leido or '-'}: grados a {peor_g:.3g} de Python, matriz a "
+              f"{peor_m:.3g} de object_mvp")
         if not ok:
-            fallos.append(f"{nombre} {lz} [{locale}]: grados {peor_g:.3g}, "
-                          f"matriz {peor_m:.3g}")
+            fallos.append(f"{nombre} {lz} [{locale}]: {leido or '-'}, grados "
+                          f"{peor_g:.3g}, matriz {peor_m:.3g}")
     return fallos
+
+
+def gira_en_pixeles(m: list[float], grados: float, aspecto: float) -> list[float]:
+    """D · R(grados) · D⁻¹ sobre la 2x2 (m0, m1, m4, m5), con D = diag(2/w, 2/h)
+    de proporción `aspecto`: la cuenta de `we_giro_coloca`, en Python, para
+    ver cuánto se separa con otra proporción."""
+    a = math.radians(grados)
+    c, s, k = math.cos(a), math.sin(a), aspecto
+    return [c * m[0] - s * m[2] / k, c * m[1] - s * m[3] / k,
+            s * k * m[0] + c * m[2], s * k * m[1] + c * m[3]]
 
 
 def main() -> int:
@@ -215,29 +242,82 @@ def main() -> int:
             # La colocación que hornea el plan, con el `value` guardado.
             quieta = dict(raw, angles=raw["angles"]["value"])
             v = [float(x) for x in raw["angles"]["value"].split()]
-            (tmp / "giro.txt").write_text(linea + "\n")
             for lz in lienzos:
                 base = werender.object_mvp(_Capa(quieta), lz)
-                fallos += _compara(exe, tmp / "giro.txt", lz, base, f"{capa}",
+                fallos += _compara(exe, tmp, con_lienzo(linea, lz), lz, base,
+                                   f"{capa}",
                                    lambda t: wescript.grados_del_giro(forma, t),
                                    lambda g: dict(raw, angles=f"{v[0]} {v[1]} "
                                                   f"{math.radians(g)!r}"))
 
         # Con decimales, que es donde muerde la locale: la forma, la base y
-        # la hora del plan. La hora no la mira el arnés, pero tiene que leerse
-        # sin descolocar lo de antes. La capa es sintética, no cuadrada y con
-        # el ángulo `base` ya horneado: ahí, girar la colocación en clip en
-        # vez de en píxeles no daría lo que `object_mvp`.
+        # la hora del plan, que aquí va puesta y no como `@HORA@`. La hora no
+        # la mira el arnés, pero tiene que leerse sin descolocar lo de antes
+        # ni el lienzo de detrás. La capa es sintética, no cuadrada y con el
+        # ángulo `base` ya horneado: ahí, girar la colocación en clip en vez
+        # de en píxeles no daría lo que `object_mvp`.
         forma, base_g = (-0.5, 1.5, 0.25), 0.75
-        (tmp / "giro.txt").write_text("giro -0.5 1.5 0.25 0.75 0.5\n")
         sint = {"origin": "700.25 300.5 0", "size": "512.5 128.25",
                 "scale": "1.25 0.75 1"}
         for lz in lienzos:
             base = werender.object_mvp(
                 _Capa(dict(sint, angles=f"0 0 {math.radians(base_g)!r}")), lz)
-            fallos += _compara(exe, tmp / "giro.txt", lz, base, "con decimales",
+            fallos += _compara(exe, tmp, f"giro -0.5 1.5 0.25 0.75 0.5 {lz[0]} {lz[1]}",
+                               lz, base, "con decimales",
                                lambda t: wescript.grados_del_giro(forma, t),
                                lambda g: dict(sint, angles=f"0 0 {math.radians(g)!r}"))
+
+        # Una línea sin lienzo, la de un plan de antes, se sigue leyendo y lo
+        # deja a 0: `we_giro_coloca` gira entonces en clip, como se horneó.
+        (tmp / "giro.txt").write_text("giro -720 1 0 0 @HORA@\n")
+        r = subprocess.run([str(exe), str(tmp / "giro.txt"), "es_ES.UTF-8"],
+                           input="", capture_output=True, text=True)
+        ok = r.returncode == 0 and r.stdout.strip() == "lienzo 0 0"
+        print(f"  {'ok' if ok else 'MAL':3} línea sin lienzo: {r.stdout.strip() or r.returncode}")
+        if not ok:
+            fallos.append(f"la línea sin lienzo da {r.stdout.strip() or r.returncode}")
+
+        # El plan con `resolucion`, como en vivo: `canvas` es la resolución
+        # de dibujo y no el lienzo. Las líneas `object` y `giro` se toman del
+        # plan tal cual, como las toman los ejecutores.
+        for res in RESOLUCIONES:
+            out = tmp / f"plan_{res[0]}x{res[1]}"
+            werender.emit_plan(d, out, ruta_final=Path("/PLAN"), resolucion=res)
+            plan = (out / "plan.txt").read_text().splitlines()
+            canvas = next(tuple(int(x) for x in l.split()[1:3])
+                          for l in plan if l.startswith("canvas "))
+            pares = [(plan[i - 1], l) for i, l in enumerate(plan)
+                     if l.startswith("giro ") and plan[i - 1].startswith("object ")]
+            print(f"── plan con resolucion {res[0]}x{res[1]}: canvas "
+                  f"{canvas[0]}x{canvas[1]} (proporción {canvas[0] / canvas[1]:.6f} "
+                  f"frente a {lienzo[0] / lienzo[1]:.6f}), {len(pares)} giros ──")
+            if len(pares) != len(AGUJAS):
+                fallos.append(f"resolucion {res}: {len(pares)} líneas giro "
+                              "detrás de un object")
+            for (obj, linea), capa in zip(pares, AGUJAS):
+                raw = por_id[capa]
+                forma = wescript.giro_por_hora(raw)
+                v = [float(x) for x in raw["angles"]["value"].split()]
+                base = [float(x) for x in obj.split()[2:18]]
+                fallos += _compara(exe, tmp, linea, lienzo, base,
+                                   f"{capa} plan a {res[0]}x{res[1]}",
+                                   lambda t: wescript.grados_del_giro(forma, t),
+                                   lambda g: dict(raw, angles=f"{v[0]} {v[1]} "
+                                                  f"{math.radians(g)!r}"))
+                # Lo que habría dado girar con la proporción de `canvas`.
+                peor = 0.0
+                for t in tods():
+                    g = wescript.grados_del_giro(forma, t)
+                    dado = gira_en_pixeles([base[0], base[1], base[4], base[5]],
+                                           g - v[2], canvas[0] / canvas[1])
+                    esp = werender.object_mvp(_Capa(dict(
+                        raw, angles=f"{v[0]} {v[1]} {math.radians(g)!r}")), lienzo)
+                    peor = max(peor, max(abs(a - b) for a, b in
+                                         zip(dado, (esp[0], esp[1], esp[4], esp[5]))))
+                print(f"      con la proporción de canvas se separaría {peor:.3g}")
+                if peor <= TOL_MATRIZ:
+                    fallos.append(f"{capa} plan a {res}: la proporción de canvas "
+                                  "no se separa; el caso no discrimina")
 
         print("── we_hora_del_dia ──")
         instantes = [(1791394680, 0), (1791394680, 500000000), (1791417599, 999000000),

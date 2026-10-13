@@ -9523,11 +9523,20 @@ con D = diag(2/w, 2/h). Es lo que ya hacían `object_world` (la luz) y
   sale ahora la ortográfica del lienzo para cualquier capa, girada o no; antes
   una girada llevaba una VP con cizalla.
 - **`we_giro_coloca`** (`src/wegiro.c`) gira por Δ en píxeles:
-  m' = D · R(Δ) · D⁻¹ · m. De D solo queda el cociente w/h, así que la firma
-  gana un `double aspecto` que los dos ejecutores sacan de los dos enteros de
-  la línea `canvas` que ya leían (`glexec.c`, `canvas_w / canvas_h`;
-  `glexecutor.cpp`, `m_canvasW / m_canvasH`). No se lee ningún número nuevo
-  del plan, así que no hay nada nuevo que sujetar a la locale.
+  m' = D · R(Δ) · D⁻¹ · m. De D solo queda el cociente w/h, y tiene que ser el
+  del **lienzo de la escena**, el que usó `object_mvp`. La línea `canvas` no
+  lo da: es la resolución de dibujo (`self.pixeles`), que
+  `resolucion_de_dibujo` redondea a enteros cuando hay `resolucion`, y en
+  vivo siempre la hay porque `wectl` pasa la de la pantalla. Con un lienzo de
+  3840x2160, a 1920x1200 el plan dice `canvas 2133 1200` (1,7775 frente a
+  1,7778) y a 1366x768, `canvas 1366 768`; es el mismo redondeo por el que
+  `g_Screen` toma la proporción de la escena. Así que la línea gana el lienzo
+  detrás de la hora, `giro <a> <b> <c> <base> <hora> <ancho> <alto>`, y
+  `we_giro_linea` —compartido, el que llaman los dos ejecutores— lo deja en
+  el `WeGiro` (`ancho`, `alto`), de donde lo toma `we_giro_coloca`. Son dos
+  enteros leídos con `strtol` en base 10, que no dependen de la locale. Una
+  línea sin ellos, la de un plan de antes, deja `ancho` y `alto` a 0 y gira
+  en clip, que es como se horneó esa colocación.
 - `object_mvp` también da el `g_EffectModelViewProjectionMatrix` de los pases
   de un **sistema de partículas** girado (con el lienzo como `size`, porque
   la partícula no lo tiene), y ese uniform cambia con el resto. Es inerte: el
@@ -9541,9 +9550,12 @@ con D = diag(2/w, 2/h). Es lo que ya hacían `object_world` (la luz) y
 - **Girar en píxeles solo las agujas**, como ya decía la tarea de las agujas:
   serían las únicas sin deformar y dejarían de dar lo mismo que el `angles`
   estático.
-- **Pasarle a `we_giro_coloca` ancho y alto por la línea `giro`**: es un
-  número más que leer del plan con la locale sujeta, y repite lo que ya dice
-  `canvas`.
+- **Sacar la proporción de la línea `canvas`**, que fue el primer intento:
+  `canvas` es la resolución de dibujo redondeada, no el lienzo, y en vivo el
+  giro se separaba del ángulo horneado 2,0e-5 en clip a 1920x1200 y 6,3e-5
+  a 1366x768 (el caso con `resolucion` de `test_giro.py`). Ponerle el lienzo
+  a `canvas` tampoco: cambiaría el plan de las 129 escenas por algo que solo
+  leen las agujas.
 - **Dejarle a las partículas el `g_EffectModelViewProjectionMatrix` de antes**
   para que sus planes no cambien: sería conservar la fórmula mala a propósito
   en un uniform que nadie lee.
@@ -9568,16 +9580,24 @@ tienen capas giradas.
 - **El módulo C** (`tools/test_giro.py`, ampliado): las tres líneas `giro` de
   `2396319149` y una sintética con decimales —ahora sobre una capa no
   cuadrada de 512,5x128,25 con su ángulo `base` horneado—, en 174 `tod`, en
-  el lienzo de la escena, en 1920x1080 y en 1000x1000, en `C` y en
-  `es_ES.UTF-8`: `we_giro_coloca` queda a **4,1e-8 como mucho** de
-  `object_mvp` con el ángulo puesto en `angles`.
+  el lienzo de la escena, en 1920x1080 y en 1000x1000 (la línea con ese
+  lienzo detrás), en `C` y en `es_ES.UTF-8`: `we_giro_coloca` queda a
+  **4,1e-8 como mucho** de `object_mvp` con el ángulo puesto en `angles`.
+  Con el plan emitido con `resolucion`, como en vivo, y las líneas `object`
+  y `giro` tomadas del plan tal cual: a 1920x1200 (`canvas 2133 1200`) y a
+  1366x768 queda a **1,1e-7** del `object_mvp` en el lienzo de la escena (lo
+  que pierde el `object` impreso con seis cifras); con la proporción de
+  `canvas` se separaría **2,0e-5 y 6,3e-5**. Una línea sin lienzo se lee y
+  lo deja a 0.
 - **Los planes** (`planes_vs_main.py`, las 129 contra `be91dfd` con
   `git archive`, hora congelada, todos los ficheros byte a byte): **46
   idénticas** y 83 con `plan.txt` distinto, siempre con las mismas líneas en
   el mismo orden. Las que cambian alguna colocación son **las 22 del censo**,
   y solo en líneas `object` y matrices de colocación de 66 bloques girados
   (|sin| > 1e-6 en main); son más que las 63 capas porque cuentan también
-  colocaciones de capas que no son de imagen ni de texto. Las otras 61
+  colocaciones de capas que no son de imagen ni de texto. En `2396319149`
+  cambian además sus tres líneas `giro`, que ganan `3840 2160` detrás y
+  nada más. Las otras 61
   solo cambian líneas inertes: `g_EffectModelViewProjectionMatrix` de
   partículas en pases que no lo declaran, 567 entre las 83.
 - **La aguja en el PNG** (`aguja_en_pixeles.py`, 3840x2160, `--time 4`): con
@@ -9591,13 +9611,15 @@ tienen capas giradas.
   las 03:00:00 y a las 10:10:30, con un máximo de 0.
 - **La luz** (`test_luminancia.py` con Mesa y bajo el cerrojo, main con su
   propio `glexec`; `luz_compara.py`): 129/129 renderizan en las dos, **0
-  regresiones, 0 apagadas**. Fuera del censo se mueven 7 escenas, la que más
-  0,04 de 255: el vaivén entre pasadas (sus planes son idénticos o solo
-  cambian líneas inertes). Dentro, se mueven 12; la que más, `3521337568`,
-  64,28 → 65,02.
-- **El reparto** (`reparto_y_avisos.py`): la firma de `src/wegiro.h` lleva
-  `double aspecto` y `glexec.c` y `glexecutor.cpp` llaman a `we_giro_coloca`
-  con cuatro argumentos. `make build`, `make glexec` y `make psysprobe` desde
+  regresiones, 0 apagadas**. Fuera del censo se mueven 6 escenas, la que más
+  0,11 de 255: el vaivén entre pasadas (sus planes son idénticos o solo
+  cambian líneas inertes, y cinco de las seis ya se movían en la tarea de
+  las agujas con planes idénticos). Dentro, se mueven 13; la que más,
+  `3521337568`, 64,28 → 65,03.
+- **El reparto** (`reparto_y_avisos.py`): `WeGiro` lleva `int ancho, alto`,
+  y `glexec.c` y `glexecutor.cpp` llaman a `we_giro_coloca` con los tres
+  argumentos de su firma, después de leer la línea con el mismo
+  `we_giro_linea`. `make build`, `make glexec` y `make psysprobe` desde
   cero: el mismo único aviso en main y en la rama, **0 nuevos**.
 - `test_werender.py`, `test_wereloj.py`, `test_giro.py`, `test_wescript.py`
   y `test_hoja.py` pasan.

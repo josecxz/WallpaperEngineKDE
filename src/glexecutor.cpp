@@ -1451,7 +1451,6 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             // mueve la traslacion.
             if (op.tieneGiro)
                 we_giro_coloca(&op.giro, we_giro_grados(&op.giro, horaDelDia),
-                               double(m_canvasW) / qMax(1, m_canvasH),
                                m_placement);
             // Si la capa cuelga de un hueso, corregir lo que ese hueso se haya
             // movido desde el instante en que se horneo el plan. La malla ya

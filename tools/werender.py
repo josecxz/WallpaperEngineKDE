@@ -358,13 +358,22 @@ def linea_hojahora(volteada: bool, fotogramas: list[list[float]],
 MAX_FOTOGRAMAS_HOJA = 256
 
 
-def linea_giro(forma: tuple[float, float, float], base: float) -> str:
+def linea_giro(forma: tuple[float, float, float], base: float,
+               lienzo: tuple[int, int]) -> str:
     """La linea `giro` de una capa cuyo `angles` lleva un script de la hora;
-    el formato esta en `wereloj.h`. `forma` es la de `wescript.giro_por_hora`
+    el formato esta en `wegiro.h`. `forma` es la de `wescript.giro_por_hora`
     y `base` el angulo propio con que se horneo la colocacion, los dos en
-    GRADOS. La hora va en el marcador `@HORA@`."""
+    GRADOS. La hora va en el marcador `@HORA@`.
+
+    Detras va el lienzo de la ESCENA, el que usa `object_mvp`, porque el
+    ejecutor gira en sus pixeles. No vale el de la linea `canvas`: esa es la
+    resolucion de dibujo, redondeada a enteros cuando hay `resolucion` ---en
+    vivo siempre---, y su proporcion no es la del lienzo (2133x1200 para uno
+    de 3840x2160). Es el mismo redondeo por el que `g_Screen` toma la
+    proporcion de la escena."""
     a, b, c = forma
-    return f"giro {a:.17g} {b:.17g} {c:.17g} {base:.17g} @HORA@"
+    return (f"giro {a:.17g} {b:.17g} {c:.17g} {base:.17g} @HORA@ "
+            f"{int(lienzo[0])} {int(lienzo[1])}")
 
 
 def hora_del_dia(texto: str) -> float:
@@ -2153,7 +2162,7 @@ class Renderer:
         # el ejecutor gira la diferencia entre ese y el de la hora.
         base = math.degrees((_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[2])
         self.stats["giro_por_hora"] = self.stats.get("giro_por_hora", 0) + 1
-        return linea_giro(forma, base)
+        return linea_giro(forma, base, self.canvas)
 
     def _emit_mesh(self, obj) -> None:
         """Sube la malla puppet del objeto, si la tiene y sabemos leerla.

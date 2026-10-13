@@ -33,6 +33,25 @@ int we_giro_linea(WeGiro *g, const char *resto)
         v[leidos++] = x;
         p = fin;
     }
+    /* La hora puede llegar como el marcador `@HORA@` sin sustituir: se salta
+     * esa palabra para llegar al lienzo, que va detrás. */
+    if (leidos == 4) {
+        while (*p == ' ' || *p == '\t')
+            p++;
+        if (*p == '@')
+            while (*p && *p != ' ' && *p != '\t' && *p != '\n')
+                p++;
+    }
+    long ancho = 0, alto = 0;
+    if (leidos >= 4) {
+        ancho = strtol(p, &fin, 10);
+        if (fin != p) {
+            p = fin;
+            alto = strtol(p, &fin, 10);
+            if (fin == p)
+                ancho = 0;
+        }
+    }
 
     if (loc_c) {
         uselocale(previa);
@@ -46,6 +65,8 @@ int we_giro_linea(WeGiro *g, const char *resto)
     g->base = v[3];
     g->con_hora = leidos == 5 && v[4] >= 0.0 && v[4] < 1.0;
     g->hora = g->con_hora ? v[4] : 0.0;
+    g->ancho = ancho > 0 && alto > 0 ? (int)ancho : 0;
+    g->alto = ancho > 0 && alto > 0 ? (int)alto : 0;
     return 1;
 }
 
@@ -66,8 +87,7 @@ double we_hora_del_dia(time_t segundos, long nanosegundos)
     return d < 1.0 ? d : nextafter(1.0, 0.0);
 }
 
-void we_giro_coloca(const WeGiro *g, double grados, double aspecto,
-                    float m[16])
+void we_giro_coloca(const WeGiro *g, double grados, float m[16])
 {
     /* La colocación que escribe `object_mvp` es D · R(ángulo) · E, con E la
      * semiextensión en píxeles y D = diag(2/w, 2/h) el paso a clip: el giro
@@ -75,11 +95,15 @@ void we_giro_coloca(const WeGiro *g, double grados, double aspecto,
      * D · R(grados - base) · D⁻¹ por la que trae el plan, y así sale lo mismo
      * que horneando ese ángulo en `angles`. De D solo queda el cociente
      * w/h: la fila de x se mezcla con la de y por h/w y la de y con la de x
-     * por w/h. Con el giro directo en clip, R(Δ) · m, una capa girada de un
-     * lienzo no cuadrado salía estirada y cizallada; ver NOTAS. */
+     * por w/h. El w/h es el del lienzo de la escena que trae la línea, no el
+     * de `canvas`, que en vivo es la resolución de dibujo redondeada y se
+     * separa de él en la cuarta cifra. Con el giro directo en clip, R(Δ) · m,
+     * una capa girada de un lienzo no cuadrado salía estirada y cizallada;
+     * ver NOTAS. Sin lienzo en la línea, k = 1: un plan viejo, horneado así. */
     const double d = (grados - g->base) * (3.14159265358979323846 / 180.0);
     const double c = cos(d), s = sin(d);
-    const double k = aspecto > 0.0 ? aspecto : 1.0;
+    const double k = g->ancho > 0 && g->alto > 0
+                   ? (double)g->ancho / g->alto : 1.0;
     const double m0 = m[0], m1 = m[1], m4 = m[4], m5 = m[5];
     m[0] = (float)(c * m0 - s * m4 / k);
     m[1] = (float)(c * m1 - s * m5 / k);

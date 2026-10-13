@@ -11,12 +11,16 @@
  *
  * y `tools/werender.py` escribe detrás del `object` de la capa
  *
- *   giro <a> <b> <c> <base> <hora>
+ *   giro <a> <b> <c> <base> <hora> <ancho> <alto>
  *
  * `base` es el ángulo propio con que se horneó la colocación del `object`,
  * también en grados (el `angles.z` de `scene.json`, que va en radianes, ya
  * pasado). `hora` es el marcador `@HORA@`: offline lo pone `werender` con la
- * hora fijada o la de ahora; en vivo no se lee, la da el reloj.
+ * hora fijada o la de ahora; en vivo no se lee, la da el reloj. `ancho` y
+ * `alto` son el lienzo de la ESCENA, enteros, en el que `object_mvp` horneó
+ * la colocación y en cuyos píxeles se gira. No son los de la línea `canvas`:
+ * esa es la resolución de dibujo, redondeada, y en vivo su proporción no es
+ * la del lienzo.
  */
 #ifndef WEGIRO_H
 #define WEGIRO_H
@@ -32,11 +36,13 @@ typedef struct {
     double base;        /* el ángulo horneado en la colocación, en grados */
     double hora;        /* la del plan, si `con_hora` */
     int con_hora;
+    int ancho, alto;    /* el lienzo de la escena; 0 si la línea no lo trae */
 } WeGiro;
 
 /* Lee lo que va detrás de `giro`, con la locale numérica sujeta a `C`.
  * Devuelve 1 si entendió los cuatro primeros números; la hora es opcional
- * (un `@HORA@` sin sustituir deja `con_hora` a 0). */
+ * (un `@HORA@` sin sustituir deja `con_hora` a 0), y el lienzo también (una
+ * línea sin él deja `ancho` y `alto` a 0). */
 int we_giro_linea(WeGiro *g, const char *resto);
 
 /* `a · frac(b · hora) + c`, en grados. Es la cuenta de
@@ -52,11 +58,11 @@ double we_hora_del_dia(time_t segundos, long nanosegundos);
  * `object_mvp`) para que lleve el ángulo `grados` en vez de `base`. Solo
  * cambia la parte lineal 2x2: la traslación ---el `origin`, y lo que sumen
  * después el parallax o el temblor--- se queda, así que gira sobre el
- * `origin` de la capa. El giro es en píxeles del lienzo, como el de
- * `object_mvp`, y para eso pide `aspecto`, el ancho entre el alto del lienzo
- * (los dos enteros de la línea `canvas`). */
-void we_giro_coloca(const WeGiro *g, double grados, double aspecto,
-                    float m[16]);
+ * `origin` de la capa. El giro es en píxeles del lienzo de la escena, como el
+ * de `object_mvp`, con el `ancho` y el `alto` de la línea. Sin ellos ---un
+ * plan de antes de que `object_mvp` girara en píxeles--- gira en clip, que es
+ * como se horneó esa colocación. */
+void we_giro_coloca(const WeGiro *g, double grados, float m[16]);
 
 #ifdef __cplusplus
 }

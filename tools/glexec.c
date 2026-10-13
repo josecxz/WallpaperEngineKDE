@@ -28,7 +28,7 @@
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
- *   giro <a> <b> <c> <base> <hora>     el objeto gira con la hora (wegiro.h)
+ *   giro <a> <b> <c> <base> <hora> <w> <h>   gira con la hora (wegiro.h)
  *   pass                               abre un pase
  *     prog <vert> <frag>
  *     target <nombre|SCREEN>           SCREEN = buffer acumulado del objeto
@@ -1032,9 +1032,7 @@ int main(int argc, char **argv)
             if (we_giro_linea(&g, line + 4)) {
                 const double hora = g.con_hora ? g.hora
                                                : we_hora_del_dia(time(NULL), 0);
-                we_giro_coloca(&g, we_giro_grados(&g, hora),
-                               (double)canvas_w / (canvas_h > 0 ? canvas_h : 1),
-                               obj_mvp);
+                we_giro_coloca(&g, we_giro_grados(&g, hora), obj_mvp);
             }
         } else if (strcmp(kw, "parallax") == 0 && !in_pass) {
             /* `parallax <retardo> <influencia>`. El retardo no pinta nada
