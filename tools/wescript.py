@@ -613,8 +613,8 @@ class Objeto(dict):
 
 
 class Motor:
-    """`engine`, el objeto global de WE, con dos miembros: `registerAsset` y
-    `timeOfDay`.
+    """`engine`, el objeto global de WE, con tres miembros: `registerAsset`,
+    `timeOfDay` y `runtime`.
 
     Hay scripts que registran sus fuentes en el cuerpo del módulo
     ---`cachedFonts.push(engine.registerAsset(f))`--- y solo las usan en
@@ -627,6 +627,11 @@ class Motor:
     `timeOfDay` es la hora local como fracción del día, en [0, 1): lo que da
     la hora, igual que `new Date()`, y por eso se lee del mismo instante. Lo
     usan las agujas de un reloj analógico (`giro_por_hora`).
+
+    `runtime` son los segundos de escena, y solo existe cuando quien evalúa
+    lo da (`vector_en`, para `vaiven_de`). Si no, sigue siendo un ScriptError:
+    un texto que lo lea depende de algo que `formato_de` no barre, y con un
+    `runtime` fijo saldría un «reloj» congelado.
     """
 
 
@@ -812,6 +817,8 @@ class Interprete:
         # `engine.timeOfDay` exacto, si quien evalúa lo da; si no, sale de
         # `fecha`. Ver `giro_en`.
         self.hora_del_dia: float | None = None
+        # `engine.runtime`, solo si quien evalúa lo da; ver `Motor`.
+        self.runtime: float | None = None
         self.animacion = Animacion()
         self._prepara()
 
@@ -880,6 +887,33 @@ class Interprete:
                 or r.get("x") != x or r.get("y") != y):
             return None
         return float(rz)
+
+    def vector_en(self, runtime: float, valor: list[float],
+                  cuando: dt.datetime | None = None) -> list[float] | None:
+        """Las tres componentes del `Vec3` que `update(value)` devuelve con
+        `engine.runtime` igual a `runtime`, o None si no devuelve eso.
+
+        `value` llega como en `giro_en`, un objeto nuevo en cada llamada.
+        `cuando` es el instante de `new Date()` y de `timeOfDay`; quien
+        compruebe una forma lo cambia para ver que no los lee.
+        """
+        f = self.global_.vars.get("update")
+        if not isinstance(f, Funcion):
+            raise ScriptError("el script no exporta update()")
+        self.runtime = runtime
+        self.hora_del_dia = None
+        self.fecha = cuando or dt.datetime(2026, 1, 5, 12)
+        x, y, z = valor
+        r = self.llama(f, [Objeto({"x": x, "y": y, "z": z})])
+        if not isinstance(r, dict):
+            return None
+        salida = []
+        for k in ("x", "y", "z"):
+            v = r.get(k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return None
+            salida.append(float(v))
+        return salida
 
     # --- sentencias
     def ejecuta(self, s, a: Ambito):
@@ -1159,6 +1193,8 @@ class Interprete:
                 d = self.fecha
                 return (d.hour * 3600 + d.minute * 60 + d.second
                         + d.microsecond / 1e6) / 86400.0
+            if clave == "runtime" and self.runtime is not None:
+                return self.runtime
             raise ScriptError(f"engine.{js_str(clave)}")
         if isinstance(obj, Recurso):
             raise ScriptError("propiedad de un recurso de engine")
@@ -1320,6 +1356,8 @@ def _math(nombre: str, args: list[float]):
         "max": lambda: max(args),
         "pow": lambda: args[0] ** args[1],
         "sqrt": lambda: math.sqrt(args[0]),
+        "sin": lambda: math.sin(args[0]),
+        "cos": lambda: math.cos(args[0]),
         "trunc": lambda: float(int(args[0])),
         "random": lambda: 0.5,
     }
@@ -1952,6 +1990,216 @@ def giro_por_hora(obj: dict) -> tuple[float, float, float] | None:
         return None
     valor = (valor + [0.0, 0.0, 0.0])[:3]
     return forma_del_giro(ip, valor)
+
+
+# ── un campo que oscila con el tiempo de escena: el vaivén ────────────────
+#
+# `value.y = 992.82019 + (Math.sin(engine.runtime * 1) * 10)` en el `origin`
+# de una capa la columpia; en su `angles`, la balancea. Lo que viaja en el
+# plan es, por cada componente que el script cambie,
+#
+#     v = K + A · sin(ω · t + φ)          (t = engine.runtime, en segundos)
+#
+# en las unidades que ve el script: grados en `angles`, como las agujas, y
+# unidades de lienzo en `origin`. El ejecutor la evalúa con el tiempo de
+# escena, el mismo que da a `g_Time`.
+
+# Qué componentes puede mover el script en cada campo. El giro de una capa
+# es solo el del plano, como en `giro_por_hora`; la z de `origin` no coloca
+# nada en un lienzo plano, y un script que la cambie no es un vaivén que se
+# sepa rehacer.
+COMPONENTES_DEL_VAIVEN = {"angles": (2,), "origin": (0, 1)}
+
+
+def _tiempos_de_prueba() -> list[float]:
+    """Los 2401 `runtime` con los que se comprueba un vaivén: uno cada cuarto
+    de segundo en [0, 600]."""
+    return [k * 0.25 for k in range(2401)]
+
+
+def valor_del_vaiven(forma: tuple[float, float, float, float],
+                     t: float) -> float:
+    """`K + A · sin(ω · t + φ)`. Es la cuenta de `we_vaiven_valor` en
+    `src/wegiro.c`, con las mismas operaciones en el mismo orden."""
+    import math
+    k, a, w, fase = forma
+    return k + a * math.sin(w * t + fase)
+
+
+def _resuelve3(m: list[list[float]], b: list[float]) -> list[float]:
+    """Un sistema 3x3 por eliminación con pivote; ValueError si es singular."""
+    m = [fila[:] + [bi] for fila, bi in zip(m, b)]
+    for i in range(3):
+        piv = max(range(i, 3), key=lambda r: abs(m[r][i]))
+        if m[piv][i] == 0.0:
+            raise ValueError("singular")
+        m[i], m[piv] = m[piv], m[i]
+        for r in range(i + 1, 3):
+            f = m[r][i] / m[i][i]
+            for c in range(i, 4):
+                m[r][c] -= f * m[i][c]
+    x = [0.0, 0.0, 0.0]
+    for i in (2, 1, 0):
+        x[i] = (m[i][3] - sum(m[i][c] * x[c] for c in range(i + 1, 3))) / m[i][i]
+    return x
+
+
+def _frecuencia(f) -> float | None:
+    """La ω de `f(t) = K + A · sin(ω · t + φ)`, si lo es.
+
+    Sale de una identidad que vale para cualquier `t` y cualquier paso `h`:
+    `f(t + h) + f(t − h) = 2 · cos(ω · h) · f(t) + 2 · K · (1 − cos(ω · h))`.
+    Una recta por mínimos cuadrados entre `f(t)` y la suma da `cos(ω · h)`.
+    Con un paso corto no hay ambigüedad pero sí poca precisión; con uno
+    largo, al revés. Así que se empieza en 1 ms y se alarga cuadruplicando,
+    y en cada paso la ω anterior decide cuál de las ramas de `acos` es la
+    buena. Si `f` no es una sinusoide sale una ω cualquiera: lo que decide
+    es la comprobación de `forma_del_vaiven`.
+    """
+    import math
+    ts = [1.0 + 598.0 * ((i * 0.6180339887498949) % 1.0) for i in range(64)]
+    xs = [f(t) for t in ts]
+    xm = sum(xs) / len(xs)
+    sxx = sum((x - xm) ** 2 for x in xs)
+    if sxx == 0.0:
+        return None
+    w = None
+    h = 1e-3
+    while h < 400.0:
+        if w is not None:
+            # Un paso donde `sin(ω · h)` no se acerque a 0, que es donde
+            # `acos` pierde la precisión.
+            h = max((h * (1.0 + 0.1 * j) for j in range(10)),
+                    key=lambda hh: abs(math.sin(w * hh)))
+        ys = [f(t + h) + f(t - h) for t in ts]
+        ym = sum(ys) / len(ys)
+        c = sum((x - xm) * (y - ym) for x, y in zip(xs, ys)) / sxx / 2.0
+        if not math.isfinite(c) or abs(c) > 1.0 + 1e-9:
+            return None
+        th = math.acos(max(-1.0, min(1.0, c)))
+        if w is None:
+            w = th / h
+        else:
+            n = round(w * h / (2.0 * math.pi))
+            w = min(((2.0 * math.pi * m + sg * th) / h
+                     for m in (n - 1, n, n + 1) for sg in (1.0, -1.0)),
+                    key=lambda cand: abs(cand - w))
+        h *= 4.0
+    return w if w > 0.0 else None
+
+
+def _limpia(x: float) -> float:
+    """El número con 12 cifras, que es como lo escribió el autor: 992.82019
+    y no 992.82019000000002, y 0 en vez de un 1e-17 de redondeo."""
+    return 0.0 if abs(x) < 1e-12 else float(f"{x:.12g}")
+
+
+def forma_del_vaiven(ip: Interprete, valor: list[float],
+                     componentes: tuple[int, ...]
+                     ) -> list[tuple[int, tuple[float, float, float, float]]] | None:
+    """Por cada componente de `componentes` que el script cambie, su forma
+    (K, A, ω, φ), y solo si se comprueba. None si no hay ninguna.
+
+    La ω sale de `_frecuencia`; K, A y φ, de una recta por mínimos cuadrados
+    en `sin(ω · t)` y `cos(ω · t)`. Si los números con 12 cifras también se
+    comprueban, se quedan esos.
+
+    La garantía es la comprobación, como en `forma_del_giro`: en los
+    `_tiempos_de_prueba` cada componente tiene que dar lo que el script, a
+    1e-6. Las que no son de `componentes` tienen que devolverse tal cual
+    llegaron. Y el script tiene que dar lo mismo con otro `value` de entrada
+    ---en WE es lo del fotograma anterior, y un script que lo lea acumula---,
+    con otro día y otra hora ---que no lea `new Date()` ni `timeOfDay`--- y
+    al repetir un instante ya visto, que no lleve cuentas propias.
+    """
+    import math
+    otro = [v + 37.0 for v in valor]
+    otro_dia = dt.datetime(2031, 7, 19, 3, 25, 41)
+
+    def vec(t: float, entrada=valor, cuando=None) -> list[float]:
+        r = ip.vector_en(t, entrada, cuando)
+        if r is None or not all(math.isfinite(v) for v in r):
+            raise ScriptError("update no da un Vec3")
+        return r
+
+    try:
+        tiempos = _tiempos_de_prueba()
+        primeras = [vec(t) for t in tiempos]
+        cambian = []
+        for i in range(3):
+            if all(r[i] == valor[i] for r in primeras):
+                continue
+            if i not in componentes:
+                return None
+            cambian.append(i)
+        if not cambian:
+            return None
+        formas = []
+        for i in cambian:
+            def f(t: float, i=i) -> float:
+                return vec(t)[i]
+            w = _frecuencia(f)
+            if w is None:
+                return None
+            filas = [(1.0, math.sin(w * t), math.cos(w * t)) for t in tiempos]
+            ys = [r[i] for r in primeras]
+            m = [[sum(a[p] * a[q] for a in filas) for q in range(3)]
+                 for p in range(3)]
+            b = [sum(a[p] * y for a, y in zip(filas, ys)) for p in range(3)]
+            k, bs, bc = _resuelve3(m, b)
+            amp = math.hypot(bs, bc)
+            if amp == 0.0:
+                return None
+            cruda = (k, amp, w, math.atan2(bc, bs))
+            limpia = tuple(_limpia(x) for x in cruda)
+
+            def encaja(forma) -> bool:
+                return all(abs(valor_del_vaiven(forma, t) - y) <= 1e-6
+                           for t, y in zip(tiempos, ys))
+            if encaja(limpia):
+                formas.append((i, limpia))
+            elif encaja(cruda):
+                formas.append((i, cruda))
+            else:
+                return None
+        for j, t in enumerate(tiempos):
+            if j % 50:
+                continue
+            r = primeras[j]
+            if vec(t) != r or vec(t, cuando=otro_dia) != r:
+                return None
+            r2 = vec(t, otro)
+            for i in range(3):
+                if (i in cambian and r2[i] != r[i]) or (i not in cambian
+                                                        and r2[i] != otro[i]):
+                    return None
+    except Exception:
+        return None
+    return formas
+
+
+def vaiven_de(obj: dict, campo: str
+              ) -> list[tuple[int, tuple[float, float, float, float]]] | None:
+    """Las formas del vaivén del campo `campo` (`angles` u `origin`) de una
+    capa, o None. Solo el script del propio campo. El `value` guardado entra
+    como lo ve el script: `angles` pasado a GRADOS, `origin` tal cual."""
+    import math
+    d = obj.get(campo)
+    if (campo not in COMPONENTES_DEL_VAIVEN or not isinstance(d, dict)
+            or not isinstance(d.get("script"), str)):
+        return None
+    props = d.get("scriptproperties")
+    props = {k: (v.get("value") if isinstance(v, dict) else v)
+             for k, v in props.items()} if isinstance(props, dict) else {}
+    try:
+        ip = Interprete(d["script"], props)
+        valor = [float(x) for x in str(d.get("value") or "").split()]
+    except Exception:
+        return None
+    if campo == "angles":
+        valor = [math.degrees(x) for x in valor]
+    valor = (valor + [0.0, 0.0, 0.0])[:3]
+    return forma_del_vaiven(ip, valor, COMPONENTES_DEL_VAIVEN[campo])
 
 
 # ── barrido del corpus ──────────────────────────────────────────────────────

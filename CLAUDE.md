@@ -104,7 +104,7 @@ aguja, tocas los dos a la vez o divergen.
 | `src/wevideo.c` | decodificador libav, **compartido** por los dos ejecutores |
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
 | `src/wetemblor.c` | la curva de `camerashake`, **compartida** por los dos |
-| `src/wegiro.c` | el `angles` que pone la hora (agujas), **compartido** por los dos |
+| `src/wegiro.c` | el `angles` que pone la hora (agujas) y el vaivén de `engine.runtime`, **compartido** por los dos |
 | `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`) |
 
 ## Comandos

@@ -3879,6 +3879,11 @@ Por orden de lo que más se nota:
    analógico](#las-agujas-de-un-reloj-analógico-angles-con-enginetimeofday)—;
    los otros 4 scripts de `angles`, y `origin` (54 en 11 escenas), `scale` (78
    en 8), `alpha` (34 en 3) y `color` (31 en 5), siguen con su `value`.
+   **Empezado** también lo que oscila con `engine.runtime`: el seno en el
+   `angles` de `3050043876` y en el `origin` de `3521337568` —ver [el vaivén
+   de `angles` y de
+   `origin`](#un-campo-que-oscila-con-engineruntime-el-vaivén-de-angles-y-de-origin)—;
+   las dos capas de `3577990983` con el mismo vaivén y con hijos, no.
 4. ~~Reproducir vídeo~~ **hecho**: `src/wevideo.c` lo decodifica con libav y lo
    comparten los dos ejecutores; las 3 escenas con textura de vídeo se mueven y
    los 15 wallpapers de tipo vídeo entran en la biblioteca —ver [Vídeo de
@@ -9483,9 +9488,11 @@ la tarea.
   arriba, y las agujas con ellas.~~ Hecho: [las capas giradas giran en
   píxeles del
   lienzo](#las-capas-giradas-giran-en-píxeles-del-lienzo-object_mvp-y-we_giro_coloca).
-- **Los otros cuatro scripts de `angles`**: el seno de `engine.runtime`
-  (`3050043876`) es el siguiente; `import`, el `origin` movido, el
-  deslizador y los clics no.
+- **Los otros cuatro scripts de `angles`**: ~~el seno de `engine.runtime`
+  (`3050043876`) es el siguiente~~ hecho, con el `origin` de `3521337568`:
+  ver [el vaivén de `angles` y de
+  `origin`](#un-campo-que-oscila-con-engineruntime-el-vaivén-de-angles-y-de-origin);
+  `import`, el `origin` movido, el deslizador y los clics no.
 - **Sin leer en el motor**: si `engine.timeOfDay` lleva la fracción de
   segundo —aquí sí, y la aguja de los segundos va continua; si WE la da en
   segundos enteros, allí va a saltos— y si el `value` que recibe `update` es
@@ -9631,3 +9638,227 @@ tienen capas giradas.
   pero tampoco se ha mirado una a una contra WE.
 - **Qué pone WE en `g_EffectModelViewProjectionMatrix` de una partícula**:
   nadie lo lee hoy, así que no se ha buscado.
+
+## Un campo que oscila con `engine.runtime`: el vaivén de `angles` y de `origin`
+
+**El síntoma.** Dos capas del corpus se mueven en WE con un seno del tiempo
+de escena y aquí se quedaban quietas en su `value`:
+
+```js
+value.z = 0 + (Math.sin(engine.runtime * 1) * 3);         // 3050043876, 338 `眼罩`, angles
+value.y = 992.82019 + (Math.sin(engine.runtime * 1) * 10); // 3521337568, 222 `吊瓶`, origin
+```
+
+Un parche que se balancea ±3° y un gotero que sube y baja ±10 unidades de
+lienzo. El intérprete de `wescript` no tenía `Math.sin` ni `Math.cos`, y
+rechazaba `engine.runtime` como cualquier miembro de `engine` que no fuera
+`registerAsset` o `timeOfDay`.
+
+**El censo** (`censo_seno_runtime.py`: campos con script que leen
+`engine.runtime` y `Math.sin`/`Math.cos`, sin `import` ni `frametime`): 7
+campos en 4 escenas. Además de las dos de arriba:
+
+- `3577990983` 5365 y 31, `origin`: x = base + sin(t·speed·1,3)·xShake e
+  y = base + cos(t·speed·0,7)·yShake, con `scriptProperties` y un
+  `return {x, y, z}`. **Se quedan fuera**: de las dos cuelgan otras capas
+  (4 y 2 hijos), y el `origin` de un hijo se mueve con el del padre en
+  `transform_absoluto`, cosa que el ejecutor no rehace. Es la misma regla que
+  ya deja sin `giro` a una capa de la que cuelga otra. Hoy además no llegan a
+  dar forma porque usan `parseFloat` e `isNaN`, que el intérprete no tiene;
+  si los tuviera, la regla de los hijos las seguiría dejando sin línea
+  (`hijos_sin_vaiven.py`, abajo).
+- Tres en `visible`, que no es un campo de la colocación: `3577990983` 35
+  (el mismo script de vaivén, puesto en un booleano), `3577990983` 210
+  (rebotes con temporizadores que guardan `engine.runtime`) y `3362719513`
+  429 `SharedNoise` (un `Math.random` con retardos).
+
+### Lo que cambia
+
+- **`tools/wescript.py`**: `Math.sin` y `Math.cos`, y `engine.runtime`, que
+  solo existe cuando quien evalúa lo da (`Interprete.vector_en`). En un
+  texto sigue siendo un ScriptError, por lo mismo que `frametime`: con un
+  `runtime` fijo, un texto que lo leyera saldría como un «reloj» congelado,
+  y `formato_de` no lo barre. `vaiven_de(obj, campo)` evalúa el `update` del
+  `angles` o del `origin` y reduce cada componente que cambie a
+  **`v = K + A · sin(ω · t + φ)`**, en las unidades del script: grados en
+  `angles`, como las agujas (el `value` entra pasado de radianes a grados), y
+  unidades de lienzo en `origin`. La ω sale de una identidad que vale para
+  cualquier `t` y cualquier paso `h`, `f(t+h) + f(t−h) = 2·cos(ωh)·f(t) +
+  2K·(1 − cos(ωh))`: una recta por mínimos cuadrados da `cos(ωh)`, con `h`
+  de 1 ms cuadruplicado hasta ~400 s y la ω anterior eligiendo la rama de
+  `acos`. K, A y φ salen de mínimos cuadrados en `sin ωt` y `cos ωt`, y si
+  los números redondeados a 12 cifras también se comprueban, se quedan esos
+  (992.82019 y no 992.82019000000002, y φ = 0 en vez de 1e-17). **Lo que da
+  la garantía es la comprobación**, como en `formato_de` y `giro_por_hora`:
+  en 2401 tiempos de [0, 600] s cada componente tiene que dar lo que el
+  script a 1e-6; las que no son del campo (la z de `origin`, la x y la y de
+  `angles`) tienen que devolverse como llegaron; y el script tiene que dar lo
+  mismo con otro `value` de entrada (no acumula), con otro día y otra hora
+  (no lee `new Date()` ni `timeOfDay`) y al repetir un instante ya visto (no
+  lleva cuentas propias).
+- **`tools/werender.py`**: detrás del `object` de la capa, una línea por
+  componente, `vaiven angles <K> <A> <ω> <φ> <base> @TIME@ <ancho> <alto>` o
+  `vaiven origin <K> <A> <ω> <φ> <base> @TIME@ <ex> <ey>`. `base` es lo que
+  ya lleva horneado la colocación (el ángulo propio en grados, o esa
+  componente del `origin`). En `angles` detrás va el lienzo de la escena, el
+  de `giro`; en `origin`, lo que se mueve en clip la traslación por unidad
+  de esa componente: la escala y el giro del padre si lo tiene, como en el
+  `anclaje`, y en una raíz (0, 2·(1 + k)/alto) para la y. **El 1 + k es el
+  parallax de cámara en reposo**: WE suma a la raíz
+  `amount · depth · (origin − P)` cada fotograma con el `origin` de ese
+  fotograma ([leído en el
+  motor](#el-parallax-de-cámara-la-fórmula-estaba-en-el-motor-y-mueve-las-capas-también-en-reposo)
+  y horneado aquí en `_paralaje`), así que lo que se mueve el `origin`
+  arrastra ese término y la capa se mueve (1 + k) veces el vaivén, con
+  k = `_paralaje_k`. En `3521337568` es 1,025 (`cameraparallaxamount` 0,5 ·
+  `parallaxDepth` 0,05). Sin vaivén, como sin `giro`, quedan una partícula,
+  una `passthrough` y una capa de la que cuelga otra.
+- **`src/wegiro.c`**, el módulo del giro, que ya enlazan los dos ejecutores:
+  `we_vaiven_linea` lee la línea con la locale numérica sujeta a `C`,
+  `we_vaiven_valor` hace la cuenta de `wescript.valor_del_vaiven` y
+  `we_vaiven_coloca` lleva la colocación al instante: en `angles` llama a
+  `we_giro_coloca` con un `WeGiro` de la misma `base` y el mismo lienzo
+  (**la misma conversión de grados y el mismo giro en píxeles del lienzo**,
+  no otra), y en `origin` suma `(ex, ey) · (v − base)` a la traslación, como
+  el parallax o el temblor. El signo de y es el de la colocación estática: y
+  del lienzo hacia arriba. `tools/glexec.c` usa el tiempo del plan, que
+  `werender` pone en `@TIME@` igual que el de `g_Time`;
+  `src/glexecutor.cpp` usa el `time` del fotograma, el mismo que sube a
+  `g_Time`.
+
+Con `sin(0) = 0` y K igual al `value`, en t = 0 `v − base` es 0 exactamente:
+la colocación no cambia ni en un bit y el render a `--time 0` es el de main.
+
+### Lo que se descartó
+
+- **Reconocer el script por su texto** (`Math.sin(engine.runtime * N) * A`).
+  La forma sale de evaluarlo: `let t = engine.runtime; return {x: 3 +
+  Math.sin(t * 0.5) * 2, …}`, un coseno con fase o el producto de un seno y
+  un coseno de la misma ω dan la suya igual (`test_wescript.py`).
+- **Mover también las capas con hijos** sumando el desplazamiento a cada
+  hijo. El ejecutor no tiene la cadena de padres; para hacerlo bien habría
+  que emitir el vaivén del padre en cada hijo con su escala y su giro, y eso
+  es otro trozo.
+- **Una cuenta nueva para el giro del vaivén.** `we_giro_coloca` ya gira en
+  píxeles del lienzo con la `base` horneada; inventar otra conversión
+  arriesgaba que el balanceo y el ángulo estático dejaran de coincidir.
+- **Sumar el vaivén al `origin` a secas**, que fue el primer intento. Contra
+  el oráculo estático (`fidelidad_vaiven.py`, abajo) el giro daba 0 píxeles
+  pero el `origin` 92406 a t = π/2, con un máximo de 13 de 255: la capa se
+  quedaba 0,25 unidades corta, el 2,5 % del parallax en reposo de la raíz.
+- **Mover también el `g_EffectModelViewProjectionMatrix`** de los pases de
+  la capa con la misma cuenta, en los dos ejecutores. Es la colocación
+  horneada, y en `3521337568` 222 lo declara el último pase de sus efectos
+  (el que compone con el fondo por `v_ScreenCoord`). Se probó, y contra el
+  oráculo estático da 0 píxeles con él movido y con él sin mover: aquí es
+  inerte. Se quitó para no dejar en los ejecutores código que nada ejercita.
+
+### Lo medido
+
+Con Mesa y la hora de pared congelada; los scripts están en la carpeta de
+medidas de la tarea, con `repetir.sh`. La biblioteca tiene hoy **133
+escenas** con `scene.pkg` (las 129 de siempre y las cuatro que llegaron
+durante la tarea del giro en píxeles), y las medidas pasan por todas.
+
+- **La deducción sobre el corpus** (`deduccion_corpus.py`): de 430 campos
+  con script en 133 escenas, dan forma **exactamente dos**: `3050043876` 338
+  `angles.z = 0 + 3·sin(1·t + 0)` y `3521337568` 222
+  `origin.y = 992.82019 + 10·sin(1·t + 0)`, con **error 0** frente al script
+  evaluado por el intérprete en 3000 tiempos al azar de [0, 600] s. Las dos
+  de `3577990983` con hijos dan None (`parseFloat`). En `test_wescript.py`,
+  las mismas dos son las únicas de los 65 scripts de `angles` y `origin`, a
+  error 0 en 2400 tiempos que no son los de la aceptación; los sintéticos dan
+  la forma de un seno, un coseno con fase, x e y a la vez, un producto de
+  seno y coseno, una ω negativa y el balanceo en `angles`, y ninguna dos
+  senos, leer el `value`, leer la hora o `timeOfDay`, la z de `origin`, la x
+  de `angles`, `sin(t²)`, una recta, un valor fijo, no devolver, contar
+  llamadas o cambiar tras 3000 llamadas.
+- **Los planes** (`planes_vs_main.py`, `emit_plan` de las 133 con la base
+  `1fc4d6c` sacada por `git archive`, hora congelada, todos los ficheros
+  byte a byte): **131 idénticas**, y en las otras dos solo cambia `plan.txt`
+  con una línea añadida, ninguna quitada, justo detrás del `object`:
+  `vaiven angles 0 3 1 0 0 @TIME@ 3840 2160` y
+  `vaiven origin 992.82019000000003 10 1 0 992.82019000000003 @TIME@ 0
+  0.00094907407407407397` (2 · 1,025 / 2160). `3577990983` no lleva
+  ninguna.
+- **Las capas con hijos** (`hijos_sin_vaiven.py`): con el script de 5365 y
+  31 hecho evaluable al cargar (`Number` por `parseFloat`), `vaiven_de` da
+  dos sinusoides en cada una y el plan sigue sin `vaiven`; con el conjunto
+  de padres vacío, `_lineas_de_vaiven` daría dos líneas por capa. Lo que las
+  quita es la regla de los hijos.
+- **Los renders** (`renders_vaiven.py`, `obj/glexec` de la rama y el de
+  main construido en su `git archive`). Las dos escenas se mueven enteras
+  con el tiempo también en main —agua, partículas, efectos con `g_Time`, el
+  bloom—: entre t = 0 y t = π/2 cambian 1,98 y 6,96 millones de píxeles en
+  main. Por eso lo del vaivén se aísla de dos maneras: la escena entera de la
+  rama frente a la de main **al mismo tiempo**, y la escena cargada con solo
+  la capa y `--only-base` (sin sus efectos ni bloom), donde sí se comparan
+  dos tiempos.
+  - A `--time 0`, en las dos escenas, **0 píxeles distintos** de 8294400
+    entre la rama y main.
+  - `3521337568`, sola, t = 1.5707963 frente a t = 4.712389: 222545 píxeles
+    distintos dentro de la caja de la capa ampliada 25 unidades, **0 fuera**;
+    el desplazamiento, hacia abajo en la imagen, es **20,501 px por
+    correlación y 20,503 por centroide** (escala 1 px por unidad): los 20 del
+    vaivén por el 1,025 del parallax en reposo. En la escena entera, la rama
+    frente a main difiere solo dentro de esa caja a los dos tiempos (193723 y
+    197781 píxeles, 0 fuera).
+  - `3050043876`, sola, t = 1.5707963 frente a t = 0: 18646 píxeles distintos
+    dentro de la caja girada ±3° y ampliada 25 unidades, 0 fuera; el ángulo
+    es **3,00° por búsqueda del giro** sobre el centro del quad (de −6° a 6°
+    cada 0,05°) y 3,17° por la orientación de los momentos, que no depende
+    del pivote pero sí del trozo de la capa que queda fuera del lienzo. En la
+    escena entera, rama frente a main a t = π/2: 43539 píxeles distintos
+    dentro de la caja, 0 fuera; el bloom no llega a sacar la diferencia.
+- **Contra el campo estático** (`fidelidad_vaiven.py`, como
+  `fidelidad_giro.py` de las agujas): la referencia es la misma escena con el
+  script quitado y el campo fijo a lo que devuelve el `update` en ese
+  instante, evaluado con el intérprete; ahí todo lo que sale del campo —la
+  colocación, el parallax en reposo, los uniforms horneados— sale del valor
+  de ese instante. A t = 1.5707963 y t = 4.712389, en las dos escenas
+  enteras: **0 píxeles distintos**.
+- **El módulo C** (`tools/test_giro.py`, ampliado): con las dos líneas del
+  corpus y dos sintéticas con decimales en todos los campos, en 1201 tiempos
+  de [0, 600] s, en `C` y en `es_ES.UTF-8`, `we_vaiven_valor` queda a **0**
+  de `wescript.valor_del_vaiven` y del script evaluado, y `we_vaiven_coloca`
+  a **2,3e-8 como mucho** de `object_mvp` con el valor del instante puesto en
+  el campo (y el parallax en reposo recalculado con él; sin el 1 + k la de
+  `3521337568` se separaría 2,3e-4). Una línea con `@TIME@` sin poner se lee sin tiempo y con lo de
+  detrás.
+- **El reparto** (`reparto_y_avisos.py`): `glexec.c` y `glexecutor.cpp`
+  llaman a `we_vaiven_linea` y a `we_vaiven_coloca` con los tres argumentos
+  de su firma, y el `Makefile` enlaza `src/wegiro.c` en los dos. `make
+  build`, `make glexec` y `make psysprobe` desde cero: el mismo único aviso
+  en main y en la rama, **0 nuevos**.
+- **La luz** (`test_luminancia.py` con Mesa, bajo el cerrojo, a tiempo fijo
+  —`--time 4`, 6 fotogramas—, main con su propio `glexec`; `luz_compara.py`
+  reanaliza con `--desde`): 133/133 renderizan en las dos, **0 regresiones,
+  0 apagadas**. `3050043876` 41,69 → 41,69 y `3521337568` 65,03 → 65,03; se
+  mueven 13 escenas de planes idénticos byte a byte, la que más
+  `2864255069`, 0,49 de 255: tiene tres relojes de texto y
+  `test_luminancia` no congela la hora, así que entre las dos pasadas
+  cambian los dígitos.
+- `test_wescript.py`, `test_giro.py`, `test_werender.py`, `test_wereloj.py`,
+  `test_hoja.py` y `test_weparticles.py` pasan.
+
+### Lo que queda
+
+- **Las capas con hijos**: 5365 y 31 de `3577990983`, que además necesitan
+  `parseFloat` e `isNaN` en el intérprete. Habría que mover a cada hijo con
+  el vaivén del padre pasado por su cadena.
+- **Lo demás de `engine.runtime`**: el glitch de `2413651762`, que usa
+  `thisScene.getLayer(...).getEffect(...)`, y el `Math.random` con retardos
+  de `3362719513` (`visible`). No son una forma cerrada del tiempo.
+- **El pivote de una capa con `alignment`**: `3050043876` 338 dice `top`, y
+  `object_mvp` la gira —estática o con vaivén— sobre el centro del quad, con
+  el desplazamiento del `alignment` sin girar. Si WE gira sobre el `origin`
+  (el borde de arriba, que es como se balancearía un parche colgado), con 3°
+  el centro se iría ~17 px. No está leído en el motor y no es de este
+  trozo: cambia por igual el ángulo estático.
+- **Lo que no pasa por la colocación**: los uniforms con la MVP del objeto
+  (`g_EffectModelViewProjectionMatrix`, la luz) se quedan con el `value`,
+  como con `giro`. En `3521337568` 222 hay uno declarado y es inerte
+  (medido arriba); una capa con vaivén que lo lea de verdad, o que esté
+  iluminada, se separaría.
+- **Sin leer en el motor**: si `engine.runtime` empieza en 0 al arrancar el
+  fondo, como aquí `g_Time`. Si no, cambia la fase, no la forma.

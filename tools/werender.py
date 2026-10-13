@@ -376,6 +376,22 @@ def linea_giro(forma: tuple[float, float, float], base: float,
             f"{int(lienzo[0])} {int(lienzo[1])}")
 
 
+def linea_vaiven(campo: str, forma: tuple[float, float, float, float],
+                 base: float, p: tuple[float, float]) -> str:
+    """La linea `vaiven` de una componente de un campo que oscila con
+    `engine.runtime`; el formato esta en `wegiro.h`. `forma` es la de
+    `wescript.vaiven_de` y `base` lo que ya lleva horneado la colocacion,
+    en las unidades del script: grados en `angles`, unidades de lienzo en
+    `origin`. El tiempo va en el marcador `@TIME@`, el de `g_Time`.
+
+    Lo que va detras depende del campo. En `angles`, el lienzo de la ESCENA,
+    porque se gira en sus pixeles igual que en `linea_giro`. En `origin`, lo
+    que se mueve en clip la traslacion por cada unidad de esa componente."""
+    k, a, w, fase = forma
+    return (f"vaiven {campo} {k:.17g} {a:.17g} {w:.17g} {fase:.17g} "
+            f"{base:.17g} @TIME@ {p[0]:.17g} {p[1]:.17g}")
+
+
 def hora_del_dia(texto: str) -> float:
     """`HH:MM:SS` como fraccion del dia, que es lo que da `engine.timeOfDay`."""
     h, m, s = (texto.split(":") + ["0", "0"])[:3]
@@ -2164,6 +2180,66 @@ class Renderer:
         self.stats["giro_por_hora"] = self.stats.get("giro_por_hora", 0) + 1
         return linea_giro(forma, base, self.canvas)
 
+    def _lineas_de_vaiven(self, obj, padres: set[str]) -> list[str]:
+        """Las lineas `vaiven` de una capa cuyo `angles` o cuyo `origin`
+        oscila con `engine.runtime`: una por componente que se mueva.
+
+        La forma la da `wescript.vaiven_de`, y el ejecutor rehace con ella la
+        colocacion del `object` cada fotograma: el giro de la parte lineal en
+        `angles`, como `giro`, y la traslacion en `origin`, que se suma como
+        el parallax o el temblor. Se quedan sin ellas, con el `value`, las
+        mismas que sin `giro` y por lo mismo: una particula, una
+        `passthrough` y una capa de la que cuelga otra, cuyo hijo se mueve y
+        gira con ella sin pasar por esta colocacion.
+        """
+        if (obj.kind == "particle" or obj.raw.get("_passthrough")
+                or str(obj.raw.get("id")) in padres):
+            return []
+        lineas = []
+        for campo in ("angles", "origin"):
+            try:
+                formas = wescript.vaiven_de(obj.raw, campo)
+            except Exception as e:             # ancho a proposito: ver `_emit_text`
+                self.notes.append(f"vaiven sin deducir ({obj.name}): {e}")
+                continue
+            if not formas:
+                continue
+            guardado = (_floats(obj.raw.get(campo)) + [0.0, 0.0, 0.0])[:3]
+            if campo == "angles":
+                # Solo la z, en grados, como el `value` que vio el script.
+                for _, forma in formas:
+                    lineas.append(linea_vaiven(campo, forma,
+                                               math.degrees(guardado[2]),
+                                               self.canvas))
+                continue
+            # El `origin` de una capa con padre va en el marco del padre: su
+            # escala y su giro lo llevan al lienzo, como en `transform_absoluto`.
+            # De pixeles a clip, 2/ancho y 2/alto.
+            esc, ang = [1.0, 1.0], 0.0
+            padre = self.por_id.get(str(obj.raw.get("parent"))) \
+                if obj.raw.get("parent") is not None else None
+            if padre is not None:
+                _, e3, a3 = transform_absoluto(padre, self.por_id)
+                esc, ang = e3[:2], a3[2]
+            else:
+                # Una raiz lleva ademas el parallax de camara en reposo,
+                # `amount * depth * (origin - C)` (`parallax_de_camara`), que
+                # WE calcula cada fotograma con el `origin` de ese momento: lo
+                # que se mueve el `origin` arrastra ese termino con el, y la
+                # capa se mueve (1 + k) veces el vaiven.
+                k = obj.raw.get("_paralaje_k") or (0.0, 0.0)
+                esc = [1.0 + k[0], 1.0 + k[1]]
+            c, sn = math.cos(ang), math.sin(ang)
+            w, h = self.canvas
+            # (+ 0.0 quita el -0 de un seno nulo, que no mueve nada.)
+            ejes = ((2.0 * esc[0] * c / w + 0.0, 2.0 * esc[0] * sn / h + 0.0),
+                    (-2.0 * esc[1] * sn / w + 0.0, 2.0 * esc[1] * c / h + 0.0))
+            for i, forma in formas:
+                lineas.append(linea_vaiven(campo, forma, guardado[i], ejes[i]))
+        if lineas:
+            self.stats["vaiven"] = self.stats.get("vaiven", 0) + len(lineas)
+        return lineas
+
     def _emit_mesh(self, obj) -> None:
         """Sube la malla puppet del objeto, si la tiene y sabemos leerla.
 
@@ -3525,6 +3601,7 @@ class Renderer:
             giro = self._linea_de_giro(obj, padres)
             if giro:
                 self.body.append(giro)
+            self.body.extend(self._lineas_de_vaiven(obj, padres))
             # Lo que el RATON mueve al objeto por el parallax de camara. La
             # parte en reposo ya esta en `place`; esta la suma el ejecutor cada
             # fotograma. Va con el `amount * depth` de la raiz, porque WE mueve

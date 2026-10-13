@@ -316,6 +316,15 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             Op &op = m_ops.last();
             const QByteArray resto = line.mid(kw.size()).toUtf8();
             op.tieneGiro = we_giro_linea(&op.giro, resto.constData()) != 0;
+        } else if (kw == QLatin1String("vaiven") && !m_ops.isEmpty()
+                   && m_ops.last().kind == Op::BeginObject) {
+            // Un `angles` o un `origin` que oscila con `engine.runtime`. Lo
+            // lee `src/wegiro.c`, como en `tools/glexec.c`; el tiempo del plan
+            // (`@TIME@`) no se mira, vale el de `g_Time`.
+            const QByteArray resto = line.mid(kw.size()).toUtf8();
+            WeVaiven v{};
+            if (we_vaiven_linea(&v, resto.constData()))
+                m_ops.last().vaivenes.append(v);
         } else if (kw == QLatin1String("copy") && tok.size() >= 3) {
             Op op;
             op.kind = Op::Copy;
@@ -1452,6 +1461,9 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             if (op.tieneGiro)
                 we_giro_coloca(&op.giro, we_giro_grados(&op.giro, horaDelDia),
                                m_placement);
+            // Un vaiven, con el tiempo de escena que tambien lleva `g_Time`.
+            for (const WeVaiven &v : op.vaivenes)
+                we_vaiven_coloca(&v, time, m_placement);
             // Si la capa cuelga de un hueso, corregir lo que ese hueso se haya
             // movido desde el instante en que se horneo el plan. La malla ya
             // esta deformada para este fotograma ---`skinMeshes` va antes---,

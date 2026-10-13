@@ -29,6 +29,8 @@
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
  *   giro <a> <b> <c> <base> <hora> <w> <h>   gira con la hora (wegiro.h)
+ *   vaiven <campo> <k> <a> <w> <fase> <base> <t> <p0> <p1>
+ *                                      angles/origin oscila con el tiempo (wegiro.h)
  *   pass                               abre un pase
  *     prog <vert> <frag>
  *     target <nombre|SCREEN>           SCREEN = buffer acumulado del objeto
@@ -1034,6 +1036,15 @@ int main(int argc, char **argv)
                                                : we_hora_del_dia(time(NULL), 0);
                 we_giro_coloca(&g, we_giro_grados(&g, hora), obj_mvp);
             }
+        } else if (strcmp(kw, "vaiven") == 0 && !in_pass) {
+            /* Un `angles` o un `origin` que un script mueve con
+             * `engine.runtime`: la colocacion del plan lleva el `value` y
+             * esto la lleva al del tiempo del plan, el mismo de `g_Time`.
+             * Sin el (un `@TIME@` sin poner) es 0, que es lo que lee
+             * entonces `g_Time`. */
+            WeVaiven v;
+            if (we_vaiven_linea(&v, line + 6))
+                we_vaiven_coloca(&v, v.con_tiempo ? v.t : 0.0, obj_mvp);
         } else if (strcmp(kw, "parallax") == 0 && !in_pass) {
             /* `parallax <retardo> <influencia>`. El retardo no pinta nada
              * offline: no hay trayectoria que suavizar. */

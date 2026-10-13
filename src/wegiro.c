@@ -11,6 +11,7 @@
 #include <locale.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 int we_giro_linea(WeGiro *g, const char *resto)
 {
@@ -109,4 +110,104 @@ void we_giro_coloca(const WeGiro *g, double grados, float m[16])
     m[1] = (float)(c * m1 - s * m5 / k);
     m[4] = (float)(s * k * m0 + c * m4);
     m[5] = (float)(s * k * m1 + c * m5);
+}
+
+int we_vaiven_linea(WeVaiven *v, const char *resto)
+{
+    if (!v || !resto)
+        return 0;
+    const char *p = resto;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    int angulo;
+    if (strncmp(p, "angles", 6) == 0)
+        angulo = 1;
+    else if (strncmp(p, "origin", 6) == 0)
+        angulo = 0;
+    else
+        return 0;
+    p += 6;
+
+    /* La misma guarda que `we_giro_linea`. */
+    locale_t loc_c = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    locale_t previa = loc_c ? uselocale(loc_c) : (locale_t)0;
+
+    double n[5];
+    int leidos = 0;
+    char *fin;
+    while (leidos < 5) {
+        double x = strtod(p, &fin);
+        if (fin == p)
+            break;
+        n[leidos++] = x;
+        p = fin;
+    }
+    /* El tiempo, o el marcador `@TIME@` sin sustituir, que se salta. */
+    double t = 0.0;
+    int con_tiempo = 0;
+    if (leidos == 5) {
+        t = strtod(p, &fin);
+        if (fin != p) {
+            con_tiempo = 1;
+            p = fin;
+        } else {
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (*p == '@')
+                while (*p && *p != ' ' && *p != '\t' && *p != '\n')
+                    p++;
+        }
+    }
+    double q[2];
+    int detras = 0;
+    while (leidos == 5 && detras < 2) {
+        double x = strtod(p, &fin);
+        if (fin == p)
+            break;
+        q[detras++] = x;
+        p = fin;
+    }
+
+    if (loc_c) {
+        uselocale(previa);
+        freelocale(loc_c);
+    }
+    if (leidos < 5 || detras < 2)
+        return 0;
+    v->angulo = angulo;
+    v->k = n[0];
+    v->a = n[1];
+    v->w = n[2];
+    v->fase = n[3];
+    v->base = n[4];
+    v->t = t;
+    v->con_tiempo = con_tiempo;
+    v->p[0] = q[0];
+    v->p[1] = q[1];
+    return 1;
+}
+
+double we_vaiven_valor(const WeVaiven *v, double t)
+{
+    return v->k + v->a * sin(v->w * t + v->fase);
+}
+
+void we_vaiven_coloca(const WeVaiven *v, double t, float m[16])
+{
+    const double valor = we_vaiven_valor(v, t);
+    if (v->angulo) {
+        /* El giro de `giro`, con su `base` y su lienzo: la misma conversión
+         * de grados y la misma cuenta en píxeles. */
+        WeGiro g = {0};
+        g.base = v->base;
+        g.ancho = (int)v->p[0];
+        g.alto = (int)v->p[1];
+        we_giro_coloca(&g, valor, m);
+        return;
+    }
+    /* En t = 0 el seno da 0 y, si el script parte del `value`, `valor` es
+     * exactamente `base`: no se suma nada y la colocación queda la del plan. */
+    const double d = valor - v->base;
+    m[3] = (float)(m[3] + v->p[0] * d);
+    m[7] = (float)(m[7] + v->p[1] * d);
 }
