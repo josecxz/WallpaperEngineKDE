@@ -149,32 +149,59 @@ UNSUPPORTED = {
 #     difuso con `lightAttn * lightAttn` sobre el mismo `saturate(1 - d/radio)`,
 #     o sea 2. Pero NO es una constante: en el modulo que WE genera de verdad
 #     ---esta como texto en `wallpaper64.exe`, ver NOTAS--- el exponente viaja
-#     con la luz, en el `.w` de su origen. Aqui va en `g_LightsExponent`, que
-#     el plan rellena; 2 es solo el valor por defecto.
+#     con la luz, en el `.w` de su origen, y asi va aqui; 2 es solo el valor
+#     por defecto que pone el plan.
+#
+# Las arrays son las de ese generador: una por clase de luz y dimensionada por
+# escena (`g_LPoint_*[LIGHTS_POINT]`, `g_LTube_*[LIGHTS_TUBE]`), las mismas que
+# declara `genericimage3`. La primera reconstruccion llevaba la generacion
+# anterior, cuatro puntuales en `g_LightsPosition[4]`, y no sabia de tubos: en
+# `3210875135` ---dos puntuales y un tubo sobre un cielo `genericimage4`--- la
+# iluminacion se apagaba entera y el cielo salia gris plano. El tubo es el del
+# generador: `PointSegmentDelta` hasta el segmento, con el radio en el `.w` del
+# color y el exponente en el de `OriginA`.
 #
 # Se construye sobre `ComputePBRLightShadow` y no sobre `ComputePBRLight`
 # porque `common_pbr_2.h` --- el header que incluyen los 8 --- ya no define la
 # segunda. Por eso se inyecta en el sitio del `#require`, que en los 8 va
 # despues de los `#include`: alli el helper ya esta declarado.
 LIGHTING_V1_GLSL = """
-uniform vec3 g_LightsPosition[4];
-uniform vec4 g_LightsColorRadius[4];
-uniform float g_LightsExponent[4];
+#if LIGHTS_POINT
+uniform vec4 g_LPoint_Color[LIGHTS_POINT];
+uniform vec4 g_LPoint_Origin[LIGHTS_POINT];
+#endif
+#if LIGHTS_TUBE
+uniform vec4 g_LTube_Color[LIGHTS_TUBE];
+uniform vec4 g_LTube_OriginA[LIGHTS_TUBE];
+uniform vec4 g_LTube_OriginB[LIGHTS_TUBE];
+#endif
 
 vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal, vec3 viewDir,
                         vec3 specularTint, vec3 f0, float roughness, float metallic)
 {
 	vec3 suma = vec3(0.0, 0.0, 0.0);
-	for (int i = 0; i < 4; ++i) {
-		vec3 hacia = g_LightsPosition[i] - worldPos;
+#if LIGHTS_POINT
+	for (int i = 0; i < LIGHTS_POINT; ++i) {
+		vec3 hacia = g_LPoint_Origin[i].xyz - worldPos;
 		// Una particula puede nacer justo encima de la luz. Alli `length` da 0 y
 		// la normalizacion de dentro reparte NaN por toda la capa; el corpus ya
 		// se ha ido a negro dos veces por un normalize(0).
 		hacia.z += step(dot(hacia, hacia), 1e-8) * 1e-4;
 		suma += ComputePBRLightShadow(normal, hacia, viewDir, albedo,
-			g_LightsColorRadius[i].rgb, max(g_LightsColorRadius[i].w, 1e-4),
-			g_LightsExponent[i], specularTint, f0, roughness, metallic, 1.0);
+			g_LPoint_Color[i].rgb, max(g_LPoint_Color[i].w, 1e-4),
+			g_LPoint_Origin[i].w, specularTint, f0, roughness, metallic, 1.0);
 	}
+#endif
+#if LIGHTS_TUBE
+	for (int i = 0; i < LIGHTS_TUBE; ++i) {
+		vec3 hacia = PointSegmentDelta(worldPos, g_LTube_OriginA[i].xyz,
+		                               g_LTube_OriginB[i].xyz);
+		hacia.z += step(dot(hacia, hacia), 1e-8) * 1e-4;
+		suma += ComputePBRLightShadow(normal, hacia, viewDir, albedo,
+			g_LTube_Color[i].rgb, max(g_LTube_Color[i].w, 1e-4),
+			g_LTube_OriginA[i].w, specularTint, f0, roughness, metallic, 1.0);
+	}
+#endif
 	return suma;
 }
 """

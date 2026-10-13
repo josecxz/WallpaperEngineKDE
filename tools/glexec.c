@@ -71,6 +71,9 @@
 #define MAX_UNIFORMS 64
 
 static int canvas_w = 1920, canvas_h = 1080;
+/* Con que empieza cada fotograma: `clear r g b` del plan, opaco; sin esa
+ * linea, transparente y negro, como antes. Ver `clearcolor` en werender. */
+static float fondo_escena[4] = {0, 0, 0, 0};
 
 typedef struct {
     char name[128];
@@ -990,6 +993,15 @@ int main(int argc, char **argv)
             glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
             glClearColor(0, 0, 0, 0);
             glClear(GL_COLOR_BUFFER_BIT);
+        } else if (strcmp(kw, "clear") == 0 && !in_pass) {
+            float r, g, b;
+            if (sscanf(line, "%*s %f %f %f", &r, &g, &b) == 3) {
+                fondo_escena[0] = r; fondo_escena[1] = g;
+                fondo_escena[2] = b; fondo_escena[3] = 1;
+                glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
+                glClearColor(r, g, b, 1);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
         } else if (strcmp(kw, "object") == 0 && !in_pass) {
             /* El flush del objeto anterior usa SU matriz: primero componer,
              * despues adoptar la del que empieza. */
@@ -1109,7 +1121,8 @@ int main(int argc, char **argv)
             traza_buffers(n_frames++);
             glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
             glViewport(0, 0, scene_rt.w, scene_rt.h);
-            glClearColor(0, 0, 0, 0);
+            glClearColor(fondo_escena[0], fondo_escena[1], fondo_escena[2],
+                         fondo_escena[3]);
             glClear(GL_COLOR_BUFFER_BIT);
         } else if (strcmp(kw, "video") == 0 && !in_pass) {
             int id, w, h;

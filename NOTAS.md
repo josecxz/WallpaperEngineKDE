@@ -2600,6 +2600,10 @@ anterior y se hizo desde los shaders de la propia librería.
 
 ### La función repuesta no la usa ninguna escena de esta biblioteca
 
+**Ya sí**: con la biblioteca de 133, `3210875135` ilumina su cielo con
+`genericimage4`, que llama a `PerformLighting_V1`, y con un tubo entre sus
+luces. Ver [El cielo de After Sunset](#el-cielo-de-after-sunset-lightingv1-por-clase-el-exponente-de-cada-luz-y-el-fondo-opaco).
+
 Conviene decirlo claro: de los 6 pases que acaban iluminados en el corpus, los 6
 van por el camino viejo, el de `g_LightsColorPremultiplied`. **Ninguno llama a
 `PerformLighting_V1`.**
@@ -10099,3 +10103,88 @@ final, allí pasa lo mismo.
   previa no tiene, igual en `main` y en la rama.
 - **Leer en el binario** dónde se ordenan efectos y deformación, para
   tenerlo por el motor y no por las máscaras.
+
+## El cielo de After Sunset: `LightingV1` por clase, el exponente de cada luz y el fondo opaco
+
+`3210875135` (After Sunset) salía con el cielo gris plano donde la vista
+previa tiene un degradado lila y azul, y con cuadrados grises repartidos por
+el cielo. Eran tres cosas, y ninguna de la escena.
+
+### 1. El cielo sin luz: `LightingV1` no sabía de tubos
+
+El cielo es una capa `genericimage4` con `LIGHTING` y `REFLECTION`, gris
+(`color` 0,576, alfa 0,81), que se colorea con tres luces: dos `lpoint`
+(rosa y azul) y un `ltube`. `genericimage4` llama a `PerformLighting_V1`, que
+inyecta `weshader`, y nuestra reconstrucción tenía la interfaz de la
+generación anterior: cuatro puntuales en `g_LightsPosition[4]`. Con un tubo en
+la escena, `werender` aplica [o todas las luces, o
+ninguna](#o-todas-las-luces-o-ninguna) y apagaba la iluminación entera.
+
+El módulo se reescribe con la interfaz del generador que lleva
+`wallpaper64.exe` ([el módulo de verdad está en el
+binario](#el-módulo-de-verdad-está-en-el-binario-y-no-es-un-fichero)): un
+array por clase y dimensionado por escena (`g_LPoint_*[LIGHTS_POINT]`,
+`g_LTube_*[LIGHTS_TUBE]`), los mismos que declara `genericimage3`, y el tubo
+como allí: `PointSegmentDelta` hasta el segmento, con el radio en el `.w` del
+color y el exponente en el de `OriginA`. `werender` trata como moderno a todo
+shader que pida `LightingV1`.
+
+### 2. El cielo oscuro: `exponent` es de la luz
+
+La radiancia de `ComputePBRLightShadow` es `color · falloff^exponente`. Estas
+notas daban el exponente por fijo en 2 porque «ninguna luz lo declara» y «el
+campo `exponent` del formato es de color». Las 3 luces de esta escena lo
+declaran (1,06), y el lector de luces de WE lo registra como `float` en
+`[luz+0x2e8]`, justo detrás de `radius` (`0x14025dcda`, `0x14025dd83`). Ahora
+viaja en el `.w` del origen; las otras 9 luces del corpus no lo traen y se
+quedan con 2. `g_LightsExponent` desaparece: solo lo leía el módulo viejo.
+
+### 3. Los cuadrados: el fotograma empezaba transparente
+
+La capa 118 es un `blur` a pantalla completa, y su `blur_combine` hace
+`blurred.rgb / blurred.a`. El fotograma empezaba en (0, 0, 0, 0) y el
+`clearcolor` de la escena no se usaba en ningún sitio, así que donde solo hay
+capas translúcidas —el cielo, con alfa 0,81— el alfa del fotograma quedaba
+por debajo de 1. Cada sprite de estrella lo movía un poco en todo su quad, y la
+división lo convertía en un cuadrado. Con el fotograma borrado a
+`clearcolor` **opaco** el alfa vale 1 y la división no hace nada. Se probó
+primero cambiando solo el borrado de `glexec`: los cuadrados desaparecen y el
+cielo queda como en la vista previa.
+
+Las 133 escenas declaran `clearcolor` (casi todas gris 0,7) y 130 además
+`clearenabled`. El plan lleva una línea `clear r g b` detrás de `canvas`
+cuando `clearenabled` no es falso; los dos ejecutores borran la escena a ese
+color con alfa 1 al empezar y en cada fotograma. Sin la línea —un plan de
+vídeo, o uno viejo— siguen con (0, 0, 0, 0), y el ejecutor en vivo la
+reinicia al cargar cada plan.
+
+### Y lo que no era un fallo: la intro
+
+La última capa, un `color_grading`, tiene el `Brightness` animado de −1 a 0
+en 150 fotogramas, en modo `single`: un fundido de entrada de 5 s. A
+`--time 2` la escena sale oscura porque está a mitad del fundido; las
+medidas de esta sección se miran a 10 s.
+
+### Lo medido
+
+- **La escena**, a 10 s con Mesa: cielo lila y azul como la vista previa, sin
+  cuadrados. `test_luminancia`: 65,0 → **82,2** de media, con la vista previa
+  en 103,3 (razón 0,63 → 0,80).
+- **El corpus** (`test_luminancia.py` con Mesa, `--guardar` en `main` y
+  `--referencia` en la rama; los dos `glexec` compilados de su árbol): 133/133
+  renderizan, **0 regresiones, 0 apagadas**. Solo dos escenas se mueven más
+  de 0,5: esta y `3047352572`, 49,26 → 47,76. En esa, la zona del dragón sale
+  más limpia (el mismo `rgb / a` de algún efecto, ahora con alfa 1) y en la
+  esquina de arriba a la derecha aparecen dos cuñas grises: huecos que
+  ninguna capa cubre, negros en `main` y ahora del `clearcolor`.
+- `make glexec` y `make build` sin avisos nuevos. `test_wemdl.py`,
+  `test_werender.py`, `test_wereloj.py`, `test_weparticles.py`,
+  `test_wescript.py`, `test_hoja.py` y `test_giro.py` pasan.
+
+### Lo que queda
+
+- **Las cuñas de `3047352572`**: si en WE alguna capa tapa esa esquina, el
+  fallo es de colocación y antes lo escondía el negro. La vista previa es un
+  recorte central y no la enseña.
+- **Los focos y las direccionales** en `LightingV1`: el generador los tiene;
+  aquí siguen apagando la iluminación porque ninguna escena los trae.

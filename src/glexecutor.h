@@ -424,6 +424,9 @@ private:
     int m_compoCur = 0;
     GlName m_vao = 0, m_vbo = 0;
     int m_canvasW = 1920, m_canvasH = 1080;
+    // Con que empieza cada fotograma: la linea `clear` del plan, opaca. Sin
+    // ella, transparente y negro.
+    float m_fondo[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     // Encaje del lienzo en la pantalla. Los valores por defecto son lo que se
     // hacia antes de que fuera configurable: cubrir, sin zoom y centrado.
     int m_fit = Cubrir;
