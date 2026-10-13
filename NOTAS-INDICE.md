@@ -128,6 +128,11 @@ make indice                       # reescribe los números desde NOTAS.md
 - `5498` **La causa: la identidad que le damos a una capa passthrough** — `composelayer.vert` dibuja pantalla completa pero muestrea POR LA MVP, y se la damos identidad.
 - `5519` **Por qué el arreglo son dos mitades y ninguna vale sola** — la tabla de las tres variantes, y por qué la que se probó en su día tenía que fallar.
 - `5539` **Alcance, medido sobre las 129** — 29 capas de 85 tienen rectángulo distinto del lienzo; 27 son `composelayer` en 18 escenas. Arreglado: `_colocacion` ya no fuerza identidad en `composelayer`, y su pase base lleva la MVP real.
+- `9499` **Las capas giradas giran en píxeles del lienzo: `object_mvp` y `we_giro_coloca`** — `object_mvp` giraba después de pasar a clip y estiraba en x por ancho/alto toda capa girada de un lienzo no cuadrado; ahora es D · R · E como `object_world` y `particle_mvp`, y `we_giro_coloca` gira por D · R(Δ) · D⁻¹ con el lienzo de la escena, que la línea `giro` lleva detrás porque `canvas` es la resolución de dibujo redondeada. Cambian las colocaciones de las 22 escenas del censo y nada más.
+- `9515` **Lo que cambia** — `object_mvp`, la VP de una capa iluminada que pasa a ser la ortográfica, el lienzo de la escena en la línea `giro` y en el `WeGiro` que leen los dos ejecutores, y el `g_EffectModelViewProjectionMatrix` inerte de las partículas.
+- `9548` **Lo que se descartó** — girar en píxeles solo las agujas, sacar la proporción de `canvas` (2,0e-5 y 6,3e-5 en vivo), y conservar la fórmula vieja para las partículas.
+- `9563` **Lo medido** — 722 capas a 4,4e-16 de ortográfica · mundo y 63 giradas en 22 escenas; el C a 4,1e-8 en tres lienzos y dos locales, y a 1,1e-7 con el plan a 1920x1200 y 1366x768; 46 planes idénticos, 22 con colocaciones distintas y 61 solo con líneas inertes; la aguja de las 03:00 a −0,11 % y +0,28 % de su `size · scale` (main, +77,5 %); 0 regresiones de luz.
+- `9627` **Lo que queda** — un autor que compensara la deformación, y lo que WE pone en el uniform de efecto de una partícula.
 
 ## Escenas negras y capas perdidas
 
@@ -427,10 +432,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `8960` **Lo medido** — la prueba nueva contra `main` (3 frente a 3384 en el hueco); 172 líneas de `.psys` en 39 escenas; 0 regresiones de luz; el vórtice de `3219398263` que no hacía nada.
 - `8985` **Lo que queda** — el factor de tiempo `F` sin identificar, el `drag` lineal de WE, y `flags & 1`.
 - `9328` **Las agujas de un reloj analógico: `angles` con `engine.timeOfDay`** — `wescript` reduce el script a `A · frac(B · tod) + C` en grados y lo comprueba evaluándolo; la línea `giro` y `src/wegiro.c`, nuevo y compartido, giran la colocación con la hora en los dos ejecutores. Las tres agujas de `2396319149` se mueven; solo cambia su plan.
-- `9360` **Lo que cambia** — `engine.timeOfDay`, `giro_por_hora`, `--hora` y `@HORA@`, grados frente a radianes, y por qué el giro reproduce la deformación del ángulo estático (63 capas en 22 escenas).
-- `9411` **Lo que se descartó** — reconocer el texto del script, girar en píxeles solo las agujas o en el espacio del quad, y dar `timeOfDay` solo a `angles`.
-- `9426` **Lo medido** — 3 de 7 scripts aceptados; 0 grados en 7200 `tod`; 128/128 planes idénticos y tres líneas `giro` añadidas; el C a 0 grados en `C` y `es_ES`; 0,0000 y 0,0001 de 255 contra el `angles` estático; 0 → 42193 entre las 03:00 y las 09:00; 0 regresiones de luz.
-- `9477` **Lo que queda** — la deformación del ángulo estático, los otros cuatro `angles`, la fracción de segundo de `timeOfDay` sin leer en el motor, y los hijos de una capa girada.
+- `9360` **Lo que cambia** — `engine.timeOfDay`, `giro_por_hora`, `--hora` y `@HORA@`, grados frente a radianes, y por qué el giro reproducía la deformación del ángulo estático (63 capas en 22 escenas), ya quitada en los dos sitios.
+- `9414` **Lo que se descartó** — reconocer el texto del script, girar en píxeles solo las agujas o en el espacio del quad, y dar `timeOfDay` solo a `angles`.
+- `9429` **Lo medido** — 3 de 7 scripts aceptados; 0 grados en 7200 `tod`; 128/128 planes idénticos y tres líneas `giro` añadidas; el C a 0 grados en `C` y `es_ES`; 0,0000 y 0,0001 de 255 contra el `angles` estático; 0 → 42193 entre las 03:00 y las 09:00; 0 regresiones de luz.
+- `9480` **Lo que queda** — ~~la deformación del ángulo estático~~ (hecha), los otros cuatro `angles`, la fracción de segundo de `timeOfDay` sin leer en el motor, y los hijos de una capa girada.
 
 ## Inventario del formato: qué leemos y qué no
 

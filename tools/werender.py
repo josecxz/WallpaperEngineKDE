@@ -358,13 +358,22 @@ def linea_hojahora(volteada: bool, fotogramas: list[list[float]],
 MAX_FOTOGRAMAS_HOJA = 256
 
 
-def linea_giro(forma: tuple[float, float, float], base: float) -> str:
+def linea_giro(forma: tuple[float, float, float], base: float,
+               lienzo: tuple[int, int]) -> str:
     """La linea `giro` de una capa cuyo `angles` lleva un script de la hora;
-    el formato esta en `wereloj.h`. `forma` es la de `wescript.giro_por_hora`
+    el formato esta en `wegiro.h`. `forma` es la de `wescript.giro_por_hora`
     y `base` el angulo propio con que se horneo la colocacion, los dos en
-    GRADOS. La hora va en el marcador `@HORA@`."""
+    GRADOS. La hora va en el marcador `@HORA@`.
+
+    Detras va el lienzo de la ESCENA, el que usa `object_mvp`, porque el
+    ejecutor gira en sus pixeles. No vale el de la linea `canvas`: esa es la
+    resolucion de dibujo, redondeada a enteros cuando hay `resolucion` ---en
+    vivo siempre---, y su proporcion no es la del lienzo (2133x1200 para uno
+    de 3840x2160). Es el mismo redondeo por el que `g_Screen` toma la
+    proporcion de la escena."""
     a, b, c = forma
-    return f"giro {a:.17g} {b:.17g} {c:.17g} {base:.17g} @HORA@"
+    return (f"giro {a:.17g} {b:.17g} {c:.17g} {base:.17g} @HORA@ "
+            f"{int(lienzo[0])} {int(lienzo[1])}")
 
 
 def hora_del_dia(texto: str) -> float:
@@ -419,14 +428,18 @@ def object_mvp(obj, canvas: tuple[int, int], mesh: bool = False,
     """
     w, h = canvas
     hx, hy, ax, ay, c, s, _ = _colocacion(obj, canvas, mesh, por_id)
-    sx, sy = 2.0 * hx / w, 2.0 * hy / h
     tx = 2.0 * ax / w - 1.0
     ty = 2.0 * ay / h - 1.0
-    # Rotacion en Z antes de la escala; los angulos vienen en radianes.
-    return [ sx * c, -sy * s, 0.0, tx,
-             sx * s,  sy * c, 0.0, ty,
-             0.0,     0.0,    1.0, 0.0,
-             0.0,     0.0,    0.0, 1.0]
+    # El giro va en PIXELES del lienzo y despues se pasa a clip: es
+    # D · R · diag(hx, hy), con D = diag(2/w, 2/h), lo mismo que
+    # `object_world` y `particle_mvp`. Girar ya en clip, R · D · diag(hx, hy),
+    # estiraba en x por ancho/alto cualquier capa girada que no estuviera a 0
+    # o 180 grados de un lienzo no cuadrado, y ademas la cizallaba. Los
+    # angulos vienen en radianes.
+    return [2.0 * hx * c / w, -2.0 * hy * s / w, 0.0, tx,
+            2.0 * hx * s / h,  2.0 * hy * c / h, 0.0, ty,
+            0.0,               0.0,              1.0, 0.0,
+            0.0,               0.0,              0.0, 1.0]
 
 
 def _es_composelayer(obj) -> bool:
@@ -831,6 +844,11 @@ def vp_de(mvp: list[float], mundo: list[float]) -> list[float]:
     `MVP = VP * Mundo`, la que falta es `MVP * Mundo^-1`. Sale exacta para
     cualquier tipo de pase ---capa, malla o particula--- sin distinguir casos, y
     por construccion el triangulo acaba en el mismo sitio que sin luces.
+
+    Para una capa sale la ortografica del lienzo, girada o no: `object_mvp`
+    gira en pixeles, como `object_world`, y lo unico que las separa es el paso
+    a clip. Cuando la MVP giraba ya en clip, una capa iluminada girada llevaba
+    aqui una VP con cizalla.
     """
     try:
         w = np.linalg.inv(np.array(mundo, dtype=np.float64).reshape(4, 4))
@@ -2144,7 +2162,7 @@ class Renderer:
         # el ejecutor gira la diferencia entre ese y el de la hora.
         base = math.degrees((_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[2])
         self.stats["giro_por_hora"] = self.stats.get("giro_por_hora", 0) + 1
-        return linea_giro(forma, base)
+        return linea_giro(forma, base, self.canvas)
 
     def _emit_mesh(self, obj) -> None:
         """Sube la malla puppet del objeto, si la tiene y sabemos leerla.

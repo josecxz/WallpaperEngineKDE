@@ -28,7 +28,7 @@
  *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
- *   giro <a> <b> <c> <base> <hora>     el objeto gira con la hora (wegiro.h)
+ *   giro <a> <b> <c> <base> <hora> <w> <h>   gira con la hora (wegiro.h)
  *   pass                               abre un pase
  *     prog <vert> <frag>
  *     target <nombre|SCREEN>           SCREEN = buffer acumulado del objeto
