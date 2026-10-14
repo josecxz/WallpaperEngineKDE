@@ -8,6 +8,7 @@
     wectl start            vuelve a activar el motor
     wectl stop             devuelve el escritorio al fondo de Plasma
     wectl status           que hay puesto y como va
+    wectl gpu [dedicated|integrated]  en que grafica se dibuja el fondo
 
 Todo pasa por la API de scripting de Plasma via D-Bus, que aplica el cambio
 EN CALIENTE. Es la diferencia importante con `make reload`, que reinicia
@@ -702,6 +703,56 @@ def cmd_shuffle(args) -> int:
                    + "\n".join(errores))
 
 
+# Lo que acepta `wectl gpu`, a lo que guarda la clave `DedicatedGpu`. Los
+# nombres de marca son los de un portatil Intel + NVIDIA; lo que se elige de
+# verdad es "la de plasmashell" u "otra", sea cual sea (src/otragpu.h).
+GPUS = {"dedicated": True, "dedicada": True, "nvidia": True,
+        "integrated": False, "integrada": False, "intel": False}
+
+
+def _config_gpu(valor: bool | None = None) -> list[str]:
+    """Escribe `DedicatedGpu` en todos los escritorios, si se da, y la lee."""
+    grupo = json.dumps(["Wallpaper", PLUGIN, "General"])
+    escribe = (f" d[i].writeConfig('DedicatedGpu', {json.dumps(valor)});"
+               if valor is not None else "")
+    salida = _script(
+        "var o = []; var d = desktops();"
+        "for (var i = 0; i < d.length; i++) {"
+        f" d[i].currentConfigGroup = {grupo};{escribe}"
+        " o.push(String(d[i].readConfig('DedicatedGpu', true))); }"
+        "print(o.join(' '));")
+    return salida.split()
+
+
+def _gpu_en_uso() -> str | None:
+    """La ultima linea del motor que dice donde dibuja, si la hay."""
+    # Solo plasmashell: el arnes QML escribe las mismas lineas en el registro.
+    reg = subprocess.run(
+        ["journalctl", "--user", "-b", "--no-pager", "-n", "1", "_COMM=plasmashell", "-g",
+         "SceneView: (el fondo se dibuja en|configurado para dibujar|no hay otra GPU|Qt no dibuja)"],
+        capture_output=True, text=True)
+    lineas = [l for l in reg.stdout.splitlines() if "SceneView:" in l]
+    return lineas[-1].split("SceneView:", 1)[1].strip() if lineas else None
+
+
+def cmd_gpu(args) -> int:
+    if args.grafica is None:
+        valores = _config_gpu()
+        pedida = "dedicada" if all(v != "false" for v in valores) else "integrada"
+        print(f"configurado   : {pedida}")
+    else:
+        dedicada = GPUS[args.grafica]
+        _config_gpu(dedicada)
+        # El motor la cambia en el siguiente fotograma, sin recargar: el
+        # SceneView pide uno al cambiar la propiedad, aunque este en pausa.
+        print(f"configurado   : {'dedicada' if dedicada else 'integrada'}"
+              " (se aplica en el siguiente fotograma)")
+        time.sleep(1.0)
+    en_uso = _gpu_en_uso()
+    print(f"en uso        : {en_uso or '(sin datos del motor en el registro)'}")
+    return 0
+
+
 def cmd_start(args) -> int:
     if plan_instalado() is None:
         raise CtlError("no hay ningun plan preparado; usa `wectl set <wallpaper>`")
@@ -779,6 +830,12 @@ def main() -> int:
                    help="30m, 2h, 90s, 1d; un numero suelto son minutos")
     s.add_argument("--parar", action="store_true", help="para la rotacion")
     s.set_defaults(fn=cmd_shuffletime)
+
+    s = sub.add_parser("gpu", help="en que grafica se dibuja el fondo")
+    s.add_argument("grafica", nargs="?", choices=sorted(GPUS), metavar="GRAFICA",
+                   help="dedicated (nvidia) o integrated (intel); sin nada, "
+                        "dice cual esta configurada y cual se usa")
+    s.set_defaults(fn=cmd_gpu)
 
     for nombre, fn, ayuda in (("start", cmd_start, "activa el motor"),
                               ("stop", cmd_stop, "para el motor"),

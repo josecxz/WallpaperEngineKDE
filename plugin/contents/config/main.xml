@@ -41,6 +41,13 @@
       <label>Desplazamiento vertical del recorte</label>
       <default>0.0</default>
     </entry>
+    <!-- Con dos GPU, si el plan va en la que no es la de plasmashell: en un
+         portatil hibrido, la dedicada. Lo cambia `wectl gpu`; ver
+         src/otragpu.h. Sin segunda GPU no hace nada. -->
+    <entry name="DedicatedGpu" type="Bool">
+      <label>Dibujar el fondo en la grafica dedicada</label>
+      <default>true</default>
+    </entry>
   </group>
 
 </kcfg>

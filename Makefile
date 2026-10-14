@@ -41,11 +41,12 @@ CXXFLAGS := -O2 -fPIC -std=c++20 -Wall -Wextra -Wno-unused-parameter -MMD -MP \
 # sobre la .so mapeada (ver install-qml).
 CFLAGS   := -O2 -fPIC -std=c11 -Wall -Wextra -MMD -MP $(AV_CFLAGS)
 LDFLAGS  := -shared -Wl,-z,nodelete
-LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL $(AV_LIBS) -lpthread
+# -lEGL: el plan puede ir en otra GPU con su propio contexto (src/otragpu.cpp).
+LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL -lEGL $(AV_LIBS) -lpthread
 
 MOC     := /usr/lib/qt6/moc
 BUILD   := obj
-OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o \
+OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o $(BUILD)/otragpu.o \
            $(BUILD)/escritorio.o $(BUILD)/moc_escritorio.o \
            $(BUILD)/weparticles.o $(BUILD)/wevideo.o $(BUILD)/wereloj.o \
            $(BUILD)/wetemblor.o $(BUILD)/wegiro.o $(BUILD)/moc_sceneview.o

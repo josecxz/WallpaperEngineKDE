@@ -122,6 +122,17 @@ void SceneView::setPunteroPresente(bool v)
         ponPuntero(m_puntero, v);
 }
 
+// Pide fotograma: con el escritorio tapado y el reloj en pausa, el cambio de
+// GPU tiene que llegar igual, como el encaje.
+void SceneView::setGpuDedicada(bool v)
+{
+    if (v == m_gpuDedicada)
+        return;
+    m_gpuDedicada = v;
+    Q_EMIT gpuDedicadaChanged();
+    update();
+}
+
 void SceneView::ponPuntero(const QPointF &p, bool presente)
 {
     if (p == m_puntero && presente == m_punteroPresente)
@@ -189,6 +200,44 @@ QQuickRhiItemRenderer *SceneView::createRenderer()
 
 // ── SceneRenderer ───────────────────────────────────────────────────────────
 
+void SceneRenderer::soltarPlan()
+{
+    if (m_otra.abierta()) {
+        if (m_otra.entrar()) {
+            m_exec.releaseResources();
+            m_otra.liberarDentro();
+            m_otra.salir();
+        }
+        m_otra.cerrar();
+    } else {
+        m_exec.releaseResources();
+    }
+    // Todo como en el primer fotograma: se decide la GPU, se carga el plan y
+    // se vuelve a publicar el estado. Un fallo de antes no se arrastra: puede
+    // ser de la GPU que se deja.
+    m_gpuDecidida = false;
+    m_planLoaded = false;
+    m_failed = false;
+    m_diagDone = false;
+    m_frames = 0;
+    m_reportedPhase = -1;
+}
+
+SceneRenderer::~SceneRenderer()
+{
+    if (!m_otra.abierta())
+        return;
+    // El plan vive en el contexto propio: se entra, se suelta todo y se
+    // devuelve el que hubiera. Asi el destructor de GlExecutor ya no tiene
+    // nada que liberar ---ni con que contexto equivocarse---.
+    if (m_otra.entrar()) {
+        m_exec.releaseResources();
+        m_otra.liberarDentro();
+        m_otra.salir();
+    }
+    m_otra.cerrar();
+}
+
 void SceneRenderer::initialize(QRhiCommandBuffer *)
 {
     // Nada que hacer aqui: los recursos GL se crean en el primer render, ya
@@ -213,6 +262,7 @@ void SceneRenderer::synchronize(QQuickRhiItem *item)
     m_puntero[0] = float(view->m_puntero.x());
     m_puntero[1] = float(view->m_puntero.y());
     m_punteroPresente = view->m_punteroPresente;
+    m_quiereOtra = view->m_gpuDedicada;
 
     // El estado solo cambia en las transiciones cargando -> listo -> error.
     // Construir la cadena y cruzar hilos en cada fotograma seria trabajo
@@ -270,7 +320,9 @@ void SceneRenderer::synchronize(QQuickRhiItem *item)
 
 void SceneRenderer::render(QRhiCommandBuffer *cb)
 {
-    if (m_failed || m_planPath.isEmpty())
+    // Pedir la otra GPU tambien saca de un fallo: se vuelve a intentar alli.
+    const bool cambioDeGpu = m_gpuDecidida && m_quiereOtra != m_gpuPedida;
+    if ((m_failed && !cambioDeGpu) || m_planPath.isEmpty())
         return;
 
     QRhi *r = rhi();
@@ -300,11 +352,38 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
     cb->beginPass(renderTarget(), QColor(0, 0, 0, 0), {1.0f, 0});
     cb->beginExternal();
 
+    // El destino de Qt se lee AQUI, con su contexto aun puesto.
+    GLint qtFbo = 0;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &qtFbo);
+
+    if (cambioDeGpu)
+        soltarPlan();
+    if (!m_gpuDecidida) {
+        m_gpuDecidida = true;
+        m_gpuPedida = m_quiereOtra;
+        QString informe = QStringLiteral("configurado para dibujar en la GPU de Qt");
+        if (m_gpuPedida)
+            m_otra.abrir(&informe);
+        qInfo("SceneView: %s", qPrintable(informe));
+    }
+    // Desde aqui hasta `salir()` todo GL va a la otra GPU, plan incluido: se
+    // carga, se compila y se dibuja ahi.
+    const bool aparte = m_otra.abierta();
+    if (aparte && !m_otra.entrar()) {
+        m_failed = true;
+        qWarning("SceneView: no se pudo poner el contexto de la otra GPU");
+        cb->endExternal();
+        cb->endPass();
+        return;
+    }
+
     if (!m_planLoaded) {
         QString err;
         if (!m_exec.loadPlan(m_planPath, &err) || !m_exec.initialize(&err)) {
             m_failed = true;
             qWarning("SceneView: %s", qPrintable(err.isEmpty() ? m_exec.log() : err));
+            if (aparte)
+                m_otra.salir();
             cb->endExternal();
             cb->endPass();
             return;
@@ -324,31 +403,40 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
             qWarning("SceneView: %s", qPrintable(m_exec.log()));
     }
 
-    GLint qtFbo = 0;
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &qtFbo);
+    const GLuint destino = aparte ? m_otra.destino(size.width(), size.height())
+                                  : GLuint(qtFbo);
     m_exec.setFit(m_encaje, m_zoom, m_despX, m_despY);
     m_exec.setBarColor(m_bar[0], m_bar[1], m_bar[2]);
     m_exec.setPuntero(m_puntero[0], m_puntero[1], m_punteroPresente);
-    m_exec.render(GLuint(qtFbo), size.width(), size.height(), m_time);
+    m_exec.render(destino, size.width(), size.height(), m_time);
 
     // Segundo parte, ya en marcha: el primero sale en el fotograma 1, cuando el
-    // cronometro de GPU aun no puede tener resultado por definicion.
+    // cronometro de GPU aun no puede tener resultado por definicion. Con el
+    // plan en otra GPU el cronometro mide ESA GPU, y la copia va aparte: leer
+    // en la otra y subir en la de Qt, en ms de CPU.
     if (++m_frames == 200)
         qInfo("SceneView: cronometro de GPU -> %.2f ms/fotograma, "
-              "saltos=%d fallos=%d consulta_ajena=%d",
+              "saltos=%d fallos=%d consulta_ajena=%d; copia leer=%.2f subir=%.2f ms",
               m_exec.diagGpuMs(), m_exec.diagGpuSaltos(),
-              m_exec.diagGpuFallos(), m_exec.diagGpuAjena());
+              m_exec.diagGpuFallos(), m_exec.diagGpuAjena(),
+              m_otra.msLeer(), m_otra.msPresentar());
 
     if (!m_diagDone) {
         m_diagDone = true;
         const GLenum e = glGetError();
-        qInfo("SceneView: destino=%d tam=%dx%d glError=0x%x compo_medio=%.1f targets=%d "
-              "gpu=%.2f ms fallos_cronometro=%d",
-              qtFbo, size.width(), size.height(), e,
+        qInfo("SceneView: destino=%u (%s) tam=%dx%d glError=0x%x compo_medio=%.1f "
+              "targets=%d gpu=%.2f ms fallos_cronometro=%d",
+              destino, aparte ? "otra GPU" : "Qt", size.width(), size.height(), e,
               m_exec.diagCompoMean(), m_exec.targetCount(),
               m_exec.diagGpuMs(), m_exec.diagGpuFallos());
         if (m_exec.diagBlitError())
             qWarning("SceneView: error de GL tras componer: 0x%x", m_exec.diagBlitError());
+    }
+
+    if (aparte) {
+        m_otra.leer();
+        m_otra.salir();
+        m_otra.presentar(GLuint(qtFbo));
     }
 
     cb->endExternal();

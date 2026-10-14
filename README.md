@@ -33,6 +33,11 @@ SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
   el motor cuando no queda fondo a la vista —también con dos ventanas en
   mosaico, donde ninguna está maximizada (98,2 % → 0,1 % de la GPU)—. Al
   destapar sigue donde estaba.
+- **En la gráfica dedicada**, si el portátil tiene dos: el escritorio sigue en
+  la integrada y el fondo se dibuja en la otra, que le pasa el fotograma ya
+  hecho. Con una escena de 51 pases, la integrada pasa de 33 ms por fotograma
+  ---y 30 fps--- a 1,2 ms, y el fondo va a 165 fps. `wectl gpu integrated` lo
+  devuelve a la integrada en caliente, por ejemplo para ahorrar batería.
 
 No soporta wallpapers de tipo web, ni audio: ni el reactivo ni la pista de
 sonido de los vídeos.
@@ -103,6 +108,9 @@ wectl set <id|texto>    prepara uno y lo pone en el escritorio
 wectl shuffle           pone uno al azar de toda la biblioteca
 wectl shuffletime <t>    ajusta cada cuánto rota, sin cambiar el fondo
 wectl start / stop      activa o para el motor
+wectl gpu [dedicated|integrated]
+                        en qué gráfica se dibuja; sin nada, la configurada y la
+                        que se usa (también `nvidia` / `intel`)
 wectl status            qué hay puesto y cómo va
 ```
 

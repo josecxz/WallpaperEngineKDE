@@ -17,11 +17,15 @@
 #include <QUrl>
 
 #include "glexecutor.h"
+#include "otragpu.h"
 
 class SceneRenderer : public QQuickRhiItemRenderer
 {
 public:
     SceneRenderer() = default;
+    // Con el plan en otra GPU, sus recursos solo se liberan con el contexto
+    // de esa GPU puesto: el destructor de GlExecutor mira el de Qt.
+    ~SceneRenderer() override;
     // Contiene un GlExecutor, que posee handles de GL y no es copiable.
     SceneRenderer(const SceneRenderer &) = delete;
     SceneRenderer &operator=(const SceneRenderer &) = delete;
@@ -32,6 +36,17 @@ public:
 
 private:
     GlExecutor m_exec;
+    // Donde se ejecuta el plan: ver otragpu.h. Se decide en el primer
+    // fotograma, que es el primer momento con el contexto de Qt en la mano, y
+    // se vuelve a decidir si la configuracion cambia: `m_quiereOtra` es lo
+    // pedido (copiado en synchronize) y `m_gpuPedida` con lo que se decidio.
+    OtraGpu m_otra;
+    bool m_gpuDecidida = false;
+    bool m_quiereOtra = true;
+    bool m_gpuPedida = true;
+    // Suelta el plan en el contexto donde vive y deja todo para cargarlo de
+    // nuevo en el siguiente fotograma. Dentro de beginExternal().
+    void soltarPlan();
     QString m_planPath;      // copiado en synchronize()
     float m_time = 0.0f;
     bool m_planLoaded = false;
@@ -90,6 +105,12 @@ class SceneView : public QQuickRhiItem
     Q_PROPERTY(QPointF puntero READ puntero WRITE setPuntero NOTIFY punteroChanged)
     Q_PROPERTY(bool punteroPresente READ punteroPresente WRITE setPunteroPresente
                NOTIFY punteroChanged)
+    // Si el plan va en otra GPU que la de Qt cuando la hay: en un portatil
+    // hibrido, la dedicada en vez de la integrada. Ver otragpu.h. Cambiarlo
+    // con el fondo puesto mueve el plan de una GPU a otra en el siguiente
+    // fotograma, sin reiniciar nada.
+    Q_PROPERTY(bool gpuDedicada READ gpuDedicada WRITE setGpuDedicada
+               NOTIFY gpuDedicadaChanged)
 
 public:
     explicit SceneView(QQuickItem *parent = nullptr);
@@ -119,6 +140,8 @@ public:
     bool punteroPresente() const { return m_punteroPresente; }
     void setPuntero(const QPointF &p);
     void setPunteroPresente(bool v);
+    bool gpuDedicada() const { return m_gpuDedicada; }
+    void setGpuDedicada(bool v);
 
 Q_SIGNALS:
     void planSourceChanged();
@@ -130,6 +153,7 @@ Q_SIGNALS:
     // mira ---el HUD--- los enseña en la misma linea.
     void encajeChanged();
     void punteroChanged();
+    void gpuDedicadaChanged();
 
 protected:
     QQuickRhiItemRenderer *createRenderer() override;
@@ -160,6 +184,7 @@ private:
     QColor m_colorBarras = QColor(0, 0, 0);
     QPointF m_puntero = QPointF(0.5, 0.5);
     bool m_punteroPresente = false;
+    bool m_gpuDedicada = true;
     // Si ya llega el cursor de KWin: entonces lo que mande el QML se ignora.
     bool m_cursorKWin = false;
     void ponPuntero(const QPointF &p, bool presente);
