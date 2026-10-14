@@ -32,7 +32,12 @@ make indice                       # reescribe los números desde NOTAS.md
 - `1439` **Notas de plataforma** — `Screen.refreshRate` llega `undefined`; `FrameAnimation` late en el hilo de render y se para solo cuando Qt deja de componer.
 - `311` **Hito 0 (completado)** — el primer color sólido detrás de los iconos, con el reloj sincronizado al refresco.
 - `2784` **Nota de rendimiento para el port a C++** — qué extensiones de compresión de textura expone esta GPU.
-- `3962` **Elegir la GPU que renderiza** — la iGPU se come el 49,6 %; los dos caminos para mover el fondo a la dedicada y el riesgo que puede tumbar el segundo.
+- `3964` **Elegir la GPU que renderiza** — la iGPU se come el 49,6 %; los dos caminos para mover el fondo a la dedicada y el riesgo que puede tumbar el segundo.
+- `10199` **El fondo en la dedicada: el plan en otra GPU y el fotograma por la CPU** — la sonda del dmabuf dice que no; el plan en otro contexto del mismo hilo, leído por la CPU: la integrada de 33 ms a 1,2 ms por fotograma y 148 planes sin diferencias.
+- `10206` **La sonda: NVIDIA no escribe nada que la integrada sepa leer** — la textura sale en bloques y Mesa la rechaza; un dmabuf LINEAR, NVIDIA solo lo muestrea. La CPU: 1,2 + 2,0 ms a 2560×1440.
+- `10225` **El camino: otro contexto en el mismo hilo** — libglvnd reparte GL por hilo; qué GPU se elige, qué estado EGL se guarda (la API también) y por qué `~SceneRenderer` libera en el contexto propio.
+- `10314` **El mando: `wectl gpu`, en caliente** — `DedicatedGpu` por la API de Plasma; el plan se suelta y se recarga en la otra GPU sin reiniciar, y los dos fallos que eso destapó (sampler y consultas que sobrevivían al contexto, contadores que se sumaban).
+- `10344` **¿Duerme la dedicada? Steam, btop y el audio HDMI** — la carga de btop con el fondo tapado era Steam y el propio btop (NVML la despierta); la dedicada no se suspende nunca por `audio-fix.conf` (`power_save=0` del audio HDMI). Y el driver no suelta sus descriptores hasta que muere el proceso.
 
 ## CLI, rotación y rutas
 
@@ -41,11 +46,11 @@ make indice                       # reescribe los números desde NOTAS.md
 - `222` **Cambiar la cadencia sin cambiar el fondo, y por qué el mínimo es 1 minuto** — `shuffletime`, y de dónde sale el suelo del intervalo.
 - `2242` **Dos `wectl` a la vez se pisaban** — la rotación por systemd cayendo encima de un `set` a mano: los dos construían el plan en el mismo directorio.
 - `274` **Dónde está Wallpaper Engine** — el orden de búsqueda de `wepaths.py`: variables de entorno, luego las bibliotecas declaradas en Steam.
-- `3938` **Los 19 wallpapers que trae la aplicación: 7 servirían** — vienen sin empaquetar (`scene.json` suelto) y las herramientas filtran justo por `scene.pkg`.
+- `3940` **Los 19 wallpapers que trae la aplicación: 7 servirían** — vienen sin empaquetar (`scene.json` suelto) y las herramientas filtran justo por `scene.pkg`.
 
-- `4292` **`wectl list` dice de qué tipo es cada wallpaper** — el `type` de `project.json`, normalizado: 24 de 148 lo escriben con mayúscula.
-- `4308` **Enseñar también los que no se pueden poner** — un wallpaper que no aparece no se distingue de uno que no está instalado.
-- `4326` **El que no es un wallpaper** — `2336642563` trae `category: Asset`: es un paquete de materiales, no un fondo.
+- `4299` **`wectl list` dice de qué tipo es cada wallpaper** — el `type` de `project.json`, normalizado: 24 de 148 lo escriben con mayúscula.
+- `4315` **Enseñar también los que no se pueden poner** — un wallpaper que no aparece no se distingue de uno que no está instalado.
+- `4333` **El que no es un wallpaper** — `2336642563` trae `category: Asset`: es un paquete de materiales, no un fondo.
 ## Pausa por oclusión, resolución y rendimiento
 
 - `1318` **La pausa mide cobertura, no una bandera** — preguntar «¿está maximizada?» falla en tres casos diarios; medir cuánta pantalla queda a la vista, no.
@@ -66,19 +71,19 @@ make indice                       # reescribe los números desde NOTAS.md
 - `3511` **El puppet se quedaba en reposo: el campo de la cabecera es un desplazamiento** — 58 de 95 puppets no encontraban `MDLA` y se quedaban quietos.
 - `3552` **Y entonces `mirror` deja de ser un detalle** — los dos ejecutores dan por hecho que la última clave repite la primera; en modo `mirror` no.
 - `3571` **Lo medido** — las 129 escenas tras recuperar los puppets: ninguna regresión.
-- `4903` **El personaje calvo: el rig tenía un bloque con nombres que nadie leía** — `attachment` cuelga una capa de un hueso del padre; el nombre está en el bloque `MDAT`, que se saltaba entero.
-- `4925` **Dónde estaba el nombre** — el campo de texto del hueso son los límites de la articulación; el formato de `MDAT` y por qué el recuento es u16.
-- `4960` **Por qué no basta con hornearlo** — el hueso se mueve hasta 285 px, así que los ejecutores rehacen la traslación por fotograma.
-- `9874` **La Vi sin piernas: tres lectores que se quedaban cortos** — `3047352572`: un rectángulo negro, piezas sueltas y un pase perdido; tres arreglos de lectura y la cabeza, que queda abierta.
-- `9882` **1. El rectángulo negro: un `.mdl` sin esqueleto** — el formato `0x0000000f` es `0x0180000f` sin huesos ni pesos: 12 campos por vértice.
-- `9896` **2. Las piezas sueltas: la cola de cada animación crece con la versión** — 4, 9, 10, 34 y 35 bytes según el `MDLA`; y la animación la elige `animationlayers` por su identificador, no `anims[0]`.
-- `9920` **3. Un pase que no compilaba: los combos de `// [COMBO]` existen siempre** — la copia vieja de `pulse` pregunta `#ifndef AUDIOPROCESSING`; WE define los de directiva a 0, los de sampler no.
-- `9936` **Lo que NO se arregló: la cabeza** — efectos antes o después de deformar: la Vi pide después y la cabeza del dragón antes; se deja como estaba.
-- `10005` **La cabeza de la Vi: los efectos de un puppet van sobre la textura y se deforma al final** — las máscaras de la Vi y del dragón solo tienen sentido sobre la textura; un pase final deforma la malla.
-- `10013` **Lo que lo decide: qué tapa cada máscara en la textura** — la de la Vi, la cabeza pintada en el cuerpo; la del dragón, un párpado suelto salvo el ojo.
-- `10033` **Por qué la primera prueba pareció decir lo contrario** — el pase final sin mezcla: un párpado transparente sobrescribía la cabeza del dragón.
-- `10047` **El binario no lo resolvía** — `_rt_imageLayerAlbedo_` es del camino de la iluminación, no del orden de efectos y deformación.
-- `10057` **El reparto** — solo `werender`: malla en reposo en el pase base y un `passthrough` con la mezcla del pase base al final.
+- `4910` **El personaje calvo: el rig tenía un bloque con nombres que nadie leía** — `attachment` cuelga una capa de un hueso del padre; el nombre está en el bloque `MDAT`, que se saltaba entero.
+- `4932` **Dónde estaba el nombre** — el campo de texto del hueso son los límites de la articulación; el formato de `MDAT` y por qué el recuento es u16.
+- `4967` **Por qué no basta con hornearlo** — el hueso se mueve hasta 285 px, así que los ejecutores rehacen la traslación por fotograma.
+- `9881` **La Vi sin piernas: tres lectores que se quedaban cortos** — `3047352572`: un rectángulo negro, piezas sueltas y un pase perdido; tres arreglos de lectura y la cabeza, que queda abierta.
+- `9889` **1. El rectángulo negro: un `.mdl` sin esqueleto** — el formato `0x0000000f` es `0x0180000f` sin huesos ni pesos: 12 campos por vértice.
+- `9903` **2. Las piezas sueltas: la cola de cada animación crece con la versión** — 4, 9, 10, 34 y 35 bytes según el `MDLA`; y la animación la elige `animationlayers` por su identificador, no `anims[0]`.
+- `9927` **3. Un pase que no compilaba: los combos de `// [COMBO]` existen siempre** — la copia vieja de `pulse` pregunta `#ifndef AUDIOPROCESSING`; WE define los de directiva a 0, los de sampler no.
+- `9943` **Lo que NO se arregló: la cabeza** — efectos antes o después de deformar: la Vi pide después y la cabeza del dragón antes; se deja como estaba.
+- `10012` **La cabeza de la Vi: los efectos de un puppet van sobre la textura y se deforma al final** — las máscaras de la Vi y del dragón solo tienen sentido sobre la textura; un pase final deforma la malla.
+- `10020` **Lo que lo decide: qué tapa cada máscara en la textura** — la de la Vi, la cabeza pintada en el cuerpo; la del dragón, un párpado suelto salvo el ojo.
+- `10040` **Por qué la primera prueba pareció decir lo contrario** — el pase final sin mezcla: un párpado transparente sobrescribía la cabeza del dragón.
+- `10054` **El binario no lo resolvía** — `_rt_imageLayerAlbedo_` es del camino de la iluminación, no del orden de efectos y deformación.
+- `10064` **El reparto** — solo `werender`: malla en reposo en el pase base y un `passthrough` con la mezcla del pase base al final.
 
 ## Vídeo
 
@@ -110,9 +115,9 @@ make indice                       # reescribe los números desde NOTAS.md
 - `2991` **Tres causas, y ninguna era la que decían estas notas** — el desglose con `--link` sobre los 297 pares, en los dos drivers.
 - `3056` **Y lo que parecía un límite de hardware: `GLSL` sin definir** — WE define `GLSL` o `HLSL` según el backend; nosotros ninguno, así que todo `#ifdef GLSL` caía al lado equivocado.
 - `3072` **Lo que queda** — cero fallos en los planes reales; la única variante que NVIDIA rechaza y Mesa acepta.
-- `5002` **`step(0.5, nodeNum)`: la norma lo admite y NVIDIA no** — promocionar el argumento entero que no es un literal, y por qué la tabla de tipos va aparte de la de truncación.
+- `5009` **`step(0.5, nodeNum)`: la norma lo admite y NVIDIA no** — promocionar el argumento entero que no es un literal, y por qué la tabla de tipos va aparte de la de truncación.
 
-- `4078` **La homografía salía transpuesta: `m[i][j]` no es lo mismo en los dos lenguajes** — el único header que construye una matriz por índices, y los 10 efectos que lo incluyen.
+- `4085` **La homografía salía transpuesta: `m[i][j]` no es lo mismo en los dos lenguajes** — el único header que construye una matriz por índices, y los 10 efectos que lo incluyen.
 ## Grafo de escena y composición
 
 - `1504` **Grafo de escena — `tools/wescene.py`** — una escena no es una lista de capas: es un grafo con recursos nombrados. La cadena completa para pintar una sola imagen.
@@ -132,17 +137,17 @@ make indice                       # reescribe los números desde NOTAS.md
 - `3318` **La invisibilidad no bajaba por la cadena de padres** — apagar un grupo tiene que apagar lo que cuelga; Lonely Cat trae la escena seis veces, una por idioma.
 - `3338` **Lo que NO era: la Y del hijo** — la tentación de invertir la Y del `origin` relativo, comprobada y descartada.
 - `3359` **Lo que se ve** — los tres rectángulos desaparecen y las ondas salen del centro.
-- `5460` **El fondo de *Lonely Cat* se desliza, y las dos mitades de un arreglo** — un `composelayer` que se queda el fotograma entero y lo desplaza; el mismo fallo explica la banda de arriba y que las olas no cuadren con el gato.
-- `5471` **El oráculo: el preview del autor no se mueve** — 0 px en los 38 fotogramas de WE contra 2,2 % de altura por segundo en el nuestro.
-- `5484` **Quién lo mueve** — el volcado pase a pase señala uno solo: el `scroll` de una capa cuyo efecto de barras está apagado por una propiedad de usuario.
-- `5507` **La causa: la identidad que le damos a una capa passthrough** — `composelayer.vert` dibuja pantalla completa pero muestrea POR LA MVP, y se la damos identidad.
-- `5528` **Por qué el arreglo son dos mitades y ninguna vale sola** — la tabla de las tres variantes, y por qué la que se probó en su día tenía que fallar.
-- `5548` **Alcance, medido sobre las 129** — 29 capas de 85 tienen rectángulo distinto del lienzo; 27 son `composelayer` en 18 escenas. Arreglado: `_colocacion` ya no fuerza identidad en `composelayer`, y su pase base lleva la MVP real.
-- `9510` **Las capas giradas giran en píxeles del lienzo: `object_mvp` y `we_giro_coloca`** — `object_mvp` giraba después de pasar a clip y estiraba en x por ancho/alto toda capa girada de un lienzo no cuadrado; ahora es D · R · E como `object_world` y `particle_mvp`, y `we_giro_coloca` gira por D · R(Δ) · D⁻¹ con el lienzo de la escena, que la línea `giro` lleva detrás porque `canvas` es la resolución de dibujo redondeada. Cambian las colocaciones de las 22 escenas del censo y nada más.
-- `9526` **Lo que cambia** — `object_mvp`, la VP de una capa iluminada que pasa a ser la ortográfica, el lienzo de la escena en la línea `giro` y en el `WeGiro` que leen los dos ejecutores, y el `g_EffectModelViewProjectionMatrix` inerte de las partículas.
-- `9559` **Lo que se descartó** — girar en píxeles solo las agujas, sacar la proporción de `canvas` (2,0e-5 y 6,3e-5 en vivo), y conservar la fórmula vieja para las partículas.
-- `9574` **Lo medido** — 722 capas a 4,4e-16 de ortográfica · mundo y 63 giradas en 22 escenas; el C a 4,1e-8 en tres lienzos y dos locales, y a 1,1e-7 con el plan a 1920x1200 y 1366x768; 46 planes idénticos, 22 con colocaciones distintas y 61 solo con líneas inertes; la aguja de las 03:00 a −0,11 % y +0,28 % de su `size · scale` (main, +77,5 %); 0 regresiones de luz.
-- `9638` **Lo que queda** — un autor que compensara la deformación, y lo que WE pone en el uniform de efecto de una partícula.
+- `5467` **El fondo de *Lonely Cat* se desliza, y las dos mitades de un arreglo** — un `composelayer` que se queda el fotograma entero y lo desplaza; el mismo fallo explica la banda de arriba y que las olas no cuadren con el gato.
+- `5478` **El oráculo: el preview del autor no se mueve** — 0 px en los 38 fotogramas de WE contra 2,2 % de altura por segundo en el nuestro.
+- `5491` **Quién lo mueve** — el volcado pase a pase señala uno solo: el `scroll` de una capa cuyo efecto de barras está apagado por una propiedad de usuario.
+- `5514` **La causa: la identidad que le damos a una capa passthrough** — `composelayer.vert` dibuja pantalla completa pero muestrea POR LA MVP, y se la damos identidad.
+- `5535` **Por qué el arreglo son dos mitades y ninguna vale sola** — la tabla de las tres variantes, y por qué la que se probó en su día tenía que fallar.
+- `5555` **Alcance, medido sobre las 129** — 29 capas de 85 tienen rectángulo distinto del lienzo; 27 son `composelayer` en 18 escenas. Arreglado: `_colocacion` ya no fuerza identidad en `composelayer`, y su pase base lleva la MVP real.
+- `9517` **Las capas giradas giran en píxeles del lienzo: `object_mvp` y `we_giro_coloca`** — `object_mvp` giraba después de pasar a clip y estiraba en x por ancho/alto toda capa girada de un lienzo no cuadrado; ahora es D · R · E como `object_world` y `particle_mvp`, y `we_giro_coloca` gira por D · R(Δ) · D⁻¹ con el lienzo de la escena, que la línea `giro` lleva detrás porque `canvas` es la resolución de dibujo redondeada. Cambian las colocaciones de las 22 escenas del censo y nada más.
+- `9533` **Lo que cambia** — `object_mvp`, la VP de una capa iluminada que pasa a ser la ortográfica, el lienzo de la escena en la línea `giro` y en el `WeGiro` que leen los dos ejecutores, y el `g_EffectModelViewProjectionMatrix` inerte de las partículas.
+- `9566` **Lo que se descartó** — girar en píxeles solo las agujas, sacar la proporción de `canvas` (2,0e-5 y 6,3e-5 en vivo), y conservar la fórmula vieja para las partículas.
+- `9581` **Lo medido** — 722 capas a 4,4e-16 de ortográfica · mundo y 63 giradas en 22 escenas; el C a 4,1e-8 en tres lienzos y dos locales, y a 1,1e-7 con el plan a 1920x1200 y 1366x768; 46 planes idénticos, 22 con colocaciones distintas y 61 solo con líneas inertes; la aguja de las 03:00 a −0,11 % y +0,28 % de su `size · scale` (main, +77,5 %); 0 regresiones de luz.
+- `9645` **Lo que queda** — un autor que compensara la deformación, y lo que WE pone en el uniform de efecto de una partícula.
 
 ## Escenas negras y capas perdidas
 
@@ -171,11 +176,11 @@ make indice                       # reescribe los números desde NOTAS.md
 - `2550` **El módulo de verdad está en el binario, y no es un fichero** — `LightingV1` va como texto dentro de `wallpaper64.exe`: no es un shader, es un generador.
 - `2601` **La función repuesta no la usa ninguna escena de esta biblioteca** — los 6 pases iluminados del corpus van por el camino viejo.
 - `2643` **Lo que se ve** — 9 luces en 5 wallpapers; la media de la escena de referencia contra el preview del autor.
-- `10107` **El cielo de After Sunset: `LightingV1` por clase, el exponente de cada luz y el fondo opaco** — `3210875135`: cielo gris plano y cuadrados; tres causas generales.
-- `10113` **1. El cielo sin luz: `LightingV1` no sabía de tubos** — la reconstrucción tenía cuatro puntuales fijas; ahora un array por clase, como el generador del binario.
-- `10132` **2. El cielo oscuro: `exponent` es de la luz** — el lector de WE lo guarda en `[luz+0x2e8]`; 1,06 en vez de 2 fijo.
-- `10142` **3. Los cuadrados: el fotograma empezaba transparente** — `clearcolor` opaco; el `blur` divide por el alfa y cada sprite dejaba su quad.
-- `10161` **Y lo que no era un fallo: la intro** — un `color_grading` con fundido de entrada de 5 s.
+- `10114` **El cielo de After Sunset: `LightingV1` por clase, el exponente de cada luz y el fondo opaco** — `3210875135`: cielo gris plano y cuadrados; tres causas generales.
+- `10120` **1. El cielo sin luz: `LightingV1` no sabía de tubos** — la reconstrucción tenía cuatro puntuales fijas; ahora un array por clase, como el generador del binario.
+- `10139` **2. El cielo oscuro: `exponent` es de la luz** — el lector de WE lo guarda en `[luz+0x2e8]`; 1,06 en vez de 2 fijo.
+- `10149` **3. Los cuadrados: el fotograma empezaba transparente** — `clearcolor` opaco; el `blur` divide por el alfa y cada sprite dejaba su quad.
+- `10168` **Y lo que no era un fallo: la intro** — un `color_grading` con fundido de entrada de 5 s.
 - `2654` **El tubo sí venía en la escena, y el reflejo solo pedía una pirámide** — las dos cosas que quedaban eran mucho más pequeñas de lo que decían estas notas.
 - `2660` **La luz de tubo: `controlpoint` es el otro extremo** — estas notas decían que no había forma de ponerla; el segundo extremo sí está en el formato.
 - `2690` **La tercera convención para el mismo color** — la que leen los shaders con un array por clase.
@@ -202,184 +207,184 @@ make indice                       # reescribe los números desde NOTAS.md
 - `1914` **El humo que no se apagaba** — una neblina ancha donde WE tiene una voluta compacta; no era el tamaño del sprite.
 - `2078` **El `exponent` de los sorteos: leído, y la curva elegida mirando la vela** — 96 usos en la biblioteca que se estaban tirando.
 - `2101` **Lo que NO se pudo confirmar** — la dirección del sesgo, con los tres oráculos que se intentaron y por qué ninguno sirve.
-- `4005` **El anillo del vórtice, y las dos velocidades que faltaban** — una captura del escritorio de Windows como oráculo; tres cosas mal a la vez en la misma escena.
-- `4013` **La tangente es una cuerda: el radio crecía solo** — un 65 % por vida; se arregla girando la posición, no empujándola.
-- `4030` **`distanceouter` es hasta dónde llega, no dónde se satura** — la medida que lo decide es la PENDIENTE de las estelas: radiales, no tangenciales.
-- `4049` **El emisor tenía una velocidad y nadie la leía** — `speedmin`/`speedmax` de `sphererandom`: la única velocidad de 12 sistemas del corpus.
-- `4334` **Las estrellas no parpadeaban: `colorrandom` sin `max` sortea hasta negro** — el oráculo se monta restando el fondo a la captura; dos fallos distintos con la misma medida.
-- `4349` **El tamaño del sprite: el brillo explicaba una parte, no toda** — por qué el rayo NO sirve de contraste, y qué queda abierto.
-- `4374` **La pista estaba en un campo escrito de más** — 158 objetos escriben `max` igual a `min`; por eso el defecto de `max` es negro y no `min`.
-- `4391` **El ritmo implícito estaba en el extremo, y se comía el `instanceoverride`** — `maxcount/vida` deja el depósito lleno, que es el percentil 76 del corpus, no la costumbre.
-- `4422` **La otra mitad era el bloom** — el halo que la resta enseña alrededor de todo lo brillante; lo piden 33 de las 129.
+- `4012` **El anillo del vórtice, y las dos velocidades que faltaban** — una captura del escritorio de Windows como oráculo; tres cosas mal a la vez en la misma escena.
+- `4020` **La tangente es una cuerda: el radio crecía solo** — un 65 % por vida; se arregla girando la posición, no empujándola.
+- `4037` **`distanceouter` es hasta dónde llega, no dónde se satura** — la medida que lo decide es la PENDIENTE de las estelas: radiales, no tangenciales.
+- `4056` **El emisor tenía una velocidad y nadie la leía** — `speedmin`/`speedmax` de `sphererandom`: la única velocidad de 12 sistemas del corpus.
+- `4341` **Las estrellas no parpadeaban: `colorrandom` sin `max` sortea hasta negro** — el oráculo se monta restando el fondo a la captura; dos fallos distintos con la misma medida.
+- `4356` **El tamaño del sprite: el brillo explicaba una parte, no toda** — por qué el rayo NO sirve de contraste, y qué queda abierto.
+- `4381` **La pista estaba en un campo escrito de más** — 158 objetos escriben `max` igual a `min`; por eso el defecto de `max` es negro y no `min`.
+- `4398` **El ritmo implícito estaba en el extremo, y se comía el `instanceoverride`** — `maxcount/vida` deja el depósito lleno, que es el percentil 76 del corpus, no la costumbre.
+- `4429` **La otra mitad era el bloom** — el halo que la resta enseña alrededor de todo lo brillante; lo piden 33 de las 129.
 
 
-- `5082` **Los destellos de la `City`: qué se mueve, y por qué no se toca nada** — el desglose de lo que se mueve en una escena de destellos: ~900 parpadean sin desplazarse, 170 derivan y 20 fugaces cruzan.
-- `5096` **Los dos candidatos a fallo, y por qué ninguno lo era** — `turbulence` como aceleración la respaldan las plantillas de WE con su `drag: 4`; el ritmo implícito no se puede bajar sin apagar el polvo y las brasas.
-- `5122` **Lo que se probó y se retiró: frenar el reloj de la simulación** — la vía medida (x1,00 / x0,55 / x0,26) por si algún día se pide, y la trampa de comparar por el reloj de pantalla.
+- `5089` **Los destellos de la `City`: qué se mueve, y por qué no se toca nada** — el desglose de lo que se mueve en una escena de destellos: ~900 parpadean sin desplazarse, 170 derivan y 20 fugaces cruzan.
+- `5103` **Los dos candidatos a fallo, y por qué ninguno lo era** — `turbulence` como aceleración la respaldan las plantillas de WE con su `drag: 4`; el ritmo implícito no se puede bajar sin apagar el polvo y las brasas.
+- `5129` **Lo que se probó y se retiró: frenar el reloj de la simulación** — la vía medida (x1,00 / x0,55 / x0,26) por si algún día se pide, y la trampa de comparar por el reloj de pantalla.
 
-- `5150` **La turbulencia, a la mitad: una desviación pedida, no un arreglo** — el rotacional del ruido tiene RMS 0,980, así que `speed` ya era la aceleración: bajarla es preferencia, y vive en `FACTOR_TURBULENCIA`.
-- `5179` **`FACTOR_TURBULENCIA = 0.5`** — por qué solo el operador y no el inicializador, por qué en Python y no en el `.c`, y a cuántas escenas alcanza.
-- `5198` **Lo medido, antes y después** — camino y desplazamiento neto por vida, siguiendo cada partícula por vecino más próximo.
+- `5157` **La turbulencia, a la mitad: una desviación pedida, no un arreglo** — el rotacional del ruido tiene RMS 0,980, así que `speed` ya era la aceleración: bajarla es preferencia, y vive en `FACTOR_TURBULENCIA`.
+- `5186` **`FACTOR_TURBULENCIA = 0.5`** — por qué solo el operador y no el inicializador, por qué en Python y no en el `.c`, y a cuántas escenas alcanza.
+- `5205` **Lo medido, antes y después** — camino y desplazamiento neto por vida, siguiendo cada partícula por vecino más próximo.
 
-- `6740` **Los ejes de la turbulencia: `forward` gira alrededor de `right`, y `up` no se lee** — leído en `wallpaper64.exe` y sin aplicar: WE no muestrea un campo en el espacio, gira `forward` (`0 1 0`) alrededor de `right` (`0 0 1`) un ángulo de ruido 1D en el tiempo; cambiaría las 152 piezas, no solo las 5 con ejes.
-- `6757` **Lo leído, con direcciones** — bloque de tipo 9; defectos y desplazamientos de cada campo (rapidez 0,5–1 o 100–250, `phasemax` 0,1, `scale` 1, `offset` escalar); `up` no aparece ni en el lector ni en los defectos.
-- `6781` **La regla** — θ = π·`scale`·snoise1((fase + reloj)·`timescale`) + `offset`; `right` normalizado, `forward` no (`0 0 0` da velocidad nula); la misma matriz que `velocityrandom`. Con `audioprocessingmode` distinto de 0 (2 piezas), el audio multiplica el ancho de la fase: se omite, no hay audio.
-- `6850` **Por qué no se aplica** — el defecto de WE no es la identidad de hoy, y `offset`, la rapidez y la fase tampoco casan; aplicarlo solo a los que declaran ejes darían dos semánticas para la misma pieza. Lo que haría falta para sustituir el inicializador; hecho después.
-- `6661` **Lo medido** — rumbo de la pieza aislada, hoy contra la regla: 12 de 18 fuera de ±15°; 1131 de 1131 planes idénticos en las 129 y `verifica_exe.sh` 154 ok.
-- `7066` **La turbulencia con la regla de WE: `turbulentvelocityrandom` deja de muestrear nuestro ruido** — la regla leída sustituye al inicializador en las 152 piezas; `ESCALA_RUIDO` queda solo para el operador y `desplazar_ruido` desaparece.
-- `7080` **El booleano es «la escena es ortográfica»** — bit 10 de `[contexto+0x118]`, que el cargador enciende con `orthogonalprojection`; las 129 lo son, así que la rapidez por defecto es 100–250.
-- `7109` **`[obj+0x130]` son los segundos de la escena** — el mismo contexto en `renderizador+0x10`; el reloj que suma el dt y que `remapinitialvalue` llama `runtime`.
-- `7020` **Cómo queda aquí** — 13 floats en el `.psys`, `wescene.ortografica`, `snoise1` y Rodrigues en el `.c`, el reloj de la escena en `s->reloj`.
-- `7162` **Lo que cambia en el aspecto** — lo que nace a la vez sale paralelo: 269 de 271 sistemas en chorro, contra 114.
-- `7028` **Lo medido** — 18 de 18 rumbos a ≤ 15° (la base, 6), Flare_Sparks quieto, 95 de 98 a ±10 % de 175, planes idénticos fuera de la pieza, `verifica_exe.sh` 254 ok.
+- `6747` **Los ejes de la turbulencia: `forward` gira alrededor de `right`, y `up` no se lee** — leído en `wallpaper64.exe` y sin aplicar: WE no muestrea un campo en el espacio, gira `forward` (`0 1 0`) alrededor de `right` (`0 0 1`) un ángulo de ruido 1D en el tiempo; cambiaría las 152 piezas, no solo las 5 con ejes.
+- `6764` **Lo leído, con direcciones** — bloque de tipo 9; defectos y desplazamientos de cada campo (rapidez 0,5–1 o 100–250, `phasemax` 0,1, `scale` 1, `offset` escalar); `up` no aparece ni en el lector ni en los defectos.
+- `6788` **La regla** — θ = π·`scale`·snoise1((fase + reloj)·`timescale`) + `offset`; `right` normalizado, `forward` no (`0 0 0` da velocidad nula); la misma matriz que `velocityrandom`. Con `audioprocessingmode` distinto de 0 (2 piezas), el audio multiplica el ancho de la fase: se omite, no hay audio.
+- `6857` **Por qué no se aplica** — el defecto de WE no es la identidad de hoy, y `offset`, la rapidez y la fase tampoco casan; aplicarlo solo a los que declaran ejes darían dos semánticas para la misma pieza. Lo que haría falta para sustituir el inicializador; hecho después.
+- `6668` **Lo medido** — rumbo de la pieza aislada, hoy contra la regla: 12 de 18 fuera de ±15°; 1131 de 1131 planes idénticos en las 129 y `verifica_exe.sh` 154 ok.
+- `7073` **La turbulencia con la regla de WE: `turbulentvelocityrandom` deja de muestrear nuestro ruido** — la regla leída sustituye al inicializador en las 152 piezas; `ESCALA_RUIDO` queda solo para el operador y `desplazar_ruido` desaparece.
+- `7087` **El booleano es «la escena es ortográfica»** — bit 10 de `[contexto+0x118]`, que el cargador enciende con `orthogonalprojection`; las 129 lo son, así que la rapidez por defecto es 100–250.
+- `7116` **`[obj+0x130]` son los segundos de la escena** — el mismo contexto en `renderizador+0x10`; el reloj que suma el dt y que `remapinitialvalue` llama `runtime`.
+- `7027` **Cómo queda aquí** — 13 floats en el `.psys`, `wescene.ortografica`, `snoise1` y Rodrigues en el `.c`, el reloj de la escena en `s->reloj`.
+- `7169` **Lo que cambia en el aspecto** — lo que nace a la vez sale paralelo: 269 de 271 sistemas en chorro, contra 114.
+- `7035` **Lo medido** — 18 de 18 rumbos a ≤ 15° (la base, 6), Flare_Sparks quieto, 95 de 98 a ±10 % de 175, planes idénticos fuera de la pieza, `verifica_exe.sh` 254 ok.
 
 ## Bloom
 
-- `4430` **El bloom son tres shaders de WE y un objeto más** — la cadena no había que escribirla, había que deducirla de los nombres.
-- `4447` **`g_TexelSize` es el texel de PANTALLA, y lo dice la captura** — tres lecturas posibles con un factor 8 entre ellas; el radio medido cae limpio en 16 px.
-- `4468` **El umbral va DESPUÉS de promediar, y eso se ve** — por qué el bloom de WE rodea zonas brillantes y no puntos sueltos.
-- `4476` **No hay que tocar los ejecutores** — va como un objeto más que se compone sumando; los buffers ya sabían sacar su resolución del nombre.
-- `4490` **Lo medido sobre las 129** — 39 escenas, la mediana contra el preview de 0,171 a 0,135, y la primera pasada sin escenas apagadas.
+- `4437` **El bloom son tres shaders de WE y un objeto más** — la cadena no había que escribirla, había que deducirla de los nombres.
+- `4454` **`g_TexelSize` es el texel de PANTALLA, y lo dice la captura** — tres lecturas posibles con un factor 8 entre ellas; el radio medido cae limpio en 16 px.
+- `4475` **El umbral va DESPUÉS de promediar, y eso se ve** — por qué el bloom de WE rodea zonas brillantes y no puntos sueltos.
+- `4483` **No hay que tocar los ejecutores** — va como un objeto más que se compone sumando; los buffers ya sabían sacar su resolución del nombre.
+- `4497` **Lo medido sobre las 129** — 39 escenas, la mediana contra el preview de 0,171 a 0,135, y la primera pasada sin escenas apagadas.
 
 ## Resolución
 
-- `4657` **El lienzo del autor no es un límite de resolución: 38 escenas salían ampliadas** — el `min(1.0, ...)` hacía que el blit final las agrandara; el diario del motor en vivo lo traza.
-- `4687` **Lo medido** — 38 de 129, mediana x1,11 y hasta x3,40; y por qué `test_luminancia` no vale como oráculo aquí.
-- `4702` **Lo que NO explica** — la City ya se dibujaba 1:1; su destello sigue pendiente.
+- `4664` **El lienzo del autor no es un límite de resolución: 38 escenas salían ampliadas** — el `min(1.0, ...)` hacía que el blit final las agrandara; el diario del motor en vivo lo traza.
+- `4694` **Lo medido** — 38 de 129, mediana x1,11 y hasta x3,40; y por qué `test_luminancia` no vale como oráculo aquí.
+- `4709` **Lo que NO explica** — la City ya se dibujaba 1:1; su destello sigue pendiente.
 
 ## Sistemas hijos
 
-- `4709` **Sistemas hijos: `eventspawn`** — 232 sistemas con hijos en 61 escenas; aquí solo el que estalla donde muere el padre.
-- `4717` **El hijo es un objeto hermano, no un pase más del padre** — trae su propio material, así que se devuelve como objeto y se ata con `psyspadre`.
-- `4731` **La lectura del formato** — el depósito sale de `children` y la ráfaga del preset; el emisor libre del hijo se apaga.
-- `4743` **Por qué se simulan en tándem, y no uno detrás de otro** — una cola diferida haría estallar el sistema entero de golpe tras una recuperación de 60 s.
-- `4763` **Lo medido** — 0 a 60–92 partículas; 10 escenas, 17 hijos; y por qué `test_luminancia` no vale como oráculo aquí.
-- `4776` **Lo que NO arregla** — las manchas van de 23 a 74 pero siguen en 5–8 px donde WE tiene el pico en 3–4.
-- `5047` **Un puntero donde hacía falta una lista: el hijo `eventspawn` congelado** — con dos hijos el segundo pisaba al primero y lo dejaba sin dar pasos; una escena del corpus.
-- `5589` **Los hijos de un sistema: cuatro tipos, y `eventspawn` estaba leído al revés** — lo que se había implementado como `eventspawn` era `eventdeath`; `static` y `eventfollow` entran.
-- `5596` **El oráculo: lo que la propia aplicación dice y trae** — la interfaz de WE nombra cuatro tipos y su documentación los define; los fuegos artificiales usan `eventdeath`.
-- `5621` **Sin `type` es `static`** — `ember` → `emberglow` va sin tipo y con `static` más todos los defectos: 320 entradas en 51 escenas, no 34.
-- `5636` **Qué es cada uno, en el motor** — `static` es un sistema colocado con `parent`; los de evento sueltan su `instantaneous`; `eventfollow` emite donde está su partícula y deja estela.
-- `5669` **El reparto** — la línea `psyspadre` con modo, instancias, probabilidad y escala; `nace()` como único punto de nacimiento, y por qué hacen falta los nietos.
-- `5696` **Lo que se deja fuera, a propósito** — `angles` de la entrada, `controlpointstartindex`, `flags` y las piezas `inherit*`: sin caso en el corpus con el que medirlos.
-- `5714` **Lo medido** — 275 hijos en 60 escenas; la prueba de contrato y que muerde; 0 regresiones sobre las 129.
-- `9162` **La instancia de un hijo de evento: lo leído en wallpaper64.exe** — un `eventspawn`/`eventdeath` con `rate` emite para siempre donde lo creó el evento, sin ráfaga si no declara `instantaneous`, y solo hay `maxcount` de la entrada a la vez; 9 entradas en 4 escenas.
-- `9184` **Lo leído, con direcciones** — tope de instancias, posición fija, emisión, apagado del emisor, liberación de la instancia y los defectos (`rate` 10, `instantaneous` 0).
-- `9236` **Lo que se descartó** — «emite hasta que muere la partícula» es solo de `eventfollow`; no se satura porque el tope de instancias corta.
-- `9247` **El reparto** — sin campo nuevo: ráfaga 0 sin `instantaneous` en `werender.py`, y las `Instancia` de `fijas` en `weparticles.c`.
-- `9261` **Lo medido** — 55/55 direcciones; la prueba de contrato muerde; `Flare_Smoke` de 3063 a 206 vivas; 125/125 planes idénticos; 0 regresiones de luz.
-- `9317` **Lo que queda** — el tope de instancias de los hijos solo `instantaneous`, el puesto de `eventfollow` que se libera antes que en WE, `delay` y emisión periódica.
+- `4716` **Sistemas hijos: `eventspawn`** — 232 sistemas con hijos en 61 escenas; aquí solo el que estalla donde muere el padre.
+- `4724` **El hijo es un objeto hermano, no un pase más del padre** — trae su propio material, así que se devuelve como objeto y se ata con `psyspadre`.
+- `4738` **La lectura del formato** — el depósito sale de `children` y la ráfaga del preset; el emisor libre del hijo se apaga.
+- `4750` **Por qué se simulan en tándem, y no uno detrás de otro** — una cola diferida haría estallar el sistema entero de golpe tras una recuperación de 60 s.
+- `4770` **Lo medido** — 0 a 60–92 partículas; 10 escenas, 17 hijos; y por qué `test_luminancia` no vale como oráculo aquí.
+- `4783` **Lo que NO arregla** — las manchas van de 23 a 74 pero siguen en 5–8 px donde WE tiene el pico en 3–4.
+- `5054` **Un puntero donde hacía falta una lista: el hijo `eventspawn` congelado** — con dos hijos el segundo pisaba al primero y lo dejaba sin dar pasos; una escena del corpus.
+- `5596` **Los hijos de un sistema: cuatro tipos, y `eventspawn` estaba leído al revés** — lo que se había implementado como `eventspawn` era `eventdeath`; `static` y `eventfollow` entran.
+- `5603` **El oráculo: lo que la propia aplicación dice y trae** — la interfaz de WE nombra cuatro tipos y su documentación los define; los fuegos artificiales usan `eventdeath`.
+- `5628` **Sin `type` es `static`** — `ember` → `emberglow` va sin tipo y con `static` más todos los defectos: 320 entradas en 51 escenas, no 34.
+- `5643` **Qué es cada uno, en el motor** — `static` es un sistema colocado con `parent`; los de evento sueltan su `instantaneous`; `eventfollow` emite donde está su partícula y deja estela.
+- `5676` **El reparto** — la línea `psyspadre` con modo, instancias, probabilidad y escala; `nace()` como único punto de nacimiento, y por qué hacen falta los nietos.
+- `5703` **Lo que se deja fuera, a propósito** — `angles` de la entrada, `controlpointstartindex`, `flags` y las piezas `inherit*`: sin caso en el corpus con el que medirlos.
+- `5721` **Lo medido** — 275 hijos en 60 escenas; la prueba de contrato y que muerde; 0 regresiones sobre las 129.
+- `9169` **La instancia de un hijo de evento: lo leído en wallpaper64.exe** — un `eventspawn`/`eventdeath` con `rate` emite para siempre donde lo creó el evento, sin ráfaga si no declara `instantaneous`, y solo hay `maxcount` de la entrada a la vez; 9 entradas en 4 escenas.
+- `9191` **Lo leído, con direcciones** — tope de instancias, posición fija, emisión, apagado del emisor, liberación de la instancia y los defectos (`rate` 10, `instantaneous` 0).
+- `9243` **Lo que se descartó** — «emite hasta que muere la partícula» es solo de `eventfollow`; no se satura porque el tope de instancias corta.
+- `9254` **El reparto** — sin campo nuevo: ráfaga 0 sin `instantaneous` en `werender.py`, y las `Instancia` de `fijas` en `weparticles.c`.
+- `9268` **Lo medido** — 55/55 direcciones; la prueba de contrato muerde; `Flare_Smoke` de 3063 a 206 vivas; 125/125 planes idénticos; 0 regresiones de luz.
+- `9324` **Lo que queda** — el tope de instancias de los hijos solo `instantaneous`, el puesto de `eventfollow` que se libera antes que en WE, `delay` y emisión periódica.
 
 ## Emisores
 
-- `4795` **`distancemax` sin declarar no es cero: la lluvia salía toda del mismo punto** — el tercer campo con el mismo patrón; 6 presets-emisor en 7 escenas.
-- `4808` **Por qué 512** — el corpus escribe el 0 explícito 153 veces y `exampleturbolence` obliga a que el defecto sea ≥256.
-- `4823` **Lo medido, y lo que queda torcido** — dejan de pegarse al borde, pero el 75 % nace fuera por el `directions: "1 5 0"`.
-- `6348` **Varios emisores: emiten todos, al mismo depósito** — 2 sistemas en 2 escenas, con un segundo `sphererandom` vacío; una línea `emit` por emisor y un crédito por emisor en `src/weparticles.c`.
-- `6361` **Lo leído y lo supuesto** — los defectos del segundo emisor son los leídos; que el `rate` del override multiplique a cada uno y que el depósito sea común, supuesto.
-- `6390` **Lo hecho** — `Sistema.emisores`, `Emisor em[4]` y `we_psys_vivas`; un `.psys` de un emisor sale y se lee igual.
-- `6407` **Lo medido** — 1412 de 1414 `.psys` idénticos y el simulador idéntico sobre ellos; `fog2` se llena con el segundo emisor; 0 regresiones.
-- `6444` **`flags: 2` no coloca el emisor: es una partícula por fotograma, y al cursor lo lleva el punto de control** — la hipótesis del rastro del ratón, refutada en `wallpaper64.exe`; el render no se toca.
-- `6462` **Lo que hace WE, con direcciones** — `flags` en `+0x3c`, `controlpoint` (defecto 0, tope 7) en `+0xe0`/`+0x98`, el bit 1 como `min(cuenta, 1)` y el centro de emisión en el punto de control, con o sin el bit; el bit 0 es `sign` y el sorteo gira con el punto si `controlpoint ≠ 0`.
-- `6527` **El corpus con la regla leída** — 17 emisores con el punto atado al cursor en 12 escenas, 6 de ellos sin el bit (`mouse_trail_1`, `shurikencursor_1` con `controlpoint: 1`); 0 con offset.
-- `6561` **Lo que queda, para hacerlo bien** — leer `controlpoint` y centrar `emite` en su punto, girando el sorteo con la matriz del punto; sin ratón, el offset; el tope de una por fotograma, sin leer; la unión del `rope`, cerrada después.
-- `6599` **Lo medido** — `verifica_exe.sh` (5 cadenas y 57 instrucciones, 0 fallos), `censo_cp_emisor.py` y ningún diff en el render.
-- `6610` **Todo emisor nace en su punto de control, primer trozo: la traslación** — `controlpoint` al final de `emit` solo si no es 0, y `emite` centra en `cp[controlpoint]` + `origin`; los hijos colgados y los repartos por puestos, como estaban.
-- `6623` **Lo hecho** — `_punto_del_emisor`, `Emisor.punto`, el centro de las cintas en `psysprobe` y la prueba 10 de `test_weparticles.py`, en `C` y `es_ES`.
-- `6661` **Lo medido** — de 2414 `.psys` cambia una línea; planes idénticos; los 17 nacen en el puntero; 2414 sondas sin ratón y 2388 con él, idénticas; 0 regresiones de luz.
-- `6720` **Lo que queda fuera** — el giro del sorteo con el punto, el tope de `flags & 2`, el cosido del `rope` (cerrado después), el punto antes del primer movimiento y `mapsequence*`.
+- `4802` **`distancemax` sin declarar no es cero: la lluvia salía toda del mismo punto** — el tercer campo con el mismo patrón; 6 presets-emisor en 7 escenas.
+- `4815` **Por qué 512** — el corpus escribe el 0 explícito 153 veces y `exampleturbolence` obliga a que el defecto sea ≥256.
+- `4830` **Lo medido, y lo que queda torcido** — dejan de pegarse al borde, pero el 75 % nace fuera por el `directions: "1 5 0"`.
+- `6355` **Varios emisores: emiten todos, al mismo depósito** — 2 sistemas en 2 escenas, con un segundo `sphererandom` vacío; una línea `emit` por emisor y un crédito por emisor en `src/weparticles.c`.
+- `6368` **Lo leído y lo supuesto** — los defectos del segundo emisor son los leídos; que el `rate` del override multiplique a cada uno y que el depósito sea común, supuesto.
+- `6397` **Lo hecho** — `Sistema.emisores`, `Emisor em[4]` y `we_psys_vivas`; un `.psys` de un emisor sale y se lee igual.
+- `6414` **Lo medido** — 1412 de 1414 `.psys` idénticos y el simulador idéntico sobre ellos; `fog2` se llena con el segundo emisor; 0 regresiones.
+- `6451` **`flags: 2` no coloca el emisor: es una partícula por fotograma, y al cursor lo lleva el punto de control** — la hipótesis del rastro del ratón, refutada en `wallpaper64.exe`; el render no se toca.
+- `6469` **Lo que hace WE, con direcciones** — `flags` en `+0x3c`, `controlpoint` (defecto 0, tope 7) en `+0xe0`/`+0x98`, el bit 1 como `min(cuenta, 1)` y el centro de emisión en el punto de control, con o sin el bit; el bit 0 es `sign` y el sorteo gira con el punto si `controlpoint ≠ 0`.
+- `6534` **El corpus con la regla leída** — 17 emisores con el punto atado al cursor en 12 escenas, 6 de ellos sin el bit (`mouse_trail_1`, `shurikencursor_1` con `controlpoint: 1`); 0 con offset.
+- `6568` **Lo que queda, para hacerlo bien** — leer `controlpoint` y centrar `emite` en su punto, girando el sorteo con la matriz del punto; sin ratón, el offset; el tope de una por fotograma, sin leer; la unión del `rope`, cerrada después.
+- `6606` **Lo medido** — `verifica_exe.sh` (5 cadenas y 57 instrucciones, 0 fallos), `censo_cp_emisor.py` y ningún diff en el render.
+- `6617` **Todo emisor nace en su punto de control, primer trozo: la traslación** — `controlpoint` al final de `emit` solo si no es 0, y `emite` centra en `cp[controlpoint]` + `origin`; los hijos colgados y los repartos por puestos, como estaban.
+- `6630` **Lo hecho** — `_punto_del_emisor`, `Emisor.punto`, el centro de las cintas en `psysprobe` y la prueba 10 de `test_weparticles.py`, en `C` y `es_ES`.
+- `6668` **Lo medido** — de 2414 `.psys` cambia una línea; planes idénticos; los 17 nacen en el puntero; 2414 sondas sin ratón y 2388 con él, idénticas; 0 regresiones de luz.
+- `6727` **Lo que queda fuera** — el giro del sorteo con el punto, el tope de `flags & 2`, el cosido del `rope` (cerrado después), el punto antes del primer movimiento y `mapsequence*`.
 
 ## Cintas y movimiento
 
-- `4850` **La cola de una cinta sale de `length`, no de un 8 fijo** — el defecto de `segments` pisaba el campo declarado; 68 de 74 cintas.
-- `4871` **`gravity` es una aceleración, y lo demuestran los fuegos artificiales** — por qué no se endereza la caída, y qué hace que la parábola cante.
-- `6034` **`upright` en una cinta: WE la orienta como a un sprite, y da la base de siempre** — la anchura de la cinta la pone `g_OrientationForward`, no nuestro constructor; cierra el último aviso de `orientation` del corpus.
-- `6053` **El lector: tres modos y una base** — `0x1401c22e0`, compartido por las cuatro fábricas de renderer; `axis` nulo es (0, 1, 0).
-- `6072` **La rutina que pone los tres uniforms, igual para los cuatro renderers** — `0x1402298b0`: `screen`, `upright` y `fixed`, y la normalización final.
-- `6094` **Por qué en el corpus no cambia nada** — `(c × u) × u` es `−c` si `u` no tiene z; *Vapor 1* y los `Rain_Splash` con `flags: 1`.
-- `6111` **Lo hecho** — `_orientacion` con una sola regla para sprites y cintas; ni plan ni ejecutores.
-- `6125` **Lo medido** — 0 avisos (antes 1); 1131 de 1131 `plan.txt` y `.psys` idénticos en las 129; PNG idéntico; 0 regresiones.
-- `7666` **Cómo cose WE un `rope`: una sola cinta que une las partículas vivas, de la más vieja a la más nueva** — `rope` no es una cinta por partícula: une las vivas en el orden en que nacieron, y su fábrica no lee ni `length` ni `segments`.
-- `7678` **Lo que hace WE, con direcciones** — bloque de tipo 3 frente a 4, la rama `0x1402369ed` del bucle de dibujo, el constructor `0x140230919` y la lista `sistema+0x218`, que crece al nacer y se compacta al morir.
-- `7718` **Lo hecho** — `orden` y `construye_cuerda` en `src/weparticles.c`, sin duplicados con un `instantaneous` repetido; `cinta 1 0 0` en el `.psys`; el plan solo cambia en el `g_RenderVar0` del `rope`; la prueba 11 de `test_weparticles.py`.
-- `7745` **Lo medido** — 71 de 71 en el binario; `6·(N−1)` vértices, cosidos y en orden de nacimiento; 113 planes y 964 `.psys` idénticos, y en las 16 con `rope` solo 38 líneas `g_RenderVar0`; 0 regresiones de luz en las 16.
-- `7788` **Lo que queda fuera** — `trailLength` en régimen, `uvscrolling`, la cuerda con dos puntos en el mismo sitio, el tope de `flags & 2` y la curva (hecha después).
-- `8165` **La curva de un `rope`: la Bézier de `subdivision`, hecha en la CPU** — `subdivision` (4 si falta, topado a 32) es el `TRAILSUBDIVISION` del `.geom`; `construye_cuerda` parte cada tramo en `sub + 1` subquads con su curva, su ancho y su UV.
-- `8177` **Lo que hace WE, con direcciones** — los defectos del `rope` en `0x1401c0c90` (`subdivision` 4, `uvsmoothing` verdadero), el tope en `0x1401cffbd` y el combo en `0x1401d2aa2`.
-- `8196` **El `.geom`, y cómo se lleva al quad sin geometry shader** — controles `fin − R(inicio)` e `inicio + R(fin)`, tamaño `|R|`, y `trailLength`/`trailPosition` que dan la UV de WE en cada punto.
-- `8235` **Lo hecho** — `_subdivision` y el cuarto número de `cinta`; `tramo_curvo` y el búfer con `sub + 1`; el plan no cambia; la prueba 12.
-- `8251` **Lo medido** — 65 de 65 en el binario; la curva a 3e-06 del `.geom`; con 0, la cuerda de main byte a byte; 113 planes y 964 `.psys` idénticos; *Vapor* cambia un 1,145 % de los píxeles con flechas de menos de una unidad; 0 regresiones.
-- `8316` **Lo que queda fuera** — `ropetrail`, el ojo en perspectiva, `uvsmoothing` verdadero por defecto y el tramo que da media vuelta.
+- `4857` **La cola de una cinta sale de `length`, no de un 8 fijo** — el defecto de `segments` pisaba el campo declarado; 68 de 74 cintas.
+- `4878` **`gravity` es una aceleración, y lo demuestran los fuegos artificiales** — por qué no se endereza la caída, y qué hace que la parábola cante.
+- `6041` **`upright` en una cinta: WE la orienta como a un sprite, y da la base de siempre** — la anchura de la cinta la pone `g_OrientationForward`, no nuestro constructor; cierra el último aviso de `orientation` del corpus.
+- `6060` **El lector: tres modos y una base** — `0x1401c22e0`, compartido por las cuatro fábricas de renderer; `axis` nulo es (0, 1, 0).
+- `6079` **La rutina que pone los tres uniforms, igual para los cuatro renderers** — `0x1402298b0`: `screen`, `upright` y `fixed`, y la normalización final.
+- `6101` **Por qué en el corpus no cambia nada** — `(c × u) × u` es `−c` si `u` no tiene z; *Vapor 1* y los `Rain_Splash` con `flags: 1`.
+- `6118` **Lo hecho** — `_orientacion` con una sola regla para sprites y cintas; ni plan ni ejecutores.
+- `6132` **Lo medido** — 0 avisos (antes 1); 1131 de 1131 `plan.txt` y `.psys` idénticos en las 129; PNG idéntico; 0 regresiones.
+- `7673` **Cómo cose WE un `rope`: una sola cinta que une las partículas vivas, de la más vieja a la más nueva** — `rope` no es una cinta por partícula: une las vivas en el orden en que nacieron, y su fábrica no lee ni `length` ni `segments`.
+- `7685` **Lo que hace WE, con direcciones** — bloque de tipo 3 frente a 4, la rama `0x1402369ed` del bucle de dibujo, el constructor `0x140230919` y la lista `sistema+0x218`, que crece al nacer y se compacta al morir.
+- `7725` **Lo hecho** — `orden` y `construye_cuerda` en `src/weparticles.c`, sin duplicados con un `instantaneous` repetido; `cinta 1 0 0` en el `.psys`; el plan solo cambia en el `g_RenderVar0` del `rope`; la prueba 11 de `test_weparticles.py`.
+- `7752` **Lo medido** — 71 de 71 en el binario; `6·(N−1)` vértices, cosidos y en orden de nacimiento; 113 planes y 964 `.psys` idénticos, y en las 16 con `rope` solo 38 líneas `g_RenderVar0`; 0 regresiones de luz en las 16.
+- `7795` **Lo que queda fuera** — `trailLength` en régimen, `uvscrolling`, la cuerda con dos puntos en el mismo sitio, el tope de `flags & 2` y la curva (hecha después).
+- `8172` **La curva de un `rope`: la Bézier de `subdivision`, hecha en la CPU** — `subdivision` (4 si falta, topado a 32) es el `TRAILSUBDIVISION` del `.geom`; `construye_cuerda` parte cada tramo en `sub + 1` subquads con su curva, su ancho y su UV.
+- `8184` **Lo que hace WE, con direcciones** — los defectos del `rope` en `0x1401c0c90` (`subdivision` 4, `uvsmoothing` verdadero), el tope en `0x1401cffbd` y el combo en `0x1401d2aa2`.
+- `8203` **El `.geom`, y cómo se lleva al quad sin geometry shader** — controles `fin − R(inicio)` e `inicio + R(fin)`, tamaño `|R|`, y `trailLength`/`trailPosition` que dan la UV de WE en cada punto.
+- `8242` **Lo hecho** — `_subdivision` y el cuarto número de `cinta`; `tramo_curvo` y el búfer con `sub + 1`; el plan no cambia; la prueba 12.
+- `8258` **Lo medido** — 65 de 65 en el binario; la curva a 3e-06 del `.geom`; con 0, la cuerda de main byte a byte; 113 planes y 964 `.psys` idénticos; *Vapor* cambia un 1,145 % de los píxeles con flechas de menos de una unidad; 0 regresiones.
+- `8323` **Lo que queda fuera** — `ropetrail`, el ojo en perspectiva, `uvsmoothing` verdadero por defecto y el tramo que da media vuelta.
 
 ## El ratón
 
-- `5221` **El ratón entra en la escena: un puntero, cuatro consumidores** — quién lo mira (46 escenas de partículas, 29 de cámara, 13 pases de efecto) y por dónde entra un dato que cambia cada fotograma.
-- `5234` **Quién lo mira, contado antes de escribir nada** — la tabla que decide el diseño: las partículas son el consumidor grande.
-- `5247` **El puntero viaja como el tiempo: un marcador en la plantilla** — `@PUNTERO_X@`, `psyspuntero` con la afín ya resuelta, y por qué «sin ratón» no es «ratón en el centro».
-- `5279` **De dónde sale el ratón en el escritorio** — `HoverHandler` y no `MouseArea`, para no quedarse los clics; y lo que Wayland no da.
-- `5295` **La pantalla no es la escena** — el encaje recorta, así que el píxel bajo el ratón no es el píxel de escena; `encajado()` sacado del blit.
-- `5305` **La `y` del uniform, que es donde estaba la trampa** — los flips de los shaders de WE y la rama `GLSL` que ya estaba elegida; sin flip.
-- `5331` **Lo que sí se midió** — tres sistemas con origen, escala y giro distintos cayendo en el mismo punto de la pantalla; y el contrato Python↔C.
-- `5383` **Lo que la regresión dice: 0 regresiones y una reordenación honesta** — las 129 antes y después; las once que cambian son relojes, menos una, y esa cambia porque el operador nuevo mueve las fases.
-- `5409` **`g_ParallaxPosition` es el puntero con retardo, y nada más** — por qué no lleva `amount` ni `mouseinfluence`: dos escenas con el efecto declaran amount 0. Corregido después: es el P de la cámara, con la influencia.
-- `5433` **Lo que queda, medido** — la cámara (falta el número que lleva `amount` a píxeles), el emisor con `flags: 2` y el puntero bajo las ventanas.
+- `5228` **El ratón entra en la escena: un puntero, cuatro consumidores** — quién lo mira (46 escenas de partículas, 29 de cámara, 13 pases de efecto) y por dónde entra un dato que cambia cada fotograma.
+- `5241` **Quién lo mira, contado antes de escribir nada** — la tabla que decide el diseño: las partículas son el consumidor grande.
+- `5254` **El puntero viaja como el tiempo: un marcador en la plantilla** — `@PUNTERO_X@`, `psyspuntero` con la afín ya resuelta, y por qué «sin ratón» no es «ratón en el centro».
+- `5286` **De dónde sale el ratón en el escritorio** — `HoverHandler` y no `MouseArea`, para no quedarse los clics; y lo que Wayland no da.
+- `5302` **La pantalla no es la escena** — el encaje recorta, así que el píxel bajo el ratón no es el píxel de escena; `encajado()` sacado del blit.
+- `5312` **La `y` del uniform, que es donde estaba la trampa** — los flips de los shaders de WE y la rama `GLSL` que ya estaba elegida; sin flip.
+- `5338` **Lo que sí se midió** — tres sistemas con origen, escala y giro distintos cayendo en el mismo punto de la pantalla; y el contrato Python↔C.
+- `5390` **Lo que la regresión dice: 0 regresiones y una reordenación honesta** — las 129 antes y después; las once que cambian son relojes, menos una, y esa cambia porque el operador nuevo mueve las fases.
+- `5416` **`g_ParallaxPosition` es el puntero con retardo, y nada más** — por qué no lleva `amount` ni `mouseinfluence`: dos escenas con el efecto declaran amount 0. Corregido después: es el P de la cámara, con la influencia.
+- `5440` **Lo que queda, medido** — la cámara (falta el número que lleva `amount` a píxeles), el emisor con `flags: 2` y el puntero bajo las ventanas.
 
 ## La cámara
 
-- `5908` **El parallax de cámara: la fórmula estaba en el motor, y mueve las capas también en reposo** — `cameraparallax` en 29 escenas, leído en `wallpaper64.exe` en vez de medido contra WE corriendo.
-- `5917` **Cómo se encontró** — la tabla de propiedades de `general` y la de la capa dan los desplazamientos; de ahí, las lecturas.
-- `5928` **Lo que hace WE** — el punto P entre el centro y el ratón, su suavizado, y la traslación `amount × depth × (origin − P)` con la raíz.
-- `5953` **La sorpresa: con el ratón en el centro, las capas ya están desplazadas** — comprobado contra el preview de `2262142032`: el reloj a unos 10 px y el letrero que WE deja fuera.
-- `5969` **Cómo está hecho aquí** — el término en reposo horneado en `transform_absoluto`; el del ratón en la línea `paralaje` de los dos ejecutores.
-- `5997` **Lo medido** — 0 regresiones; correlación con el preview: 4 se acercan, 2 se alejan, 23 igual.
-- `6015` **Lo que queda** — `g_ParallaxPosition` (ya hecho), `escena[+0xf0]`, la marca que invierte la x y `camerashake` (ya hecho).
-- `6175` **El temblor de cámara: también estaba en el motor, y no es ruido** — `camerashake` en 6 escenas: una curva de Lissajous determinista leída en `0x140199580`, que mueve la cámara entera; línea `temblor` y `src/wetemblor.c` en los dos ejecutores.
-- `6187` **Cómo se encontró** — `+0x328/+0x32c/+0x330` y el bit 7 de `+0xe0` en el lector de `general`; los defectos en el constructor; el reloj es el del renderizador.
-- `6223` **Lo que hace WE** — `velocidad² · t`, `(cos s, sin 1,333·s)`, la amplitud por `0,01 × alto`; la rugosidad solo deforma la norma; y `escena[+0xf0]` es el ojo.
-- `6251` **Cómo está hecho aquí** — `temblor` en la cabecera, `tiembla` por capa, acoplado al punto del parallax; por qué las `passthrough` se quedan quietas (con ellas se movía el doble).
-- `6284` **Lo medido** — 138 de 144 planes idénticos; desplazamiento medido contra predicho a ±0,1 px en cinco escenas; 0 regresiones.
-- `6328` **Lo que queda** — `3053927686` un 7 % largo, el marco de las `composelayer` pequeñas y el `eye` fuera del origen (cerrado).
-- `6927` **El `eye` de la cámara no llega al parallax: WE lo pone a cero en las escenas ortográficas** — leído en `wallpaper64.exe` antes de aplicarlo: el cargador borra el `eye` del json en las 47 escenas que lo declaran; no cambia el render.
-- `6757` **Lo leído, con direcciones** — la cámara declarada (`+0x118`) y la vigente (`+0xf0`), el cero de `0x14018866b`, de dónde sale el ojo cada fotograma y la suma en `0x140189c18`.
-- `6987` **Lo que dicen los previews** — con el `eye` sumado la correlación empeora en 7 de 11; el reloj de `2262142032` mejora, pero por el encaje global.
-- `7020` **Cómo queda aquí** — un comentario en `parallax_de_camara` y `prueba_parallax_de_camara` con el `eye` declarado.
-- `6891` **Lo medido** — `verifica_ojo.sh` sin fallos, 129 planes idénticos, 137 raíces sin cambio y la luz de las once igual.
-- `7052` **Lo que queda** — los objetos cámara (`3521337568`) y las escenas con `paths`.
-- `7233` **`g_ParallaxPosition` es el punto P de la cámara, no el puntero con retardo** — el `switch` de uniforms encontrado en `wallpaper64.exe` (índice `0x6b`, tabla de dos niveles): `clamp(P/lienzo)` con la influencia y la y hacia arriba, y el centro si `cameraparallax` está apagado; en vivo sale de `m_camara`.
-- `7251` **Lo leído, con direcciones** — la tabla de nombres, el enlace, el `switch` y su caso (`0x1400d9e90`, `contexto+0x9c`), el 0,5 del cargador, el bit 8 de `+0xe0` y la escritura en `0x140189cbe`.
-- `7314` **Lo que cambia en el corpus** — las 6 con `depthparallax`; las dos de influencia negativa iban en x al revés y entre 3,7 y cinco veces más fuertes.
-- `7334` **Cómo está hecho aquí** — `posicion_de_parallax` en `_fotograma`, el centro sin marcadores en los pases que lo leen con el parallax apagado, y `m_camara` acotado en vivo.
-- `7180` **Lo medido** — 57 direcciones sin fallos, 24 de 24 valores contra la regla, la prueba que cae sin la influencia y con la y al revés, 1131 ficheros idénticos sin ratón.
-- `7391` **Lo que queda** — el ojo (el temblor) no entra offline, las marcas `0x200200` y `0x800` del contexto, y verlo en el escritorio.
-- `7403` **El parallax sigue al ratón en tiempo real: el cursor lo da KWin, y el retardo de WE se queda para el temblor** — al fondo le llegaban 1–5 posiciones/s (ventanas maximizadas apiladas; el hover no llega a plasmashell); `CursorKWin` pide el cursor global a KWin por D-Bus: 18–40/s. Y la parte del ratón de `m_camara` con 25 ms en vez del retardo de WE (decisión del usuario).
-- `7410` **La que importaba: al fondo no le llegaba el ratón** — 1–5 posiciones/s pegadas al panel con ~42 fps; el `HoverHandler` en la raíz no bastó; `CursorKWin` y su script de KWin (enteros por D-Bus): 18–40/s en toda la pantalla.
-- `7446` **La otra: el retardo de WE** — 300–883 ms hasta el 95 % con `(1 − delay/3)·10·dt`; la parte del ratón a 25 ms, la del temblor con el de WE.
-- `7476` **Partículas con perspectiva: el bit 0x4 del `flags` del sistema es otra cámara, no otra simulación** — «Perspective rendering» en 153 sistemas de 58 escenas: leída en `wallpaper64.exe` la cámara que WE les pone en una escena ortográfica (ojo a `alto / (2 tan(fov/2))`, `perspectiveoverridefov` o 95°, cercano 5); va en la MVP del pase, sin tocar C.
-- `7487` **Qué bit es cuál: la tabla del editor** — `wallpaperui.exe`: 0x1 worldspace, 0x4 perspectiva, 0x8..0x80 «disable overrides» (ninguno en el corpus); el 0x2 no tiene casilla.
-- `7507` **Lo que hace WE, con direcciones** — `flags` → descriptor+0x8 → sistema+0x20; el `>> 2 & 1` del dibujo, `0x1401e5b60`, la `PerspectiveFovRH` de z invertida del dispositivo y de dónde salen fov, centro y aspecto.
-- `7334` **Cómo está hecho aquí** — `perspectiva 1` al final del `.psys`, `particle_mvp_perspectiva` en `werender.py`; los ejecutores heredan la matriz.
-- `7355` **Lo medido** — 149 direcciones sin fallos; 140 `.psys` marcados de 153 (13 invisibles); 71 escenas idénticas a main; los copos de 1,0 a 6,4 px por unidad; luz sin regresiones (los relojes, con la hora fija).
-- `7391` **Lo que queda** — el bit 0x1 (worldspace) y el 0x2; márgenes, espejo y aspecto del destino; el ojo de las estelas y las cintas.
+- `5915` **El parallax de cámara: la fórmula estaba en el motor, y mueve las capas también en reposo** — `cameraparallax` en 29 escenas, leído en `wallpaper64.exe` en vez de medido contra WE corriendo.
+- `5924` **Cómo se encontró** — la tabla de propiedades de `general` y la de la capa dan los desplazamientos; de ahí, las lecturas.
+- `5935` **Lo que hace WE** — el punto P entre el centro y el ratón, su suavizado, y la traslación `amount × depth × (origin − P)` con la raíz.
+- `5960` **La sorpresa: con el ratón en el centro, las capas ya están desplazadas** — comprobado contra el preview de `2262142032`: el reloj a unos 10 px y el letrero que WE deja fuera.
+- `5976` **Cómo está hecho aquí** — el término en reposo horneado en `transform_absoluto`; el del ratón en la línea `paralaje` de los dos ejecutores.
+- `6004` **Lo medido** — 0 regresiones; correlación con el preview: 4 se acercan, 2 se alejan, 23 igual.
+- `6022` **Lo que queda** — `g_ParallaxPosition` (ya hecho), `escena[+0xf0]`, la marca que invierte la x y `camerashake` (ya hecho).
+- `6182` **El temblor de cámara: también estaba en el motor, y no es ruido** — `camerashake` en 6 escenas: una curva de Lissajous determinista leída en `0x140199580`, que mueve la cámara entera; línea `temblor` y `src/wetemblor.c` en los dos ejecutores.
+- `6194` **Cómo se encontró** — `+0x328/+0x32c/+0x330` y el bit 7 de `+0xe0` en el lector de `general`; los defectos en el constructor; el reloj es el del renderizador.
+- `6230` **Lo que hace WE** — `velocidad² · t`, `(cos s, sin 1,333·s)`, la amplitud por `0,01 × alto`; la rugosidad solo deforma la norma; y `escena[+0xf0]` es el ojo.
+- `6258` **Cómo está hecho aquí** — `temblor` en la cabecera, `tiembla` por capa, acoplado al punto del parallax; por qué las `passthrough` se quedan quietas (con ellas se movía el doble).
+- `6291` **Lo medido** — 138 de 144 planes idénticos; desplazamiento medido contra predicho a ±0,1 px en cinco escenas; 0 regresiones.
+- `6335` **Lo que queda** — `3053927686` un 7 % largo, el marco de las `composelayer` pequeñas y el `eye` fuera del origen (cerrado).
+- `6934` **El `eye` de la cámara no llega al parallax: WE lo pone a cero en las escenas ortográficas** — leído en `wallpaper64.exe` antes de aplicarlo: el cargador borra el `eye` del json en las 47 escenas que lo declaran; no cambia el render.
+- `6764` **Lo leído, con direcciones** — la cámara declarada (`+0x118`) y la vigente (`+0xf0`), el cero de `0x14018866b`, de dónde sale el ojo cada fotograma y la suma en `0x140189c18`.
+- `6994` **Lo que dicen los previews** — con el `eye` sumado la correlación empeora en 7 de 11; el reloj de `2262142032` mejora, pero por el encaje global.
+- `7027` **Cómo queda aquí** — un comentario en `parallax_de_camara` y `prueba_parallax_de_camara` con el `eye` declarado.
+- `6898` **Lo medido** — `verifica_ojo.sh` sin fallos, 129 planes idénticos, 137 raíces sin cambio y la luz de las once igual.
+- `7059` **Lo que queda** — los objetos cámara (`3521337568`) y las escenas con `paths`.
+- `7240` **`g_ParallaxPosition` es el punto P de la cámara, no el puntero con retardo** — el `switch` de uniforms encontrado en `wallpaper64.exe` (índice `0x6b`, tabla de dos niveles): `clamp(P/lienzo)` con la influencia y la y hacia arriba, y el centro si `cameraparallax` está apagado; en vivo sale de `m_camara`.
+- `7258` **Lo leído, con direcciones** — la tabla de nombres, el enlace, el `switch` y su caso (`0x1400d9e90`, `contexto+0x9c`), el 0,5 del cargador, el bit 8 de `+0xe0` y la escritura en `0x140189cbe`.
+- `7321` **Lo que cambia en el corpus** — las 6 con `depthparallax`; las dos de influencia negativa iban en x al revés y entre 3,7 y cinco veces más fuertes.
+- `7341` **Cómo está hecho aquí** — `posicion_de_parallax` en `_fotograma`, el centro sin marcadores en los pases que lo leen con el parallax apagado, y `m_camara` acotado en vivo.
+- `7187` **Lo medido** — 57 direcciones sin fallos, 24 de 24 valores contra la regla, la prueba que cae sin la influencia y con la y al revés, 1131 ficheros idénticos sin ratón.
+- `7398` **Lo que queda** — el ojo (el temblor) no entra offline, las marcas `0x200200` y `0x800` del contexto, y verlo en el escritorio.
+- `7410` **El parallax sigue al ratón en tiempo real: el cursor lo da KWin, y el retardo de WE se queda para el temblor** — al fondo le llegaban 1–5 posiciones/s (ventanas maximizadas apiladas; el hover no llega a plasmashell); `CursorKWin` pide el cursor global a KWin por D-Bus: 18–40/s. Y la parte del ratón de `m_camara` con 25 ms en vez del retardo de WE (decisión del usuario).
+- `7417` **La que importaba: al fondo no le llegaba el ratón** — 1–5 posiciones/s pegadas al panel con ~42 fps; el `HoverHandler` en la raíz no bastó; `CursorKWin` y su script de KWin (enteros por D-Bus): 18–40/s en toda la pantalla.
+- `7453` **La otra: el retardo de WE** — 300–883 ms hasta el 95 % con `(1 − delay/3)·10·dt`; la parte del ratón a 25 ms, la del temblor con el de WE.
+- `7483` **Partículas con perspectiva: el bit 0x4 del `flags` del sistema es otra cámara, no otra simulación** — «Perspective rendering» en 153 sistemas de 58 escenas: leída en `wallpaper64.exe` la cámara que WE les pone en una escena ortográfica (ojo a `alto / (2 tan(fov/2))`, `perspectiveoverridefov` o 95°, cercano 5); va en la MVP del pase, sin tocar C.
+- `7494` **Qué bit es cuál: la tabla del editor** — `wallpaperui.exe`: 0x1 worldspace, 0x4 perspectiva, 0x8..0x80 «disable overrides» (ninguno en el corpus); el 0x2 no tiene casilla.
+- `7514` **Lo que hace WE, con direcciones** — `flags` → descriptor+0x8 → sistema+0x20; el `>> 2 & 1` del dibujo, `0x1401e5b60`, la `PerspectiveFovRH` de z invertida del dispositivo y de dónde salen fov, centro y aspecto.
+- `7341` **Cómo está hecho aquí** — `perspectiva 1` al final del `.psys`, `particle_mvp_perspectiva` en `werender.py`; los ejecutores heredan la matriz.
+- `7362` **Lo medido** — 149 direcciones sin fallos; 140 `.psys` marcados de 153 (13 invisibles); 71 escenas idénticas a main; los copos de 1,0 a 6,4 px por unidad; luz sin regresiones (los relojes, con la hora fija).
+- `7398` **Lo que queda** — el bit 0x1 (worldspace) y el 0x2; márgenes, espejo y aspecto del destino; el ojo de las estelas y las cintas.
 
 ## Valores por defecto de las partículas
 
-- `5757` **Los valores por defecto estaban en el binario: el giro, la caja, el ritmo y el sesgo** — cuatro cabos de partículas: uno lo cierra la documentación y tres el código del motor de WE.
-- `5765` **El sesgo de `exponent`: confirmado, no se toca nada** — la documentación dice que de 2 en adelante sesga hacia Min: es `pow(t, e)`.
-- `5775` **Dónde guarda WE sus valores por defecto, y cómo se leen** — desensamblar `wallpaper64.exe`: cada defecto se carga junto a su campo, y la fábrica dice de qué pieza es; la tabla completa.
-- `5819` **La «hoja girada» del rayo era un giro, y afecta a 66 escenas** — `rotationrandom` vacío gira de 0 a 2π (112 sistemas); `angularvelocityrandom` vacío, ±5 (18).
-- `5829` **La caja es `256 256 0`, y el 40 % que sigue fuera es del preset** — las fugaces que cruzan pasan del 28 % al 60 %; `distancemax` es el semieje, lo dice la muestra de `rain_splashes`.
-- `5853` **El ritmo: 10 por segundo, no el 48 % del depósito** — sustituye al ritmo implícito en 68 sistemas; en la `City`, más fugaces y no menos.
-- `5876` **`directions` es `1 1 0`** — solo cambia la z, que entra en el ruido de la turbulencia.
-- `5881` **Lo medido** — cinco pasadas, 0 regresiones; `3097749052` se mueve por sorteo; los rayos girados y las fugaces cruzando en la `City`.
+- `5764` **Los valores por defecto estaban en el binario: el giro, la caja, el ritmo y el sesgo** — cuatro cabos de partículas: uno lo cierra la documentación y tres el código del motor de WE.
+- `5772` **El sesgo de `exponent`: confirmado, no se toca nada** — la documentación dice que de 2 en adelante sesga hacia Min: es `pow(t, e)`.
+- `5782` **Dónde guarda WE sus valores por defecto, y cómo se leen** — desensamblar `wallpaper64.exe`: cada defecto se carga junto a su campo, y la fábrica dice de qué pieza es; la tabla completa.
+- `5826` **La «hoja girada» del rayo era un giro, y afecta a 66 escenas** — `rotationrandom` vacío gira de 0 a 2π (112 sistemas); `angularvelocityrandom` vacío, ±5 (18).
+- `5836` **La caja es `256 256 0`, y el 40 % que sigue fuera es del preset** — las fugaces que cruzan pasan del 28 % al 60 %; `distancemax` es el semieje, lo dice la muestra de `rain_splashes`.
+- `5860` **El ritmo: 10 por segundo, no el 48 % del depósito** — sustituye al ritmo implícito en 68 sistemas; en la `City`, más fugaces y no menos.
+- `5883` **`directions` es `1 1 0`** — solo cambia la z, que entra en el ruido de la turbulencia.
+- `5888` **Lo medido** — cinco pasadas, 0 regresiones; `3097749052` se mueve por sorteo; los rayos girados y las fugaces cruzando en la `City`.
 
 ## Pendiente
 
-- `4517` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — el diámetro del destello, la lluvia que sale de un punto y la estela corta.
-- `4523` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
-- `4569` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.
-- `4588` **1b. Lo que falta son los sistemas HIJOS** — `halo_4` con núcleo del 8 % explica el pico de 3–4 px; 232 sistemas con hijos en 61 escenas.
-- `4618` **2. La lluvia de estrellas sale toda del mismo punto** — `boxrandom` sin `distancemax`: el mismo patrón que `rate` y que el `max` de `colorrandom`.
-- `4638` **3. La estela es corta y gorda; debería ser fina y larga** — el defecto de `segments` pisa el `length` que el autor sí escribe; 68 cintas de 74.
+- `4524` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — el diámetro del destello, la lluvia que sale de un punto y la estela corta.
+- `4530` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
+- `4576` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.
+- `4595` **1b. Lo que falta son los sistemas HIJOS** — `halo_4` con núcleo del 8 % explica el pico de 3–4 px; 232 sistemas con hijos en 61 escenas.
+- `4625` **2. La lluvia de estrellas sale toda del mismo punto** — `boxrandom` sin `distancemax`: el mismo patrón que `rate` y que el `max` de `colorrandom`.
+- `4645` **3. La estela es corta y gorda; debería ser fina y larga** — el defecto de `segments` pisa el `length` que el autor sí escribe; 68 cintas de 74.
 
 ## Texto
 
@@ -391,71 +396,71 @@ make indice                       # reescribe los números desde NOTAS.md
 - `3462` **Lo que la distribución ahorró** — mirar los valores y no los recuentos quita más trabajo del que deja.
 - `3482` **Lo que se ve** — 25 escenas cambian, 0 regresiones.
 - `3495` **Y el muro: 148 de los 167 son JavaScript** — 133 llaman a `new Date`: son relojes y fechas, y el texto dibujado no es el que el autor quiso.
-- `4106` **Una capa de texto se ancla por su alineación, no por su centro** — no trae `alignment`: trae `horizontalalign` y `verticalalign`, y dicen lo mismo.
-- `4128` **Y lo que faltaba: la hora era la del autor** — lo que se pensó entonces, que resultó ser la mitad de la historia.
-- `4143` **La hora de verdad: interpretar el script sin un motor de JavaScript** — el plan es una foto, así que lo que viaja en él es el FORMATO, no la cadena.
-- `4150` **Por qué no vale con ejecutarlo una vez** — cambiaría una hora congelada de 2021 por una congelada de hoy; el reparto en tres piezas.
-- `4165` **Un intérprete, no un motor** — el vocabulario de los 51 scripts, contado; y `createScriptProperties()`, que llevó de 6 a 129.
-- `4194` **Deducir el formato: cortar siete muestras a la vez** — las dos maneras de equivocarse: una sola cadena es ambigua y diferenciar cadenas cortas miente.
-- `4213` **Los nombres no se adivinan: se reconocen** — están escritos en el script; hacen falta TRES muestras por valor o se cuela el campo vecino.
-- `4230` **Lo que da la garantía es la comprobación, no la deducción** — ~1050 instantes; con una diferencia se descarta y la capa no se toca.
-- `4246` **El alfabeto, y lo que se pierde** — rasterizar glifo a glifo en vez de por línea, y el kerning que eso cuesta.
-- `4267` **Y la locale, otra vez** — `strtof` dentro de plasmashell deja el alfabeto a cero sin un solo error por medio.
-- `7811` **Relojes de varias líneas: el salto viaja al plan y `wereloj` apila renglones** — el `SATURDAY` de `2946362143` empieza por `\n`; la ruta del reloj apila renglones como la estática, de 123 a 124 relojes.
-- `7822` **Lo que cambia** — el `\n` escapado en el plan, el `espaciado` al final de la línea `reloj`; el atlas de los relojes de una línea no cambia.
-- `7849` **Lo que se descartó** — la caja del quad engaña: `getbbox` de Pillow cuenta el espacio final; se compara la tinta. Y `dayFormat`, sin tocar.
-- `7933` **El tope del atlas de un reloj: el renglón que se escribe y un alto máximo** — el tope de ancho estimaba una `W` por glifo y dejaba la 217 de `2946362143` a 160 px de em; ahora se mide renglón a renglón (11 capas suben, ninguna baja) y hay un tope de alto de 16384.
-- `7947` **Lo que cambia** — avances glifo a glifo sobre `Formato.cadenas()`, al px de partida; `ALTO_ATLAS_MAX` rebaja la em si la columna se pasa (en el corpus, ninguna).
-- `7973` **Lo que se descartó** — medir con `getlength` del renglón, que mete un kerning que el reloj no dibuja; y un tope de alto de 8192, que ya bajaría un atlas de main de 9053 px.
-- `7987` **Lo medido** — 218,3 → 278,1 MB de atlas a 1920x1200 (+50,0 en `3462491575`); el más alto, 10550 px frente a los 16384 de Mesa, también en 4K; luz sin regresiones con la hora fija.
-- `8067` **Desestructurar, `Boolean` y `engine.registerAsset`: seis relojes más** — tres huecos de JavaScript en `wescript`, ninguno propio de una escena; de 124 a 130 relojes, y `engine` solo con `registerAsset`.
-- `8088` **Lo que cambia** — el patrón `[a, , c]` en las declaraciones, `Boolean` como `!!v` y un `Motor` cuyo único miembro devuelve un recurso opaco.
-- `8111` **Lo que se descartó** — un `engine` permisivo: el contador de fps de `3238423642` suma `engine.frametime` y pasaría por reloj.
-- `8120` **Lo medido** — el listado de main a la rama son seis líneas añadidas; `tools/test_wescript.py`; luz sin regresiones con la hora fija y nada fuera de las tres escenas se mueve.
-- `8157` **Lo que sigue sin reloj** — `import`, la expresión regular, los otros miembros de `engine` y la `Date` de `3597772384`, que lanza «a número».
-- `8780` **El kerning de los relojes: los pares del alfabeto viajan al plan** — la pluma glifo a glifo perdía hasta 0,368 em en 27 capas de 11 escenas; los pares del alfabeto van al plan (`relojkern`) y `wereloj.c` los suma: 0 em contra raqm en los 130 relojes.
-- `8800` **Lo que cambia** — `_pares_del_alfabeto` y `_plumas` en `wetext`, la línea `relojkern` aparte para que un ejecutor viejo la salte, y `wereloj.c` leyéndola bajo la locale C.
-- `8826` **Lo que se descartó** — HarfBuzz en el ejecutor; el miedo a los espacios (el 0,368 em de «| S A T U R D A Y |» son pares letra-espacio); ligaduras, que en el corpus no hay.
-- `8839` **Lo medido** — 0 em en ancho, pluma y origen; 117 planes idénticos y 12 con pares, donde además solo cambia la caja del reloj; luz sin regresiones con la hora fija; ningún aviso nuevo.
-- `8334` **Una hoja de sprites cuyo fotograma elige la hora: el indicador AM/PM** — un script de `visible` llama a `setFrame` con la hora; `wescript` da la tabla de 24, el plan lleva la hoja y `wereloj.c` pone los uniforms en los dos ejecutores. Solo cambia `3299228616`.
-- `8352` **El censo** — 39 scripts con `setFrame` fuera del texto y por qué solo 30 dependen de la hora; las 56 capas con hoja animada en 10 escenas, 37 con `SPRITESHEET` (53 contando las que lo declaran en minúsculas) y 12 de varias imágenes.
-- `8388` **Lo que cambia** — `thisLayer.getTextureAnimation().setFrame`, la línea `hojahora`, y el volteo: los uniforms de WE no se suben tal cual sobre una textura volteada.
-- `8425` **Lo que se descartó** — encender `SPRITESHEET` o reproducir por `frame_time` las hojas sin script, y reconocer el script por su texto.
-- `8434` **Lo medido** — 09:00 y 15:00 con `es_ES` a 1e-6; de las 129 solo cambia un plan; el recorte de la capa difiere entre AM y PM en la rama y es idéntico en main.
-- `8471` **Lo que queda** — ~~reproducir por `frame_time` y si WE enciende `SPRITESHEET` solo~~, hecho en el trozo siguiente; ~~las de varias imágenes~~, hechas las 7 sin script; `setFrame` movido por clics.
-- `8490` **Los combos van en mayúsculas y la hoja corre por `frame_time`: lo leído en wallpaper64.exe** — el censo buscaba `SPRITESHEET` y 16 capas lo declaran como `spritesheet`; WE pasa los nombres de combo por `toupper` y avanza la hoja con el paso de `g_Time`. Las 4 hojas de una imagen sin script de `2262142032` corren; las de varias imágenes, quietas en el fotograma 0.
-- `8513` **Lo leído, con direcciones** — `toupper` en el lector de pases (`0x140154480`); el avance al enlazar la textura (`0x14015f0d0`), desde el fotograma 0, con el paso de `g_Time`; `spritesheetrefreshsync` solo duerme hasta el próximo fotograma; `frame_time` 0, uno por fotograma de render.
-- `8575` **Lo que cambia** — `_combos_en_mayusculas` en `wescene`, `mueve_la_hoja` en `wescript`, el fotograma 0 y la línea `hojatiempo` en `werender`, y `we_hoja_tiempo_uniforms` en los dos ejecutores con `g_Time`.
-- `8610` **Lo que se descartó** — normalizar solo `spritesheet`, imitar el paso a paso de WE, medir en el `origin` de la capa y el perfil de luminancia.
-- `8628` **Lo medido** — 60 comprobaciones del binario; 34 planes cambian, cada uno con su causa; 34 → 54119 en el recorte de la 389 y el fotograma que toca; 0 regresiones de luz, y las caídas son el `color` y el `alpha` que `VERSION` aplica.
-- `8690` **Lo que queda** — ~~la textura por `image_id`~~, hecha para las 7 sin script; el `alpha` que el valor por defecto del material pisa sin `VERSION`; `setFrame` por clics.
-- `9007` **Las hojas de varias imágenes eligen la textura por `image_id`: lo leído en wallpaper64.exe** — WE parte cada fotograma por el tamaño de SU imagen y al enlazar pone en el sampler la imagen del fotograma; la línea `hojaimagenes` lleva la textura de cada uno y `we_hoja_tiempo_textura` la elige en los dos ejecutores. Corren las 7 capas sin script de `2262142032`, `2229352184` y `2220826239`.
-- `9027` **Lo leído, con direcciones** — el `image_id` en `+4` del registro del fotograma y la división por el ancho y alto de su imagen (`0x14015e4b6..0x14015e4eb`); el avance lo apunta en `textura+0x98` (`0x14015f2e8`) y el enlace lo lee (`0x1400ee8f0`).
-- `9062` **Lo que cambia** — `texture(imagen=)` y `linea_hojaimagenes` en `werender`, `lee_por_tiempo` con siete u ocho números en `wereloj.c`, y `g_Texture0` rebindeado en `glexec.c` y `glexecutor.cpp`.
-- `9087` **Lo que se descartó** — una línea hermana detrás de `hojatiempo`, que un ejecutor viejo correría sobre la imagen 0; un atlas; partir por el tamaño de la imagen 0.
-- `9105` **Lo medido** — 29 comprobaciones del binario; las 7 capas con su textura por fotograma; 3 planes cambian de 129; 128 → 106680 en el recorte de la 983; el `glexec` de main con el plan nuevo, igual que main; 0 regresiones de luz.
-- `9151` **Lo que queda** — las 5 de `3577990983`, que mueve un script y pesan 1,1 GB en RGBA; `g_Texture0Resolution` por imagen.
-- `8703` **Los puntos de un efecto van en la v de WE: la espiral de dragones de Karma** — un `center` con `"position": true` se subía sin voltear y el `spin` de `2637739953` giraba alrededor de un punto cerca del borde de abajo; ahora se escribe `1 − v`.
-- `8720` **Lo que cambia** — el volteo en el bucle de constantes de `werender`, y `es_punto`: solo lo que el shader usa entero, porque `u_FixedSize` lleva la marca y es una proporción.
-- `8742` **Lo que se descartó** — voltear todo `"position": true` y separar por la `label`.
-- `8751` **Lo medido** — 15 planes y 54 centros cambian; 0 regresiones de luz en las 15; los `godrays` de `2645037214` salen ya del orbe y el farol.
-- `8772` **Lo que queda** — el sentido de giro de cualquier ángulo de un efecto, que el volteo invierte y no se ha comprobado contra WE.
-- `8874` **El cursor aparta: `controlpointattract` leído en wallpaper64.exe** — la regla del simulador era una deducción y estaba al revés en las dos cosas: WE solo actúa DENTRO de `threshold`, con caída lineal, y la `scale` negativa empuja. Las luciérnagas de Karma que perseguían el ratón ahora lo esquivan.
-- `8885` **Lo leído, con direcciones** — la fábrica (`0x1401cc9d3`, bloque de tipo `0xa`), los defectos 512/512 o 20/5 con el booleano de la escena, el operador en `0x140241554`, `flags & 2` y `flags & 1`, y el tiempo `t` con el que se integra.
-- `8936` **El corpus con la regla leída** — 109 de los 111 usos sobre el cursor tienen `scale` negativa; 13 sin `threshold`, uno sin `scale`, 6 con un `origin` que WE no lee.
-- `8947` **Lo que cambia** — `_op_atrae` con los defectos de WE, `OP_ATRAE` a 4 floats, y `prueba_cursor`, que medía el fallo como si fuera lo correcto.
-- `8969` **Lo medido** — la prueba nueva contra `main` (3 frente a 3384 en el hueco); 172 líneas de `.psys` en 39 escenas; 0 regresiones de luz; el vórtice de `3219398263` que no hacía nada.
-- `8994` **Lo que queda** — el factor de tiempo `F` sin identificar, el `drag` lineal de WE, y `flags & 1`.
-- `9337` **Las agujas de un reloj analógico: `angles` con `engine.timeOfDay`** — `wescript` reduce el script a `A · frac(B · tod) + C` en grados y lo comprueba evaluándolo; la línea `giro` y `src/wegiro.c`, nuevo y compartido, giran la colocación con la hora en los dos ejecutores. Las tres agujas de `2396319149` se mueven; solo cambia su plan.
-- `9369` **Lo que cambia** — `engine.timeOfDay`, `giro_por_hora`, `--hora` y `@HORA@`, grados frente a radianes, y por qué el giro reproducía la deformación del ángulo estático (63 capas en 22 escenas), ya quitada en los dos sitios.
-- `9423` **Lo que se descartó** — reconocer el texto del script, girar en píxeles solo las agujas o en el espacio del quad, y dar `timeOfDay` solo a `angles`.
-- `9438` **Lo medido** — 3 de 7 scripts aceptados; 0 grados en 7200 `tod`; 128/128 planes idénticos y tres líneas `giro` añadidas; el C a 0 grados en `C` y `es_ES`; 0,0000 y 0,0001 de 255 contra el `angles` estático; 0 → 42193 entre las 03:00 y las 09:00; 0 regresiones de luz.
-- `9489` **Lo que queda** — ~~la deformación del ángulo estático~~ (hecha), los otros cuatro `angles` (el seno, hecho), la fracción de segundo de `timeOfDay` sin leer en el motor, y los hijos de una capa girada.
-- `9646` **Un campo que oscila con `engine.runtime`: el vaivén de `angles` y de `origin`** — `wescript` da `Math.sin`, `Math.cos` y `engine.runtime`, y `vaiven_de` reduce cada componente a `K + A · sin(ω · t + φ)` y lo comprueba evaluándolo; la línea `vaiven` y `src/wegiro.c` mueven la colocación con el tiempo de `g_Time` en los dos ejecutores. Se balancea el parche de `3050043876` y sube y baja el gotero de `3521337568`; las dos capas con hijos de `3577990983` no.
-- `9679` **Lo que cambia** — `vector_en`, la ω por la identidad de `f(t ± h)`, la comprobación, la línea con los ejes de clip y el 1 + k del parallax en reposo de una raíz, y el giro con `we_giro_coloca`.
-- `9736` **Lo que se descartó** — reconocer el texto, mover también a los hijos, otra cuenta para el giro, sumar el `origin` sin el parallax en reposo (92406 píxeles contra el estático) y mover el `g_EffectModelViewProjectionMatrix`, inerte aquí.
-- `9763` **Lo medido** — 2 de 430 campos con forma, error 0; 131/133 planes idénticos y una línea añadida en cada una de las otras dos; 0 píxeles a t = 0 y contra el estático; 20,5 unidades y 3,00°; el C a 0 en `C` y `es_ES`; 0 regresiones de luz.
-- `9852` **Lo que queda** — las capas con hijos, el glitch y el `Math.random` de `engine.runtime`, el pivote de una capa con `alignment`, los uniforms con la MVP del objeto y el arranque de `engine.runtime`.
+- `4113` **Una capa de texto se ancla por su alineación, no por su centro** — no trae `alignment`: trae `horizontalalign` y `verticalalign`, y dicen lo mismo.
+- `4135` **Y lo que faltaba: la hora era la del autor** — lo que se pensó entonces, que resultó ser la mitad de la historia.
+- `4150` **La hora de verdad: interpretar el script sin un motor de JavaScript** — el plan es una foto, así que lo que viaja en él es el FORMATO, no la cadena.
+- `4157` **Por qué no vale con ejecutarlo una vez** — cambiaría una hora congelada de 2021 por una congelada de hoy; el reparto en tres piezas.
+- `4172` **Un intérprete, no un motor** — el vocabulario de los 51 scripts, contado; y `createScriptProperties()`, que llevó de 6 a 129.
+- `4201` **Deducir el formato: cortar siete muestras a la vez** — las dos maneras de equivocarse: una sola cadena es ambigua y diferenciar cadenas cortas miente.
+- `4220` **Los nombres no se adivinan: se reconocen** — están escritos en el script; hacen falta TRES muestras por valor o se cuela el campo vecino.
+- `4237` **Lo que da la garantía es la comprobación, no la deducción** — ~1050 instantes; con una diferencia se descarta y la capa no se toca.
+- `4253` **El alfabeto, y lo que se pierde** — rasterizar glifo a glifo en vez de por línea, y el kerning que eso cuesta.
+- `4274` **Y la locale, otra vez** — `strtof` dentro de plasmashell deja el alfabeto a cero sin un solo error por medio.
+- `7818` **Relojes de varias líneas: el salto viaja al plan y `wereloj` apila renglones** — el `SATURDAY` de `2946362143` empieza por `\n`; la ruta del reloj apila renglones como la estática, de 123 a 124 relojes.
+- `7829` **Lo que cambia** — el `\n` escapado en el plan, el `espaciado` al final de la línea `reloj`; el atlas de los relojes de una línea no cambia.
+- `7856` **Lo que se descartó** — la caja del quad engaña: `getbbox` de Pillow cuenta el espacio final; se compara la tinta. Y `dayFormat`, sin tocar.
+- `7940` **El tope del atlas de un reloj: el renglón que se escribe y un alto máximo** — el tope de ancho estimaba una `W` por glifo y dejaba la 217 de `2946362143` a 160 px de em; ahora se mide renglón a renglón (11 capas suben, ninguna baja) y hay un tope de alto de 16384.
+- `7954` **Lo que cambia** — avances glifo a glifo sobre `Formato.cadenas()`, al px de partida; `ALTO_ATLAS_MAX` rebaja la em si la columna se pasa (en el corpus, ninguna).
+- `7980` **Lo que se descartó** — medir con `getlength` del renglón, que mete un kerning que el reloj no dibuja; y un tope de alto de 8192, que ya bajaría un atlas de main de 9053 px.
+- `7994` **Lo medido** — 218,3 → 278,1 MB de atlas a 1920x1200 (+50,0 en `3462491575`); el más alto, 10550 px frente a los 16384 de Mesa, también en 4K; luz sin regresiones con la hora fija.
+- `8074` **Desestructurar, `Boolean` y `engine.registerAsset`: seis relojes más** — tres huecos de JavaScript en `wescript`, ninguno propio de una escena; de 124 a 130 relojes, y `engine` solo con `registerAsset`.
+- `8095` **Lo que cambia** — el patrón `[a, , c]` en las declaraciones, `Boolean` como `!!v` y un `Motor` cuyo único miembro devuelve un recurso opaco.
+- `8118` **Lo que se descartó** — un `engine` permisivo: el contador de fps de `3238423642` suma `engine.frametime` y pasaría por reloj.
+- `8127` **Lo medido** — el listado de main a la rama son seis líneas añadidas; `tools/test_wescript.py`; luz sin regresiones con la hora fija y nada fuera de las tres escenas se mueve.
+- `8164` **Lo que sigue sin reloj** — `import`, la expresión regular, los otros miembros de `engine` y la `Date` de `3597772384`, que lanza «a número».
+- `8787` **El kerning de los relojes: los pares del alfabeto viajan al plan** — la pluma glifo a glifo perdía hasta 0,368 em en 27 capas de 11 escenas; los pares del alfabeto van al plan (`relojkern`) y `wereloj.c` los suma: 0 em contra raqm en los 130 relojes.
+- `8807` **Lo que cambia** — `_pares_del_alfabeto` y `_plumas` en `wetext`, la línea `relojkern` aparte para que un ejecutor viejo la salte, y `wereloj.c` leyéndola bajo la locale C.
+- `8833` **Lo que se descartó** — HarfBuzz en el ejecutor; el miedo a los espacios (el 0,368 em de «| S A T U R D A Y |» son pares letra-espacio); ligaduras, que en el corpus no hay.
+- `8846` **Lo medido** — 0 em en ancho, pluma y origen; 117 planes idénticos y 12 con pares, donde además solo cambia la caja del reloj; luz sin regresiones con la hora fija; ningún aviso nuevo.
+- `8341` **Una hoja de sprites cuyo fotograma elige la hora: el indicador AM/PM** — un script de `visible` llama a `setFrame` con la hora; `wescript` da la tabla de 24, el plan lleva la hoja y `wereloj.c` pone los uniforms en los dos ejecutores. Solo cambia `3299228616`.
+- `8359` **El censo** — 39 scripts con `setFrame` fuera del texto y por qué solo 30 dependen de la hora; las 56 capas con hoja animada en 10 escenas, 37 con `SPRITESHEET` (53 contando las que lo declaran en minúsculas) y 12 de varias imágenes.
+- `8395` **Lo que cambia** — `thisLayer.getTextureAnimation().setFrame`, la línea `hojahora`, y el volteo: los uniforms de WE no se suben tal cual sobre una textura volteada.
+- `8432` **Lo que se descartó** — encender `SPRITESHEET` o reproducir por `frame_time` las hojas sin script, y reconocer el script por su texto.
+- `8441` **Lo medido** — 09:00 y 15:00 con `es_ES` a 1e-6; de las 129 solo cambia un plan; el recorte de la capa difiere entre AM y PM en la rama y es idéntico en main.
+- `8478` **Lo que queda** — ~~reproducir por `frame_time` y si WE enciende `SPRITESHEET` solo~~, hecho en el trozo siguiente; ~~las de varias imágenes~~, hechas las 7 sin script; `setFrame` movido por clics.
+- `8497` **Los combos van en mayúsculas y la hoja corre por `frame_time`: lo leído en wallpaper64.exe** — el censo buscaba `SPRITESHEET` y 16 capas lo declaran como `spritesheet`; WE pasa los nombres de combo por `toupper` y avanza la hoja con el paso de `g_Time`. Las 4 hojas de una imagen sin script de `2262142032` corren; las de varias imágenes, quietas en el fotograma 0.
+- `8520` **Lo leído, con direcciones** — `toupper` en el lector de pases (`0x140154480`); el avance al enlazar la textura (`0x14015f0d0`), desde el fotograma 0, con el paso de `g_Time`; `spritesheetrefreshsync` solo duerme hasta el próximo fotograma; `frame_time` 0, uno por fotograma de render.
+- `8582` **Lo que cambia** — `_combos_en_mayusculas` en `wescene`, `mueve_la_hoja` en `wescript`, el fotograma 0 y la línea `hojatiempo` en `werender`, y `we_hoja_tiempo_uniforms` en los dos ejecutores con `g_Time`.
+- `8617` **Lo que se descartó** — normalizar solo `spritesheet`, imitar el paso a paso de WE, medir en el `origin` de la capa y el perfil de luminancia.
+- `8635` **Lo medido** — 60 comprobaciones del binario; 34 planes cambian, cada uno con su causa; 34 → 54119 en el recorte de la 389 y el fotograma que toca; 0 regresiones de luz, y las caídas son el `color` y el `alpha` que `VERSION` aplica.
+- `8697` **Lo que queda** — ~~la textura por `image_id`~~, hecha para las 7 sin script; el `alpha` que el valor por defecto del material pisa sin `VERSION`; `setFrame` por clics.
+- `9014` **Las hojas de varias imágenes eligen la textura por `image_id`: lo leído en wallpaper64.exe** — WE parte cada fotograma por el tamaño de SU imagen y al enlazar pone en el sampler la imagen del fotograma; la línea `hojaimagenes` lleva la textura de cada uno y `we_hoja_tiempo_textura` la elige en los dos ejecutores. Corren las 7 capas sin script de `2262142032`, `2229352184` y `2220826239`.
+- `9034` **Lo leído, con direcciones** — el `image_id` en `+4` del registro del fotograma y la división por el ancho y alto de su imagen (`0x14015e4b6..0x14015e4eb`); el avance lo apunta en `textura+0x98` (`0x14015f2e8`) y el enlace lo lee (`0x1400ee8f0`).
+- `9069` **Lo que cambia** — `texture(imagen=)` y `linea_hojaimagenes` en `werender`, `lee_por_tiempo` con siete u ocho números en `wereloj.c`, y `g_Texture0` rebindeado en `glexec.c` y `glexecutor.cpp`.
+- `9094` **Lo que se descartó** — una línea hermana detrás de `hojatiempo`, que un ejecutor viejo correría sobre la imagen 0; un atlas; partir por el tamaño de la imagen 0.
+- `9112` **Lo medido** — 29 comprobaciones del binario; las 7 capas con su textura por fotograma; 3 planes cambian de 129; 128 → 106680 en el recorte de la 983; el `glexec` de main con el plan nuevo, igual que main; 0 regresiones de luz.
+- `9158` **Lo que queda** — las 5 de `3577990983`, que mueve un script y pesan 1,1 GB en RGBA; `g_Texture0Resolution` por imagen.
+- `8710` **Los puntos de un efecto van en la v de WE: la espiral de dragones de Karma** — un `center` con `"position": true` se subía sin voltear y el `spin` de `2637739953` giraba alrededor de un punto cerca del borde de abajo; ahora se escribe `1 − v`.
+- `8727` **Lo que cambia** — el volteo en el bucle de constantes de `werender`, y `es_punto`: solo lo que el shader usa entero, porque `u_FixedSize` lleva la marca y es una proporción.
+- `8749` **Lo que se descartó** — voltear todo `"position": true` y separar por la `label`.
+- `8758` **Lo medido** — 15 planes y 54 centros cambian; 0 regresiones de luz en las 15; los `godrays` de `2645037214` salen ya del orbe y el farol.
+- `8779` **Lo que queda** — el sentido de giro de cualquier ángulo de un efecto, que el volteo invierte y no se ha comprobado contra WE.
+- `8881` **El cursor aparta: `controlpointattract` leído en wallpaper64.exe** — la regla del simulador era una deducción y estaba al revés en las dos cosas: WE solo actúa DENTRO de `threshold`, con caída lineal, y la `scale` negativa empuja. Las luciérnagas de Karma que perseguían el ratón ahora lo esquivan.
+- `8892` **Lo leído, con direcciones** — la fábrica (`0x1401cc9d3`, bloque de tipo `0xa`), los defectos 512/512 o 20/5 con el booleano de la escena, el operador en `0x140241554`, `flags & 2` y `flags & 1`, y el tiempo `t` con el que se integra.
+- `8943` **El corpus con la regla leída** — 109 de los 111 usos sobre el cursor tienen `scale` negativa; 13 sin `threshold`, uno sin `scale`, 6 con un `origin` que WE no lee.
+- `8954` **Lo que cambia** — `_op_atrae` con los defectos de WE, `OP_ATRAE` a 4 floats, y `prueba_cursor`, que medía el fallo como si fuera lo correcto.
+- `8976` **Lo medido** — la prueba nueva contra `main` (3 frente a 3384 en el hueco); 172 líneas de `.psys` en 39 escenas; 0 regresiones de luz; el vórtice de `3219398263` que no hacía nada.
+- `9001` **Lo que queda** — el factor de tiempo `F` sin identificar, el `drag` lineal de WE, y `flags & 1`.
+- `9344` **Las agujas de un reloj analógico: `angles` con `engine.timeOfDay`** — `wescript` reduce el script a `A · frac(B · tod) + C` en grados y lo comprueba evaluándolo; la línea `giro` y `src/wegiro.c`, nuevo y compartido, giran la colocación con la hora en los dos ejecutores. Las tres agujas de `2396319149` se mueven; solo cambia su plan.
+- `9376` **Lo que cambia** — `engine.timeOfDay`, `giro_por_hora`, `--hora` y `@HORA@`, grados frente a radianes, y por qué el giro reproducía la deformación del ángulo estático (63 capas en 22 escenas), ya quitada en los dos sitios.
+- `9430` **Lo que se descartó** — reconocer el texto del script, girar en píxeles solo las agujas o en el espacio del quad, y dar `timeOfDay` solo a `angles`.
+- `9445` **Lo medido** — 3 de 7 scripts aceptados; 0 grados en 7200 `tod`; 128/128 planes idénticos y tres líneas `giro` añadidas; el C a 0 grados en `C` y `es_ES`; 0,0000 y 0,0001 de 255 contra el `angles` estático; 0 → 42193 entre las 03:00 y las 09:00; 0 regresiones de luz.
+- `9496` **Lo que queda** — ~~la deformación del ángulo estático~~ (hecha), los otros cuatro `angles` (el seno, hecho), la fracción de segundo de `timeOfDay` sin leer en el motor, y los hijos de una capa girada.
+- `9653` **Un campo que oscila con `engine.runtime`: el vaivén de `angles` y de `origin`** — `wescript` da `Math.sin`, `Math.cos` y `engine.runtime`, y `vaiven_de` reduce cada componente a `K + A · sin(ω · t + φ)` y lo comprueba evaluándolo; la línea `vaiven` y `src/wegiro.c` mueven la colocación con el tiempo de `g_Time` en los dos ejecutores. Se balancea el parche de `3050043876` y sube y baja el gotero de `3521337568`; las dos capas con hijos de `3577990983` no.
+- `9686` **Lo que cambia** — `vector_en`, la ω por la identidad de `f(t ± h)`, la comprobación, la línea con los ejes de clip y el 1 + k del parallax en reposo de una raíz, y el giro con `we_giro_coloca`.
+- `9743` **Lo que se descartó** — reconocer el texto, mover también a los hijos, otra cuenta para el giro, sumar el `origin` sin el parallax en reposo (92406 píxeles contra el estático) y mover el `g_EffectModelViewProjectionMatrix`, inerte aquí.
+- `9770` **Lo medido** — 2 de 430 campos con forma, error 0; 131/133 planes idénticos y una línea añadida en cada una de las otras dos; 0 píxeles a t = 0 y contra el estático; 20,5 unidades y 3,00°; el C a 0 en `C` y `es_ES`; 0 regresiones de luz.
+- `9859` **Lo que queda** — las capas con hijos, el glitch y el `Math.random` de `engine.runtime`, el pivote de una capa con `alignment`, los uniforms con la MVP del objeto y el arranque de `engine.runtime`.
 
 ## Inventario del formato: qué leemos y qué no
 

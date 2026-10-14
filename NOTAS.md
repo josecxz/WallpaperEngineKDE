@@ -3894,7 +3894,9 @@ Por orden de lo que más se nota:
    verdad](#vídeo-de-verdad-un-decodificador-compartido-y-dos-entregas-distintas)—.
    Queda el **audio** (pista AAC en dos de las tres escenas y en los 15
    wallpapers) y la **decodificación por hardware**: hoy todo va por CPU.
-5. **Elegir la GPU que renderiza** (ver abajo).
+5. ~~**Elegir la GPU que renderiza**~~ **hecho**, por un tercer camino: el
+   plan en otro contexto del mismo hilo y el fotograma por la CPU. Ver [El fondo
+   en la dedicada](#el-fondo-en-la-dedicada-el-plan-en-otra-gpu-y-el-fotograma-por-la-cpu).
 6. ~~Reflejos y luces de tubo~~ **hecho**: el reflejo solo pedía la pirámide de
    mipmaps del buffer de escena, y el tubo venía en `controlpoint` desde el
    principio. Del sistema de iluminación quedan los **focos** y las
@@ -4001,6 +4003,11 @@ del mismo:
   fondo no se ve. Semana larga, y **con un riesgo que puede tumbarlo**: que Mesa
   no pueda importar el dmabuf que exporta NVIDIA. Se resuelve con una sonda de
   ~150 líneas antes de comprometerse.
+
+**Resuelto:** la sonda dijo que no ---NVIDIA solo dibuja en su formato en
+bloques y la integrada solo lee lineal---, y el fondo va en la dedicada por un
+tercer camino que no estaba aquí. Ver [El fondo en la
+dedicada](#el-fondo-en-la-dedicada-el-plan-en-otra-gpu-y-el-fotograma-por-la-cpu).
 
 ## El anillo del vórtice, y las dos velocidades que faltaban
 
@@ -10188,3 +10195,237 @@ medidas de esta sección se miran a 10 s.
   recorte central y no la enseña.
 - **Los focos y las direccionales** en `LightingV1`: el generador los tiene;
   aquí siguen apagando la iluminación porque ninguna escena los trae.
+
+## El fondo en la dedicada: el plan en otra GPU y el fotograma por la CPU
+
+[Elegir la GPU que renderiza](#elegir-la-gpu-que-renderiza) dejaba dos caminos
+y una sonda pendiente: si Mesa podía importar el dmabuf que exporta NVIDIA. Se
+hizo la sonda, y el camino del dmabuf **no existe** en esta máquina. El fondo
+va ahora en la dedicada por un tercero, que no estaba en la lista.
+
+### La sonda: NVIDIA no escribe nada que la integrada sepa leer
+
+Unas 200 líneas fuera del repo: NVIDIA pinta cuatro cuadrantes de colores, un
+segundo proceso con el ICD de Mesa importa el fd y los lee. Con el driver
+615.78 y la UHD de Raptor Lake:
+
+| intento | resultado |
+|---|---|
+| exportar una textura GL de NVIDIA | modifier `0x0300000000e08014` (bloques de NVIDIA): Mesa la **rechaza**, `EGL_BAD_MATCH` |
+| bo GBM LINEAR de NVIDIA para dibujar | `RENDERING \| LINEAR` no se puede pedir; `LINEAR` solo, sí |
+| bo LINEAR de Intel, importado en NVIDIA | lo importa **solo para muestrear**: `GL_INVALID_OPERATION` al atarlo a `TEXTURE_2D`, FBO incompleto |
+| bo LINEAR del propio NVIDIA | lo mismo |
+| por la CPU, 2560×1440 | 1,19 ms leer en NVIDIA (dos PBO), 2,03 ms subir en Intel |
+
+El GL de NVIDIA **solo dibuja en su formato en bloques**, y la integrada solo
+lee lineal. Quedaría Vulkan en NVIDIA ---copiar a una imagen LINEAR, que como
+destino de transferencia sí podría valer--- con la interoperabilidad GL↔Vulkan
+de por medio; no se probó, porque la CPU ya cabía.
+
+### El camino: otro contexto en el mismo hilo
+
+La GPU la elige libglvnd por proceso al cargar el driver, pero **las llamadas
+GL las reparte por hilo** según el contexto actual, y `glexecutor.cpp` llama a
+`gl*` directamente. Así que no hace falta otro proceso ni otro hilo: dentro de
+`beginExternal()`, `src/otragpu.cpp` guarda el contexto de Qt (Mesa), pone uno
+suyo sobre la otra GPU, ejecuta el plan en un FBO propio del tamaño del item,
+lo lee con `glReadPixels`, devuelve el contexto a Qt y lo sube a una textura
+que copia con un blit al framebuffer de Qt. Sin fotograma de retraso: todo
+pasa en el mismo `render()`.
+
+- **Qué GPU.** La primera de `eglQueryDevicesEXT` con nodo de render, que no
+  sea software y cuyo `GL_RENDERER` no sea el de Qt. Mesa enumera también el
+  nodo de NVIDIA, donde no tiene driver: falla al inicializar y se pasa al
+  siguiente. Sin otra GPU, o con `wectl gpu integrated` (abajo), se dibuja en
+  la de Qt como antes. Dos GPU idénticas no se distinguen por el renderer: se quedaría en
+  la de Qt.
+- **El contexto es GL 3.3 core**, el de `tools/glexec.c`. En un portátil
+  híbrido el plan en vivo corre ahora en el mismo driver y el mismo tipo de
+  contexto que el render offline (`werender.py` no fuerza Mesa).
+- **Lo que hay que guardar** al cambiar de contexto es todo el estado EGL del
+  hilo de Qt: display, superficies de lectura y escritura, contexto **y la
+  API** de `eglBindAPI`, que también es por hilo.
+- **Liberar.** El destructor de `GlExecutor` decide mirando
+  `QOpenGLContext::currentContext()`, que es contabilidad de Qt y seguiría
+  diciendo «hay contexto» con el de NVIDIA sin poner. `~SceneRenderer` entra
+  en el propio, libera el plan ahí y sale; el de `GlExecutor` ya no tiene nada
+  que hacer. Sin `eglTerminate`: el display de un dispositivo es único en el
+  proceso y lo puede estar usando el fondo de otra pantalla.
+- **La locale** no cambia nada: `wereloj.c` hace `uselocale` en cada llamada y
+  todo sigue en el mismo hilo.
+
+### Lo medido
+
+En el arnés QML (no en plasmashell), 1600×900, a 165 Hz:
+
+| *High Noon Irelia* | fps | integrada ocupada | ms de integrada por fotograma |
+|---|---|---|---|
+| ventana de Qt vacía, animada | 165 | 7,4 % | 0,45 |
+| antes: todo en la integrada | **30** | **100 %** | **33,0** |
+| ahora: el plan en NVIDIA | **165** | **20,2 %** | **1,22** |
+
+Medido con `/proc/<pid>/fdinfo` del i915, por `drm-client-id` y tomando el
+máximo de cada cliente: sumar los fd de un mismo cliente da más del 100 %. El
+0,8 ms de diferencia con la ventana vacía es la subida y el blit. El 20 % que
+queda es por ir a 165 fps; a 30 serían ~4 %. NVIDIA, dibujando: ~17,8 W y
+37 %; en pausa vuelve a los 4,0 W del reposo, con el plan aún cargado (201
+MiB con esta escena, 689 MiB con la escena en marcha según `nvidia-smi`).
+
+**El corpus**, con el mismo arnés, el fotograma 60 volcado con `glReadPixels`
+desde el contexto de Qt ---no con `grabToImage`---, en NVIDIA y con
+`WE_GPU=qt` (la variable de entonces; hoy, `wectl gpu integrated`):
+
+- 153 directorios, **148 planes**: NVIDIA elegida en 148/148, 0 salidas con
+  error, 0 coredumps. **0 errores de GL que solo salgan en NVIDIA**: los tres
+  que hay (`0x502` tras componer, en `2317494988`, `3810943704` y
+  `3811980360`) salen igual en la integrada. Alfa 255 en todos. Mediana de la
+  diferencia, 0,073 sobre 255.
+- 16 escenas se repitieron dos veces por modo, porque diferían en más de un 1 %
+  de píxeles o no llegaban a volcar. Siete dan 0,0 en todo: era el arnés
+  volcando momentos distintos. NVIDIA es **determinista** (nvidia contra
+  nvidia, 0,0 en 13 de 15); la integrada no (hasta un 10,8 % contra sí misma)
+  porque se salta fotogramas y eso mueve el tiempo y las partículas. La que
+  más difería, `3810943704` (26 %), es la misma imagen desplazada: difieren
+  los bordes, igual que contra sí misma, y el reloj marca otro minuto.
+- `3047352572` (260 pases a 4K) no llega a 60 fotogramas en la integrada en
+  400 tics; en NVIDIA sí.
+- Redimensionar el item a mitad (1600×900 → 1000×700 → 1700×1000 → 1600×900),
+  tres veces: sin errores y el último fotograma a su tamaño.
+
+### Lo que queda
+
+- **Que la dedicada duerma en pausa.** No se pudo medir: Steam y un proceso
+  de Proton la tienen abierta y está `active` con o sin fondo. (Luego: ni
+  sin ellos duerme, por el audio HDMI; ver [¿Duerme la
+  dedicada?](#duerme-la-dedicada-steam-btop-y-el-audio-hdmi).) Con 201 MiB el
+  plan está justo en el umbral de `DynamicPowerManagementVideoMemoryThreshold`
+  (200); soltar los recursos al pausar y recargarlos al destapar (el `init`
+  son ~100–300 ms) es lo que lo aseguraría.
+- **Leer sin esperar.** `glReadPixels` es síncrono (~1,6–2,4 ms en el hilo de
+  render a 1600×900). Dos PBO alternos lo bajan, pero mostrarían el fotograma
+  anterior: un fotograma de retraso, y en pausa el último no saldría nunca.
+- **Subir sin copiar en la integrada**: `/dev/udmabuf` existe; un memfd
+  importado como dmabuf lineal se muestrea sin `glTexSubImage2D`. Sin probar.
+- **La regla de los dos drivers cambia de lado**: con dos GPU, el plan en vivo
+  va en NVIDIA. Los tests de shader que fuerzan Mesa siguen siendo el oráculo
+  de `wectl gpu integrated` y de las máquinas sin dedicada, y el render offline pasa a
+  predecir el escritorio también en el driver.
+
+### El mando: `wectl gpu`, en caliente
+
+Pedido expresamente (la regla de `wectl`): `wectl gpu dedicated|integrated`
+---o `nvidia`/`intel`--- escribe `DedicatedGpu` en la configuración del
+fondo por la API de scripting de Plasma, la misma puerta que el resto de
+`wectl`. Sin argumento dice qué hay configurado y qué está usando el motor,
+leído de su línea en el registro **de plasmashell** (`_COMM=plasmashell`: el
+arnés escribe las mismas líneas y la primera versión las confundía). La
+variable `WE_GPU` desaparece: dos sitios decidiendo lo mismo.
+
+El cambio no reinicia nada. `SceneView.gpuDedicada` pide fotograma al cambiar
+---con el escritorio tapado también, como el encaje---, y en ese `render()`
+`soltarPlan()` libera el plan en el contexto donde vive y vuelve todo al
+estado del primer fotograma: se decide la GPU, se carga y se compila allí.
+
+Cargar un segundo plan en el mismo ejecutor no lo había hecho nadie, y
+destapó dos fallos que solo se ven al cambiar de contexto:
+
+- **El sampler de mipmaps y las consultas del cronómetro** no se liberaban:
+  se crean la primera vez que hacen falta y sobrevivían a
+  `releaseResources()`. En el contexto nuevo sus nombres no existen:
+  `GL_INVALID_OPERATION` en el primer fotograma tras cada cambio y, peor, el
+  reflejo leyendo `_rt_MipMappedFrameBuffer` sin su filtro.
+- **Los contadores de diagnóstico se sumaban**: 237 → 474 → 711 uniforms
+  activos tras dos cambios. `loadPlan()` ponía a cero unos y no otros.
+
+Medido en el arnés, tres veces: dedicada → integrada → dedicada → integrada
+con el reloj parado; cada cambio recarga en la GPU pedida, `glError=0x0` en
+todos y sin coredumps.
+
+### ¿Duerme la dedicada? Steam, btop y el audio HDMI
+
+Con el motor ya instalado, btop enseñaba la NVIDIA con carga con el escritorio
+tapado. **No era el fondo**, y llegar ahí pasó por tres capas:
+
+- **El fondo en pausa no toca la GPU.** `nvidia-smi pmon` 10 s: ningún proceso
+  con actividad, plasmashell incluido. Y la prueba A/B con `wectl gpu` en
+  caliente da lo mismo: 16,6 % y 4,10 W con el fondo en la integrada, 12,5 % y
+  4,16 W en la dedicada en pausa. Es el suelo de reposo (P8), el mismo que se
+  midió por la tarde antes de instalar nada.
+- **Steam** (su `steamwebhelper`, 155 MiB) y el Wallpaper Engine de Windows
+  bajo Proton tenían la dedicada abierta: de ahí el 10–17 %. Cerrándolos se va.
+- **btop y `nvidia-smi` la despiertan.** Para enseñar el uso consultan NVML
+  cada segundo, y cada consulta saca a la GPU de su estado de reposo. Medir si
+  duerme solo vale leyendo `/sys/bus/pci/devices/<dGPU>/power/runtime_status`
+  y `runtime_suspended_time`, que no la tocan.
+
+Y aun sin nada de eso ---Steam y btop cerrados, plasmashell reiniciado una vez
+con el fondo en la integrada y **0 descriptores** sobre NVIDIA--- la dedicada
+**no se suspende nunca**: `runtime_suspended_time` en 0 desde el arranque. La
+causa es de la máquina, no del motor: `/etc/modprobe.d/audio-fix.conf`, sin
+paquete que lo reclame,
+
+```
+options snd_hda_intel power_save=0 power_save_controller=N
+```
+
+apaga el ahorro de **todos** los controladores HDA, también el audio HDMI que
+la NVIDIA lleva dentro (`01:00.1`). Mientras esa función está despierta, el
+kernel no puede suspender la GPU entera. Es el arreglo típico del chasquido de
+los altavoces al despertar el controlador; no se ha tocado. Las salidas que
+hay: subir `power_save` a mano para probar (se pierde al reiniciar), quitar
+del controlador solo la función HDMI de la NVIDIA (sin sonido por ese HDMI), o
+dejarlo, con la dedicada en ~4 W de reposo con fondo o sin él.
+
+**Lo que sí es del motor, y queda abierto:** el driver de NVIDIA **no suelta
+sus descriptores** mientras viva el proceso. Medido con una sonda aparte:
+
+| paso | descriptores `/dev/nvidia*` |
+|---|---|
+| inicio | 0 |
+| solo **enumerar** los dispositivos EGL | 5 |
+| inicializar el display de NVIDIA | 7 |
+| con contexto | 18 |
+| contexto destruido + `eglTerminate` | **18** |
+| `eglReleaseThread` | 12 |
+
+Así que plasmashell, en cuanto ha usado la dedicada una vez, la tiene abierta
+hasta que se reinicia, aunque `wectl gpu integrated` destruya el contexto.
+Si eso impide suspenderla no se puede medir mientras el audio HDMI la tenga
+despierta. Según lo que diga:
+
+- **si un descriptor ocioso basta para impedirlo**, la única salida es el
+  renderizador en un **proceso aparte** que muera al pausar o al pasar a la
+  integrada: el driver no los suelta de otra forma;
+- **si solo lo impide un contexto vivo**, basta destruirlo en pausa y
+  recrearlo al destapar (`init` de 50–300 ms);
+- y en los dos casos, `abrir()` enumera dispositivos aunque luego no elija la
+  NVIDIA: con la configuración en la integrada desde el arranque no se llama, y
+  plasmashell no la abre nunca.
+
+#### Con el ahorro del audio puesto, tampoco
+
+Para medir si el motor la mantendría despierta hacía falta que la dedicada
+pudiera dormir. Se subió `power_save` a mano (`1` y `Y`, se pierde al
+reiniciar) y se midió con un proceso aparte ---no plasmashell--- en cuatro
+estados, cada uno 30–35 s, leyendo solo `/sys` y con btop y Steam cerrados:
+
+| estado | suspendida |
+|---|---|
+| nada abierto | 0 ms |
+| descriptores ociosos, contexto destruido | 0 ms |
+| contexto vivo, 64 MiB, sin dibujar | 0 ms |
+| contexto vivo, 400 MiB, sin dibujar | 0 ms |
+
+El códec HDMI sí se apaga ahora (1450 s apagado), pero el **controlador** de
+audio de la NVIDIA (`01:00.1`, que cuelga de la GPU como consumidor) solo
+llegó a suspenderse 4,6 s justo tras el cambio y no volvió a hacerlo, y la GPU
+con él. Así que `audio-fix.conf` **no es el único** bloqueo. Los sospechosos
+que quedan son de la máquina: `nvidia-powerd` (el reparto de potencia CPU/GPU
+de Dynamic Boost, en marcha desde el arranque) y el `card1` que Xwayland tiene
+abierto. Probarlos es parar un servicio o reiniciar Xwayland, y se dejó.
+
+**La respuesta a si es culpa del motor: no.** Sin nada del motor abierto la
+dedicada tampoco duerme. Lo que sigue sin respuesta es si, en una máquina
+donde sí duerma, los descriptores que el driver no suelta la mantendrían
+despierta; la tabla de arriba no lo distingue porque ni el caso «nada
+abierto» llega a dormir.
