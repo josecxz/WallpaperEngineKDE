@@ -137,7 +137,9 @@ def tokenizar(src: str) -> list[Token]:
     i, n = 0, len(src)
     while i < n:
         c = src[i]
-        if c in " \t\r\n":
+        # El espacio duro (U+00A0) y el BOM también son blancos en JS; hay
+        # scripts pegados desde una web que los traen entre los tokens.
+        if c in " \t\r\n\v\f\u00a0\ufeff":
             i += 1
             continue
         if src.startswith("//", i):
@@ -632,6 +634,10 @@ class Motor:
     lo da (`vector_en`, para `vaiven_de`). Si no, sigue siendo un ScriptError:
     un texto que lo lea depende de algo que `formato_de` no barre, y con un
     `runtime` fijo saldría un «reloj» congelado.
+
+    `canvasSize` es el lienzo de la escena, el `width` x `height` de
+    `orthogonalprojection`, como `Vec2`. Solo existe si quien evalúa lo da
+    (`valor_fijo_de`); en una escena con `auto` no hay número que dar.
     """
 
 
@@ -819,6 +825,8 @@ class Interprete:
         self.hora_del_dia: float | None = None
         # `engine.runtime`, solo si quien evalúa lo da; ver `Motor`.
         self.runtime: float | None = None
+        # `engine.canvasSize`, (ancho, alto), solo si quien evalúa lo da.
+        self.lienzo: tuple[float, float] | None = None
         self.animacion = Animacion()
         self._prepara()
 
@@ -1031,6 +1039,8 @@ class Interprete:
                 return "__parseInt__"
             if e[1] == "Array":
                 return "__Array__"
+            if e[1] in ("Vec2", "Vec3"):
+                return f"__{e[1]}__"
             return a.get(e[1])
         if clase == "plantilla":
             return "".join(js_str(self.eval(p, a)) for p in e[1])
@@ -1085,7 +1095,16 @@ class Interprete:
             destino = self.eval(e[1], a)
             if destino == "__Date__":
                 return Fecha(self.fecha)
-            raise ScriptError("new de algo que no es Date")
+            if destino in ("__Vec2__", "__Vec3__"):
+                # Solo el constructor con un número por componente; sin
+                # argumentos son ceros. Los métodos (`copy`, `add`...) no
+                # existen: un objeto no los tiene y llamarlos es ScriptError.
+                ejes = ("x", "y") if destino == "__Vec2__" else ("x", "y", "z")
+                args = [js_numero(self.eval(x, a)) for x in e[2]]
+                if len(args) not in (0, len(ejes)):
+                    raise ScriptError(f"new {destino.strip('_')} con {len(args)}")
+                return Objeto(zip(ejes, args or [0.0] * len(ejes)))
+            raise ScriptError("new de algo que no es Date ni un vector")
         if clase == "llama":
             return self.llamada(e, a)
         raise ScriptError(f"expresión {clase}")
@@ -1195,6 +1214,9 @@ class Interprete:
                         + d.microsecond / 1e6) / 86400.0
             if clave == "runtime" and self.runtime is not None:
                 return self.runtime
+            if clave == "canvasSize" and self.lienzo is not None:
+                return Objeto({"x": float(self.lienzo[0]),
+                               "y": float(self.lienzo[1])})
             raise ScriptError(f"engine.{js_str(clave)}")
         if isinstance(obj, Recurso):
             raise ScriptError("propiedad de un recurso de engine")
@@ -2201,6 +2223,148 @@ def vaiven_de(obj: dict, campo: str
     valor = (valor + [0.0, 0.0, 0.0])[:3]
     return forma_del_vaiven(ip, valor, COMPONENTES_DEL_VAIVEN[campo])
 
+
+
+# ── campos con script que no dependen de nada que cambie ────────────────────
+#
+# Hay scripts que no animan nada: colocan. `value.x = scriptProperties.x *
+# engine.canvasSize.x` pone una capa donde dice un deslizador del usuario, y
+# lo que dé es lo mismo en todos los fotogramas. WE lo ejecuta y dibuja eso;
+# aquí se dibujaba el `value`, que es lo que la capa tenía en el editor antes
+# de pasar por el script. No hace falta nada en el ejecutor: basta con poner
+# lo que devuelve en lugar de la copia, antes de colocar nada.
+
+# Los campos de una capa que se evalúan así, con cuántas componentes. El
+# script ve `angles` en grados, como en `vaiven_de`.
+CAMPOS_FIJOS = {"origin": 3, "scale": 3, "angles": 3, "color": 3, "alpha": 1}
+
+
+def _entrada(valor: list[float]):
+    if len(valor) == 1:
+        return valor[0]
+    return Objeto(zip(("x", "y", "z"), valor))
+
+
+def _componentes(r, n: int) -> list[float] | None:
+    import math
+    if n == 1:
+        r = [r]
+    elif isinstance(r, dict):
+        r = [r.get(k) for k in ("x", "y", "z")]
+    else:
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) for v in r):
+        return None
+    return [float(v) for v in r]
+
+
+def _es_suceso(nombre: str) -> bool:
+    """Si `nombre` es el de una función que WE llama ante un suceso: el
+    ratón (`cursorClick`, `cursorMove`...), la música (`mediaStatusChanged`,
+    `mediaThumbnailChanged`...), las propiedades del usuario, los ajustes de
+    la aplicación y el cambio de pantalla. Es la lista de `IComponent` en la
+    definición de tipos que trae WE (`lib.sceneScript.d.ts`)."""
+    return (nombre.startswith(("cursor", "media"))
+            or nombre in ("applyUserProperties", "applyGeneralSettings",
+                          "resizeScreen"))
+
+
+def valor_fijo(ip: Interprete, valor: list[float],
+               lienzo: tuple[float, float] | None) -> list[float] | None:
+    """Lo que `update(value)` devuelve, si es siempre lo mismo y no es
+    `valor`; None si no.
+
+    Antes se llama una vez a `init(value)`, si existe, como hace WE al cargar.
+    «Siempre lo mismo» se comprueba como en `forma_del_vaiven`: con varios
+    `engine.runtime`, con dos días y horas distintos y con otro `value` de
+    entrada ---en WE es lo del fotograma anterior---. Cada componente tiene
+    que salir siempre igual o, si el script la deja pasar, ser la que entró.
+    Un script que acumule, que lea el tiempo o la hora, o
+    que devuelva otra cosa que el campo, se queda con su `value`.
+
+    Tampoco se evalúa un script que declare un manejador de sucesos
+    (`_es_suceso`): lo que devuelve en reposo es lo de antes del primer
+    suceso, y en WE ese suceso llega ---la carátula de la música que suena,
+    las propiedades al cargar, el ratón---. Aquí no, y el reposo no es lo que
+    se ve allí: los 8 colores de `3210875135` saldrían negros porque su color
+    lo pone `mediaThumbnailChanged`.
+    """
+    n = len(valor)
+    otro = [v + 37.0 for v in valor]
+    tiempos = (0.0, 0.25, 1.7, 60.0, 599.75, 0.0)
+    dias = (dt.datetime(2026, 1, 5, 12), dt.datetime(2031, 7, 19, 3, 25, 41))
+    try:
+        f = ip.global_.vars.get("update")
+        if not isinstance(f, Funcion) or any(
+                _es_suceso(k) and isinstance(v, Funcion)
+                for k, v in ip.global_.vars.items()):
+            return None
+        ip.lienzo = lienzo
+        ip.hora_del_dia = None
+        ip.runtime, ip.fecha = tiempos[0], dias[0]
+        init = ip.global_.vars.get("init")
+        if isinstance(init, Funcion):
+            ip.llama(init, [_entrada(valor)])
+
+        def llama(t, cuando, entrada):
+            ip.runtime, ip.fecha = t, cuando
+            return _componentes(ip.llama(f, [_entrada(entrada)]), n)
+
+        r = llama(tiempos[0], dias[0], valor)
+        if r is None:
+            return None
+        if r == valor:
+            return None
+        for t in tiempos:
+            for cuando in dias:
+                if llama(t, cuando, valor) != r:
+                    return None
+                # Con otra entrada, cada componente sale igual que antes o,
+                # si el script la dejó pasar, es la que entró. En WE la
+                # entrada es la salida del fotograma anterior, y en reposo las
+                # dos lecturas dan `r`.
+                r2 = llama(t, cuando, otro)
+                if r2 is None or any(
+                        r2[i] != r[i] and not (r[i] == valor[i] and r2[i] == otro[i])
+                        for i in range(n)):
+                    return None
+    except Exception:
+        return None
+    return r
+
+
+def valor_fijo_de(obj: dict, campo: str,
+                  lienzo: tuple[float, float] | None) -> list[float] | None:
+    """`valor_fijo` del campo `campo` de una capa, en las unidades del
+    `scene.json` (`angles` vuelve a radianes), o None."""
+    import math
+    d = obj.get(campo)
+    if (campo not in CAMPOS_FIJOS or not isinstance(d, dict)
+            or not isinstance(d.get("script"), str)):
+        return None
+    props = d.get("scriptproperties")
+    props = {k: (v.get("value") if isinstance(v, dict) else v)
+             for k, v in props.items()} if isinstance(props, dict) else {}
+    try:
+        crudo = d.get("value")
+        if isinstance(crudo, bool):
+            return None
+        if isinstance(crudo, (int, float)):
+            valor = [float(crudo)]
+        else:
+            valor = [float(x) for x in str(crudo or "").split()]
+        if len(valor) != CAMPOS_FIJOS[campo]:
+            return None
+        if campo == "angles":
+            valor = [math.degrees(x) for x in valor]
+        ip = Interprete(d["script"], props)
+    except Exception:
+        return None
+    r = valor_fijo(ip, valor, lienzo)
+    if r is not None and campo == "angles":
+        r = [math.radians(x) for x in r]
+    return r
 
 # ── barrido del corpus ──────────────────────────────────────────────────────
 

@@ -3888,6 +3888,10 @@ Por orden de lo que más se nota:
    de `angles` y de
    `origin`](#un-campo-que-oscila-con-engineruntime-el-vaivén-de-angles-y-de-origin)—;
    las dos capas de `3577990983` con el mismo vaivén y con hijos, no.
+   **Empezado** también lo que no cambia: un script que da siempre lo mismo
+   se evalúa al cargar y sustituye al `value`, como los 19 `origin` que
+   colocan con deslizadores el widget de `3462491575` —ver [Los scripts que
+   colocan](#los-scripts-que-colocan-un-valor-que-no-cambia-se-evalúa-una-vez)—.
 4. ~~Reproducir vídeo~~ **hecho**: `src/wevideo.c` lo decodifica con libav y lo
    comparten los dos ejecutores; las 3 escenas con textura de vídeo se mueven y
    los 15 wallpapers de tipo vídeo entran en la biblioteca —ver [Vídeo de
@@ -10429,3 +10433,152 @@ dedicada tampoco duerme. Lo que sigue sin respuesta es si, en una máquina
 donde sí duerma, los descriptores que el driver no suelta la mantendrían
 despierta; la tabla de arriba no lo distingue porque ni el caso «nada
 abierto» llega a dormir.
+
+## Los scripts que colocan: un valor que no cambia se evalúa una vez
+
+**El síntoma.** En `3462491575` (Arknights, Kal'tsit y Mon3tr) el widget de
+la hora salía amontonado en el centro: «FRIDAY» con la fecha encima, el
+texto del autor debajo, y el reloj no se veía. Sus 19 `origin` con script
+son el mismo, copiado de capa en capa:
+
+```js
+value.x = scriptProperties.x * engine.canvasSize.x;
+value.y = scriptProperties.y * engine.canvasSize.y;
+return value;
+```
+
+`x` e `y` son deslizadores atados a propiedades del usuario (`x1` = −0,268
+para la hora, `y2` = −0,574...). WE ejecuta el script en cada fotograma, da
+siempre lo mismo y dibuja eso. Aquí se dibujaba el `value`, que es donde
+estaba la capa en el editor **antes** del script: −488 108 para la hora,
+cuando el script dice −1029 −1240.
+
+No hace falta nada en el ejecutor. Si el script devuelve siempre lo mismo,
+basta con evaluarlo al cargar la escena y poner el resultado en lugar de la
+copia, antes de colocar nada.
+
+**El censo.** Hay 186 campos con script en `origin`, `scale`, `angles`,
+`color` y `alpha` de las 133 escenas. Con lo de abajo dan un valor fijo
+**20 campos en 2 escenas**: los 19 de `3462491575` y la capa `定位` de
+`3521337568`. El resto lee el tiempo (`frametime`, `runtime`), el ratón, el
+audio o la música, otras capas (`getParent`, `thisScene`), o acumula entre
+fotogramas.
+
+### Lo que cambia
+
+- **`tools/wescript.py`**:
+  - `engine.canvasSize`, el `width` x `height` de `orthogonalprojection`.
+    La definición de tipos que trae la propia instalación de WE
+    (`ui/dist/monaco/autocomplete/lib.sceneScript.d.ts`) dice «Size of the
+    canvas/full wallpaper in pixels (2D scenes only)». Solo existe si quien
+    evalúa lo da; un texto que lo lea sigue siendo ScriptError.
+  - `new Vec2(...)` y `new Vec3(...)`, como objetos `{x, y, z}`, sin
+    métodos: `copy()` o `add()` siguen siendo ScriptError.
+  - El espacio duro (U+00A0) y el BOM como blancos, igual que en JS. El
+    script de `定位` lo trae entre tokens.
+  - `valor_fijo` y `valor_fijo_de`. Llaman a `init(value)` si existe (según
+    la misma definición de tipos, se llama una vez al crear el objeto) y
+    luego a `update`. El resultado se acepta solo si sale igual con seis
+    `runtime` entre 0 y 600 s, con dos días y horas distintos, y con otra
+    entrada (`value` + 37). Con esa otra entrada, cada componente tiene que
+    salir igual o, si el script la dejaba pasar, ser la que entró: en WE la
+    entrada es la salida del fotograma anterior, y en reposo las dos lecturas
+    dan lo mismo. `angles` entra en grados y vuelve en radianes, como en
+    `vaiven_de`.
+  - **Un script con manejadores de sucesos no se evalúa** (`_es_suceso`:
+    `cursor*`, `media*`, `applyUserProperties`, `applyGeneralSettings`,
+    `resizeScreen`). Lo que devuelve en reposo es lo de antes del primer
+    suceso, y en WE el suceso llega. Sin esta regla, los 8 `color` del panel
+    de música de `3210875135` salían **negros**: su color lo pone
+    `mediaThumbnailChanged` con la carátula de lo que suena, y antes de eso
+    vale `Vec3(0, 0, 0)`.
+- **`tools/wescene.py`**:
+  - `_hornear_scripts_fijos`, justo detrás de `_refrescar_valores_de_usuario`,
+    porque las `scriptproperties` tienen que llegar al script con el valor
+    del usuario. El `script` se queda en el campo, y `vaiven_de` y
+    `giro_por_hora` ven un campo que ya no cambia.
+  - **Un deslizador atado a la `scale` de una capa reparte su número** por
+    las tres componentes. Al colocar bien el widget apareció un segundo
+    fallo, que ya estaba antes: el grupo `组件` tiene su `scale` atada a un
+    deslizador (0,403). Se ponía el número suelto, `_floats` rellenaba y y z
+    con unos, y el grupo se estiraba 2,5 veces en alto. La copia del autor
+    dice lo que hace WE: `0.40300 0.40300 0.40300`. Lo mismo pasa en los 3
+    campos así del corpus (`origin`, `scale` y `angles` de una capa; solo
+    hay `scale`, en 2 escenas).
+
+### Lo que se descartó
+
+- **Repartir también en las constantes de shader.** Allí la copia no dice
+  lo mismo: el `repeat` del efecto `scroll` de `2311315748` guarda `0.3 1`
+  con el deslizador en 0,3, y el `scale` de `blurprecise` en `2317494988`
+  guarda `0 0` con el deslizador en 1. La primera versión repartía por el
+  nombre de la clave y cambiaba las dos. Ahora solo se reparte en los campos
+  que cuelgan de una capa de `objects`, y en el shader el número sigue suelto
+  como antes.
+- **Evaluar los scripts con sucesos «en reposo»**, por lo de los colores
+  negros de arriba.
+- **Ejecutar `applyUserProperties` al cargar.** Según la definición de tipos
+  se llama una vez al cargar con las propiedades, y daría los 4 `origin` de
+  `2537500835`. Pero esos leen `engine.screenResolution`, que en WE es la
+  pantalla y no el lienzo: un lienzo de 1920x1080 en una pantalla de
+  2560x1600 pondría el reloj fuera de su sitio también en WE. Queda para
+  cuando se pueda comparar.
+
+### Lo medido
+
+- **`test_wescript.py`**, sección nueva «valor fijo». Los sintéticos aceptan:
+  - el deslizador por el lienzo, un `Vec3` nuevo, `init` que guarda la
+    base, cambiar solo la y, `alpha` y `angles` en grados.
+
+  Y rechazan:
+  - devolver lo mismo que se guardó, leer `runtime`, leer la hora, leer el
+    `value`, acumular, no devolver, devolver un número en un vector y leer
+    `screenResolution`;
+  - un suceso del ratón, uno de la música y `applyUserProperties`.
+
+  En el corpus salen exactamente `{3462491575: 19, 3521337568: 1}` de los
+  186 campos.
+- **Lo que no tenía que cambiar.** Relojes, hojas por hora, giros y vaivenes
+  de las 133 escenas, evaluados con la base (`git archive` de `b9ed235`) y
+  con la rama: las **174** formas, idénticas.
+- **Las escenas cargadas** (`load_scene`, el `raw` de cada objeto, base
+  contra rama, 133 escenas): cambian solo `3462491575` (los 19 objetos con
+  `origin` por script; uno de ellos, el grupo `组件`, lleva además la `scale`
+  repartida), `3521337568` 1342, y `2311315748` 27. En esta última la `scale` pasa de `1` a `1.0 1.0 1.0`,
+  que es el mismo número.
+- **`3521337568` `定位`**: su `x` está atada a `newproperty`, que en
+  `project.json` es el **booleano** de la animación de entrada, así que el
+  script da `true * 3840`. No se entiende qué hace WE con un booleano en un
+  deslizador, pero da igual: el render es **idéntico píxel a píxel** antes y
+  después, porque la capa no dibuja nada visible.
+- **`3462491575`, a 1920x1080**: 53201 píxeles cambian solo con los
+  `origin`. Con el reparto de la `scale`, el widget queda como una columna
+  en la esquina de arriba a la izquierda: «FRIDAY», la fecha, la hora (que
+  antes no se veía) y el texto del autor, en proporción.
+- **Luz** (`test_luminancia.py`, base contra rama, ICD por defecto, que es
+  NVIDIA): 133/133 renderizadas, **0 regresiones**, 0 apagadas, y la misma
+  sospechosa que en la base (`3459506773`). Solo `3462491575` se mueve de
+  verdad: media de 131,0 a 129,9 y razón contra la vista previa de 1,183 a
+  1,173, porque el texto deja de amontonarse en el centro. Las demás
+  diferencias son de ±0,1 en la media, en escenas con reloj o partículas:
+  `3521337568` da 0,01 aquí y fue idéntica píxel a píxel con el tiempo
+  fijo.
+
+### Lo que queda
+
+- **Una capa hija sin `origin` va al centro del lienzo** e ignora a su
+  padre (`werender.py`, «sin origin declarado: al centro»). Son **34 hijos
+  en 10 escenas**. En `3462491575` es el «FPS 60» (`帧率显示`): su padre lo
+  manda fuera de la pantalla (los deslizadores `x5` = 1,181 e `y5` = 1,138
+  del autor), pero él se queda en el centro. Hay que leer en el motor qué
+  `origin` por defecto tiene un hijo antes de tocarlo.
+- **Los scripts que leen a otra capa** (`thisLayer.getParent().scale`, en
+  `3238423642` y `3210875135`): con la `scale` del padre positiva dan el
+  mismo `value`, pero hace falta `getParent` para decirlo.
+- **`applyUserProperties` al cargar**, por lo de `screenResolution` de
+  arriba.
+- **El rebote de `2262142032`**: 9 `origin` que suben 0,021 y bajan 0,022
+  **por fotograma** entre dos topes. Es una onda triangular cuyo periodo
+  depende de los fps, y no se ha leído cuántos `update` por segundo da WE.
+- **Un deslizador en una constante de shader de dos o más componentes**: las
+  dos copias del corpus no se ponen de acuerdo.
