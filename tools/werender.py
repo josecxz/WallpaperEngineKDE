@@ -3954,6 +3954,7 @@ def plan_de_video(mp4: Path, out_dir: Path, destino: Path,
     # Cubrir la pantalla, no caber en ella: un fondo con franjas negras no es
     # un fondo. El quad se sale y el recorte lo hace el viewport.
     sx, sy = wevideo.encaje((ancho, alto), canvas)
+    tex_w, tex_h = wevideo.tamano_textura((ancho, alto), canvas)
 
     vert = out_dir / "video.vert"
     frag = out_dir / "video.frag"
@@ -3976,9 +3977,9 @@ def plan_de_video(mp4: Path, out_dir: Path, destino: Path,
     ident = " ".join("1" if i % 5 == 0 else "0" for i in range(16))
     lineas = [
         f"canvas {canvas[0]} {canvas[1]}",
-        # `0 0` es "el tamano nativo del video": aqui no hay ningun `.tex` que
-        # declare medidas y el decodificador ya las sabe.
-        f"video 0 {destino / 'video.mp4'} 0 0",
+        # El tamano al que se VE, no el nativo: ver `wevideo.tamano_textura`.
+        # Sin pantalla sale el nativo.
+        f"video 0 {destino / 'video.mp4'} {tex_w} {tex_h}",
         f"videotime {marca}",
         "frame",
         f"object 0 {ident} 0 0",
@@ -3992,6 +3993,7 @@ def plan_de_video(mp4: Path, out_dir: Path, destino: Path,
     ]
     stats = {"pases": 1, "video": 1, "canvas": canvas,
              "resolucion_video": (ancho, alto),
+             "textura_video": (tex_w, tex_h),
              "encaje": (round(sx, 4), round(sy, 4))}
     return lineas, canvas, stats
 

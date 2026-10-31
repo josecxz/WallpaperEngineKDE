@@ -11384,3 +11384,84 @@ el temporizador y lo deja como estaba. Las medidas de los puntos
 anteriores pudieron llevar alguna así. Las conclusiones aguantan (los
 efectos medidos son del 30 al 60 %, y las medidas de cada caso coincidían
 entre sí), pero un valor suelto disparado de entonces puede ser esto.
+
+## El vídeo, al tamaño al que se ve
+
+Punto 8 de la auditoría: el vídeo se decodifica y se convierte por CPU.
+Medido en eDP-1 solo: *Blade Runner* 4K, 61 % de un núcleo; *Home* 4K,
+83 %; *Irelia* 1080p60, 55 %. *Jeanne*, sin vídeo, 17 %.
+
+### Dónde se va
+
+Cuatro pasos por fotograma de vídeo: decodificar (libav, hilos
+automáticos), convertir de YUV a RGBA con `swscale`, subir la textura a la
+NVIDIA y copiar a la integrada. Con `ffmpeg -benchmark` sobre 10 s de vídeo,
+en % de un núcleo:
+
+| vídeo | decodificar | + RGBA nativo (antes) | + RGBA 1920×1080 |
+|---|---|---|---|
+| *Home* 4K H.264 24 fps | 51 % | 145 % | 97 % |
+| *Blade Runner* 4K MPEG-4 24 fps | 23 % | 104 % | 54 % |
+| *Irelia* 1080p H.264 60 fps | 28 % | 50 % | 48 % |
+
+**Convertir cuesta más que decodificar.** Y el plan de un wallpaper de vídeo
+pedía el vídeo **nativo** (`video 0 … 0 0`): un 4K se convertía a 33 MB de
+RGBA por fotograma, se subía así, y el shader lo encogía a 0,55× para
+cubrir una pantalla de 1920×1200, sin mipmaps. Llegaba a verse el 31 % de
+ese trabajo.
+
+### El cambio
+
+`wevideo.tamano_textura`: el plan pide al decodificador el tamaño al que el
+vídeo **se ve** cubriendo el lienzo, y nunca más que el nativo (ampliar lo
+hace la GPU gratis). Las medidas van en pares por el 4:2:0. Un 4K en
+1920×1200 sale a 2134×1200. `swscale` convierte y reduce en una sola pasada
+y filtra bien al reducir. Sin pantalla (un render offline sin `--pantalla`)
+el lienzo es el vídeo y sale el nativo. Solo para los 15 wallpapers de tipo
+vídeo: una capa `IS_VIDEO` de una escena lleva el tamaño de su `.tex` y
+puede estar escalada dentro de la escena.
+
+Con zoom en el encaje (`Zoom` > 1), la textura queda por debajo de lo que
+se ve. Es un caso raro y no se ha tratado.
+
+### Comprobado
+
+- Los 15 wallpapers de vídeo, offline a `--pantalla 1920x1200` y
+  `--time 3`, con el plan viejo y el nuevo: **9 idénticos** (los que no
+  pasan de la pantalla, para los que el plan no cambia), y los **6 de 4K**
+  con PSNR de 37,5 a 45,3 dB y la media de luz entre +0,5 y +0,7 (1–1,5 %).
+  Es el filtrado: reducir con `swscale` en vez de muestrear una textura 4K
+  sin mipmaps.
+- `test_luminancia` no sirve aquí: renderiza sin pantalla, y sin pantalla la
+  textura sale nativa como antes. Se lanzó y se paró por eso.
+- **`test_wevideo` falla en 3 fotogramas de `3047352572`** (*Pattern*, una
+  capa `IS_VIDEO`: «el fotograma no es el de ffmpeg», diferencia media ~1 y
+  máxima 255). **Ya fallaba antes**: falla igual sin este cambio, la prueba
+  compila `src/wevideo.c` por su cuenta, y ni ese fichero ni la prueba han
+  cambiado desde `V1.0.0`. Huele a una actualización de ffmpeg/swscale del
+  sistema. Queda pendiente aparte; los demás vídeos pasan.
+
+### Lo medido
+
+Intercalado tres y tres, las dos pantallas (cada una decodifica su copia):
+
+| | CPU del proceso | CPU de render por fotograma | GPU por fotograma | NVIDIA |
+|---|---|---|---|---|
+| *Home*, antes | 178–182 % | 5,7–6,0 ms | 3,3–3,9 ms | 33–34 W |
+| *Home*, después | 140–141 % | 2,8–2,9 ms | 1,1–1,6 ms | 18–20 W |
+| *Blade Runner*, antes | 132–134 % | 5,6–5,9 ms | 3,2–3,9 ms | 34 W |
+| *Blade Runner*, después | 98–102 % | 2,9–3,1 ms | 1,1–1,7 ms | 19–21 W |
+
+La NVIDIA baja ~15 W: subirle 33 MB por fotograma la tenía a alta
+frecuencia.
+
+### Lo que queda
+
+- **La conversión, en la GPU**: subir los planos Y/U/V y pasarlos a RGB en
+  un shader quitaría `swscale` entero. Pero toca los dos ejecutores y
+  `wevideo.c`, y los píxeles dejarían de ser los de `ffmpeg`, que es el
+  oráculo de `test_wevideo`.
+- **Decodificar por hardware** (VAAPI en la integrada): quitaría el 23–51 %
+  de la decodificación.
+- **Con dos pantallas en modo `mismo`, el vídeo se decodifica dos veces**,
+  una por pantalla.

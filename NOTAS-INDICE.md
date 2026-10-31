@@ -87,6 +87,12 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11353` **Comprobado** — PNG idénticos byte a byte en 5 escenas, `test_weparticles` y `test_luminancia` sin regresiones.
 - `2885` **Lo medido** — la tabla de EVA y Voyage; baja también la GPU.
 - `11376` **Dos medidas que se contaminaban** — la rotación arrancaba el fondo normal en medio de una medida; `medir_vivo` para ahora el temporizador.
+- `11388` **El vídeo, al tamaño al que se ve** — convertir YUV→RGBA costaba más que decodificar, y el plan pedía el vídeo nativo: ahora el tamaño con que cubre la pantalla. *Home* 4K de 180 % a 140 % de CPU y la NVIDIA de 34 a 19 W.
+- `11394` **Dónde se va** — `ffmpeg -benchmark`: decodificar frente a convertir, en tres vídeos.
+- `10945` **El cambio** — `wevideo.tamano_textura`, nunca más que el nativo; solo los wallpapers de vídeo, no las capas `IS_VIDEO`.
+- `11353` **Comprobado** — 15 vídeos offline: 9 idénticos, 6 de 4K a 37–45 dB. `test_wevideo` falla en *Pattern* (`3047352572`) desde antes de este cambio.
+- `2885` **Lo medido** — intercalado tres y tres.
+- `3072` **Lo que queda** — conversión en la GPU, VAAPI, y el vídeo decodificado dos veces con dos pantallas.
 
 ## CLI, rotación y rutas
 
