@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -134,6 +135,16 @@ void Hyprland::setMonitor(const QString &m)
     Q_EMIT monitorChanged();
     if (m_disponible)
         m_pendiente.start();
+}
+
+QScreen *Hyprland::pantalla() const
+{
+    // Wayland da a cada QScreen el nombre del conector (`HDMI-A-3`), el mismo
+    // que usa Hyprland.
+    for (QScreen *p : QGuiApplication::screens())
+        if (p->name() == m_monitor)
+            return p;
+    return nullptr;
 }
 
 void Hyprland::setModo(int m)

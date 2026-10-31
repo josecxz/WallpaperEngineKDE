@@ -92,6 +92,11 @@ QtObject {
             // -1: no la empuja ninguna barra; el fondo va de borde a borde.
             LayerShell.Window.exclusionZone: -1
             LayerShell.Window.keyboardInteractivity: LayerShell.Window.KeyboardInteractivityNone
+            // El monitor lo decide layer-shell-qt con SU propiedad, no con
+            // `Window.screen`: con solo esa, las dos capas de dos monitores
+            // acababan en el primero y el segundo se quedaba sin fondo.
+            LayerShell.Window.screen: hypr.pantalla
+            LayerShell.Window.wantsToBeOnActiveScreen: false
 
             // Las propiedades de layer-shell se leen al crear la superficie,
             // asi que se muestra cuando ya estan puestas.

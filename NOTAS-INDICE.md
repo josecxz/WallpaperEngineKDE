@@ -43,6 +43,7 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10613` **La pausa y el cursor: el IPC de Hyprland** — `.socket2.sock` dispara la revisión de `j/monitors` + `j/clients` con la rejilla de `VentanasEncima`; `j/cursorpos` cada 16 ms, asíncrono, solo sin pausa. El espacio especial abierto tapa el monitor.
 - `10644` **Cambiar de plan sin plasmashell** — `Loader` + `VigiaArchivo` (inodo y fecha, porque `wectl` renombra el directorio); `shuffle` probaba cinco escenas por tick hasta que `recargar()` aprendió a ver el pid del fondo de Hyprland.
 - `10664` **`wectl` en Hyprland** — las mismas órdenes; el fondo es la unidad transitoria `wallpaperengine-hyprland` porque un hijo del servicio oneshot de la rotación moriría con él; `gpu` reinicia la unidad y se guarda en `~/.config/wallpaperengine/hyprland.json`.
+- `10697` **Dos monitores: las dos capas iban al primero** — layer-shell-qt elige monitor con `LayerShell.Window.screen`, no con `Window.screen`, y `Qt.application.screens` da `QQuickScreenInfo`: `Hyprland.pantalla` busca el `QScreen` por nombre. Probado con HDMI y con una salida `headless` en caliente.
 
 ## CLI, rotación y rutas
 

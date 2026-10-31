@@ -10694,10 +10694,32 @@ fondo parado, el tick de la rotación lo arrancó y siguió vivo después de
 - El resto del panel de ajustes (`--pausa`, `--encaje`...) va en `opciones`
   del mismo JSON, editado a mano. No se ha añadido ninguna orden para eso.
 
-### Lo que queda
+### Dos monitores: las dos capas iban al primero
 
-- **Varios monitores** están escritos (una ventana y un `Hyprland` por
-  pantalla), pero solo se han probado con uno.
+Al conectar un segundo monitor (HDMI-A-3, 1920×1080 a la derecha), el
+`Instantiator` sí creó la segunda ventana (dos `SceneView` en el registro),
+pero `hyprctl layers` puso las **dos** en eDP-1 y dejó el HDMI vacío. Fallaban
+dos cosas a la vez:
+
+- **layer-shell-qt no mira `Window.screen`**: el monitor de la superficie lo
+  decide su propiedad `LayerShell.Window.screen` (con
+  `wantsToBeOnActiveScreen: false`). Sin ella, cada superficie va donde diga
+  el compositor.
+- **`Qt.application.screens` no da `QScreen`** sino `QQuickScreenInfo`:
+  «Unable to assign QQuickScreenInfo to QScreen». `Hyprland.pantalla` busca
+  el `QScreen` por el nombre del conector (el mismo en Qt y en Hyprland), y
+  `Window.screen` se queda con el `QQuickScreenInfo`, que es lo que acepta
+  («Unable to assign QScreen to QQuickScreenInfo» al revés). Tiene que estar
+  bien también este, porque `alMoverCursorGlobal` traduce el cursor con
+  `window()->screen()`.
+
+Medido: una capa por monitor (`0 0 1920 1200` y `1920 0 1920 1080`); con
+`--pausa 0`, el cursor en (2880, 540) da (0,5, 0,5) presente en el HDMI y
+ausente en eDP-1, y en (480, 300), (0,25, 0,25) en eDP-1. En caliente, con
+`hyprctl output create headless`: aparece la tercera capa en `3840 0`, y al
+quitar la salida desaparece sin coredump.
+
+### Lo que queda
 - **Sin `test_luminancia` propio**: el anfitrión no cambia el plan ni el
   ejecutor, así que el oráculo de siempre vale. Lo nuevo es la presentación y
   se comprobó en vivo con el registro del proceso.

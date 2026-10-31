@@ -19,6 +19,7 @@
 #include <QObject>
 #include <QPointF>
 #include <QRectF>
+#include <QScreen>
 #include <QSet>
 #include <QTimer>
 #include <qqmlintegration.h>
@@ -44,6 +45,10 @@ class Hyprland : public QObject
     // Nombre del monitor (`eDP-1`), el `Screen.name` del QML. Vacio: el que
     // tenga el foco.
     Q_PROPERTY(QString monitor READ monitor WRITE setMonitor NOTIFY monitorChanged)
+    // El QScreen de ese monitor, para `Window.screen` y `LayerShell.Window.screen`.
+    // Hace falta porque `Qt.application.screens` da `QQuickScreenInfo`, que
+    // ninguna de las dos acepta: sin esto todas las capas iban al primer monitor.
+    Q_PROPERTY(QScreen *pantalla READ pantalla NOTIFY monitorChanged)
     // 0 nunca, 1 cuando lo visible tapa la pantalla, 2 con cualquier ventana.
     Q_PROPERTY(int modo READ modo WRITE setModo NOTIFY modoChanged)
     Q_PROPERTY(bool tapado READ tapado NOTIFY estadoChanged)
@@ -58,6 +63,7 @@ public:
     bool disponible() const { return m_disponible; }
     QString monitor() const { return m_monitor; }
     void setMonitor(const QString &m);
+    QScreen *pantalla() const;
     int modo() const { return m_modo; }
     void setModo(int m);
     bool tapado() const { return m_tapado; }
