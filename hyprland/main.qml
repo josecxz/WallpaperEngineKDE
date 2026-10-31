@@ -15,7 +15,8 @@
 //
 //   QML_IMPORT_PATH=~/.local/lib/qt6/qml /usr/lib/qt6/bin/qml hyprland/main.qml \
 //       -- --plan <plan.txt> [--pausa 0|1|2] [--encaje 0|1|2] [--zoom 1.0]
-//          [--color '#0b0b0d'] [--gpu dedicada|integrada] [--hud]
+//          [--color '#0b0b0d'] [--gpu dedicada|integrada] [--fps 60] [--hud]
+//          [--solo eDP-1,HDMI-A-3]
 //
 // `wectl` toma `--gpu` de `wectl gpu` y el resto de `opciones` en
 // ~/.config/wallpaperengine/hyprland.json.
@@ -53,6 +54,10 @@ QtObject {
         const p = opcion("plan", "")
         return p.startsWith("/") ? p : (p ? Qt.resolvedUrl(p).toString().replace("file://", "") : "")
     }
+    // Con `--planes <dir>` cada monitor busca su plan propio en
+    // `<dir>/<monitor>/plan.txt` y, mientras no lo haya, usa el compartido de
+    // `--plan`. Es el modo `independiente` de `wectl pantallas`.
+    readonly property string planes: opcion("planes", "")
     readonly property int pausa: parseInt(opcion("pausa", "1"))
     readonly property int encaje: parseInt(opcion("encaje", "0"))
     readonly property real zoom: parseFloat(opcion("zoom", "1"))
@@ -60,7 +65,13 @@ QtObject {
     readonly property real despY: parseFloat(opcion("despy", "0"))
     readonly property string color: opcion("color", "#0b0b0d")
     readonly property bool gpuDedicada: opcion("gpu", "dedicada") !== "integrada"
+    // Tope de fotogramas por segundo; 0, sin tope (el ritmo del monitor). 60
+    // por defecto, como el plugin de Plasma (config/main.xml, `FpsMax`).
+    readonly property real fpsMax: parseFloat(opcion("fps", "60"))
     readonly property bool hud: opcion("hud", false)
+    // `--solo eDP-1,HDMI-A-3`: fondo solo en esos monitores. Para medir lo
+    // que cuesta cada pantalla sin desenchufar ninguna.
+    readonly property var solo: opcion("solo", "") ? opcion("solo", "").split(",") : []
 
     property VigiaArchivo vigia: VigiaArchivo { ruta: app.plan }
 
@@ -68,14 +79,18 @@ QtObject {
         if (!app.plan)
             console.warn("hyprland/main.qml: falta --plan <ruta a plan.txt>")
         else
-            console.info("WallpaperEngine en Hyprland: plan " + app.plan + ", pausa "
+            console.info("WallpaperEngine en Hyprland: plan " + app.plan
+                         + (app.planes ? " (y uno por monitor en " + app.planes + ")" : "")
+                         + ", pausa "
                          + app.pausa + ", encaje " + app.encaje + ", "
                          + Qt.application.screens.length + " monitor(es)")
     }
 
     // ── un fondo por monitor ────────────────────────────────────────────────
     property Instantiator fondos: Instantiator {
-        model: Qt.application.screens
+        model: app.solo.length
+               ? Qt.application.screens.filter(p => app.solo.indexOf(p.name) >= 0)
+               : Qt.application.screens
 
         delegate: Window {
             id: ventana
@@ -116,22 +131,33 @@ QtObject {
                 paused: hypr.tapado && (escena.item ? escena.item.dibujado : false)
             }
 
-            // Se recrea la escena cuando cambia el plan.
+            // El plan propio de este monitor, si `wectl` le ha dado uno.
+            VigiaArchivo {
+                id: propio
+                ruta: app.planes ? app.planes + "/" + ventana.modelData.name + "/plan.txt" : ""
+            }
+            readonly property bool planPropio: app.planes !== "" && propio.existe
+            readonly property string plan: planPropio ? propio.ruta : app.plan
+
+            // Se recrea la escena cuando cambia el plan que ESTE monitor usa:
+            // un cambio del compartido no toca a los que tienen el suyo.
             Loader {
                 id: escena
                 anchors.fill: parent
-                property int version: app.vigia.version
-                onVersionChanged: { active = false; active = true }
-                active: app.plan !== ""
+                property string clave: ventana.plan + "#"
+                                       + (ventana.planPropio ? propio.version : app.vigia.version)
+                onClaveChanged: { active = false; active = true }
+                active: ventana.plan !== ""
 
                 sourceComponent: SceneView {
-                    planSource: "file://" + app.plan
+                    planSource: "file://" + ventana.plan
                     time: reloj.elapsedTime
                     encaje: app.encaje
                     zoom: app.zoom
                     desplazamientoX: app.despX
                     desplazamientoY: app.despY
                     gpuDedicada: app.gpuDedicada
+                    fpsMax: app.fpsMax
                     colorBarras: app.color
 
                     // Respaldo: con Hyprland manda CursorHyprland y esto se
@@ -175,7 +201,9 @@ QtObject {
                                         + hypr.ventanas + " ventanas · "
                                         + (hypr.disponible ? "" : "SIN IPC de Hyprland"),
                         "            " + hypr.detalle,
-                        "plan      : version " + app.vigia.version
+                        "plan      : " + (ventana.planPropio ? "propio" : "compartido")
+                                        + " · version " + (ventana.planPropio ? propio.version
+                                                                              : app.vigia.version)
                     ].join("\n")
                 }
             }

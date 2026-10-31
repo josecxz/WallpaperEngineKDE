@@ -118,6 +118,7 @@ public:
     int canvasWidth() const { return m_canvasW; }
     int canvasHeight() const { return m_canvasH; }
     int liveUniformCount() const { return m_liveUniforms; }
+    int uniformsPorFotograma() const { return m_uniformsPorFotograma; }
     int initMillis() const { return m_initMs; }
     double diagCompoMean() const { return m_diagCompoMean; }
 
@@ -127,6 +128,14 @@ public:
     // quede atras. Con el fondo 4K medimos 166 fps en el HUD mientras la
     // integrada estaba al 98%. Negativo mientras no haya medida.
     double diagGpuMs() const { return m_gpuMs; }
+    // Las muestras crudas del cronometro desde la ultima llamada (suma, numero
+    // y maximo, en ms), y las pone a cero. Para `WE_MEDIDAS`: la media movil
+    // de arriba sirve al HUD, pero no se puede comparar entre dos medidas.
+    void tomarMuestrasGpu(double &suma, int &n, double &max)
+    {
+        suma = m_gpuSuma; n = m_gpuN; max = m_gpuMax;
+        m_gpuSuma = 0; m_gpuN = 0; m_gpuMax = 0;
+    }
     // Cuantas veces fallo al abrir la consulta; >0 explica un
     // "sin medida" que si no seria mudo.
     int diagGpuFallos() const { return m_gpuFallos; }
@@ -251,6 +260,9 @@ private:
         GlName program = 0;
         qsizetype targetIndex = kCompo;
         QVector<Sampler> samplers;
+        // Tras `resolve`, solo los que cambian por fotograma (`g_Time` y los
+        // marcados): los constantes se suben UNA vez al cargar, porque cada
+        // pase tiene su propio programa y un programa conserva sus uniforms.
         QVector<Uniform> uniforms;
         // Copy: -1 = compuesto del objeto
         qsizetype copySrc = kCompo, copyDst = kCompo;
@@ -384,6 +396,7 @@ private:
     void flushObjectToScene();
     bool buildProgram(Op &op);
     void resolve(Op &op);
+    static void subirUniform(const Uniform &u, const float *v);
 
     QVector<Op> m_ops;
     QHash<int, TexSpec> m_textures;
@@ -415,6 +428,7 @@ private:
     // textura porque el buffer de escena se lee tambien sin mipmaps.
     GlName m_mipSampler = 0;
     GlLocation m_compositePremul = -1;
+    GlLocation m_compositeSrc = -1;
     GlLocation m_compositeMvp = -1;
     float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     Compose m_compose = Compose::Normal;
@@ -468,9 +482,16 @@ private:
     quint64 m_diagFitSig = 0;   // ultimo encaje trazado, para no repetirlo
     int m_passCount = 0;
     int m_liveUniforms = 0;
+    int m_uniformsPorFotograma = 0;   // los que quedan en el bucle de dibujado
     int m_initMs = 0;
     bool m_diagDone = false;
     int m_frame = 0;            // solo para la traza de WE_TRACE_FRAMES
+    // `WE_TRACE_FRAMES` y `WE_TRACE_PASES`, leidas UNA vez. Se miraban con
+    // qgetenv en cada objeto y en cada pase ---46 veces por fotograma y
+    // pantalla en una escena de 31 pases---, y qgetenv toma el cerrojo del
+    // entorno, que los hilos de render de dos pantallas se disputan.
+    const int m_traza = qEnvironmentVariableIntValue("WE_TRACE_FRAMES");
+    const bool m_trazaPases = !qEnvironmentVariableIsEmpty("WE_TRACE_PASES");
     int m_objeto = 0;           // idem
     double m_diagCompoMean = -1;
 
@@ -490,6 +511,8 @@ private:
     int m_gpuSaltos = 0;
     int m_gpuAjena = 0;
     double m_gpuMs = -1;
+    double m_gpuSuma = 0, m_gpuMax = 0;
+    int m_gpuN = 0;
     int m_diagBlitError = 0;
     int m_diagTargets = 0;
     int m_droppedUniforms = 0;

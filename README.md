@@ -219,8 +219,18 @@ wectl set <id|texto>    # prepara el plan y arranca el fondo si no estaba
 wectl shuffle --cada 30m
 wectl start / stop
 wectl gpu integrated    # reinicia el fondo en la otra gráfica
+wectl pantallas independiente   # uno al azar distinto en cada pantalla
+wectl pantallas mismo           # el mismo en todas (lo de siempre)
 wectl status
 ```
+
+Con `pantallas independiente`, `wectl shuffle` (y la rotación automática)
+saca un wallpaper distinto para cada monitor, de la misma bolsa: no se
+repiten entre pantallas ni vuelve a salir ninguno hasta que hayan salido
+todos. `wectl set` sigue poniendo el elegido en todas las pantallas, sin
+cambiar el modo; el siguiente `shuffle` vuelve a repartir. Cada plan se
+genera a la resolución de su monitor. Un monitor que se conecta después usa
+el plan compartido hasta el siguiente `shuffle`.
 
 Para que arranque con la sesión, en `hyprland.conf`:
 
@@ -238,7 +248,7 @@ Lo que en Plasma es el panel de ajustes aquí es
 
 `--pausa 0|1|2` (nunca / cuando lo visible tapa la pantalla / con cualquier
 ventana), `--encaje 0|1|2` (cubrir / entera / estirar), `--zoom`, `--despx`,
-`--despy`, `--color` y `--hud`.
+`--despy`, `--color`, `--fps` (tope de fotogramas por segundo; 60 por defecto, 0 sin tope), `--solo eDP-1,HDMI-A-3` (fondo solo en esos monitores) y `--hud`.
 
 Lo que en Plasma dan KWin y el modelo de tareas aquí lo da el IPC de
 Hyprland (`src/hyprland.cpp`): qué tapa cada monitor, para la pausa, y dónde

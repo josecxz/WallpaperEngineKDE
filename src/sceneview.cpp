@@ -11,6 +11,7 @@
 #include <QQuickWindow>
 #include <QScreen>
 
+#include <chrono>
 #include <cmath>
 
 #include <QDebug>
@@ -57,7 +58,24 @@ void SceneView::setTime(qreal t)
         return;
     m_time = t;
     Q_EMIT timeChanged();
+    // El tope. El 0,9 da holgura al latido: con 60 en un panel de 165 Hz
+    // (6,06 ms) se dibuja uno de cada tres latidos ---55 por segundo, siempre
+    // con el mismo paso---; exigir 16,67 ms exactos alternaria tres y cuatro
+    // latidos, y eso se ve como tirones. Un tiempo que va hacia atras es otro
+    // reloj (la escena se ha recreado) y pide fotograma siempre.
+    if (m_fpsMax > 0 && m_tPedido >= 0 && t >= m_tPedido && t - m_tPedido < 0.9 / m_fpsMax)
+        return;
+    m_tPedido = t;
     update();     // pide un fotograma nuevo
+}
+
+void SceneView::setFpsMax(qreal v)
+{
+    v = qMax<qreal>(0, v);
+    if (qFuzzyCompare(1 + v, 1 + m_fpsMax))
+        return;
+    m_fpsMax = v;
+    Q_EMIT fpsMaxChanged();
 }
 
 // Los cinco piden un fotograma al cambiar, y ese `update()` no es opcional:
@@ -242,6 +260,57 @@ SceneRenderer::~SceneRenderer()
     m_otra.cerrar();
 }
 
+namespace {
+double ahoraMs()
+{
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+}  // namespace
+
+SceneRenderer::SceneRenderer()
+{
+    bool ok = false;
+    const double s = qEnvironmentVariable("WE_MEDIDAS").toDouble(&ok);
+    m_medidaSeg = ok && s > 0 ? s : 0;
+}
+
+void SceneRenderer::contarMedida(double msCpu)
+{
+    const double ahora = ahoraMs();
+    if (m_medidaInicio < 0) {
+        // El primer fotograma abre el intervalo y no cuenta: lleva la carga
+        // del plan dentro.
+        m_medidaInicio = ahora;
+        double d1, d2, d3;
+        int i1;
+        m_exec.tomarMuestrasGpu(d1, i1, d2);
+        m_otra.tomarMuestrasCopia(d1, d3, i1);
+        return;
+    }
+    m_medidaFotos++;
+    m_medidaCpu += msCpu;
+    m_medidaCpuMax = std::max(m_medidaCpuMax, msCpu);
+    const double dur = ahora - m_medidaInicio;
+    if (dur < m_medidaSeg * 1000.0)
+        return;
+    double gpuSuma = 0, gpuMax = 0, leer = 0, subir = 0;
+    int gpuN = 0, copias = 0;
+    m_exec.tomarMuestrasGpu(gpuSuma, gpuN, gpuMax);
+    m_otra.tomarMuestrasCopia(leer, subir, copias);
+    const int n = qMax(1, m_medidaFotos);
+    qInfo("SceneView: medida pantalla=%s seg=%.2f fotogramas=%d fps=%.2f "
+          "cpu_ms=%.3f cpu_max=%.3f gpu_ms=%.3f gpu_max=%.3f gpu_muestras=%d "
+          "leer_ms=%.3f subir_ms=%.3f copias=%d",
+          qPrintable(m_pantalla.isEmpty() ? QStringLiteral("?") : m_pantalla),
+          dur / 1000.0, m_medidaFotos, m_medidaFotos * 1000.0 / dur,
+          m_medidaCpu / n, m_medidaCpuMax, gpuN ? gpuSuma / gpuN : -1.0, gpuMax, gpuN,
+          copias ? leer / copias : 0.0, copias ? subir / copias : 0.0, copias);
+    m_medidaInicio = ahora;
+    m_medidaFotos = 0;
+    m_medidaCpu = m_medidaCpuMax = 0;
+}
+
 void SceneRenderer::initialize(QRhiCommandBuffer *)
 {
     // Nada que hacer aqui: los recursos GL se crean en el primer render, ya
@@ -267,6 +336,11 @@ void SceneRenderer::synchronize(QQuickRhiItem *item)
     m_puntero[1] = float(view->m_puntero.y());
     m_punteroPresente = view->m_punteroPresente;
     m_quiereOtra = view->m_gpuDedicada;
+    // En cada sincronia y no solo en la primera: al crearse, la ventana aun
+    // tiene la pantalla por defecto, y las dos de dos monitores salian con el
+    // mismo nombre.
+    if (m_medidaSeg > 0 && view->window() && view->window()->screen())
+        m_pantalla = view->window()->screen()->name();
 
     // El estado solo cambia en las transiciones cargando -> listo -> error.
     // Construir la cadena y cruzar hilos en cada fotograma seria trabajo
@@ -324,6 +398,7 @@ void SceneRenderer::synchronize(QQuickRhiItem *item)
 
 void SceneRenderer::render(QRhiCommandBuffer *cb)
 {
+    const double t0Medida = m_medidaSeg > 0 ? ahoraMs() : 0;
     // Pedir la otra GPU tambien saca de un fallo: se vuelve a intentar alli.
     const bool cambioDeGpu = m_gpuDecidida && m_quiereOtra != m_gpuPedida;
     if ((m_failed && !cambioDeGpu) || m_planPath.isEmpty())
@@ -394,12 +469,13 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
         }
         m_planLoaded = true;
         qInfo("SceneView: backend %s, plan con %d pases, lienzo %dx%d, "
-              "init %d ms, uniforms %d activos / %d descartados, "
+              "init %d ms, uniforms %d activos (%d por fotograma) / %d descartados, "
               "mallas %d subidas / %d pases las piden / %d animadas, "
               "particulas %d sistemas / %d piezas sin soporte / %d siguen al raton",
               r->backendName(), m_exec.passCount(),
               m_exec.canvasWidth(), m_exec.canvasHeight(), m_exec.initMillis(),
-              m_exec.liveUniformCount(), m_exec.droppedUniformCount(),
+              m_exec.liveUniformCount(), m_exec.uniformsPorFotograma(),
+              m_exec.droppedUniformCount(),
               m_exec.meshCount(), m_exec.meshPassCount(), m_exec.meshAnimCount(),
               m_exec.psysCount(), m_exec.psysUnknownParts(),
               m_exec.psysCursorCount());
@@ -438,10 +514,18 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
     }
 
     if (aparte) {
-        m_otra.leer();
+        // Asincrono solo si el reloj ha avanzado: en marcha, un fotograma de
+        // retraso no se ve. Con el reloj parado ---un cambio de encaje o de
+        // zoom en pausa, el primer fotograma--- se dibuja UNA vez, y en
+        // asincrono se veria el anterior hasta el siguiente fotograma, que
+        // en pausa no llega nunca.
+        m_otra.leer(m_tLeido >= 0 && m_time != m_tLeido);
+        m_tLeido = m_time;
         m_otra.salir();
         m_otra.presentar(GLuint(qtFbo));
     }
+    if (m_medidaSeg > 0)
+        contarMedida(ahoraMs() - t0Medida);
 
     cb->endExternal();
     cb->endPass();

@@ -152,7 +152,7 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
     // Los contadores de diagnostico son de ESTE plan. Hasta que el plan se
     // pudo cambiar de GPU nadie cargaba dos en el mismo ejecutor, y se
     // sumaban: 237, 474, 711 uniforms activos tras dos cambios.
-    m_liveUniforms = m_droppedUniforms = 0;
+    m_liveUniforms = m_droppedUniforms = m_uniformsPorFotograma = 0;
     m_meshCount = m_meshPassCount = m_meshAnimCount = 0;
     m_log.clear();
     // Los sistemas son otros: hay que volver a decirles donde esta el raton.
@@ -542,6 +542,21 @@ bool GlExecutor::buildProgram(Op &op)
     return true;
 }
 
+void GlExecutor::subirUniform(const Uniform &u, const float *v)
+{
+    switch (u.count) {
+    case 1:  glUniform1fv(u.location, 1, v); break;
+    case 2:  glUniform2fv(u.location, 1, v); break;
+    case 3:  glUniform3fv(u.location, 1, v); break;
+    case 4:  glUniform4fv(u.location, 1, v); break;
+    // La matriz de normales. Va escrita por filas como las demas, asi que GL
+    // la lee traspuesta y `mul(v, M)` acaba dando `M * v`.
+    case 9:  glUniformMatrix3fv(u.location, 1, GL_FALSE, v); break;
+    case 16: glUniformMatrix4fv(u.location, 1, GL_FALSE, v); break;
+    default: break;
+    }
+}
+
 void GlExecutor::resolve(Op &op)
 {
     op.targetIndex = (op.targetName.isEmpty() || op.targetName == QLatin1String("SCREEN"))
@@ -596,7 +611,26 @@ void GlExecutor::resolve(Op &op)
         live.append(u);
     }
     m_liveUniforms += live.size();
-    op.uniforms = live;
+
+    // Constantes, una vez y aqui. Antes se subian todos los uniforms y la
+    // unidad de cada sampler en cada pase de cada fotograma ---en
+    // 2788165557, 174 uniforms y 41 samplers, 215 llamadas a GL por
+    // fotograma y pantalla--- cuando por fotograma solo cambian `g_Time` y
+    // los marcados (raton, camara). Nadie mas escribe en estos programas:
+    // son de este pase y de nadie mas (`buildProgram`).
+    glUseProgram(op.program);
+    for (const Sampler &s : std::as_const(op.samplers))
+        glUniform1i(s.location, s.unit);
+    QVector<Uniform> vivos;
+    for (const Uniform &u : std::as_const(live)) {
+        if (u.timeMarker || u.marcado)
+            vivos.append(u);
+        else
+            subirUniform(u, u.v);
+    }
+    glUseProgram(0);
+    m_uniformsPorFotograma += vivos.size();
+    op.uniforms = vivos;
     if (op.hoja >= 0) {
         op.hojaRotacion = glGetUniformLocation(op.program, "g_Texture0Rotation");
         op.hojaTraslacion = glGetUniformLocation(op.program, "g_Texture0Translation");
@@ -607,10 +641,11 @@ void GlExecutor::resolve(Op &op)
     // cada pase, que es lo que decide el viewport.
     {
         const Target &t = resolveTarget(op.targetIndex);
-        qInfo("  pase %2lld -> %-28s %dx%d  samplers=%lld uniforms=%lld",
+        qInfo("  pase %2lld -> %-28s %dx%d  samplers=%lld uniforms=%lld (%lld por fotograma)",
               (long long)m_passCount, qPrintable(op.targetName.isEmpty()
                   ? QStringLiteral("(compuesto del objeto)") : op.targetName),
-              t.w, t.h, (long long)op.samplers.size(), (long long)op.uniforms.size());
+              t.w, t.h, (long long)op.samplers.size(), (long long)live.size(),
+              (long long)op.uniforms.size());
     }
 
     // Ya no hacen falta las cadenas.
@@ -680,6 +715,7 @@ bool GlExecutor::buildCompositeProgram()
     }
     m_compositeMvp = glGetUniformLocation(m_composite, "mvp");
     m_compositePremul = glGetUniformLocation(m_composite, "premul");
+    m_compositeSrc = glGetUniformLocation(m_composite, "src");
     return true;
 }
 
@@ -718,7 +754,7 @@ const GlExecutor::Target &GlExecutor::resolveTarget(qsizetype index) const
 void GlExecutor::beginObject()
 {
     flushObjectToScene();
-    if (m_frame < qgetenv("WE_TRACE_FRAMES").toInt()) {
+    if (m_frame < m_traza) {
         QByteArray px(qsizetype(m_scene.w) * m_scene.h * 4, '\0');
         glBindFramebuffer(GL_READ_FRAMEBUFFER, m_scene.fbo);
         glReadPixels(0, 0, m_scene.w, m_scene.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -775,7 +811,7 @@ void GlExecutor::flushObjectToScene()
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_compo[m_compoCur].tex);
-    glUniform1i(glGetUniformLocation(m_composite, "src"), 0);
+    glUniform1i(m_compositeSrc, 0);
     glUniform1f(m_compositePremul,
                 (m_compose == Compose::Screen || m_compose == Compose::Lighten)
                     ? 1.0f : 0.0f);
@@ -1342,6 +1378,9 @@ void GlExecutor::gpuTimerPoll()
         const double ms = double(ns) / 1.0e6;
         // Media movil: un fotograma suelto no dice nada y el numero baila.
         m_gpuMs = m_gpuMs < 0 ? ms : m_gpuMs * 0.9 + ms * 0.1;
+        m_gpuSuma += ms;
+        m_gpuN++;
+        m_gpuMax = std::max(m_gpuMax, ms);
     }
 }
 
@@ -1571,33 +1610,22 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
                 bindMipSampler(s.unit, tex);
             else
                 glBindSampler(s.unit, 0);
-            glUniform1i(s.location, s.unit);
         }
 
+        // Solo los que cambian por fotograma; los constantes ya estan en el
+        // programa desde `resolve`.
         for (const Uniform &u : op.uniforms) {
-            // Sin copia: se pasa el puntero a los valores ya parseados. Solo
-            // g_Time y las componentes del raton cambian por fotograma.
             const float *v = u.v;
             float marcado[4];
             if (u.timeMarker) {
                 v = &time;
-            } else if (u.marcado) {
+            } else {
                 for (int i = 0; i < u.count && i < 4; ++i)
                     marcado[i] = u.marca[i] == Marca::Ninguna
                                ? u.v[i] : valorDeMarca(u.marca[i]);
                 v = marcado;
             }
-            switch (u.count) {
-            case 1:  glUniform1fv(u.location, 1, v); break;
-            case 2:  glUniform2fv(u.location, 1, v); break;
-            case 3:  glUniform3fv(u.location, 1, v); break;
-            case 4:  glUniform4fv(u.location, 1, v); break;
-            // La matriz de normales. Va escrita por filas como las demas, asi
-            // que GL la lee traspuesta y `mul(v, M)` acaba dando `M * v`.
-            case 9:  glUniformMatrix3fv(u.location, 1, GL_FALSE, v); break;
-            case 16: glUniformMatrix4fv(u.location, 1, GL_FALSE, v); break;
-            default: break;
-            }
+            subirUniform(u, v);
         }
 
         // El fotograma de la hoja sale de la hora de AHORA y no de la de
@@ -1629,8 +1657,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         } else {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
-        if (m_frame < qgetenv("WE_TRACE_FRAMES").toInt()
-            && !qgetenv("WE_TRACE_PASES").isEmpty()) {
+        if (m_frame < m_traza && m_trazaPases) {
             QByteArray px(qsizetype(dst.w) * dst.h * 4, '\0');
             glBindFramebuffer(GL_READ_FRAMEBUFFER, dst.fbo);
             glReadPixels(0, 0, dst.w, dst.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -1699,7 +1726,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     // del compuesto. WE_TRACE_FRAMES=N la activa. Sirve para los efectos
     // temporales, donde el fallo no esta en un fotograma sino en como
     // evoluciona de uno al siguiente y hacia que punto fijo converge.
-    if (const int traza = qgetenv("WE_TRACE_FRAMES").toInt(); m_frame < traza) {
+    if (m_frame < m_traza) {
         auto media = [](const Target &t) {
             QByteArray px(qsizetype(t.w) * t.h * 4, '\0');
             glBindFramebuffer(GL_READ_FRAMEBUFFER, t.fbo);

@@ -22,7 +22,7 @@
 class SceneRenderer : public QQuickRhiItemRenderer
 {
 public:
-    SceneRenderer() = default;
+    SceneRenderer();
     // Con el plan en otra GPU, sus recursos solo se liberan con el contexto
     // de esa GPU puesto: el destructor de GlExecutor mira el de Qt.
     ~SceneRenderer() override;
@@ -62,6 +62,20 @@ private:
     float m_puntero[2] = {0.5f, 0.5f};
     bool m_punteroPresente = false;
     double m_gpuPublicado = -1;   // ultimo valor mandado al item
+    float m_tLeido = -1;          // `time` del ultimo fotograma leido de la otra GPU
+
+    // `WE_MEDIDAS=<segundos>`: cada tantos segundos, una linea
+    // `SceneView: medida ...` con lo que costo este fondo en ese intervalo
+    // ---fotogramas ejecutados de verdad, CPU del render, GPU por el
+    // cronometro y la copia entre GPUs---, en sumas crudas y no en medias
+    // moviles, para que dos medidas se puedan comparar. La lee
+    // tools/medir_vivo.py. Sin la variable no se cuenta nada.
+    double m_medidaSeg = 0;
+    QString m_pantalla;            // copiado en synchronize(), para la linea
+    double m_medidaInicio = -1;    // ms del reloj monotono
+    int m_medidaFotos = 0;
+    double m_medidaCpu = 0, m_medidaCpuMax = 0;
+    void contarMedida(double msCpu);
 };
 
 class SceneView : public QQuickRhiItem
@@ -111,6 +125,11 @@ class SceneView : public QQuickRhiItem
     // fotograma, sin reiniciar nada.
     Q_PROPERTY(bool gpuDedicada READ gpuDedicada WRITE setGpuDedicada
                NOTIFY gpuDedicadaChanged)
+    // Tope de fotogramas por segundo; 0, sin tope. El reloj del QML late con
+    // el compositor ---165 veces por segundo en un panel de 165 Hz--- y sin
+    // tope cada latido es un fotograma entero del plan. Con tope, el tiempo
+    // sigue avanzando pero solo se pide fotograma cuando toca.
+    Q_PROPERTY(qreal fpsMax READ fpsMax WRITE setFpsMax NOTIFY fpsMaxChanged)
 
 public:
     explicit SceneView(QQuickItem *parent = nullptr);
@@ -141,6 +160,8 @@ public:
     void setPuntero(const QPointF &p);
     void setPunteroPresente(bool v);
     bool gpuDedicada() const { return m_gpuDedicada; }
+    qreal fpsMax() const { return m_fpsMax; }
+    void setFpsMax(qreal v);
     void setGpuDedicada(bool v);
 
 Q_SIGNALS:
@@ -154,6 +175,7 @@ Q_SIGNALS:
     void encajeChanged();
     void punteroChanged();
     void gpuDedicadaChanged();
+    void fpsMaxChanged();
 
 protected:
     QQuickRhiItemRenderer *createRenderer() override;
@@ -185,6 +207,8 @@ private:
     QPointF m_puntero = QPointF(0.5, 0.5);
     bool m_punteroPresente = false;
     bool m_gpuDedicada = true;
+    qreal m_fpsMax = 0;
+    qreal m_tPedido = -1;   // `time` del ultimo fotograma pedido
     // Si ya llega un cursor global (KWin o Hyprland): entonces lo que mande el QML se ignora.
     bool m_cursorKWin = false;
     void ponPuntero(const QPointF &p, bool presente);

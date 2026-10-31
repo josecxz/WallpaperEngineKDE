@@ -20,6 +20,7 @@ Kirigami.FormLayout {
     property alias cfg_Zoom: zoomSlider.value
     property alias cfg_OffsetX: despXSlider.value
     property alias cfg_OffsetY: despYSlider.value
+    property alias cfg_FpsMax: fpsSpin.value
     property alias formLayout: root
 
     KQuickControls.ColorButton {
@@ -94,6 +95,23 @@ Kirigami.FormLayout {
     QQC2.Label {
         text: "Un fondo que no se ve puede costar la mitad de la GPU. Al volver,\n" +
               "la escena continua donde estaba en vez de dar un salto."
+        opacity: 0.7
+        wrapMode: Text.WordWrap
+    }
+
+    QQC2.SpinBox {
+        id: fpsSpin
+        Kirigami.FormData.label: "Fotogramas por segundo:"
+        from: 0
+        to: 240
+        stepSize: 5
+        textFromValue: function (v) { return v === 0 ? "Sin tope" : String(v) }
+        valueFromText: function (t) { return /^sin/i.test(t) ? 0 : parseInt(t) || 0 }
+    }
+
+    QQC2.Label {
+        text: "Sin tope, el fondo va al ritmo del monitor: en un panel de 165 Hz son\n" +
+              "165 fotogramas por segundo, y cuesta dos o tres veces mas que a 60."
         opacity: 0.7
         wrapMode: Text.WordWrap
     }

@@ -10723,3 +10723,491 @@ quitar la salida desaparece sin coredump.
 - **Sin `test_luminancia` propio**: el anfitrión no cambia el plan ni el
   ejecutor, así que el oráculo de siempre vale. Lo nuevo es la presentación y
   se comprobó en vivo con el registro del proceso.
+
+## Un wallpaper distinto en cada pantalla
+
+Pedido: poder elegir entre el mismo wallpaper en todas las pantallas y uno al
+azar independiente en cada una. Por ahora solo en Hyprland: en Plasma el
+plugin lee un plan fijo (`../scene/plan.txt`) y cada escritorio debería
+tener el suyo en su configuración, que es otro trabajo.
+
+### Cómo
+
+- **Un plan por monitor** en `plugin/contents/pantallas/<monitor>/`, al lado
+  del compartido (`scene/`). `preparar` aprendió a escribir en cualquiera de
+  los dos con el mismo rename atómico y el mismo cerrojo.
+- **El anfitrión** recibe `--planes <dir>` en modo independiente. Cada
+  ventana tiene su propio `VigiaArchivo` sobre `<dir>/<monitor>/plan.txt`;
+  usa ese plan mientras **exista** (`VigiaArchivo.existe`, nuevo) y, si no,
+  el compartido. El `Loader` se recrea solo cuando cambia el plan que usa
+  ESE monitor: un `shuffle` que cambia los dos recarga los dos, y un cambio
+  del compartido no toca a quien tiene el suyo.
+- **`wectl pantallas [mismo|independiente]`** guarda el modo en
+  `hyprland.json` y rearranca el fondo, porque `--planes` se pasa al
+  arrancar. Al pasar a independiente reparte enseguida; al volver a `mismo`
+  borra los planes propios.
+- **`shuffle` en independiente** saca de la misma bolsa un wallpaper por
+  monitor, uno detrás de otro: en un mismo cambio no se repiten entre
+  pantallas (salvo con menos wallpapers que monitores), y entre cambios
+  sigue la regla de la bolsa. Si uno falla, se prueba otro para ese
+  monitor, hasta cinco, como antes.
+- **`set`** pone el elegido en todas: escribe el compartido y borra los
+  propios, y cada monitor ve desaparecer el suyo y vuelve al compartido. El
+  modo no cambia. Hace falta `existe` también hacia abajo: el vigía da
+  «ya no está» si, 300 ms después del último aviso, el fichero no aparece.
+  El hueco entre los dos renames de `preparar` es de microsegundos, y no se
+  confunde.
+
+### La resolución, que en Hyprland no se leía
+
+`resolucion_de_pantalla` preguntaba a `kscreen-doctor`, que en Hyprland no
+existe, y devolvía `None`: los planes salían **al lienzo del autor**, de
+3840×2160 a 7680×4320, para pantallas de 1920. Ahora en Hyprland pregunta a
+`hyprctl -j monitors` (girando el tamaño si el monitor está a 90/270
+grados). El compartido sale al monitor más grande, como en Plasma, y cada
+plan propio a SU monitor. Medido: *Sci-Fi Cyber City* a 2133×1200 en eDP-1
+y *Wlop Ocean* a 2580×1080 en el HDMI (lienzos que cubren el monitor con la
+proporción del autor).
+
+### Lo medido
+
+Con eDP-1 (1920×1200) y HDMI-A-3 (1920×1080):
+
+- `pantallas independiente`: «eDP-1: Sci-Fi Cyber City», «HDMI-A-3: Wlop
+  Ocean Painting Flow»; en el registro, un `VigiaArchivo … ha cambiado` y un
+  `SceneView: backend` por monitor, con lienzos distintos.
+- `shuffle`: los dos cambian a la vez, cada uno con su plan, y la bolsa baja
+  de dos en dos (85 → 83).
+- `set 2788165557`: «… ya no está» en los dos vigías y los dos cargan el
+  mismo plan de 31 pases; `pantallas` sigue en `independiente` y dice
+  «(compartido)» en cada monitor.
+- `pantallas mismo`: el fondo rearranca sin `--planes` y
+  `plugin/contents/pantallas/` queda vacío. Sin coredumps en ningún paso.
+- **Una carrera que hubo que cerrar**: al pasar a independiente, el fondo
+  se rearrancaba antes de que `shuffle` instalara el módulo nuevo, y
+  podría haber cargado el `.so` viejo, sin `existe`. Esta vez ganó el
+  módulo nuevo por poco. `pantallas` construye ahora antes de rearrancar.
+
+### Lo que queda
+
+- **Plasma**: `wectl pantallas` lo rechaza con un mensaje.
+- **Un monitor conectado en caliente** usa el plan compartido hasta el
+  siguiente `shuffle`: nadie le prepara uno al conectarse.
+- **Elegir a mano el wallpaper de una pantalla concreta** (`set` con un
+  monitor) no está: no se ha pedido.
+
+## La vara de medir del rendimiento
+
+Primer punto de la auditoría de rendimiento: decidir **cómo** se mide, antes
+de tocar nada, para que el antes y el después de cada cambio se puedan
+comparar. Había instrumentos buenos sueltos y ninguna forma de repetir una
+medida.
+
+### Qué vale y qué no
+
+- **El fps del HUD no vale**: es el reloj de QML («El HUD decía 166 fps»).
+- **El cronómetro de GPU sí** (`GL_TIME_ELAPSED` leído sin esperar), pero
+  solo salía una vez, al fotograma 200, y como media móvil.
+- **`fdinfo` sí, para la integrada**: el i915 publica `drm-engine-render`
+  por cliente DRM (sumando cada cliente una vez, no cada descriptor). **La
+  NVIDIA no**: el driver propietario (615.78) no publica nada por cliente en
+  `fdinfo`. De ella queda el cronómetro del motor y `nvidia-smi pmon`, que
+  muestrea por proceso y es grueso. Sirve de contraste, no de medida.
+- **Nadie contaba los fotogramas que se ejecutan de verdad**, y es el dato
+  del que dependen los demás: el coste de un fondo es coste por fotograma ×
+  fotogramas por segundo.
+
+### Los dos instrumentos
+
+- **En el motor, `WE_MEDIDAS=<segundos>`**: cada `SceneRenderer` escribe cada
+  tantos segundos `SceneView: medida pantalla=… fotogramas=… fps=… cpu_ms=…
+  gpu_ms=… leer_ms=… subir_ms=…`. Son sumas crudas del intervalo (el
+  cronómetro y la copia guardan ahora también sumas, además de su media
+  móvil), y `cpu_ms` es el tiempo de pared de `render()` entero: simulación,
+  envío de GL y la copia entre GPUs. Sin la variable no se cuenta nada.
+- **Fuera, `tools/medir_vivo.py`**: prepara un wallpaper fijo en la caché
+  (`--wallpaper <id>`, siempre de nuevo, porque el plan depende de la
+  versión), para el fondo normal, lanza uno aparte (`wallpaperengine-medida`)
+  **sin pausa** y con el mismo plan en todas las pantallas, calienta 5 s,
+  mide 15–20 s (líneas del motor, `fdinfo`, CPU y RSS del proceso, `pmon`),
+  guarda un JSON y vuelve a poner el fondo que había. `--comparar` saca la
+  diferencia contra otro JSON. Sin pausa, para que el resultado no dependa
+  de qué ventanas haya encima.
+
+Un fallo del primer intento, por si vuelve: las dos pantallas salían con el
+**mismo** nombre (`HDMI-A-3`) y se sumaban, 110 fps «en un monitor de 60 Hz».
+El nombre se tomaba en la primera sincronía, cuando la ventana aún tiene la
+pantalla por defecto. Ahora se lee en cada una.
+
+### El ruido
+
+Tres medidas seguidas de *Jeanne d'Arc* (`2788165557`, la escena de
+referencia: 31 pases, 5 sistemas de partículas, mallas animadas) sin cambiar
+nada:
+
+| | ruido entre medidas |
+|---|---|
+| fps | < 0,5 % |
+| CPU del proceso | ~2 % |
+| ms de CPU / de GPU por fotograma | hasta 8 % |
+| render de la integrada (`fdinfo`) | ~4 % |
+| ms de la subida de la copia (~1 ms) | hasta 10 % |
+| RSS | ±7 % entre procesos |
+
+**Regla de la auditoría:** un cambio cuenta si mueve una métrica más de un
+10 % y en la misma dirección en tres medidas. Con menos, es ruido.
+**Corregido después**: tres del cambio no bastan si la base es una sola.
+Se miden tres y tres, **intercaladas** en la misma sesión. Y el % de la
+integrada tiene más ruido del que dice esta tabla (±10 % con el tope de 60);
+ver «Los 2,5 puntos de la integrada».
+
+### La línea de base
+
+eDP-1 a 165 Hz y HDMI-A-3 a 60 Hz, plan en la NVIDIA, `git 513ca75`:
+
+```
+HDMI-A-3   60.0 fps   cpu 5.2 ms   gpu 1.5 ms ( 9 % ocupada)   copia leer 2.7 subir 1.1 ms
+eDP-1     162.9 fps   cpu 4.1 ms   gpu 1.3 ms (20 % ocupada)   copia leer 2.2 subir 0.9 ms
+proceso   110 % de un núcleo   350 MB   i915 render 27 %   nvidia sm (pmon) 47–51 %
+```
+
+Ya se ve hacia dónde van los siguientes puntos, sin haberlos medido aún a
+propósito: el fondo va al ritmo del monitor (163 fotogramas por segundo en
+eDP-1), y de los ~4,5 ms de CPU por fotograma, **~3,2 ms son la copia entre
+GPUs**. Es más que lo que tarda la NVIDIA en dibujar el plan entero
+(1,3 ms).
+
+## El tope de fotogramas
+
+Punto 1 de la auditoría. El reloj del QML (`FrameAnimation`) late con el
+compositor, y cada latido que cambia `time` pedía un fotograma entero del
+plan: **163 por segundo** en el panel de 165 Hz de eDP-1, para un fondo.
+
+### El tope
+
+`SceneView.fpsMax` (0, sin tope). `setTime` sigue guardando el tiempo en
+cada latido, pero solo llama a `update()` si desde el último fotograma
+pedido ha pasado al menos `0,9 / fpsMax`. El 0,9 da holgura al latido: con
+60 sobre 165 Hz (6,06 ms) se dibuja uno de cada tres latidos, siempre con el
+mismo paso. Exigir 16,67 ms exactos alternaría tres y cuatro latidos, y eso
+se ve como tirones. Un tiempo que va hacia atrás es una escena recreada y
+pide fotograma siempre.
+
+Que Qt **no** siga componiendo a 165 Hz sin nosotros lo dice `fdinfo`: el
+render de la integrada baja en proporción a los fotogramas (28 → 18 → 13 %).
+Si el item no se ensucia, el bucle de render no dibuja.
+
+**Por defecto, 60**, elegido por el usuario con las cifras de abajo: en el
+plugin de Plasma `FpsMax` en `config/main.xml`, con su control en el panel
+(0 = «Sin tope»), y en Hyprland `--fps` del anfitrión, que se cambia en
+`opciones` de `hyprland.json`.
+
+### Lo medido
+
+Con `medir_vivo.py --wallpaper 2788165557`, dos o tres medidas por valor.
+La potencia es la de la NVIDIA entera (`nvidia-smi power.draw`); sin fondo
+da 3,6 W, y con el fondo en pausa 5,5 W.
+
+| tope | fps (eDP-1 + HDMI) | CPU del proceso | render Intel | NVIDIA |
+|---|---|---|---|---|
+| sin tope | 162 + 60 | 110–115 % | 28 % | 52 W a 2550 MHz |
+| 60 | 55 + 55 | 65–68 % | 18–20 % | 23–37 W |
+| 30 | 30 + 30 | 46 % | 13 % | 20 W a ~1400 MHz |
+
+- **Con 60 salen 55 en las dos pantallas**, también en el HDMI de 60 Hz.
+  El reloj de las dos ventanas late al ritmo del panel de 165 Hz, y tres
+  latidos son 18,2 ms. Para el HDMI, eso es un fotograma nuevo cada 1,1
+  refrescos. No se ha visto tirón, pero no se ha medido, y queda anotado.
+- **Con 60, la NVIDIA es bimodal**: en una medida se quedó a 2550 MHz
+  (37 W) y en otras bajó a ~1400 (23–24 W). Es la gestión de energía del
+  driver, no el motor.
+- **El coste por fotograma SUBE al bajar los fps**: la GPU pasa de 1,3 ms a
+  2,9 ms con 30, y la CPU de 4,1 a 6,1 ms. Las dos gráficas bajan de
+  frecuencia con menos carga. Por eso **«% ocupada» no vale para medir
+  consumo**: a 30 fps sale igual que a 60, con 4–17 W menos. `medir_vivo`
+  guarda ahora los vatios y los MHz de la NVIDIA, y esa es la cifra que
+  manda para la batería. La de la CPU (RAPL) pide root y no se lee.
+- Los 2 W de la pausa (5,5 frente a 3,6 sin fondo) quedan para el punto de
+  la pausa.
+
+`medir_vivo.py` mide ahora con el tope por defecto (60). La línea de base
+para los siguientes puntos es `base-fps60.json`: 55 + 55 fps, 65 % de CPU,
+17,6 % de la Intel y 22,9 W. Ojo al comparar: la del punto anterior era sin
+tope.
+
+## La copia entre GPUs, sin esperar
+
+Punto 2 de la auditoría. Con el tope de 60, de los ~5 ms de CPU que costaba
+cada fotograma **~3,1 ms eran `glReadPixels`** en la NVIDIA. No es la copia
+en sí: un `glReadPixels` a memoria del cliente es síncrono, y la CPU se queda
+esperando a que la GPU acabe el plan antes de copiar los 9 MB.
+
+### El cambio
+
+`OtraGpu::leer(asincrono)`. En marcha, la lectura va a un anillo de dos PBO
+con una valla (`glFenceSync`) y se entrega el fotograma **anterior**, que
+cuando se pide ya lleva un fotograma entero en memoria: la espera de la valla
+es cero. Los PBO se crean con `glBufferStorage` y mapeo persistente y
+coherente (`ARB_buffer_storage`, más `CLIENT_STORAGE` para que vivan en
+memoria del sistema), así que `presentar` sube a la integrada **directamente
+desde el puntero del PBO**, sin un `memcpy` de 9 MB por medio. El puntero es
+memoria de la CPU, y se puede usar con el contexto de Qt puesto.
+
+- **El precio es un fotograma de retraso**, ~18 ms a 55 fps. Por eso solo es
+  asíncrono si el reloj ha avanzado desde la última lectura. Un fotograma con
+  el reloj parado (el primero, o un cambio de encaje o de zoom en pausa) se
+  dibuja **una** vez, y en asíncrono se vería el anterior para siempre: va
+  por el camino síncrono de antes.
+- El primer fotograma asíncrono no tiene anterior: espera al suyo y el
+  siguiente lo repite.
+- Sin `GL_ARB_buffer_storage`, todo síncrono como antes.
+- Cuesta 2 × 9,2 MB de memoria fijada por pantalla a 1920×1200.
+
+### Que lo que se ve es lo que se dibujó
+
+Con una comprobación temporal (ya quitada): en cada fotograma, además del
+PBO, una lectura síncrona del mismo FBO, comparada byte a byte en el
+siguiente con lo que sale del PBO. **950 de 950 fotogramas idénticos en las
+dos pantallas.** El primer intento dio «6 iguales, 893 distintas» porque la
+referencia era `static` y la compartían los dos hilos de render, uno por
+pantalla. Con `thread_local`, cero distintas. Ojo al hacer pruebas así:
+**cada pantalla tiene su hilo de render**.
+
+### Lo medido
+
+Tres medidas contra `base-fps60` (`medir_vivo.py --wallpaper 2788165557`):
+
+| | antes | PBO (×3) |
+|---|---|---|
+| leer, ms por fotograma | 3,11 | 0,02–0,03 |
+| CPU de `render()`, ms (eDP-1) | 4,82 | 1,61–1,67 |
+| CPU del proceso | 65,3 % | 28,3–28,4 % |
+| render de la integrada | 17,6 % | 19,7–21,0 % |
+| NVIDIA | 22,9 W | 22,3 / 37,2 / 22,6 W |
+
+- La CPU del proceso **baja a menos de la mitad**, y `leer` desaparece.
+- ~~**La integrada sube unos 2,5 puntos (+15 %)**, en las tres medidas, así
+  que es real.~~ **Corregido después: no existe.** Era la línea de base,
+  una sola medida que cayó baja. Ver «Los 2,5 puntos de la integrada».
+- La NVIDIA no cambia: sigue bimodal (1300 o 2550 MHz), como con el tope.
+- No probado: el cambio de GPU en caliente de Plasma (`soltarPlan` →
+  `liberarDentro`, que ahora también suelta los PBO). En Hyprland,
+  `wectl gpu` reinicia el proceso, y eso sí se ha probado.
+
+## Los 2,5 puntos de la integrada
+
+Tras la copia asíncrona, el render de la integrada parecía subir de 17,6 % a
+~20 % en tres medidas seguidas, más del 10 % de la regla. **No existía.**
+
+### Las hipótesis
+
+1. **La frecuencia**: `fdinfo` da tiempo ocupado, no trabajo. Si la
+   integrada baja de frecuencia, lo mismo ocupa más.
+2. **La memoria de origen**: Mesa subiendo desde el PBO de NVIDIA por un
+   camino más caro que desde un búfer propio.
+3. **Otro trabajo**: la integrada haciendo algo que antes no hacía.
+
+Para separarlas, `medir_vivo` guarda ahora la frecuencia real de la
+integrada (`gt_act_freq_mhz`, dos muestras por segundo) y su reposo (RC6 de
+`gt/gt0/rc6_residency_ms`, de todo el sistema). Un interruptor temporal,
+`WE_COPIA=sincrona|pbo|pbo-copia`, ya quitado, cambiaba el modo sin
+recompilar. `pbo-copia` copia el PBO a un `QByteArray` propio antes de
+subir, que es la hipótesis 2 aislada.
+
+### Lo medido
+
+Nueve medidas **intercaladas** (S, P, C ×3) de `2788165557` con el tope de
+60:
+
+| modo | render integrada | MHz integrada | CPU del proceso |
+|---|---|---|---|
+| síncrona (antes) | 19,3 / 21,0 / 20,8 % | 733 / 767 / 697 | 65–67 % |
+| PBO (ahora) | 20,0 / 18,7 / 18,8 % | 633 / 567 / 595 | 28–30 % |
+| PBO + copia propia | 18,2 / 19,9 / 18,3 % | 872 / 795 / 613 | 41–44 % |
+
+- **Los tres modos dan lo mismo** en la integrada. La «subida» era la línea
+  de base: una medida suelta de 17,6 %, de otra tanda. Con el tope de 60 la
+  integrada va de 570 a 870 MHz entre medidas, y su % ocupado baila ±10 %.
+  Las cinco medidas de la integrada con 60 fps de esta tarde, en tandas
+  distintas, ya iban de 17,5 a 21,0 %.
+- La hipótesis 2 queda descartada y, de paso, medido lo que valía no copiar:
+  `pbo-copia` cuesta **13 puntos más de CPU** (9 MB por fotograma y
+  pantalla) que subir desde el PBO.
+- `subir` en CPU es igual en los tres (0,9–1,2 ms).
+
+**Lección de método**, ya en la regla de «La vara de medir»: el antes y el
+después se miden en la misma sesión e intercalados, tres y tres. Una línea
+de base guardada sirve para orientarse, no para decidir.
+
+### De paso, para el punto 3
+
+`HDMI-A-3` cuelga de la NVIDIA (`/sys/class/drm/card0-HDMI-A-3`), no de la
+integrada. El fotograma de esa pantalla hace NVIDIA → CPU → integrada (Qt
+compone) → Hyprland → NVIDIA para salir por el cable. En una pantalla
+conectada a la dedicada, el viaje por la integrada sobra entero.
+
+## Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro
+
+Punto 3 de la auditoría: «dos monitores, el doble de todo». Antes de
+arreglar nada, medir cuánto cuesta cada pantalla y **a quién**.
+
+### Lo que faltaba en la vara de medir
+
+- **El compositor.** Cada fotograma nuevo del fondo obliga a Hyprland a
+  recomponer esa pantalla, y ese coste no salía en ninguna medida.
+  `medir_vivo` mide ahora también a Hyprland (`pgrep -x Hyprland`): su CPU,
+  su `fdinfo` del i915 y su % en `nvidia-smi pmon`.
+- **La VRAM** de la NVIDIA (`memory.used`, de toda la tarjeta).
+- **`--sin-fondo`**: la misma medida sin fondo, la referencia de no tener
+  nada.
+- **`--solo eDP-1,HDMI-A-3`** en el anfitrión: fondo solo en esos monitores,
+  para medir una pantalla sin desenchufar la otra.
+
+Un tropiezo de zsh, otra vez: `-- $x` con `x="--solo eDP-1"` llega como UN
+argumento, porque zsh no parte las variables en palabras. Las tres primeras
+medidas «de una pantalla» eran de las dos.
+
+### Lo medido
+
+Tres medidas intercaladas de cada caso, `2788165557`, tope de 60:
+
+| | proceso: CPU / integrada | Hyprland: CPU / integrada / NVIDIA sm | VRAM | NVIDIA |
+|---|---|---|---|---|
+| sin fondo | — | 1,7–2,1 % / 0,8–2,1 % / 0–0,7 | 54–285 MiB | 2–7 W |
+| solo eDP-1 | 16,1–17,3 % / 12,7–13,2 % | 6,1–7,0 % / 15,4–16,2 % / 0 | 541–546 MiB | 17 W |
+| solo HDMI-A-3 | 12,8–13,5 % / 10,5–10,7 % | 5,6–6,0 % / 38,6–41,5 % / 5–18 | 505–1139 MiB | 19–22 W |
+| las dos | 29,1–29,7 % / 16,4–18,4 % | 8,7–9,1 % / 31,6–35,4 % / 7–17 | 913–918 MiB | 22 o 38 W |
+
+- **En el proceso, la segunda pantalla suma casi entera**: 16,7 + 13,1 ≈
+  29,4 % de CPU, y ~370 MiB más de VRAM. Cada pantalla carga, simula y
+  ejecuta su plan. En la integrada no suma (13 + 10,6 → 17,3 %): la
+  integrada sube de frecuencia con las dos y el % ocupado no es aditivo.
+- **Lo caro del HDMI es Hyprland, no el motor.** HDMI-A-3 cuelga de la
+  NVIDIA (`card0`). Hyprland compone en la integrada y copia a la NVIDIA
+  para sacarlo por el cable. Con fondo solo en el HDMI, **Hyprland ocupa el
+  40 % de la integrada**, más que nuestro proceso entero y el triple que en
+  eDP-1. Con las dos, 33 %. Es ruido de frecuencia o Hyprland agrupa las
+  dos salidas; no se ha separado.
+- **Solo, el HDMI va a 60 fps; con las dos, a 55.** El reloj de las dos
+  ventanas lo marca el panel de 165 Hz (ver «El tope de fotogramas»).
+
+### Qué se puede hacer, y qué se hizo
+
+- **Dibujar una vez y mostrar en las dos** ahorraría el plan duplicado en la
+  NVIDIA, la simulación y ~370 MiB. Pero solo vale en modo `mismo` (en
+  `independiente` cada pantalla tiene otra escena, y es el modo que se usa
+  aquí), y obliga a compartir un contexto entre los dos hilos de render.
+  **No se ha hecho**: mucho riesgo para un modo que no se usa. Queda escrito
+  por si cambia.
+- **El coste de Hyprland en el HDMI** es cómo Hyprland maneja una salida de
+  la segunda GPU; desde el motor solo se baja pidiendo menos fotogramas
+  (`--fps`).
+- **Un ritmo propio de 60 Hz para el HDMI**: poco que ganar.
+
+El punto se cierra **medido, sin cambiar el motor**. Lo que queda es la vara
+de medir con el compositor dentro, que vale para los puntos siguientes.
+
+## Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma
+
+Punto 4 de la auditoría: que ninguna lectura de la GPU (`glReadPixels`, o
+consultas que obliguen a esperar) se cuele en el camino normal.
+
+### Lo que hay
+
+- **Las cinco `glReadPixels` de `glexecutor.cpp`**: tres son trazas que solo
+  corren con `WE_TRACE_FRAMES` (y una con `WE_TRACE_PASES`), una es el
+  volcado de `WE_DUMP_SCENE`, y la de 16×16 es el diagnóstico de **una vez**
+  al cargar (`m_diagDone`). Ninguna corre en marcha.
+- **Por fotograma**: `glGetQueryiv` y dos `glGetError` del cronómetro de GPU,
+  `glGetIntegerv` del FBO de Qt (en Mesa) y tres más en `presentar`
+  (Mesa). Ninguna espera a la GPU.
+- La única espera de verdad es la de la copia entre GPUs, ya asíncrona
+  («La copia entre GPUs, sin esperar»).
+
+### Lo que sí se pagaba, aunque poco
+
+- **`qgetenv("WE_TRACE_FRAMES")` 46 veces por fotograma y pantalla**: una
+  en cada objeto (14), una en cada pase (31) y otra al final. Cada una toma
+  el cerrojo del entorno y crea un `QByteArray`, y los dos hilos de render
+  de dos pantallas se lo disputan. Ahora se lee una vez, al crear el
+  ejecutor (`m_traza`, `m_trazaPases`).
+- **`glGetUniformLocation(m_composite, "src")` en cada objeto**, una búsqueda
+  por nombre 14 veces por fotograma, cuando `mvp` y `premul` ya se
+  guardaban al cargar. Ahora también `m_compositeSrc`.
+
+### Lo medido
+
+Tres y tres intercaladas, cambiando el `.so` instalado entre medida y
+medida (A, B, A, B, A, B):
+
+| | CPU por fotograma eDP-1 | HDMI-A-3 | proceso |
+|---|---|---|---|
+| antes | 1,80 / 1,76 / 1,71 ms | 1,93 / 1,73 / 1,84 ms | 30,5 / 28,8 / 28,5 % |
+| después | 1,65 / 1,74 / 1,75 ms | 1,76 / 1,82 / 1,83 ms | 28,3 / 28,6 / 28,7 % |
+
+Entre un 1 y un 3 % menos, **dentro del ruido**: por la regla no cuenta como
+mejora. Se queda porque no tiene riesgo y quita una contención entre hilos.
+Las trazas siguen saliendo con sus variables: dos fotogramas con
+`WE_TRACE_FRAMES=2`, 28 líneas de objeto y las de cada pase.
+
+## Los uniforms constantes, una vez al cargar
+
+Punto 5 de la auditoría. En cada pase de cada fotograma se subían **todos**
+los uniforms y la unidad de cada sampler, aunque el propio comentario del
+bucle decía que solo `g_Time` y el ratón cambian. En `2788165557` eran 174
+uniforms y 53 samplers: unas 227 llamadas a GL por fotograma y pantalla.
+
+### Por qué se puede
+
+- Cada pase tiene **su propio programa** (`buildProgram`, sin caché ni
+  programas compartidos), y un programa de GL conserva sus uniforms.
+- Los valores solo se escriben al leer el plan. Por fotograma cambian
+  `timeMarker` (`g_Time`) y los marcados (ratón, cámara, parallax), y las
+  hojas de sprites, que ya iban aparte (`g_Texture0Rotation` y
+  `Translation`, por `we_hoja_*_uniforms`).
+
+`resolve` sube ahora, tras podar, las constantes y las unidades de los
+samplers una vez, con su `glUseProgram`, y deja en `op.uniforms` solo los
+que cambian. El bucle sube esos y nada más: **14 por fotograma** en la
+escena de referencia. `SceneView` lo dice al cargar («174 activos (14 por
+fotograma)»). `glexec.c` no se ha tocado: no comparte este código, y
+offline el rendimiento no importa.
+
+### Comprobado que el render no cambia
+
+Comparar imágenes no sirve aquí: el tiempo del primer fotograma no se
+repite entre ejecuciones. Se comprobó la invariante. Con código temporal, ya
+quitado, al fotograma 100 se leyó con `glGetUniformfv`/`glGetUniformiv` cada
+uniform constante y cada sampler de cada programa, y se comparó con el plan.
+En **12 escenas** (Jeanne, Sci-Fi Cyber City, GODDES, Warwick, Halo,
+Samurai, Saber, vídeos, relojes…), en las dos pantallas: **~1.900
+constantes y ~550 samplers, cero distintos**.
+
+El primer recuento dio 16 «distintas» en *Sci-Fi Cyber City*, y no eran
+fallos de esto:
+
+- **Uniforms duplicados en el plan**: un pase trae `u1f g_UserAlpha 1` y,
+  más abajo, `u1f g_UserAlpha 0.57`. Las dos son constantes. Antes se subían
+  las dos en cada fotograma y ganaba la última; ahora se suben al cargar en
+  el mismo orden, y gana la misma. La comprobación ingenua comparaba la
+  primera. `werender.py` emite así 115 `g_UserAlpha` en esa escena, con
+  duplicados por pase. Es inofensivo, pero queda anotado.
+- **`g_Texture0Translation` de las hojas**, que la hoja reescribe en cada
+  fotograma por su cuenta.
+
+Con la comprobación contando solo la última entrada de cada ubicación y sin
+las de las hojas: 0 distintas.
+
+### Lo medido
+
+A/B intercalado, tres y tres, cambiando el `.so` instalado:
+
+| | CPU por fotograma eDP-1 | HDMI-A-3 | proceso |
+|---|---|---|---|
+| antes | 1,68 / 1,71 / 1,86 ms | 1,81 / 1,80 / 1,95 ms | 29,3 / 29,0 / 30,5 % |
+| después | 1,75 / 1,60 / 1,69 ms | 1,79 / 1,74 / 1,82 ms | 28,9 / 28,1 / 28,8 % |
+
+Alrededor de un 4 % menos, **dentro del ruido**, como las trazas del punto
+4. Se queda: son 213 llamadas a GL menos por fotograma y pantalla, sin
+riesgo comprobado. La CPU por fotograma que queda (~1,7 ms) no está en los
+uniforms.

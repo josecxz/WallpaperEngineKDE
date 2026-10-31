@@ -9,6 +9,8 @@
     wectl stop             para el motor (en Plasma, vuelve su fondo)
     wectl status           que hay puesto y como va
     wectl gpu [dedicated|integrated]  en que grafica se dibuja el fondo
+    wectl pantallas [mismo|independiente]  un wallpaper para todas o uno al
+                           azar por pantalla (Hyprland)
 
 Todo pasa por la API de scripting de Plasma via D-Bus, que aplica el cambio
 EN CALIENTE. Es la diferencia importante con `make reload`, que reinicia
@@ -47,6 +49,9 @@ from werender import emit_plan
 
 RAIZ = Path(__file__).resolve().parent.parent
 ESCENA = RAIZ / "plugin" / "contents" / "scene"
+# Un plan por monitor, en `PANTALLAS/<monitor>/`, cuando cada pantalla lleva el
+# suyo (`wectl pantallas independiente`, solo en Hyprland).
+PANTALLAS = RAIZ / "plugin" / "contents" / "pantallas"
 PLUGIN = "org.jose.wallpaperengine"
 PLUGIN_IMAGEN = "org.kde.image"
 
@@ -145,6 +150,36 @@ def _guardar_config_hyprland(datos: dict) -> None:
     tmp.replace(CONFIG_HYPRLAND)
 
 
+MODOS_PANTALLAS = ("mismo", "independiente")
+
+
+def modo_pantallas() -> str:
+    """`mismo` (un plan para todas las pantallas) o `independiente`."""
+    m = _config_hyprland().get("pantallas")
+    return m if m in MODOS_PANTALLAS else "mismo"
+
+
+def monitores_hyprland() -> list[tuple[str, int, int]]:
+    """Nombre y pixeles de cada monitor encendido, en el orden de Hyprland."""
+    try:
+        r = subprocess.run(["hyprctl", "-j", "monitors"], capture_output=True,
+                           text=True, timeout=10)
+        datos = json.loads(r.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    salida = []
+    for m in datos if isinstance(datos, list) else []:
+        if m.get("disabled") or m.get("mirrorOf", "none") not in ("none", None):
+            continue
+        w, h = m.get("width"), m.get("height")
+        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+            # Girado 90/270 grados, el panel es alto: el plan tambien.
+            if m.get("transform", 0) % 2 == 1:
+                w, h = h, w
+            salida.append((str(m.get("name")), w, h))
+    return salida
+
+
 def fondo_hyprland() -> bool:
     """Si el fondo de Hyprland esta en marcha."""
     r = subprocess.run(["systemctl", "--user", "is-active", "--quiet",
@@ -162,6 +197,12 @@ def hyprland_arrancar() -> None:
     cfg = _config_hyprland()
     opciones = [str(o) for o in cfg.get("opciones", [])]
     gpu = "integrada" if cfg.get("gpu") == "integrada" else "dedicada"
+    planes = []
+    if modo_pantallas() == "independiente":
+        # El vigia de cada monitor mira este directorio para ver aparecer su
+        # plan; si no existiera, no veria nada hasta el siguiente arranque.
+        PANTALLAS.mkdir(parents=True, exist_ok=True)
+        planes = ["--planes", str(PANTALLAS)]
     entorno = {"QT_FORCE_STDERR_LOGGING": "1",
                "QML_IMPORT_PATH": ":".join(
                    p for p in (str(MODULOS_QML), os.environ.get("QML_IMPORT_PATH"))
@@ -183,7 +224,7 @@ def hyprland_arrancar() -> None:
              "-p", "StandardError=inherit",
              *[f"--setenv={k}={v}" for k, v in entorno.items()],
              str(QML), str(ANFITRION), "--",
-             "--plan", str(ESCENA / "plan.txt"), "--gpu", gpu, *opciones]
+             "--plan", str(ESCENA / "plan.txt"), "--gpu", gpu, *planes, *opciones]
     try:
         r = subprocess.run(orden, capture_output=True, text=True)
     except FileNotFoundError:
@@ -366,7 +407,13 @@ def resolucion_de_pantalla() -> tuple[int, int] | None:
 
     Si `kscreen-doctor` no esta o no se entiende, se devuelve None y el plan
     sale al lienzo del autor, que es como ha funcionado siempre.
+
+    En Hyprland no hay `kscreen-doctor`: se pregunta a `hyprctl`.
     """
+    if en_hyprland():
+        mons = monitores_hyprland()
+        return max(((w, h) for _, w, h in mons), key=lambda t: t[0] * t[1],
+                   default=None)
     try:
         r = subprocess.run(["kscreen-doctor", "-j"], capture_output=True,
                            text=True, timeout=10)
@@ -387,7 +434,8 @@ def resolucion_de_pantalla() -> tuple[int, int] | None:
     return mejor
 
 
-def preparar(ruta: Path) -> dict:
+def preparar(ruta: Path, destino: Path = ESCENA,
+             resolucion: tuple[int, int] | None = None) -> dict:
     """Genera el plan de `ruta` y lo pone en su sitio de una pieza.
 
     El plan NO se escribe encima del que hay. Dos razones, y la segunda es la
@@ -407,22 +455,26 @@ def preparar(ruta: Path) -> dict:
     El plan nombra sus assets por ruta absoluta, asi que hay que decirle a
     `emit_plan` donde van a ACABAR y no donde se estan escribiendo; si no, sale
     apuntando al directorio de trabajo y el motor arranca sin encontrar nada.
+
+    `destino` es el plan compartido (`ESCENA`) o el de un monitor
+    (`PANTALLAS/<monitor>`); el de un monitor se genera a SU resolucion.
     """
+    if resolucion is None:
+        resolucion = resolucion_de_pantalla()
     with en_exclusiva():
         # El directorio de construccion lleva un nombre unico, no `.nueva` a
         # secas: asi ni siquiera sin el cerrojo ---otro usuario, otra copia del
         # repo--- puede un proceso borrarle los ficheros a otro.
-        ESCENA.parent.mkdir(parents=True, exist_ok=True)
-        nueva = Path(tempfile.mkdtemp(prefix=ESCENA.name + ".nueva.",
-                                      dir=ESCENA.parent))
-        vieja = ESCENA.with_name(ESCENA.name + ".vieja")
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        nueva = Path(tempfile.mkdtemp(prefix=destino.name + ".nueva.",
+                                      dir=destino.parent))
+        vieja = destino.with_name(destino.name + ".vieja")
         shutil.rmtree(vieja, ignore_errors=True)
         try:
-            stats = emit_plan(ruta, nueva, ESCENA,
-                              resolucion=resolucion_de_pantalla())
-            if ESCENA.exists():
-                ESCENA.rename(vieja)
-            nueva.rename(ESCENA)
+            stats = emit_plan(ruta, nueva, destino, resolucion=resolucion)
+            if destino.exists():
+                destino.rename(vieja)
+            nueva.rename(destino)
         except BaseException:
             shutil.rmtree(nueva, ignore_errors=True)
             raise
@@ -466,18 +518,46 @@ def aplicar(ruta: Path) -> dict:
     """
     construir()
     stats = preparar(ruta)
+    # Un wallpaper concreto va a TODAS las pantallas, tambien en modo
+    # independiente: se quitan los planes propios y cada monitor vuelve al
+    # compartido. El modo no cambia; el siguiente `shuffle` vuelve a repartir.
+    borrar_planes_propios()
     recargar()
     return stats
 
 
-def plan_instalado() -> str | None:
+def borrar_planes_propios() -> None:
+    with en_exclusiva():
+        if PANTALLAS.is_dir():
+            for d in PANTALLAS.iterdir():
+                if d.is_dir():
+                    shutil.rmtree(d, ignore_errors=True)
+
+
+def planes_propios() -> dict[str, str]:
+    """Monitor -> titulo del plan propio que tiene preparado."""
+    salida = {}
+    if PANTALLAS.is_dir():
+        for d in sorted(PANTALLAS.iterdir()):
+            titulo = _titulo_del_plan(d / "plan.txt")
+            # Los `<monitor>.nueva.*` y `.vieja` son de un cambio a medias.
+            if d.is_dir() and "." not in d.name and titulo:
+                salida[d.name] = titulo
+    return salida
+
+
+def _titulo_del_plan(plan: Path) -> str | None:
     try:
-        for linea in (ESCENA / "plan.txt").read_text().splitlines():
+        for linea in plan.read_text().splitlines():
             if linea.startswith("title "):
                 return linea[6:]
     except OSError:
         return None
     return None
+
+
+def plan_instalado() -> str | None:
+    return _titulo_del_plan(ESCENA / "plan.txt")
 
 
 # ── rotacion ────────────────────────────────────────────────────────────────
@@ -800,6 +880,8 @@ def cmd_shuffle(args) -> int:
     # como "ninguna de las escenas probadas se pudo preparar", que manda a
     # mirar la biblioteca cuando el problema es el motor.
     construir()
+    if en_hyprland() and modo_pantallas() == "independiente":
+        return _shuffle_por_pantalla(estado, entradas, raiz, titulos, segundos)
     for _ in range(min(5, len(entradas))):
         elegido = _sacar_de_la_bolsa(estado, entradas)
         titulo = titulos.get(elegido, elegido)
@@ -824,6 +906,92 @@ def cmd_shuffle(args) -> int:
     _guardar_estado(estado)
     raise CtlError("ninguna de las escenas probadas se pudo preparar:\n"
                    + "\n".join(errores))
+
+
+def _shuffle_por_pantalla(estado: dict, entradas: list[tuple[str, str]],
+                          raiz: Path, titulos: dict[str, str],
+                          segundos: int | None) -> int:
+    """Un wallpaper distinto al azar para cada monitor.
+
+    Salen de la misma bolsa, uno detras de otro, asi que en un mismo cambio dos
+    pantallas no repiten (salvo que la biblioteca tenga menos wallpapers que
+    monitores), y entre cambios sigue valiendo la regla de la bolsa: no se
+    repite ninguno hasta que hayan salido todos. Cada plan se genera a la
+    resolucion de SU monitor.
+    """
+    mons = monitores_hyprland()
+    if not mons:
+        raise CtlError("hyprctl no da ningun monitor; ¿esta Hyprland corriendo?")
+    puestos = {}
+    fallos = []
+    for nombre, w, h in mons:
+        errores = []
+        for _ in range(min(5, len(entradas))):
+            elegido = _sacar_de_la_bolsa(estado, entradas)
+            try:
+                preparar(raiz / elegido, PANTALLAS / nombre, resolucion=(w, h))
+            except Exception as e:
+                errores.append(f"  {titulos.get(elegido, elegido)} ({elegido}): "
+                               f"{type(e).__name__}: {e}")
+                continue
+            puestos[nombre] = elegido
+            estado["puesto"] = elegido
+            break
+        if errores:
+            print(f"no se pudieron preparar para {nombre}:", file=sys.stderr)
+            print("\n".join(errores), file=sys.stderr)
+        if nombre not in puestos:
+            fallos.append(nombre)
+    estado["puestos"] = puestos
+    _guardar_estado(estado)
+    if not puestos:
+        raise CtlError("ninguna pantalla recibio wallpaper; mira los errores de arriba")
+    recargar()
+    for nombre, elegido in puestos.items():
+        print(f"{nombre}: {titulos.get(elegido, elegido)}  ({elegido})")
+    for nombre in fallos:
+        print(f"{nombre}: sin cambio (ninguna escena probada se pudo preparar)")
+    print(f"quedan {len(estado['bolsa'])} de {len(entradas)} antes de repetir")
+    if segundos is not None:
+        rotacion_encender(segundos)
+        print(f"rotacion activada: otro por pantalla cada {_en_palabras(segundos)}")
+    return 0
+
+
+def cmd_pantallas(args) -> int:
+    """Mismo wallpaper en todas las pantallas, o uno al azar en cada una."""
+    if not en_hyprland():
+        raise CtlError("por ahora solo en Hyprland: en Plasma todas las "
+                       "pantallas leen el mismo plan")
+    actual = modo_pantallas()
+    if args.modo is None:
+        print(f"pantallas : {actual}")
+        if actual == "independiente":
+            propios = planes_propios()
+            for nombre, _, _ in monitores_hyprland():
+                print(f"  {nombre}: {propios.get(nombre) or plan_instalado() or '(ninguno)'}"
+                      + ("" if nombre in propios else "  (compartido)"))
+        return 0
+    modo = {"same": "mismo", "independent": "independiente"}.get(args.modo, args.modo)
+    cfg = _config_hyprland()
+    cfg["pantallas"] = modo
+    _guardar_config_hyprland(cfg)
+    if modo == "mismo":
+        borrar_planes_propios()
+    # `--planes` se pasa al arrancar: cambiar de modo es rearrancar el fondo.
+    # Construir ANTES: el fondo nuevo carga el modulo QML que haya instalado, y
+    # el modo independiente necesita el de esta version (`VigiaArchivo.existe`).
+    construir()
+    if fondo_hyprland():
+        hyprland_parar()
+        hyprland_arrancar()
+    if modo == "independiente" and actual != "independiente":
+        print("pantallas : independiente; repartiendo uno al azar por pantalla")
+        return cmd_shuffle(argparse.Namespace(parar=False, cada=None))
+    print(f"pantallas : {modo}"
+          + (f" ({plan_instalado()} en todas)" if modo == "mismo" and plan_instalado()
+             else ""))
+    return 0
 
 
 # Lo que acepta `wectl gpu`, a lo que guarda la clave `DedicatedGpu`. Los
@@ -926,7 +1094,10 @@ def cmd_stop(args) -> int:
 
 
 def cmd_status(args) -> int:
-    print(f"plan preparado : {plan_instalado() or '(ninguno)'}")
+    compartido = en_hyprland() and modo_pantallas() == "independiente"
+    print(f"{'plan compartido' if compartido else 'plan preparado '}: "
+          f"{plan_instalado() or '(ninguno)'}"
+          + ("  (lo usa la pantalla sin plan propio)" if compartido else ""))
     rot = rotacion_estado()
     if rot is None:
         print("rotacion       : parada")
@@ -949,6 +1120,9 @@ def cmd_status(args) -> int:
         print(f"escritorio     : Hyprland (unidad {UNIDAD_HYPRLAND})")
         print(f"estado         : {'EN MARCHA' if andando else 'parado'}")
         cfg = _config_hyprland()
+        print(f"pantallas      : {modo_pantallas()}")
+        for nombre, titulo in planes_propios().items():
+            print(f"  {nombre}: {titulo}")
         print(f"gpu            : {cfg.get('gpu', 'dedicada')}"
               + (f"; opciones {' '.join(map(str, cfg['opciones']))}"
                  if cfg.get("opciones") else ""))
@@ -1006,6 +1180,14 @@ def main() -> int:
                    help="dedicated (nvidia) o integrated (intel); sin nada, "
                         "dice cual esta configurada y cual se usa")
     s.set_defaults(fn=cmd_gpu)
+
+    s = sub.add_parser("pantallas",
+                       help="el mismo wallpaper en todas las pantallas o uno "
+                            "al azar en cada una (Hyprland)")
+    s.add_argument("modo", nargs="?",
+                   choices=["mismo", "independiente", "same", "independent"],
+                   help="sin nada, dice el modo y que tiene cada pantalla")
+    s.set_defaults(fn=cmd_pantallas)
 
     for nombre, fn, ayuda in (("start", cmd_start, "activa el motor"),
                               ("stop", cmd_stop, "para el motor"),

@@ -44,6 +44,37 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10644` **Cambiar de plan sin plasmashell** — `Loader` + `VigiaArchivo` (inodo y fecha, porque `wectl` renombra el directorio); `shuffle` probaba cinco escenas por tick hasta que `recargar()` aprendió a ver el pid del fondo de Hyprland.
 - `10664` **`wectl` en Hyprland** — las mismas órdenes; el fondo es la unidad transitoria `wallpaperengine-hyprland` porque un hijo del servicio oneshot de la rotación moriría con él; `gpu` reinicia la unidad y se guarda en `~/.config/wallpaperengine/hyprland.json`.
 - `10697` **Dos monitores: las dos capas iban al primero** — layer-shell-qt elige monitor con `LayerShell.Window.screen`, no con `Window.screen`, y `Qt.application.screens` da `QQuickScreenInfo`: `Hyprland.pantalla` busca el `QScreen` por nombre. Probado con HDMI y con una salida `headless` en caliente.
+- `10727` **Un wallpaper distinto en cada pantalla** — `wectl pantallas mismo|independiente` (solo Hyprland): un plan por monitor en `plugin/contents/pantallas/`, `VigiaArchivo.existe` para caer al compartido, `shuffle` reparte de la misma bolsa y `set` pone el mismo en todas.
+- `10734` **Cómo** — `preparar` con destino, `--planes` en el anfitrión, el `Loader` que solo recarga el plan de su monitor y el `existe` hacia abajo cuando `set` borra los propios.
+- `10761` **La resolución, que en Hyprland no se leía** — sin `kscreen-doctor` los planes salían al lienzo del autor (hasta 7680×4320); ahora `hyprctl -j monitors`, y cada plan propio a su monitor.
+- `10799` **La vara de medir del rendimiento** — `WE_MEDIDAS` en el motor (fotogramas ejecutados, CPU, GPU y copia por intervalo, en sumas crudas) y `tools/medir_vivo.py` (escena fija, sin pausa, `fdinfo` del i915; la NVIDIA no publica `fdinfo`). Ruido medido, regla del 10 % y la línea de base.
+- `10806` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
+- `10820` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
+- `10842` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
+- `10864` **La línea de base** — 163 fps en eDP-1, 110 % de un núcleo, y la copia entre GPUs pesa más que dibujar el plan.
+- `10880` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
+- `10886` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
+- `2885` **Lo medido** — la tabla por tope; 55 y no 60 porque el reloj late a 165 Hz; la NVIDIA bimodal a 60; el coste por fotograma sube al bajar fps, así que «% ocupada» no mide consumo y los vatios sí.
+- `10938` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
+- `10945` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
+- `10966` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
+- `2885` **Lo medido** — `leer` de 3,11 a 0,03 ms; la «subida» de la integrada, corregida después: no existe; la NVIDIA igual.
+- `10997` **Los 2,5 puntos de la integrada** — no existían: nueve medidas intercaladas de síncrona/PBO/PBO+copia dan lo mismo en la integrada; era una línea de base suelta. La integrada baila de 570 a 870 MHz y ±10 %. Desde aquí, antes y después intercalados.
+- `11002` **Las hipótesis** — frecuencia, memoria de origen u otro trabajo; `medir_vivo` guarda ahora MHz y RC6 de la integrada.
+- `2885` **Lo medido** — la tabla de los tres modos; copiar el PBO a un búfer propio cuesta 13 puntos de CPU.
+- `11042` **De paso, para el punto 3** — HDMI-A-3 cuelga de la NVIDIA: su fotograma va y vuelve por la integrada sin necesidad.
+- `11049` **Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro** — la segunda pantalla suma casi entera en el proceso (+13 % CPU, +370 MiB); el HDMI en la NVIDIA le cuesta a Hyprland el 40 % de la integrada. Cerrado medido, sin cambiar el motor.
+- `11054` **Lo que faltaba en la vara de medir** — Hyprland (CPU, i915, pmon), VRAM, `--sin-fondo` y `--solo` en el anfitrión; y zsh, que no parte `$x`.
+- `2885` **Lo medido** — la tabla por pantalla y sin fondo.
+- `11094` **Qué se puede hacer, y qué se hizo** — dibujar una vez para las dos solo vale en modo `mismo`; no se hizo.
+- `11110` **Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma** — ninguna `glReadPixels` corre en marcha; sí 46 `qgetenv` y 14 `glGetUniformLocation` por fotograma, ahora leídos al cargar. Dentro del ruido.
+- `11115` **Lo que hay** — las cinco lecturas y a qué variable obedecen; las consultas por fotograma no esperan a la GPU.
+- `11127` **Lo que sí se pagaba, aunque poco** — el cerrojo del entorno disputado por dos hilos, y la búsqueda de `src` por nombre.
+- `2885` **Lo medido** — A/B intercalado cambiando el `.so`: 1–3 % menos, dentro del ruido.
+- `11153` **Los uniforms constantes, una vez al cargar** — un programa por pase conserva sus uniforms: `resolve` sube las constantes y los samplers una vez y el bucle solo `g_Time` y los marcados (227 → 14 llamadas por fotograma). ~4 % de CPU, dentro del ruido.
+- `11160` **Por qué se puede** — sin programas compartidos; los valores solo se escriben al leer el plan; las hojas ya iban aparte.
+- `11176` **Comprobado que el render no cambia** — `glGetUniform*` al fotograma 100 en 12 escenas: cero distintos. Los 16 «distintos» de Sci-Fi City eran uniforms duplicados en el plan (`g_UserAlpha` dos veces por pase) y los de las hojas.
+- `2885` **Lo medido** — A/B intercalado: ~4 % menos, dentro del ruido.
 
 ## CLI, rotación y rutas
 
