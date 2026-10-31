@@ -11465,3 +11465,24 @@ frecuencia.
   de la decodificación.
 - **Con dos pantallas en modo `mismo`, el vídeo se decodifica dos veces**,
   una por pantalla.
+
+## Los relojes, el texto y la hora en cada fotograma
+
+Punto 9 de la auditoría: que relojes y texto no se rehagan en cada
+fotograma. **Ya estaba bien; no se cambia nada.**
+
+- **Relojes** (`updateClocks`): se rehacen cuando cambia el tramo que la
+  plantilla distingue (el minuto, o el segundo con `%S`), y suben unas
+  decenas de vértices. `localtime_r` solo al rehacer.
+- **La hora de las agujas** (`we_hora_del_dia`): un `clock_gettime` y un
+  `localtime_r` por fotograma, para todas a la vez.
+- **Las mallas animadas** (`skinMeshes`) se deforman por CPU en cada
+  fotograma, pero son pocos miles de vértices: decenas de µs.
+
+Medido en eDP-1 con las dos escenas del corpus con más capas de texto con
+script: *Lonely Cat* (`3299228616`, 60 capas, 58 relojes) gasta **1,58 ms
+de CPU por fotograma**, 0,8 de ellos la copia entre GPUs, y 17 % de
+proceso. *Arknights* (`3462491575`, 16 capas) gasta 2,8 ms, pero por otra
+cosa: **144 pases, 110 objetos, 71 sistemas de partículas y 5 mallas
+animadas**. Su CPU es el envío de GL de todo eso, que es el punto 6 (los
+cambios de estado entre pases), y es la escena con la que medirlo.

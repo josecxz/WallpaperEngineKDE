@@ -93,6 +93,7 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11353` **Comprobado** — 15 vídeos offline: 9 idénticos, 6 de 4K a 37–45 dB. `test_wevideo` falla en *Pattern* (`3047352572`) desde antes de este cambio.
 - `2885` **Lo medido** — intercalado tres y tres.
 - `3072` **Lo que queda** — conversión en la GPU, VAAPI, y el vídeo decodificado dos veces con dos pantallas.
+- `11469` **Los relojes, el texto y la hora en cada fotograma** — ya estaba bien: los relojes se rehacen por tramo. *Lonely Cat* con 58 relojes, 1,58 ms por fotograma; *Arknights* (144 pases, 71 sistemas) es la escena para el punto 6.
 
 ## CLI, rotación y rutas
 
