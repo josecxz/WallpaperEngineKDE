@@ -71,6 +71,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11115` **Lo que hay** — las cinco lecturas y a qué variable obedecen; las consultas por fotograma no esperan a la GPU.
 - `11127` **Lo que sí se pagaba, aunque poco** — el cerrojo del entorno disputado por dos hilos, y la búsqueda de `src` por nombre.
 - `2885` **Lo medido** — A/B intercalado cambiando el `.so`: 1–3 % menos, dentro del ruido.
+- `11153` **Los uniforms constantes, una vez al cargar** — un programa por pase conserva sus uniforms: `resolve` sube las constantes y los samplers una vez y el bucle solo `g_Time` y los marcados (227 → 14 llamadas por fotograma). ~4 % de CPU, dentro del ruido.
+- `11160` **Por qué se puede** — sin programas compartidos; los valores solo se escriben al leer el plan; las hojas ya iban aparte.
+- `11176` **Comprobado que el render no cambia** — `glGetUniform*` al fotograma 100 en 12 escenas: cero distintos. Los 16 «distintos» de Sci-Fi City eran uniforms duplicados en el plan (`g_UserAlpha` dos veces por pase) y los de las hojas.
+- `2885` **Lo medido** — A/B intercalado: ~4 % menos, dentro del ruido.
 
 ## CLI, rotación y rutas
 

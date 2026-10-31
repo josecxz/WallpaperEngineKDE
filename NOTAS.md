@@ -11149,3 +11149,65 @@ Entre un 1 y un 3 % menos, **dentro del ruido**: por la regla no cuenta como
 mejora. Se queda porque no tiene riesgo y quita una contención entre hilos.
 Las trazas siguen saliendo con sus variables: dos fotogramas con
 `WE_TRACE_FRAMES=2`, 28 líneas de objeto y las de cada pase.
+
+## Los uniforms constantes, una vez al cargar
+
+Punto 5 de la auditoría. En cada pase de cada fotograma se subían **todos**
+los uniforms y la unidad de cada sampler, aunque el propio comentario del
+bucle decía que solo `g_Time` y el ratón cambian. En `2788165557` eran 174
+uniforms y 53 samplers: unas 227 llamadas a GL por fotograma y pantalla.
+
+### Por qué se puede
+
+- Cada pase tiene **su propio programa** (`buildProgram`, sin caché ni
+  programas compartidos), y un programa de GL conserva sus uniforms.
+- Los valores solo se escriben al leer el plan. Por fotograma cambian
+  `timeMarker` (`g_Time`) y los marcados (ratón, cámara, parallax), y las
+  hojas de sprites, que ya iban aparte (`g_Texture0Rotation` y
+  `Translation`, por `we_hoja_*_uniforms`).
+
+`resolve` sube ahora, tras podar, las constantes y las unidades de los
+samplers una vez, con su `glUseProgram`, y deja en `op.uniforms` solo los
+que cambian. El bucle sube esos y nada más: **14 por fotograma** en la
+escena de referencia. `SceneView` lo dice al cargar («174 activos (14 por
+fotograma)»). `glexec.c` no se ha tocado: no comparte este código, y
+offline el rendimiento no importa.
+
+### Comprobado que el render no cambia
+
+Comparar imágenes no sirve aquí: el tiempo del primer fotograma no se
+repite entre ejecuciones. Se comprobó la invariante. Con código temporal, ya
+quitado, al fotograma 100 se leyó con `glGetUniformfv`/`glGetUniformiv` cada
+uniform constante y cada sampler de cada programa, y se comparó con el plan.
+En **12 escenas** (Jeanne, Sci-Fi Cyber City, GODDES, Warwick, Halo,
+Samurai, Saber, vídeos, relojes…), en las dos pantallas: **~1.900
+constantes y ~550 samplers, cero distintos**.
+
+El primer recuento dio 16 «distintas» en *Sci-Fi Cyber City*, y no eran
+fallos de esto:
+
+- **Uniforms duplicados en el plan**: un pase trae `u1f g_UserAlpha 1` y,
+  más abajo, `u1f g_UserAlpha 0.57`. Las dos son constantes. Antes se subían
+  las dos en cada fotograma y ganaba la última; ahora se suben al cargar en
+  el mismo orden, y gana la misma. La comprobación ingenua comparaba la
+  primera. `werender.py` emite así 115 `g_UserAlpha` en esa escena, con
+  duplicados por pase. Es inofensivo, pero queda anotado.
+- **`g_Texture0Translation` de las hojas**, que la hoja reescribe en cada
+  fotograma por su cuenta.
+
+Con la comprobación contando solo la última entrada de cada ubicación y sin
+las de las hojas: 0 distintas.
+
+### Lo medido
+
+A/B intercalado, tres y tres, cambiando el `.so` instalado:
+
+| | CPU por fotograma eDP-1 | HDMI-A-3 | proceso |
+|---|---|---|---|
+| antes | 1,68 / 1,71 / 1,86 ms | 1,81 / 1,80 / 1,95 ms | 29,3 / 29,0 / 30,5 % |
+| después | 1,75 / 1,60 / 1,69 ms | 1,79 / 1,74 / 1,82 ms | 28,9 / 28,1 / 28,8 % |
+
+Alrededor de un 4 % menos, **dentro del ruido**, como las trazas del punto
+4. Se queda: son 213 llamadas a GL menos por fotograma y pantalla, sin
+riesgo comprobado. La CPU por fotograma que queda (~1,7 ms) no está en los
+uniforms.

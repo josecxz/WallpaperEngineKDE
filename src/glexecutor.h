@@ -118,6 +118,7 @@ public:
     int canvasWidth() const { return m_canvasW; }
     int canvasHeight() const { return m_canvasH; }
     int liveUniformCount() const { return m_liveUniforms; }
+    int uniformsPorFotograma() const { return m_uniformsPorFotograma; }
     int initMillis() const { return m_initMs; }
     double diagCompoMean() const { return m_diagCompoMean; }
 
@@ -259,6 +260,9 @@ private:
         GlName program = 0;
         qsizetype targetIndex = kCompo;
         QVector<Sampler> samplers;
+        // Tras `resolve`, solo los que cambian por fotograma (`g_Time` y los
+        // marcados): los constantes se suben UNA vez al cargar, porque cada
+        // pase tiene su propio programa y un programa conserva sus uniforms.
         QVector<Uniform> uniforms;
         // Copy: -1 = compuesto del objeto
         qsizetype copySrc = kCompo, copyDst = kCompo;
@@ -392,6 +396,7 @@ private:
     void flushObjectToScene();
     bool buildProgram(Op &op);
     void resolve(Op &op);
+    static void subirUniform(const Uniform &u, const float *v);
 
     QVector<Op> m_ops;
     QHash<int, TexSpec> m_textures;
@@ -477,6 +482,7 @@ private:
     quint64 m_diagFitSig = 0;   // ultimo encaje trazado, para no repetirlo
     int m_passCount = 0;
     int m_liveUniforms = 0;
+    int m_uniformsPorFotograma = 0;   // los que quedan en el bucle de dibujado
     int m_initMs = 0;
     bool m_diagDone = false;
     int m_frame = 0;            // solo para la traza de WE_TRACE_FRAMES
