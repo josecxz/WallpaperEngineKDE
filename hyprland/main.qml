@@ -16,6 +16,7 @@
 //   QML_IMPORT_PATH=~/.local/lib/qt6/qml /usr/lib/qt6/bin/qml hyprland/main.qml \
 //       -- --plan <plan.txt> [--pausa 0|1|2] [--encaje 0|1|2] [--zoom 1.0]
 //          [--color '#0b0b0d'] [--gpu dedicada|integrada] [--fps 60] [--hud]
+//          [--solo eDP-1,HDMI-A-3]
 //
 // `wectl` toma `--gpu` de `wectl gpu` y el resto de `opciones` en
 // ~/.config/wallpaperengine/hyprland.json.
@@ -68,6 +69,9 @@ QtObject {
     // por defecto, como el plugin de Plasma (config/main.xml, `FpsMax`).
     readonly property real fpsMax: parseFloat(opcion("fps", "60"))
     readonly property bool hud: opcion("hud", false)
+    // `--solo eDP-1,HDMI-A-3`: fondo solo en esos monitores. Para medir lo
+    // que cuesta cada pantalla sin desenchufar ninguna.
+    readonly property var solo: opcion("solo", "") ? opcion("solo", "").split(",") : []
 
     property VigiaArchivo vigia: VigiaArchivo { ruta: app.plan }
 
@@ -84,7 +88,9 @@ QtObject {
 
     // ── un fondo por monitor ────────────────────────────────────────────────
     property Instantiator fondos: Instantiator {
-        model: Qt.application.screens
+        model: app.solo.length
+               ? Qt.application.screens.filter(p => app.solo.indexOf(p.name) >= 0)
+               : Qt.application.screens
 
         delegate: Window {
             id: ventana

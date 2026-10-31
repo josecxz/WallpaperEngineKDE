@@ -11045,3 +11045,64 @@ de base guardada sirve para orientarse, no para decidir.
 integrada. El fotograma de esa pantalla hace NVIDIA → CPU → integrada (Qt
 compone) → Hyprland → NVIDIA para salir por el cable. En una pantalla
 conectada a la dedicada, el viaje por la integrada sobra entero.
+
+## Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro
+
+Punto 3 de la auditoría: «dos monitores, el doble de todo». Antes de
+arreglar nada, medir cuánto cuesta cada pantalla y **a quién**.
+
+### Lo que faltaba en la vara de medir
+
+- **El compositor.** Cada fotograma nuevo del fondo obliga a Hyprland a
+  recomponer esa pantalla, y ese coste no salía en ninguna medida.
+  `medir_vivo` mide ahora también a Hyprland (`pgrep -x Hyprland`): su CPU,
+  su `fdinfo` del i915 y su % en `nvidia-smi pmon`.
+- **La VRAM** de la NVIDIA (`memory.used`, de toda la tarjeta).
+- **`--sin-fondo`**: la misma medida sin fondo, la referencia de no tener
+  nada.
+- **`--solo eDP-1,HDMI-A-3`** en el anfitrión: fondo solo en esos monitores,
+  para medir una pantalla sin desenchufar la otra.
+
+Un tropiezo de zsh, otra vez: `-- $x` con `x="--solo eDP-1"` llega como UN
+argumento, porque zsh no parte las variables en palabras. Las tres primeras
+medidas «de una pantalla» eran de las dos.
+
+### Lo medido
+
+Tres medidas intercaladas de cada caso, `2788165557`, tope de 60:
+
+| | proceso: CPU / integrada | Hyprland: CPU / integrada / NVIDIA sm | VRAM | NVIDIA |
+|---|---|---|---|---|
+| sin fondo | — | 1,7–2,1 % / 0,8–2,1 % / 0–0,7 | 54–285 MiB | 2–7 W |
+| solo eDP-1 | 16,1–17,3 % / 12,7–13,2 % | 6,1–7,0 % / 15,4–16,2 % / 0 | 541–546 MiB | 17 W |
+| solo HDMI-A-3 | 12,8–13,5 % / 10,5–10,7 % | 5,6–6,0 % / 38,6–41,5 % / 5–18 | 505–1139 MiB | 19–22 W |
+| las dos | 29,1–29,7 % / 16,4–18,4 % | 8,7–9,1 % / 31,6–35,4 % / 7–17 | 913–918 MiB | 22 o 38 W |
+
+- **En el proceso, la segunda pantalla suma casi entera**: 16,7 + 13,1 ≈
+  29,4 % de CPU, y ~370 MiB más de VRAM. Cada pantalla carga, simula y
+  ejecuta su plan. En la integrada no suma (13 + 10,6 → 17,3 %): la
+  integrada sube de frecuencia con las dos y el % ocupado no es aditivo.
+- **Lo caro del HDMI es Hyprland, no el motor.** HDMI-A-3 cuelga de la
+  NVIDIA (`card0`). Hyprland compone en la integrada y copia a la NVIDIA
+  para sacarlo por el cable. Con fondo solo en el HDMI, **Hyprland ocupa el
+  40 % de la integrada**, más que nuestro proceso entero y el triple que en
+  eDP-1. Con las dos, 33 %. Es ruido de frecuencia o Hyprland agrupa las
+  dos salidas; no se ha separado.
+- **Solo, el HDMI va a 60 fps; con las dos, a 55.** El reloj de las dos
+  ventanas lo marca el panel de 165 Hz (ver «El tope de fotogramas»).
+
+### Qué se puede hacer, y qué se hizo
+
+- **Dibujar una vez y mostrar en las dos** ahorraría el plan duplicado en la
+  NVIDIA, la simulación y ~370 MiB. Pero solo vale en modo `mismo` (en
+  `independiente` cada pantalla tiene otra escena, y es el modo que se usa
+  aquí), y obliga a compartir un contexto entre los dos hilos de render.
+  **No se ha hecho**: mucho riesgo para un modo que no se usa. Queda escrito
+  por si cambia.
+- **El coste de Hyprland en el HDMI** es cómo Hyprland maneja una salida de
+  la segunda GPU; desde el motor solo se baja pidiendo menos fotogramas
+  (`--fps`).
+- **Un ritmo propio de 60 Hz para el HDMI**: poco que ganar.
+
+El punto se cierra **medido, sin cambiar el motor**. Lo que queda es la vara
+de medir con el compositor dentro, que vale para los puntos siguientes.

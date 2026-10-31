@@ -248,7 +248,7 @@ Lo que en Plasma es el panel de ajustes aquí es
 
 `--pausa 0|1|2` (nunca / cuando lo visible tapa la pantalla / con cualquier
 ventana), `--encaje 0|1|2` (cubrir / entera / estirar), `--zoom`, `--despx`,
-`--despy`, `--color`, `--fps` (tope de fotogramas por segundo; 60 por defecto, 0 sin tope) y `--hud`.
+`--despy`, `--color`, `--fps` (tope de fotogramas por segundo; 60 por defecto, 0 sin tope), `--solo eDP-1,HDMI-A-3` (fondo solo en esos monitores) y `--hud`.
 
 Lo que en Plasma dan KWin y el modelo de tareas aquí lo da el IPC de
 Hyprland (`src/hyprland.cpp`): qué tapa cada monitor, para la pausa, y dónde

@@ -106,8 +106,8 @@ def _motores_drm(pid: int) -> dict[str, int]:
     return total
 
 
-def _pmon(pid: int, segundos: int, salida: list[float]) -> None:
-    """% de SM de la NVIDIA para `pid`, una muestra por segundo."""
+def _pmon(pids: list[int], segundos: int, salida: dict[int, list[float]]) -> None:
+    """% de SM de la NVIDIA para cada pid, una muestra por segundo."""
     try:
         r = subprocess.run(["nvidia-smi", "pmon", "-s", "u", "-d", "1", "-c", str(segundos)],
                            capture_output=True, text=True, timeout=segundos + 15)
@@ -115,11 +115,12 @@ def _pmon(pid: int, segundos: int, salida: list[float]) -> None:
         return
     for linea in r.stdout.splitlines():
         c = linea.split()
-        if len(c) > 3 and c[1] == str(pid):
-            salida.append(float(c[3]) if c[3] not in ("-", "") else 0.0)
+        if len(c) > 3 and c[1].isdigit() and int(c[1]) in pids:
+            salida.setdefault(int(c[1]), []).append(
+                float(c[3]) if c[3] not in ("-", "") else 0.0)
 
 
-def _potencia(segundos: int, salida: list[tuple[float, float]]) -> None:
+def _potencia(segundos: int, salida: list[tuple[float, float, float]]) -> None:
     """Vatios y MHz de la NVIDIA ENTERA, dos muestras por segundo.
 
     Es de toda la tarjeta, no de este proceso ---Hyprland tambien compone en
@@ -128,7 +129,7 @@ def _potencia(segundos: int, salida: list[tuple[float, float]]) -> None:
     tarda mas, asi que "% ocupada" puede no bajar aunque se gaste menos.
     """
     try:
-        p = subprocess.Popen(["nvidia-smi", "--query-gpu=power.draw,clocks.gr",
+        p = subprocess.Popen(["nvidia-smi", "--query-gpu=power.draw,clocks.gr,memory.used",
                               "--format=csv,noheader,nounits", "-lms", "500"],
                              stdout=subprocess.PIPE, text=True)
     except OSError:
@@ -137,8 +138,8 @@ def _potencia(segundos: int, salida: list[tuple[float, float]]) -> None:
     try:
         for linea in p.stdout:
             try:
-                w, mhz = (float(x) for x in linea.split(","))
-                salida.append((w, mhz))
+                w, mhz, mib = (float(x) for x in linea.split(","))
+                salida.append((w, mhz, mib))
             except ValueError:
                 pass
             if time.monotonic() >= fin:
@@ -297,6 +298,11 @@ def _imprimir(r: dict) -> None:
               f"copia leer {v['leer_ms']} subir {v['subir_ms']} ms")
     pr = r["proceso"]
     print(f"  proceso    cpu {pr['cpu_pct']:.1f} % de un nucleo   rss {pr['rss_mb']:.0f} MB")
+    co = r.get("compositor") or {}
+    if co.get("cpu_pct") is not None:
+        print(f"  Hyprland   cpu {co['cpu_pct']:.1f} %   "
+              + "   ".join(f"{k} {v:.1f} %" for k, v in co["motores_pct"].items())
+              + (f"   nvidia sm {co['nvidia_sm_pct']} %" if co.get("nvidia_sm_pct") is not None else ""))
     for k, v in pr["motores_pct"].items():
         print(f"             {k}: {v:.1f} %")
     if pr.get("nvidia_sm_pct") is not None:
@@ -305,7 +311,8 @@ def _imprimir(r: dict) -> None:
         print(f"             intel: {pr['intel_mhz']} MHz de media, "
               f"{pr['intel_rc6_pct']} % del tiempo en reposo (todo el sistema)")
     if pr.get("nvidia_w") is not None:
-        print(f"             nvidia tarjeta entera: {pr['nvidia_w']:.2f} W a {pr['nvidia_mhz']} MHz")
+        print(f"             nvidia tarjeta entera: {pr['nvidia_w']:.2f} W a {pr['nvidia_mhz']} MHz, "
+              f"{pr.get('nvidia_mib')} MiB usados")
 
 
 def _comparar(antes: dict, ahora: dict) -> None:
@@ -329,9 +336,21 @@ def _comparar(antes: dict, ahora: dict) -> None:
     fila("intel MHz", antes["proceso"].get("intel_mhz"), ahora["proceso"].get("intel_mhz"))
     fila("intel reposo %", antes["proceso"].get("intel_rc6_pct"),
          ahora["proceso"].get("intel_rc6_pct"))
+    fila("nvidia MiB (tarjeta)", antes["proceso"].get("nvidia_mib"),
+         ahora["proceso"].get("nvidia_mib"))
+    ac, bc = antes.get("compositor") or {}, ahora.get("compositor") or {}
+    fila("Hyprland cpu_pct", ac.get("cpu_pct"), bc.get("cpu_pct"))
+    for k, v in (bc.get("motores_pct") or {}).items():
+        fila(f"Hyprland {k}", (ac.get("motores_pct") or {}).get(k), v)
     fila("nvidia W (tarjeta)", antes["proceso"].get("nvidia_w"), ahora["proceso"].get("nvidia_w"))
     for k, v in ahora["proceso"]["motores_pct"].items():
         fila(f"proceso {k}", antes["proceso"]["motores_pct"].get(k), v)
+
+
+def _compositor() -> int | None:
+    r = subprocess.run(["pgrep", "-x", "Hyprland"], capture_output=True, text=True)
+    pids = [int(x) for x in r.stdout.split()]
+    return pids[0] if pids else None
 
 
 def main() -> int:
@@ -346,12 +365,15 @@ def main() -> int:
     ap.add_argument("--guardar", type=Path)
     ap.add_argument("--comparar", type=Path)
     ap.add_argument("--sin-pmon", action="store_true")
+    ap.add_argument("--sin-fondo", action="store_true",
+                    help="mide el sistema SIN fondo (compositor y NVIDIA), como "
+                         "referencia de lo que cuesta no tener nada")
     ap.add_argument("extra", nargs="*", help="opciones del anfitrion, tras --")
     args = ap.parse_args()
 
     if not wectl.en_hyprland():
         raise SystemExit("solo en Hyprland: en Plasma no se reinicia plasmashell para medir")
-    if args.wallpaper:
+    if args.wallpaper and not args.sin_fondo:
         ruta, titulo = wectl.resolver(args.wallpaper)
         cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
         args.plan = cache / "wallpaperengine" / "medida" / ruta.name
@@ -359,29 +381,35 @@ def main() -> int:
         # un plan viejo con un motor nuevo no compara nada.
         print(f"preparando {titulo} ({ruta.name}) en {args.plan}", flush=True)
         wectl.preparar(ruta, args.plan)
-    if not (args.plan / "plan.txt").is_file():
+    if not args.sin_fondo and not (args.plan / "plan.txt").is_file():
         raise SystemExit(f"no hay plan en {args.plan}")
 
     habia_fondo = wectl.fondo_hyprland()
     if habia_fondo:
         wectl.hyprland_parar()
+    comp = _compositor()
     try:
-        pid = _arrancar(args.plan, args.extra)
+        pid = None if args.sin_fondo else _arrancar(args.plan, args.extra)
         time.sleep(args.calentar)
         desde = REGISTRO.stat().st_size if REGISTRO.exists() else 0
-        pm: list[float] = []
-        pot: list[tuple[float, float]] = []
+        pm: dict[int, list[float]] = {}
+        pot: list[tuple[float, float, float]] = []
         intel: list[float] = []
         hilos = [threading.Thread(target=_intel, args=(args.segundos, intel))]
         if not args.sin_pmon:
-            hilos += [threading.Thread(target=_pmon, args=(pid, args.segundos, pm)),
+            hilos += [threading.Thread(target=_pmon, args=([p for p in (pid, comp) if p],
+                                                           args.segundos, pm)),
                       threading.Thread(target=_potencia, args=(args.segundos, pot))]
         for h in hilos:
             h.start()
-        t0, c0, m0, r0 = time.monotonic(), _cpu_s(pid), _motores_drm(pid), _rc6_ms()
+        cpu = lambda p: _cpu_s(p) if p else 0.0
+        drm = lambda p: _motores_drm(p) if p else {}
+        t0, c0, m0, r0 = time.monotonic(), cpu(pid), drm(pid), _rc6_ms()
+        k0, km0 = cpu(comp), drm(comp)
         time.sleep(args.segundos)
-        t1, c1, m1, r1 = time.monotonic(), _cpu_s(pid), _motores_drm(pid), _rc6_ms()
-        rss = _rss_mb(pid)
+        t1, c1, m1, r1 = time.monotonic(), cpu(pid), drm(pid), _rc6_ms()
+        k1, km1 = cpu(comp), drm(comp)
+        rss = _rss_mb(pid) if pid else 0.0
         for h in hilos:
             h.join()
         lineas = _lineas_motor(desde)
@@ -391,6 +419,9 @@ def main() -> int:
             wectl.hyprland_arrancar()
 
     dur = t1 - t0
+    pct = lambda a, b: {k: round((b[k] - a.get(k, 0)) / (dur * 1e9) * 100, 1)
+                        for k in b if b[k] - a.get(k, 0) > 0}
+    media = lambda xs: round(sum(xs) / len(xs), 1) if xs else None
     resultado = {
         "contexto": _contexto(args.plan),
         "segundos": args.segundos,
@@ -400,18 +431,27 @@ def main() -> int:
         "proceso": {
             "cpu_pct": round((c1 - c0) / dur * 100, 1),
             "rss_mb": round(rss, 1),
-            "motores_pct": {k: round((m1[k] - m0.get(k, 0)) / (dur * 1e9) * 100, 1)
-                            for k in m1 if m1[k] - m0.get(k, 0) > 0},
-            "nvidia_sm_pct": round(sum(pm) / len(pm), 1) if pm else None,
+            "motores_pct": pct(m0, m1),
+            "nvidia_sm_pct": media(pm.get(pid, [])) if pid else None,
             "intel_mhz": round(sum(intel) / len(intel)) if intel else None,
             # Tiempo de la integrada en reposo (RC6), de TODO el sistema.
             "intel_rc6_pct": round((r1 - r0) / (dur * 1000) * 100, 1)
                              if r0 is not None and r1 is not None else None,
-            "nvidia_w": round(sum(w for w, _ in pot) / len(pot), 2) if pot else None,
-            "nvidia_mhz": round(sum(m for _, m in pot) / len(pot)) if pot else None,
+            "nvidia_w": round(sum(p[0] for p in pot) / len(pot), 2) if pot else None,
+            "nvidia_mhz": round(sum(p[1] for p in pot) / len(pot)) if pot else None,
+            "nvidia_mib": round(sum(p[2] for p in pot) / len(pot)) if pot else None,
+        },
+        # Lo que el fondo le cuesta al compositor: cada fotograma nuevo del
+        # fondo le obliga a recomponer esa pantalla.
+        "compositor": {
+            "cpu_pct": round((k1 - k0) / dur * 100, 1) if comp else None,
+            "motores_pct": pct(km0, km1) if comp else {},
+            "nvidia_sm_pct": media(pm.get(comp, [])) if comp else None,
         },
     }
-    if not resultado["pantallas"]:
+    if args.sin_fondo:
+        resultado["contexto"]["plan"] = "(sin fondo)"
+    elif not resultado["pantallas"]:
         raise SystemExit(f"el motor no dio ninguna linea de medida; mira {REGISTRO}")
     _imprimir(resultado)
     if args.guardar:

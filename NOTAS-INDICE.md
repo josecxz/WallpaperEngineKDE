@@ -63,6 +63,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11002` **Las hipótesis** — frecuencia, memoria de origen u otro trabajo; `medir_vivo` guarda ahora MHz y RC6 de la integrada.
 - `2885` **Lo medido** — la tabla de los tres modos; copiar el PBO a un búfer propio cuesta 13 puntos de CPU.
 - `11042` **De paso, para el punto 3** — HDMI-A-3 cuelga de la NVIDIA: su fotograma va y vuelve por la integrada sin necesidad.
+- `11049` **Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro** — la segunda pantalla suma casi entera en el proceso (+13 % CPU, +370 MiB); el HDMI en la NVIDIA le cuesta a Hyprland el 40 % de la integrada. Cerrado medido, sin cambiar el motor.
+- `11054` **Lo que faltaba en la vara de medir** — Hyprland (CPU, i915, pmon), VRAM, `--sin-fondo` y `--solo` en el anfitrión; y zsh, que no parte `$x`.
+- `2885` **Lo medido** — la tabla por pantalla y sin fondo.
+- `11094` **Qué se puede hacer, y qué se hizo** — dibujar una vez para las dos solo vale en modo `mismo`; no se hizo.
 
 ## CLI, rotación y rutas
 
