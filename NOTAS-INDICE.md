@@ -55,6 +55,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10876` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
 - `10882` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
 - `2885` **Lo medido** — la tabla por tope; 55 y no 60 porque el reloj late a 165 Hz; la NVIDIA bimodal a 60; el coste por fotograma sube al bajar fps, así que «% ocupada» no mide consumo y los vatios sí.
+- `10934` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
+- `10941` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
+- `10962` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
+- `2885` **Lo medido** — `leer` de 3,11 a 0,03 ms; la integrada sube 2,5 puntos (sin explicar); la NVIDIA igual.
 
 ## CLI, rotación y rutas
 

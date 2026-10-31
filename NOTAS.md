@@ -10930,3 +10930,64 @@ da 3,6 W, y con el fondo en pausa 5,5 W.
 para los siguientes puntos es `base-fps60.json`: 55 + 55 fps, 65 % de CPU,
 17,6 % de la Intel y 22,9 W. Ojo al comparar: la del punto anterior era sin
 tope.
+
+## La copia entre GPUs, sin esperar
+
+Punto 2 de la auditoría. Con el tope de 60, de los ~5 ms de CPU que costaba
+cada fotograma **~3,1 ms eran `glReadPixels`** en la NVIDIA. No es la copia
+en sí: un `glReadPixels` a memoria del cliente es síncrono, y la CPU se queda
+esperando a que la GPU acabe el plan antes de copiar los 9 MB.
+
+### El cambio
+
+`OtraGpu::leer(asincrono)`. En marcha, la lectura va a un anillo de dos PBO
+con una valla (`glFenceSync`) y se entrega el fotograma **anterior**, que
+cuando se pide ya lleva un fotograma entero en memoria: la espera de la valla
+es cero. Los PBO se crean con `glBufferStorage` y mapeo persistente y
+coherente (`ARB_buffer_storage`, más `CLIENT_STORAGE` para que vivan en
+memoria del sistema), así que `presentar` sube a la integrada **directamente
+desde el puntero del PBO**, sin un `memcpy` de 9 MB por medio. El puntero es
+memoria de la CPU, y se puede usar con el contexto de Qt puesto.
+
+- **El precio es un fotograma de retraso**, ~18 ms a 55 fps. Por eso solo es
+  asíncrono si el reloj ha avanzado desde la última lectura. Un fotograma con
+  el reloj parado (el primero, o un cambio de encaje o de zoom en pausa) se
+  dibuja **una** vez, y en asíncrono se vería el anterior para siempre: va
+  por el camino síncrono de antes.
+- El primer fotograma asíncrono no tiene anterior: espera al suyo y el
+  siguiente lo repite.
+- Sin `GL_ARB_buffer_storage`, todo síncrono como antes.
+- Cuesta 2 × 9,2 MB de memoria fijada por pantalla a 1920×1200.
+
+### Que lo que se ve es lo que se dibujó
+
+Con una comprobación temporal (ya quitada): en cada fotograma, además del
+PBO, una lectura síncrona del mismo FBO, comparada byte a byte en el
+siguiente con lo que sale del PBO. **950 de 950 fotogramas idénticos en las
+dos pantallas.** El primer intento dio «6 iguales, 893 distintas» porque la
+referencia era `static` y la compartían los dos hilos de render, uno por
+pantalla. Con `thread_local`, cero distintas. Ojo al hacer pruebas así:
+**cada pantalla tiene su hilo de render**.
+
+### Lo medido
+
+Tres medidas contra `base-fps60` (`medir_vivo.py --wallpaper 2788165557`):
+
+| | antes | PBO (×3) |
+|---|---|---|
+| leer, ms por fotograma | 3,11 | 0,02–0,03 |
+| CPU de `render()`, ms (eDP-1) | 4,82 | 1,61–1,67 |
+| CPU del proceso | 65,3 % | 28,3–28,4 % |
+| render de la integrada | 17,6 % | 19,7–21,0 % |
+| NVIDIA | 22,9 W | 22,3 / 37,2 / 22,6 W |
+
+- La CPU del proceso **baja a menos de la mitad**, y `leer` desaparece.
+- **La integrada sube unos 2,5 puntos (+15 %)**, en las tres medidas, así
+  que es real. `subir` no cambia en CPU (0,9 ms). La sospecha es que Mesa
+  sube desde memoria del PBO de NVIDIA por un camino más caro que desde un
+  `QByteArray` propio. Sin medir; es del punto siguiente de la copia (la
+  subida).
+- La NVIDIA no cambia: sigue bimodal (1300 o 2550 MHz), como con el tope.
+- No probado: el cambio de GPU en caliente de Plasma (`soltarPlan` →
+  `liberarDentro`, que ahora también suelta los PBO). En Hyprland,
+  `wectl gpu` reinicia el proceso, y eso sí se ha probado.

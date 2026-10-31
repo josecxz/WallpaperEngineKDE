@@ -62,6 +62,7 @@ private:
     float m_puntero[2] = {0.5f, 0.5f};
     bool m_punteroPresente = false;
     double m_gpuPublicado = -1;   // ultimo valor mandado al item
+    float m_tLeido = -1;          // `time` del ultimo fotograma leido de la otra GPU
 
     // `WE_MEDIDAS=<segundos>`: cada tantos segundos, una linea
     // `SceneView: medida ...` con lo que costo este fondo en ese intervalo

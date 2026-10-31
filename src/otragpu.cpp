@@ -158,15 +158,104 @@ unsigned OtraGpu::destino(int w, int h)
     m_w = w;
     m_h = h;
     m_pixeles.resize(qsizetype(w) * h * 4);
+    // Los PBO son del tamano de antes; se rehacen en la siguiente lectura.
+    soltarAnillo();
     return m_fbo;
 }
 
-void OtraGpu::leer()
+void OtraGpu::crearAnillo()
+{
+    if (m_persistente < 0) {
+        m_persistente = 0;
+        GLint n = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+        for (GLint i = 0; i < n; ++i) {
+            const auto *e = reinterpret_cast<const char *>(glGetStringi(GL_EXTENSIONS, GLuint(i)));
+            if (e && std::strcmp(e, "GL_ARB_buffer_storage") == 0) {
+                m_persistente = 1;
+                break;
+            }
+        }
+        qInfo("OtraGpu: lectura %s", m_persistente
+              ? "asincrona, a PBO con mapeo persistente"
+              : "sincrona (sin GL_ARB_buffer_storage)");
+    }
+    if (!m_persistente || m_pbo[0])
+        return;
+    const GLsizeiptr tam = GLsizeiptr(m_w) * m_h * 4;
+    // CLIENT_STORAGE: que el driver lo ponga en memoria del sistema, que es
+    // donde lo lee la CPU. COHERENT: tras la valla, los datos ya se ven.
+    const GLbitfield bits = GL_MAP_READ_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+    glGenBuffers(2, m_pbo);
+    for (int i = 0; i < 2; ++i) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[i]);
+        glBufferStorage(GL_PIXEL_PACK_BUFFER, tam, nullptr, bits | GL_CLIENT_STORAGE_BIT);
+        m_mapa[i] = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, tam, bits);
+        m_lleno[i] = false;
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    if (!m_mapa[0] || !m_mapa[1]) {
+        qWarning("OtraGpu: no se pudieron mapear los PBO; lectura sincrona");
+        soltarAnillo();
+        m_persistente = 0;
+    }
+}
+
+void OtraGpu::soltarAnillo()
+{
+    for (int i = 0; i < 2; ++i) {
+        if (m_valla[i])
+            glDeleteSync(GLsync(m_valla[i]));
+        m_valla[i] = nullptr;
+        m_lleno[i] = false;
+        if (m_pbo[i] && m_mapa[i]) {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[i]);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+        m_mapa[i] = nullptr;
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    if (m_pbo[0])
+        glDeleteBuffers(2, m_pbo);
+    m_pbo[0] = m_pbo[1] = 0;
+    m_cur = 0;
+    m_fuente = nullptr;
+}
+
+void OtraGpu::leer(bool asincrono)
 {
     const double t0 = ahoraMs();
     glBindFramebuffer(GL_READ_FRAMEBUFFER, m_fbo);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
-    glReadPixels(0, 0, m_w, m_h, GL_RGBA, GL_UNSIGNED_BYTE, m_pixeles.data());
+    if (asincrono)
+        crearAnillo();
+    if (!asincrono || !m_persistente) {
+        // Lo de los PBO queda viejo: el siguiente asincrono empieza de cero.
+        m_lleno[0] = m_lleno[1] = false;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        glReadPixels(0, 0, m_w, m_h, GL_RGBA, GL_UNSIGNED_BYTE, m_pixeles.data());
+        m_fuente = m_pixeles.constData();
+    } else {
+        const int cur = m_cur, prev = 1 - m_cur;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_pbo[cur]);
+        glReadPixels(0, 0, m_w, m_h, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        if (m_valla[cur])
+            glDeleteSync(GLsync(m_valla[cur]));
+        m_valla[cur] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        // Que la orden salga ya: la valla se espera desde el fotograma que
+        // viene, y sin flush podria seguir en la cola de este contexto.
+        glFlush();
+        m_lleno[cur] = true;
+        // El primer fotograma no tiene anterior: se espera a este, como el
+        // camino sincrono, y el siguiente repite uno. Despues, el anterior
+        // casi siempre esta listo hace rato y la espera es cero.
+        const int sale = m_lleno[prev] ? prev : cur;
+        glClientWaitSync(GLsync(m_valla[sale]), GL_SYNC_FLUSH_COMMANDS_BIT,
+                         GLuint64(100) * 1000 * 1000);
+        m_fuente = m_mapa[sale];
+        m_cur = prev;
+    }
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
     const double ms = ahoraMs() - t0;
     acumula(m_msLeer, ms);
@@ -175,6 +264,8 @@ void OtraGpu::leer()
 
 void OtraGpu::presentar(unsigned qtFbo)
 {
+    if (!m_fuente)
+        return;   // sin `leer` antes no hay fotograma que subir
     const double t0 = ahoraMs();
     if (!m_texQt) {
         glGenTextures(1, &m_texQt);
@@ -193,7 +284,7 @@ void OtraGpu::presentar(unsigned qtFbo)
     glBindTexture(GL_TEXTURE_2D, m_texQt);
     if (m_wQt != m_w || m_hQt != m_h) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_w, m_h, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                     m_pixeles.constData());
+                     m_fuente);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, m_fboQt);
@@ -203,7 +294,7 @@ void OtraGpu::presentar(unsigned qtFbo)
         m_hQt = m_h;
     } else {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_w, m_h, GL_RGBA, GL_UNSIGNED_BYTE,
-                        m_pixeles.constData());
+                        m_fuente);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -228,6 +319,7 @@ void OtraGpu::presentar(unsigned qtFbo)
 
 void OtraGpu::liberarDentro()
 {
+    soltarAnillo();
     if (m_tex) glDeleteTextures(1, &m_tex);
     if (m_fbo) glDeleteFramebuffers(1, &m_fbo);
     m_tex = m_fbo = 0;

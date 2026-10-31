@@ -48,8 +48,17 @@ public:
     // Dentro: el FBO propio de w x h sobre el que dibuja el plan. Se rehace
     // si el item cambia de tamano.
     unsigned destino(int w, int h);
-    // Dentro: copia el fotograma a memoria. Sincrono: espera a la GPU.
-    void leer();
+    // Dentro: deja en memoria el fotograma que `presentar` va a subir.
+    //
+    // Sincrono (`asincrono = false`), lee el que se acaba de dibujar y espera
+    // a la GPU para ello: ~3 ms a 1920x1200, la mayor parte del coste de CPU
+    // del fondo. Asincrono, encarga la lectura de este a un PBO con una valla
+    // y entrega el ANTERIOR, que ya esta en memoria: la CPU no espera a nadie
+    // y el precio es un fotograma de retraso. Los PBO van mapeados de forma
+    // persistente (ARB_buffer_storage), asi que la integrada sube directamente
+    // desde donde los dejo la dedicada, sin otra copia de 9 MB por medio. Sin
+    // esa extension, siempre sincrono.
+    void leer(bool asincrono);
     // Fuera, con el contexto de Qt: sube el fotograma y lo copia sobre
     // `qtFbo`, dejandolo bindeado como lo espera Qt.
     void presentar(unsigned qtFbo);
@@ -87,6 +96,17 @@ private:
     int m_w = 0, m_h = 0;        // del FBO propio
     int m_wQt = 0, m_hQt = 0;    // de la textura de Qt
     QByteArray m_pixeles;
+    // De donde sube `presentar`: `m_pixeles` o un PBO mapeado.
+    const void *m_fuente = nullptr;
+    // Anillo de dos PBO para la lectura asincrona. `m_valla` son GLsync.
+    unsigned m_pbo[2] = {0, 0};
+    void *m_mapa[2] = {nullptr, nullptr};
+    void *m_valla[2] = {nullptr, nullptr};
+    bool m_lleno[2] = {false, false};
+    int m_cur = 0;
+    int m_persistente = -1;      // -1 sin comprobar; 0 no hay; 1 si
+    void crearAnillo();
+    void soltarAnillo();
 
     double m_msLeer = 0.0, m_msPresentar = 0.0;
     double m_sumaLeer = 0.0, m_sumaPresentar = 0.0;

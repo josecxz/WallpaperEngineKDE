@@ -513,7 +513,13 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
     }
 
     if (aparte) {
-        m_otra.leer();
+        // Asincrono solo si el reloj ha avanzado: en marcha, un fotograma de
+        // retraso no se ve. Con el reloj parado ---un cambio de encaje o de
+        // zoom en pausa, el primer fotograma--- se dibuja UNA vez, y en
+        // asincrono se veria el anterior hasta el siguiente fotograma, que
+        // en pausa no llega nunca.
+        m_otra.leer(m_tLeido >= 0 && m_time != m_tLeido);
+        m_tLeido = m_time;
         m_otra.salir();
         m_otra.presentar(GLuint(qtFbo));
     }
