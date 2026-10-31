@@ -680,6 +680,7 @@ bool GlExecutor::buildCompositeProgram()
     }
     m_compositeMvp = glGetUniformLocation(m_composite, "mvp");
     m_compositePremul = glGetUniformLocation(m_composite, "premul");
+    m_compositeSrc = glGetUniformLocation(m_composite, "src");
     return true;
 }
 
@@ -718,7 +719,7 @@ const GlExecutor::Target &GlExecutor::resolveTarget(qsizetype index) const
 void GlExecutor::beginObject()
 {
     flushObjectToScene();
-    if (m_frame < qgetenv("WE_TRACE_FRAMES").toInt()) {
+    if (m_frame < m_traza) {
         QByteArray px(qsizetype(m_scene.w) * m_scene.h * 4, '\0');
         glBindFramebuffer(GL_READ_FRAMEBUFFER, m_scene.fbo);
         glReadPixels(0, 0, m_scene.w, m_scene.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -775,7 +776,7 @@ void GlExecutor::flushObjectToScene()
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_compo[m_compoCur].tex);
-    glUniform1i(glGetUniformLocation(m_composite, "src"), 0);
+    glUniform1i(m_compositeSrc, 0);
     glUniform1f(m_compositePremul,
                 (m_compose == Compose::Screen || m_compose == Compose::Lighten)
                     ? 1.0f : 0.0f);
@@ -1632,8 +1633,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         } else {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         }
-        if (m_frame < qgetenv("WE_TRACE_FRAMES").toInt()
-            && !qgetenv("WE_TRACE_PASES").isEmpty()) {
+        if (m_frame < m_traza && m_trazaPases) {
             QByteArray px(qsizetype(dst.w) * dst.h * 4, '\0');
             glBindFramebuffer(GL_READ_FRAMEBUFFER, dst.fbo);
             glReadPixels(0, 0, dst.w, dst.h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
@@ -1702,7 +1702,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     // del compuesto. WE_TRACE_FRAMES=N la activa. Sirve para los efectos
     // temporales, donde el fallo no esta en un fotograma sino en como
     // evoluciona de uno al siguiente y hacia que punto fijo converge.
-    if (const int traza = qgetenv("WE_TRACE_FRAMES").toInt(); m_frame < traza) {
+    if (m_frame < m_traza) {
         auto media = [](const Target &t) {
             QByteArray px(qsizetype(t.w) * t.h * 4, '\0');
             glBindFramebuffer(GL_READ_FRAMEBUFFER, t.fbo);

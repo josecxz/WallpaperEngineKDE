@@ -67,6 +67,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11054` **Lo que faltaba en la vara de medir** — Hyprland (CPU, i915, pmon), VRAM, `--sin-fondo` y `--solo` en el anfitrión; y zsh, que no parte `$x`.
 - `2885` **Lo medido** — la tabla por pantalla y sin fondo.
 - `11094` **Qué se puede hacer, y qué se hizo** — dibujar una vez para las dos solo vale en modo `mismo`; no se hizo.
+- `11110` **Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma** — ninguna `glReadPixels` corre en marcha; sí 46 `qgetenv` y 14 `glGetUniformLocation` por fotograma, ahora leídos al cargar. Dentro del ruido.
+- `11115` **Lo que hay** — las cinco lecturas y a qué variable obedecen; las consultas por fotograma no esperan a la GPU.
+- `11127` **Lo que sí se pagaba, aunque poco** — el cerrojo del entorno disputado por dos hilos, y la búsqueda de `src` por nombre.
+- `2885` **Lo medido** — A/B intercalado cambiando el `.so`: 1–3 % menos, dentro del ruido.
 
 ## CLI, rotación y rutas
 

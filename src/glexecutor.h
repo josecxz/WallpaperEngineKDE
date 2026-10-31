@@ -423,6 +423,7 @@ private:
     // textura porque el buffer de escena se lee tambien sin mipmaps.
     GlName m_mipSampler = 0;
     GlLocation m_compositePremul = -1;
+    GlLocation m_compositeSrc = -1;
     GlLocation m_compositeMvp = -1;
     float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     Compose m_compose = Compose::Normal;
@@ -479,6 +480,12 @@ private:
     int m_initMs = 0;
     bool m_diagDone = false;
     int m_frame = 0;            // solo para la traza de WE_TRACE_FRAMES
+    // `WE_TRACE_FRAMES` y `WE_TRACE_PASES`, leidas UNA vez. Se miraban con
+    // qgetenv en cada objeto y en cada pase ---46 veces por fotograma y
+    // pantalla en una escena de 31 pases---, y qgetenv toma el cerrojo del
+    // entorno, que los hilos de render de dos pantallas se disputan.
+    const int m_traza = qEnvironmentVariableIntValue("WE_TRACE_FRAMES");
+    const bool m_trazaPases = !qEnvironmentVariableIsEmpty("WE_TRACE_PASES");
     int m_objeto = 0;           // idem
     double m_diagCompoMean = -1;
 

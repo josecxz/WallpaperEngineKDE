@@ -11106,3 +11106,46 @@ Tres medidas intercaladas de cada caso, `2788165557`, tope de 60:
 
 El punto se cierra **medido, sin cambiar el motor**. Lo que queda es la vara
 de medir con el compositor dentro, que vale para los puntos siguientes.
+
+## Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma
+
+Punto 4 de la auditoría: que ninguna lectura de la GPU (`glReadPixels`, o
+consultas que obliguen a esperar) se cuele en el camino normal.
+
+### Lo que hay
+
+- **Las cinco `glReadPixels` de `glexecutor.cpp`**: tres son trazas que solo
+  corren con `WE_TRACE_FRAMES` (y una con `WE_TRACE_PASES`), una es el
+  volcado de `WE_DUMP_SCENE`, y la de 16×16 es el diagnóstico de **una vez**
+  al cargar (`m_diagDone`). Ninguna corre en marcha.
+- **Por fotograma**: `glGetQueryiv` y dos `glGetError` del cronómetro de GPU,
+  `glGetIntegerv` del FBO de Qt (en Mesa) y tres más en `presentar`
+  (Mesa). Ninguna espera a la GPU.
+- La única espera de verdad es la de la copia entre GPUs, ya asíncrona
+  («La copia entre GPUs, sin esperar»).
+
+### Lo que sí se pagaba, aunque poco
+
+- **`qgetenv("WE_TRACE_FRAMES")` 46 veces por fotograma y pantalla**: una
+  en cada objeto (14), una en cada pase (31) y otra al final. Cada una toma
+  el cerrojo del entorno y crea un `QByteArray`, y los dos hilos de render
+  de dos pantallas se lo disputan. Ahora se lee una vez, al crear el
+  ejecutor (`m_traza`, `m_trazaPases`).
+- **`glGetUniformLocation(m_composite, "src")` en cada objeto**, una búsqueda
+  por nombre 14 veces por fotograma, cuando `mvp` y `premul` ya se
+  guardaban al cargar. Ahora también `m_compositeSrc`.
+
+### Lo medido
+
+Tres y tres intercaladas, cambiando el `.so` instalado entre medida y
+medida (A, B, A, B, A, B):
+
+| | CPU por fotograma eDP-1 | HDMI-A-3 | proceso |
+|---|---|---|---|
+| antes | 1,80 / 1,76 / 1,71 ms | 1,93 / 1,73 / 1,84 ms | 30,5 / 28,8 / 28,5 % |
+| después | 1,65 / 1,74 / 1,75 ms | 1,76 / 1,82 / 1,83 ms | 28,3 / 28,6 / 28,7 % |
+
+Entre un 1 y un 3 % menos, **dentro del ruido**: por la regla no cuenta como
+mejora. Se queda porque no tiene riesgo y quita una contención entre hilos.
+Las trazas siguen saliendo con sus variables: dos fotogramas con
+`WE_TRACE_FRAMES=2`, 28 líneas de objeto y las de cada pase.
