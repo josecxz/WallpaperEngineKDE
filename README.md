@@ -219,8 +219,18 @@ wectl set <id|texto>    # prepara el plan y arranca el fondo si no estaba
 wectl shuffle --cada 30m
 wectl start / stop
 wectl gpu integrated    # reinicia el fondo en la otra gráfica
+wectl pantallas independiente   # uno al azar distinto en cada pantalla
+wectl pantallas mismo           # el mismo en todas (lo de siempre)
 wectl status
 ```
+
+Con `pantallas independiente`, `wectl shuffle` (y la rotación automática)
+saca un wallpaper distinto para cada monitor, de la misma bolsa: no se
+repiten entre pantallas ni vuelve a salir ninguno hasta que hayan salido
+todos. `wectl set` sigue poniendo el elegido en todas las pantallas, sin
+cambiar el modo; el siguiente `shuffle` vuelve a repartir. Cada plan se
+genera a la resolución de su monitor. Un monitor que se conecta después usa
+el plan compartido hasta el siguiente `shuffle`.
 
 Para que arranque con la sesión, en `hyprland.conf`:
 

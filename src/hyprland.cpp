@@ -349,10 +349,11 @@ void VigiaArchivo::setRuta(const QString &r)
     m_ruta = r;
     Q_EMIT rutaChanged();
     struct stat st{};
-    if (::stat(QFile::encodeName(m_ruta).constData(), &st) == 0)
-        m_inodo = st.st_ino;
+    m_existe = ::stat(QFile::encodeName(m_ruta).constData(), &st) == 0;
+    m_inodo = m_existe ? quint64(st.st_ino) : 0;
     m_fecha = QFileInfo(m_ruta).lastModified();
     vigilar();
+    Q_EMIT versionChanged();
 }
 
 void VigiaArchivo::vigilar()
@@ -378,8 +379,20 @@ void VigiaArchivo::comprobar()
     // Tras un rename las rutas vigiladas apuntan a inodos que ya no estan.
     vigilar();
     struct stat st{};
-    if (::stat(QFile::encodeName(m_ruta).constData(), &st) != 0)
-        return;   // a medio cambiar: el siguiente aviso lo vera entero
+    if (::stat(QFile::encodeName(m_ruta).constData(), &st) != 0) {
+        // `wectl` cambia el plan con dos renames seguidos y el hueco entre
+        // ellos son microsegundos; 300 ms despues del ultimo aviso, si no
+        // esta, es que lo han quitado.
+        if (m_existe) {
+            m_existe = false;
+            m_inodo = 0;
+            m_version++;
+            qInfo("VigiaArchivo: %s ya no esta (version %d)", qPrintable(m_ruta), m_version);
+            Q_EMIT versionChanged();
+        }
+        return;
+    }
+    m_existe = true;
     const QDateTime fecha = QFileInfo(m_ruta).lastModified();
     if (quint64(st.st_ino) == m_inodo && fecha == m_fecha)
         return;

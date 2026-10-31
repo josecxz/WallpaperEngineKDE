@@ -44,6 +44,9 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10644` **Cambiar de plan sin plasmashell** — `Loader` + `VigiaArchivo` (inodo y fecha, porque `wectl` renombra el directorio); `shuffle` probaba cinco escenas por tick hasta que `recargar()` aprendió a ver el pid del fondo de Hyprland.
 - `10664` **`wectl` en Hyprland** — las mismas órdenes; el fondo es la unidad transitoria `wallpaperengine-hyprland` porque un hijo del servicio oneshot de la rotación moriría con él; `gpu` reinicia la unidad y se guarda en `~/.config/wallpaperengine/hyprland.json`.
 - `10697` **Dos monitores: las dos capas iban al primero** — layer-shell-qt elige monitor con `LayerShell.Window.screen`, no con `Window.screen`, y `Qt.application.screens` da `QQuickScreenInfo`: `Hyprland.pantalla` busca el `QScreen` por nombre. Probado con HDMI y con una salida `headless` en caliente.
+- `10727` **Un wallpaper distinto en cada pantalla** — `wectl pantallas mismo|independiente` (solo Hyprland): un plan por monitor en `plugin/contents/pantallas/`, `VigiaArchivo.existe` para caer al compartido, `shuffle` reparte de la misma bolsa y `set` pone el mismo en todas.
+- `10734` **Cómo** — `preparar` con destino, `--planes` en el anfitrión, el `Loader` que solo recarga el plan de su monitor y el `existe` hacia abajo cuando `set` borra los propios.
+- `10761` **La resolución, que en Hyprland no se leía** — sin `kscreen-doctor` los planes salían al lienzo del autor (hasta 7680×4320); ahora `hyprctl -j monitors`, y cada plan propio a su monitor.
 
 ## CLI, rotación y rutas
 

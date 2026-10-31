@@ -10723,3 +10723,75 @@ quitar la salida desaparece sin coredump.
 - **Sin `test_luminancia` propio**: el anfitrión no cambia el plan ni el
   ejecutor, así que el oráculo de siempre vale. Lo nuevo es la presentación y
   se comprobó en vivo con el registro del proceso.
+
+## Un wallpaper distinto en cada pantalla
+
+Pedido: poder elegir entre el mismo wallpaper en todas las pantallas y uno al
+azar independiente en cada una. Por ahora solo en Hyprland: en Plasma el
+plugin lee un plan fijo (`../scene/plan.txt`) y cada escritorio debería
+tener el suyo en su configuración, que es otro trabajo.
+
+### Cómo
+
+- **Un plan por monitor** en `plugin/contents/pantallas/<monitor>/`, al lado
+  del compartido (`scene/`). `preparar` aprendió a escribir en cualquiera de
+  los dos con el mismo rename atómico y el mismo cerrojo.
+- **El anfitrión** recibe `--planes <dir>` en modo independiente. Cada
+  ventana tiene su propio `VigiaArchivo` sobre `<dir>/<monitor>/plan.txt`;
+  usa ese plan mientras **exista** (`VigiaArchivo.existe`, nuevo) y, si no,
+  el compartido. El `Loader` se recrea solo cuando cambia el plan que usa
+  ESE monitor: un `shuffle` que cambia los dos recarga los dos, y un cambio
+  del compartido no toca a quien tiene el suyo.
+- **`wectl pantallas [mismo|independiente]`** guarda el modo en
+  `hyprland.json` y rearranca el fondo, porque `--planes` se pasa al
+  arrancar. Al pasar a independiente reparte enseguida; al volver a `mismo`
+  borra los planes propios.
+- **`shuffle` en independiente** saca de la misma bolsa un wallpaper por
+  monitor, uno detrás de otro: en un mismo cambio no se repiten entre
+  pantallas (salvo con menos wallpapers que monitores), y entre cambios
+  sigue la regla de la bolsa. Si uno falla, se prueba otro para ese
+  monitor, hasta cinco, como antes.
+- **`set`** pone el elegido en todas: escribe el compartido y borra los
+  propios, y cada monitor ve desaparecer el suyo y vuelve al compartido. El
+  modo no cambia. Hace falta `existe` también hacia abajo: el vigía da
+  «ya no está» si, 300 ms después del último aviso, el fichero no aparece.
+  El hueco entre los dos renames de `preparar` es de microsegundos, y no se
+  confunde.
+
+### La resolución, que en Hyprland no se leía
+
+`resolucion_de_pantalla` preguntaba a `kscreen-doctor`, que en Hyprland no
+existe, y devolvía `None`: los planes salían **al lienzo del autor**, de
+3840×2160 a 7680×4320, para pantallas de 1920. Ahora en Hyprland pregunta a
+`hyprctl -j monitors` (girando el tamaño si el monitor está a 90/270
+grados). El compartido sale al monitor más grande, como en Plasma, y cada
+plan propio a SU monitor. Medido: *Sci-Fi Cyber City* a 2133×1200 en eDP-1
+y *Wlop Ocean* a 2580×1080 en el HDMI (lienzos que cubren el monitor con la
+proporción del autor).
+
+### Lo medido
+
+Con eDP-1 (1920×1200) y HDMI-A-3 (1920×1080):
+
+- `pantallas independiente`: «eDP-1: Sci-Fi Cyber City», «HDMI-A-3: Wlop
+  Ocean Painting Flow»; en el registro, un `VigiaArchivo … ha cambiado` y un
+  `SceneView: backend` por monitor, con lienzos distintos.
+- `shuffle`: los dos cambian a la vez, cada uno con su plan, y la bolsa baja
+  de dos en dos (85 → 83).
+- `set 2788165557`: «… ya no está» en los dos vigías y los dos cargan el
+  mismo plan de 31 pases; `pantallas` sigue en `independiente` y dice
+  «(compartido)» en cada monitor.
+- `pantallas mismo`: el fondo rearranca sin `--planes` y
+  `plugin/contents/pantallas/` queda vacío. Sin coredumps en ningún paso.
+- **Una carrera que hubo que cerrar**: al pasar a independiente, el fondo
+  se rearrancaba antes de que `shuffle` instalara el módulo nuevo, y
+  podría haber cargado el `.so` viejo, sin `existe`. Esta vez ganó el
+  módulo nuevo por poco. `pantallas` construye ahora antes de rearrancar.
+
+### Lo que queda
+
+- **Plasma**: `wectl pantallas` lo rechaza con un mensaje.
+- **Un monitor conectado en caliente** usa el plan compartido hasta el
+  siguiente `shuffle`: nadie le prepara uno al conectarse.
+- **Elegir a mano el wallpaper de una pantalla concreta** (`set` con un
+  monitor) no está: no se ha pedido.

@@ -112,7 +112,7 @@ aguja, tocas los dos a la vez o divergen.
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
 | `src/wetemblor.c` | la curva de `camerashake`, **compartida** por los dos |
 | `src/wegiro.c` | el `angles` que pone la hora (agujas) y el vaivén de `engine.runtime`, **compartido** por los dos |
-| `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`/`gpu`); en Hyprland lleva la unidad `wallpaperengine-hyprland` en vez de Plasma |
+| `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`/`gpu`/`pantallas`); en Hyprland lleva la unidad `wallpaperengine-hyprland` en vez de Plasma, y `pantallas independiente` da un plan por monitor en `plugin/contents/pantallas/` |
 
 ## Comandos
 

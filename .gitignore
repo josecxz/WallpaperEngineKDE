@@ -25,6 +25,8 @@ __pycache__/
 # Son ~200 MB por wallpaper, casi todo .rgba sin comprimir.
 plugin/contents/scene/
 plugin/contents/media/
+# Lo mismo, uno por monitor (`wectl pantallas independiente`).
+plugin/contents/pantallas/
 
 # Cerrojo con que `wectl` serializa dos cambios de fondo a la vez. Vacio, y
 # local de la maquina.

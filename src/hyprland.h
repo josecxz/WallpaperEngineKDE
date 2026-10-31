@@ -141,6 +141,9 @@ class VigiaArchivo : public QObject
     Q_PROPERTY(QString ruta READ ruta WRITE setRuta NOTIFY rutaChanged)
     // Sube en uno cada vez que el fichero cambia de verdad.
     Q_PROPERTY(int version READ version NOTIFY versionChanged)
+    // Si el fichero esta. El fondo de un monitor usa su plan propio solo
+    // mientras exista; si se borra, vuelve al compartido.
+    Q_PROPERTY(bool existe READ existe NOTIFY versionChanged)
 
 public:
     explicit VigiaArchivo(QObject *parent = nullptr);
@@ -148,6 +151,7 @@ public:
     QString ruta() const { return m_ruta; }
     void setRuta(const QString &r);
     int version() const { return m_version; }
+    bool existe() const { return m_existe; }
 
 Q_SIGNALS:
     void rutaChanged();
@@ -159,6 +163,7 @@ private:
 
     QString m_ruta;
     int m_version = 0;
+    bool m_existe = false;
     QDateTime m_fecha;
     quint64 m_inodo = 0;
     QFileSystemWatcher m_vigia;
