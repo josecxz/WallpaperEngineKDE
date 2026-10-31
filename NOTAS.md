@@ -10856,6 +10856,10 @@ nada:
 
 **Regla de la auditoría:** un cambio cuenta si mueve una métrica más de un
 10 % y en la misma dirección en tres medidas. Con menos, es ruido.
+**Corregido después**: tres del cambio no bastan si la base es una sola.
+Se miden tres y tres, **intercaladas** en la misma sesión. Y el % de la
+integrada tiene más ruido del que dice esta tabla (±10 % con el tope de 60);
+ver «Los 2,5 puntos de la integrada».
 
 ### La línea de base
 
@@ -10982,12 +10986,62 @@ Tres medidas contra `base-fps60` (`medir_vivo.py --wallpaper 2788165557`):
 | NVIDIA | 22,9 W | 22,3 / 37,2 / 22,6 W |
 
 - La CPU del proceso **baja a menos de la mitad**, y `leer` desaparece.
-- **La integrada sube unos 2,5 puntos (+15 %)**, en las tres medidas, así
-  que es real. `subir` no cambia en CPU (0,9 ms). La sospecha es que Mesa
-  sube desde memoria del PBO de NVIDIA por un camino más caro que desde un
-  `QByteArray` propio. Sin medir; es del punto siguiente de la copia (la
-  subida).
+- ~~**La integrada sube unos 2,5 puntos (+15 %)**, en las tres medidas, así
+  que es real.~~ **Corregido después: no existe.** Era la línea de base,
+  una sola medida que cayó baja. Ver «Los 2,5 puntos de la integrada».
 - La NVIDIA no cambia: sigue bimodal (1300 o 2550 MHz), como con el tope.
 - No probado: el cambio de GPU en caliente de Plasma (`soltarPlan` →
   `liberarDentro`, que ahora también suelta los PBO). En Hyprland,
   `wectl gpu` reinicia el proceso, y eso sí se ha probado.
+
+## Los 2,5 puntos de la integrada
+
+Tras la copia asíncrona, el render de la integrada parecía subir de 17,6 % a
+~20 % en tres medidas seguidas, más del 10 % de la regla. **No existía.**
+
+### Las hipótesis
+
+1. **La frecuencia**: `fdinfo` da tiempo ocupado, no trabajo. Si la
+   integrada baja de frecuencia, lo mismo ocupa más.
+2. **La memoria de origen**: Mesa subiendo desde el PBO de NVIDIA por un
+   camino más caro que desde un búfer propio.
+3. **Otro trabajo**: la integrada haciendo algo que antes no hacía.
+
+Para separarlas, `medir_vivo` guarda ahora la frecuencia real de la
+integrada (`gt_act_freq_mhz`, dos muestras por segundo) y su reposo (RC6 de
+`gt/gt0/rc6_residency_ms`, de todo el sistema). Un interruptor temporal,
+`WE_COPIA=sincrona|pbo|pbo-copia`, ya quitado, cambiaba el modo sin
+recompilar. `pbo-copia` copia el PBO a un `QByteArray` propio antes de
+subir, que es la hipótesis 2 aislada.
+
+### Lo medido
+
+Nueve medidas **intercaladas** (S, P, C ×3) de `2788165557` con el tope de
+60:
+
+| modo | render integrada | MHz integrada | CPU del proceso |
+|---|---|---|---|
+| síncrona (antes) | 19,3 / 21,0 / 20,8 % | 733 / 767 / 697 | 65–67 % |
+| PBO (ahora) | 20,0 / 18,7 / 18,8 % | 633 / 567 / 595 | 28–30 % |
+| PBO + copia propia | 18,2 / 19,9 / 18,3 % | 872 / 795 / 613 | 41–44 % |
+
+- **Los tres modos dan lo mismo** en la integrada. La «subida» era la línea
+  de base: una medida suelta de 17,6 %, de otra tanda. Con el tope de 60 la
+  integrada va de 570 a 870 MHz entre medidas, y su % ocupado baila ±10 %.
+  Las cinco medidas de la integrada con 60 fps de esta tarde, en tandas
+  distintas, ya iban de 17,5 a 21,0 %.
+- La hipótesis 2 queda descartada y, de paso, medido lo que valía no copiar:
+  `pbo-copia` cuesta **13 puntos más de CPU** (9 MB por fotograma y
+  pantalla) que subir desde el PBO.
+- `subir` en CPU es igual en los tres (0,9–1,2 ms).
+
+**Lección de método**, ya en la regla de «La vara de medir»: el antes y el
+después se miden en la misma sesión e intercalados, tres y tres. Una línea
+de base guardada sirve para orientarse, no para decidir.
+
+### De paso, para el punto 3
+
+`HDMI-A-3` cuelga de la NVIDIA (`/sys/class/drm/card0-HDMI-A-3`), no de la
+integrada. El fotograma de esa pantalla hace NVIDIA → CPU → integrada (Qt
+compone) → Hyprland → NVIDIA para salir por el cable. En una pantalla
+conectada a la dedicada, el viaje por la integrada sobra entero.

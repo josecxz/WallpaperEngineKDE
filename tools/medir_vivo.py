@@ -19,6 +19,15 @@ y se comparan los dos JSON. Por que estos instrumentos y no otros (NOTAS,
   no duerme nunca, pero por eso se puede quitar con `--sin-pmon`.
 * **CPU y memoria del proceso**: `/proc/<pid>/stat` y `status`.
 
+* **La frecuencia de la integrada** (`gt_act_freq_mhz`) y su reposo (RC6), al
+  lado de su %: `fdinfo` da tiempo ocupado, no trabajo, y con el tope de 60
+  la integrada pasa de 570 a 870 MHz entre una medida y otra.
+
+**Comparar se hace intercalando**: tres medidas del antes y tres del despues,
+alternadas en la misma sesion (A, B, A, B, A, B), no contra un JSON de otro
+dia. Comparar contra una sola linea de base fabrico una subida de la
+integrada que no existia (NOTAS, "Los 2,5 puntos de la integrada").
+
 Para que la medida no dependa de que haya ventanas encima, el fondo se lanza
 aparte (`wallpaperengine-medida`), **sin pausa** y con un solo plan para todas
 las pantallas; el fondo normal se para mientras tanto y se vuelve a poner al
@@ -139,6 +148,45 @@ def _potencia(segundos: int, salida: list[tuple[float, float]]) -> None:
         p.wait()
 
 
+def _intel_gt() -> Path | None:
+    """sysfs de la GPU Intel (vendor 0x8086), si la hay."""
+    for c in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+        try:
+            if (c / "device" / "vendor").read_text().strip() == "0x8086" \
+                    and (c / "gt_act_freq_mhz").exists():
+                return c
+        except OSError:
+            pass
+    return None
+
+
+def _intel(segundos: int, salida: list[float]) -> None:
+    """MHz reales de la integrada, dos muestras por segundo.
+
+    `fdinfo` da tiempo OCUPADO, no trabajo: si la integrada baja de
+    frecuencia, el mismo trabajo ocupa mas tiempo y el % sube sin que se haga
+    nada mas. Sin la frecuencia al lado, el % de la integrada no se entiende.
+    """
+    gt = _intel_gt()
+    if not gt:
+        return
+    fin = time.monotonic() + segundos
+    while time.monotonic() < fin:
+        try:
+            salida.append(float((gt / "gt_act_freq_mhz").read_text()))
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.5)
+
+
+def _rc6_ms() -> float | None:
+    gt = _intel_gt()
+    try:
+        return float((gt / "gt" / "gt0" / "rc6_residency_ms").read_text()) if gt else None
+    except (OSError, ValueError):
+        return None
+
+
 # ── el fondo de medida ──────────────────────────────────────────────────────
 
 def _arrancar(plan: Path, extra: list[str]) -> int:
@@ -253,6 +301,9 @@ def _imprimir(r: dict) -> None:
         print(f"             {k}: {v:.1f} %")
     if pr.get("nvidia_sm_pct") is not None:
         print(f"             nvidia sm (pmon, grueso): {pr['nvidia_sm_pct']:.1f} %")
+    if pr.get("intel_mhz") is not None:
+        print(f"             intel: {pr['intel_mhz']} MHz de media, "
+              f"{pr['intel_rc6_pct']} % del tiempo en reposo (todo el sistema)")
     if pr.get("nvidia_w") is not None:
         print(f"             nvidia tarjeta entera: {pr['nvidia_w']:.2f} W a {pr['nvidia_mhz']} MHz")
 
@@ -275,6 +326,9 @@ def _comparar(antes: dict, ahora: dict) -> None:
             fila(f"{p} {k}", a.get(k), b.get(k))
     fila("proceso cpu_pct", antes["proceso"]["cpu_pct"], ahora["proceso"]["cpu_pct"])
     fila("proceso rss_mb", antes["proceso"]["rss_mb"], ahora["proceso"]["rss_mb"])
+    fila("intel MHz", antes["proceso"].get("intel_mhz"), ahora["proceso"].get("intel_mhz"))
+    fila("intel reposo %", antes["proceso"].get("intel_rc6_pct"),
+         ahora["proceso"].get("intel_rc6_pct"))
     fila("nvidia W (tarjeta)", antes["proceso"].get("nvidia_w"), ahora["proceso"].get("nvidia_w"))
     for k, v in ahora["proceso"]["motores_pct"].items():
         fila(f"proceso {k}", antes["proceso"]["motores_pct"].get(k), v)
@@ -317,15 +371,16 @@ def main() -> int:
         desde = REGISTRO.stat().st_size if REGISTRO.exists() else 0
         pm: list[float] = []
         pot: list[tuple[float, float]] = []
-        hilos = []
+        intel: list[float] = []
+        hilos = [threading.Thread(target=_intel, args=(args.segundos, intel))]
         if not args.sin_pmon:
-            hilos = [threading.Thread(target=_pmon, args=(pid, args.segundos, pm)),
-                     threading.Thread(target=_potencia, args=(args.segundos, pot))]
-            for h in hilos:
-                h.start()
-        t0, c0, m0 = time.monotonic(), _cpu_s(pid), _motores_drm(pid)
+            hilos += [threading.Thread(target=_pmon, args=(pid, args.segundos, pm)),
+                      threading.Thread(target=_potencia, args=(args.segundos, pot))]
+        for h in hilos:
+            h.start()
+        t0, c0, m0, r0 = time.monotonic(), _cpu_s(pid), _motores_drm(pid), _rc6_ms()
         time.sleep(args.segundos)
-        t1, c1, m1 = time.monotonic(), _cpu_s(pid), _motores_drm(pid)
+        t1, c1, m1, r1 = time.monotonic(), _cpu_s(pid), _motores_drm(pid), _rc6_ms()
         rss = _rss_mb(pid)
         for h in hilos:
             h.join()
@@ -348,6 +403,10 @@ def main() -> int:
             "motores_pct": {k: round((m1[k] - m0.get(k, 0)) / (dur * 1e9) * 100, 1)
                             for k in m1 if m1[k] - m0.get(k, 0) > 0},
             "nvidia_sm_pct": round(sum(pm) / len(pm), 1) if pm else None,
+            "intel_mhz": round(sum(intel) / len(intel)) if intel else None,
+            # Tiempo de la integrada en reposo (RC6), de TODO el sistema.
+            "intel_rc6_pct": round((r1 - r0) / (dur * 1000) * 100, 1)
+                             if r0 is not None and r1 is not None else None,
             "nvidia_w": round(sum(w for w, _ in pot) / len(pot), 2) if pot else None,
             "nvidia_mhz": round(sum(m for _, m in pot) / len(pot)) if pot else None,
         },

@@ -51,14 +51,18 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10806` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
 - `10820` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10842` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
-- `10860` **La línea de base** — 163 fps en eDP-1, 110 % de un núcleo, y la copia entre GPUs pesa más que dibujar el plan.
-- `10876` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
-- `10882` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
+- `10864` **La línea de base** — 163 fps en eDP-1, 110 % de un núcleo, y la copia entre GPUs pesa más que dibujar el plan.
+- `10880` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
+- `10886` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
 - `2885` **Lo medido** — la tabla por tope; 55 y no 60 porque el reloj late a 165 Hz; la NVIDIA bimodal a 60; el coste por fotograma sube al bajar fps, así que «% ocupada» no mide consumo y los vatios sí.
-- `10934` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
-- `10941` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
-- `10962` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
-- `2885` **Lo medido** — `leer` de 3,11 a 0,03 ms; la integrada sube 2,5 puntos (sin explicar); la NVIDIA igual.
+- `10938` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
+- `10945` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
+- `10966` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
+- `2885` **Lo medido** — `leer` de 3,11 a 0,03 ms; la «subida» de la integrada, corregida después: no existe; la NVIDIA igual.
+- `10997` **Los 2,5 puntos de la integrada** — no existían: nueve medidas intercaladas de síncrona/PBO/PBO+copia dan lo mismo en la integrada; era una línea de base suelta. La integrada baila de 570 a 870 MHz y ±10 %. Desde aquí, antes y después intercalados.
+- `11002` **Las hipótesis** — frecuencia, memoria de origen u otro trabajo; `medir_vivo` guarda ahora MHz y RC6 de la integrada.
+- `2885` **Lo medido** — la tabla de los tres modos; copiar el PBO a un búfer propio cuesta 13 puntos de CPU.
+- `11042` **De paso, para el punto 3** — HDMI-A-3 cuelga de la NVIDIA: su fotograma va y vuelve por la integrada sin necesidad.
 
 ## CLI, rotación y rutas
 
