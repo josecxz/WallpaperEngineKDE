@@ -75,6 +75,12 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11160` **Por qué se puede** — sin programas compartidos; los valores solo se escriben al leer el plan; las hojas ya iban aparte.
 - `11176` **Comprobado que el render no cambia** — `glGetUniform*` al fotograma 100 en 12 escenas: cero distintos. Los 16 «distintos» de Sci-Fi City eran uniforms duplicados en el plan (`g_UserAlpha` dos veces por pase) y los de las hojas.
 - `2885` **Lo medido** — A/B intercalado: ~4 % menos, dentro del ruido.
+- `11215` **Los pasos de la simulación** — el resto del tramo era un paso entero más: 2 pasos por fotograma a 55 fps (1,32 a 60). Ahora `round(dt/PASO)` pasos iguales: Voyage de 20–24 a 14–17 ms de CPU por fotograma; 0 regresiones de luz en 133 escenas.
+- `11219` **Dónde mirar** — `particulas_ms` y `particulas_subir_ms` en `WE_MEDIDAS`; las escenas con más partículas.
+- `11230` **Lo que hacía Voyage** — banco + `gprof`: la turbulencia es el 80 % (12 ruidos × 8 hashes por partícula y paso), y había dos pasos por fotograma.
+- `11243` **El resto que costaba un paso entero** — la tabla de pasos por cadencia; pasos iguales en vez de acumular; las cintas graban por tiempo y no cambian.
+- `2885` **Lo medido** — banco, `test_weparticles`, `test_luminancia` con referencia, y en vivo intercalado.
+- `3072` **Lo que queda** — EVA es subir 570.000 vértices; Voyage ya la limita la NVIDIA (28 ms de GPU con dos pantallas, ~60 W).
 
 ## CLI, rotación y rutas
 

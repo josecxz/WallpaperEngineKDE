@@ -1804,10 +1804,17 @@ bool GlExecutor::drawPsys(int id, float time)
     if (it == m_psys.end() || !it->sys || !it->vao)
         return false;
     PsysSpec &p = it.value();
+    timespec t0{}, t1{};
+    clock_gettime(CLOCK_MONOTONIC, &t0);
     const int nv = we_psys_update(p.sys, time);
-    if (nv <= 0)
+    if (nv <= 0) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        m_msParticulas += (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
         return false;
+    }
 
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     glBindVertexArray(p.vao);
     glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
     const qsizetype bytes = qsizetype(nv)
@@ -1820,6 +1827,9 @@ bool GlExecutor::drawPsys(int id, float time)
     } else {
         glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, we_psys_vertices(p.sys));
     }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    m_msParticulas += (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+    m_msSubidaParticulas += (t1.tv_sec - ts.tv_sec) * 1e3 + (t1.tv_nsec - ts.tv_nsec) / 1e6;
     glDrawArrays(GL_TRIANGLES, 0, nv);
     glBindVertexArray(m_vao);
     return true;

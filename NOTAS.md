@@ -11211,3 +11211,94 @@ Alrededor de un 4 % menos, **dentro del ruido**, como las trazas del punto
 4. Se queda: son 213 llamadas a GL menos por fotograma y pantalla, sin
 riesgo comprobado. La CPU por fotograma que queda (~1,7 ms) no está en los
 uniforms.
+
+## Los pasos de la simulación
+
+Punto 7 de la auditoría: lo que cuesta simular las partículas.
+
+### Dónde mirar
+
+`WE_MEDIDAS` cuenta ahora el tiempo de `drawPsys` por fotograma
+(`particulas_ms`) y, dentro de él, lo de subir los vértices
+(`particulas_subir_ms`). Las escenas con más partículas del corpus, por
+`maxcount` sumado: *Voyage* (`3053927686`, 151.230), *Empress of Grace*
+(102.141), *Makima* (100.216), *Jinx* (96 sistemas) y la lluvia de *EVA*
+(`2587542891`). Medidas en eDP-1 solo, a 55 fps: partículas 0,3–0,8 ms en
+casi todas, **4,5 ms en EVA y 13,2 ms en Voyage**, que no llegaba a los 55
+fps y pasaba del 100 % de un núcleo.
+
+### Lo que hacía Voyage
+
+Sin `perf` ni `valgrind` aquí, con un banco en C sobre el mismo
+`src/weparticles.c` (55 pasos por segundo, 5 s de calentamiento y 5 s
+cronometrados) y `gprof`:
+
+- Seis sistemas casi iguales (`s002`–`s007`: 7.950 partículas por segundo,
+  hasta 1 s de vida, ~4.150 vivas) cuestan **1,83 ms cada uno**.
+- El **80 %** es la turbulencia: `rotacional` evalúa el ruido 12 veces
+  (diferencias finitas con h = 0,5) y cada evaluación hace 8 hashes.
+- Y había **dos pasos por fotograma**: 1.100 llamadas a `paso` en 551
+  fotogramas.
+
+### El resto que costaba un paso entero
+
+`we_psys_update` daba pasos de `PASO` (1/60) y el resto **como un paso
+más**, y la turbulencia cuesta lo mismo en un paso de 1,5 ms que en uno de
+16,7. Pasos por fotograma, con el reloj en `float` como el del QML:
+
+| cadencia | antes | de ellos, restos de menos de medio paso | ideal |
+|---|---|---|---|
+| 30 fps | 2,32 | 0,32 | 2,00 |
+| 55 fps | **2,00** | 1,00 | 1,09 |
+| 60 fps | **1,32** | 0,32 | 1,00 |
+| 165 fps | 1,00 | 1,00 | 0,36 |
+
+A 60 fps, los restos son de 4·10⁻⁷ s: el `float` del reloj. El comentario
+del bucle decía «paso fijo: el resultado no puede depender de los fps», y el
+paso de resto hacía justo eso.
+
+**Ahora el tramo se reparte en `n = round(dt / PASO)` pasos iguales**, al
+menos uno: cada paso dura entre 0,67 y 1,5 veces `PASO`, y a 55–60 fps sale
+uno por fotograma. No se acumula el resto: así el movimiento no se cuantiza
+a 1/60 ni se queda un fotograma atrás. Se descartó compartir hashes entre
+las evaluaciones del rotacional sin cambiar el resultado: daría ~9 %. Y
+cambiar a derivadas analíticas cambiaría el campo sobre el que está ajustado
+`FACTOR_TURBULENCIA`.
+
+**Las cintas no cambian**: el historial se graba por tiempo (`t_hist`, que
+cuenta atrás desde `intervalo`), no por paso. Antes, a 55 fps, el paso de
+resto no llegaba a grabar punto, así que sigue saliendo uno por fotograma.
+
+### Lo medido
+
+- **Banco**: los sistemas de Voyage de 1,96 a **0,96 ms**, con los mismos
+  vértices vivos (~25.000, la misma densidad). Los de EVA, de 0,19 a 0,15.
+- **`test_weparticles`**: OK.
+- **`test_luminancia`** con `--referencia` guardada justo antes con el
+  simulador viejo: 133 escenas, **0 regresiones**, 0 apagadas y la misma
+  sospechosa de siempre (`3274519787`). De las 10 que imprime la tabla, 9
+  dan la misma media y una se mueve un 0,5 %. `src/weparticles.c` es
+  compartido, así que esto cubre también el offline.
+- **En vivo**, intercalado tres y tres, con las dos pantallas:
+
+| | fps | CPU por fotograma | CPU del proceso |
+|---|---|---|---|
+| Voyage, antes | 39–45 | 20,1–23,7 ms | 235–246 % |
+| Voyage, después | 46–52 | 13,6–16,9 ms | 202–213 % |
+| EVA, antes | 55 | 6,6–6,8 ms | 85–86 % |
+| EVA, después | 55 | 6,5–7,1 ms | 84–89 % |
+
+### Lo que queda
+
+- **EVA no cambia** porque su simulación ya era barata. Lo suyo es **subir
+  vértices**: ~19 sistemas de 30.000 vértices, 570.000 por fotograma y
+  pantalla. Son 1,75 ms de `glBufferSubData` de los ~4 ms de partículas.
+  Escribir los vértices directamente en un buffer mapeado ahorraría una
+  copia.
+- **Voyage ya no la limita la CPU sino la NVIDIA**: 13–14 ms de GPU por
+  fotograma y pantalla, ~28 ms con las dos, más que los 18 ms de 55 fps, y
+  ~60 W. Es dibujar 150.000 vértices de partículas con mucha
+  superposición, y es asunto del lado de la GPU.
+- Los ~8 ms que siguen siendo simulación en Voyage (más que los ~6 del
+  banco, por los dos hilos de render a la vez) se podrían repartir entre
+  núcleos. Eso baja el tiempo por fotograma, no la energía.

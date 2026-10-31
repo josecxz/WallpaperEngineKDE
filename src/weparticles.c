@@ -1863,14 +1863,26 @@ int we_psys_update(WeParticleSystem *s, float t)
         }
     }
 
-    /* Paso fijo: el resultado no puede depender de a cuantos fotogramas por
-     * segundo vaya el escritorio, ni diferir entre el ejecutor offline y el
-     * de plasmashell. */
-    while (dt > 0.0f) {
-        float h = dt > PASO ? PASO : dt;
-        paso_con_hijos(s, h);
-        s->reloj += h;
-        dt -= h;
+    /* El tramo se reparte en pasos IGUALES, tantos como pasos de 1/60 caben
+     * redondeando, y como poco uno: cada paso dura entre 0,67 y 1,5 veces
+     * PASO, y la simulacion depende poco de a cuantos fotogramas por segundo
+     * vaya el escritorio.
+     *
+     * Antes eran pasos de PASO mas el resto como un paso aparte, y ese resto
+     * costaba lo mismo que un paso entero ---la turbulencia se evalua igual
+     * en uno de 1,5 ms que en uno de 16,7---: a 55 fps salian 2 pasos por
+     * fotograma en vez de 1,09, y a 60 fps el `float` del reloj dejaba restos
+     * de 4e-7 s que eran 1,32. Medido en "Voyage", 13 ms de simulacion por
+     * fotograma. Ver NOTAS, "Los pasos de la simulacion". */
+    if (dt > 0.0f) {
+        int n = (int)lroundf(dt / PASO);
+        if (n < 1)
+            n = 1;
+        const float h = dt / (float)n;
+        for (int i = 0; i < n; i++) {
+            paso_con_hijos(s, h);
+            s->reloj += h;
+        }
     }
     return construye(s);
 }

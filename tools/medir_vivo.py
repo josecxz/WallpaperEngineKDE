@@ -259,6 +259,10 @@ def _por_pantalla(lineas: list[dict]) -> dict[str, dict]:
             "gpu_max_ms": round(max(l["gpu_max"] for l in ls), 3),
             # Fraccion del tiempo que la GPU del plan pasa con ESTE fondo.
             "gpu_ocupada_pct": round(fps * gpu_ms / 10, 1) if gpu_ms is not None else None,
+            "particulas_ms": round(pond("particulas_ms", "fotogramas"), 3)
+                             if all("particulas_ms" in l for l in ls) else None,
+            "particulas_subir_ms": round(pond("particulas_subir_ms", "fotogramas"), 3)
+                                   if all("particulas_subir_ms" in l for l in ls) else None,
             "leer_ms": round(pond("leer_ms", "copias"), 3) if copias else None,
             "subir_ms": round(pond("subir_ms", "copias"), 3) if copias else None,
             "intervalos": len(ls),
@@ -295,7 +299,8 @@ def _imprimir(r: dict) -> None:
         print(f"  {p:10s} {v['fps']:7.2f} fps   cpu {v['cpu_ms']:.2f} ms "
               f"(max {v['cpu_max_ms']:.1f})   gpu {v['gpu_ms']} ms "
               f"(max {v['gpu_max_ms']:.1f}) = {v['gpu_ocupada_pct']} % ocupada   "
-              f"copia leer {v['leer_ms']} subir {v['subir_ms']} ms")
+              f"copia leer {v['leer_ms']} subir {v['subir_ms']} ms   "
+              f"particulas {v.get('particulas_ms')} ms (subir {v.get('particulas_subir_ms')})")
     pr = r["proceso"]
     print(f"  proceso    cpu {pr['cpu_pct']:.1f} % de un nucleo   rss {pr['rss_mb']:.0f} MB")
     co = r.get("compositor") or {}
@@ -329,7 +334,8 @@ def _comparar(antes: dict, ahora: dict) -> None:
         if p not in antes["pantallas"]:
             continue
         a, b = antes["pantallas"][p], ahora["pantallas"][p]
-        for k in ("fps", "cpu_ms", "gpu_ms", "gpu_ocupada_pct", "leer_ms", "subir_ms"):
+        for k in ("fps", "cpu_ms", "gpu_ms", "gpu_ocupada_pct", "leer_ms", "subir_ms",
+                  "particulas_ms"):
             fila(f"{p} {k}", a.get(k), b.get(k))
     fila("proceso cpu_pct", antes["proceso"]["cpu_pct"], ahora["proceso"]["cpu_pct"])
     fila("proceso rss_mb", antes["proceso"]["rss_mb"], ahora["proceso"]["rss_mb"])

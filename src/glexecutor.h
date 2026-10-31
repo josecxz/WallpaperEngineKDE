@@ -131,6 +131,16 @@ public:
     // Las muestras crudas del cronometro desde la ultima llamada (suma, numero
     // y maximo, en ms), y las pone a cero. Para `WE_MEDIDAS`: la media movil
     // de arriba sirve al HUD, pero no se puede comparar entre dos medidas.
+    // Milisegundos de CPU en las particulas (simular y subir los vertices)
+    // desde la ultima llamada, y los pone a cero. Para `WE_MEDIDAS`.
+    double tomarMsParticulas(double *subida = nullptr)
+    {
+        const double ms = m_msParticulas;
+        if (subida)
+            *subida = m_msSubidaParticulas;
+        m_msParticulas = m_msSubidaParticulas = 0;
+        return ms;
+    }
     void tomarMuestrasGpu(double &suma, int &n, double &max)
     {
         suma = m_gpuSuma; n = m_gpuN; max = m_gpuMax;
@@ -512,6 +522,8 @@ private:
     int m_gpuAjena = 0;
     double m_gpuMs = -1;
     double m_gpuSuma = 0, m_gpuMax = 0;
+    double m_msParticulas = 0;          // simular y subir, en total
+    double m_msSubidaParticulas = 0;    // de ello, subir los vertices
     int m_gpuN = 0;
     int m_diagBlitError = 0;
     int m_diagTargets = 0;
