@@ -203,6 +203,39 @@ La imagen es la misma: de las 129 escenas renderizadas a las dos resoluciones,
 128 difieren menos de un 2%. No hay nada que configurar; si no se puede
 averiguar el tamaño de la pantalla, se dibuja al lienzo del autor como antes.
 
+## En Hyprland
+
+Fuera de Plasma no hay plasmashell que cargue el plugin, así que el fondo es
+un proceso propio: `hyprland/main.qml` pide al compositor una superficie
+`wlr-layer-shell` en la capa de fondo por cada monitor, con el mismo motor.
+Necesita además `layer-shell-qt`.
+
+```sh
+make plan WALLPAPER=<ruta>          # o wectl set / wectl shuffle
+make hyprland                       # construye, instala el módulo y lo arranca
+make hyprland HYPR_OPCIONES='--pausa 2 --encaje 1 --hud'
+make hyprland-stop
+```
+
+Para que arranque con la sesión, en `hyprland.conf`:
+
+```
+exec-once = make -C /ruta/a/WallpaperEngine hyprland
+```
+
+Opciones (las mismas del panel de ajustes de Plasma): `--pausa 0|1|2`
+(nunca / cuando lo visible tapa la pantalla / con cualquier ventana),
+`--encaje 0|1|2` (cubrir / entera / estirar), `--zoom`, `--despx`, `--despy`,
+`--color`, `--gpu dedicada|integrada` y `--hud`.
+
+Lo que en Plasma dan KWin y el modelo de tareas aquí lo da el IPC de
+Hyprland (`src/hyprland.cpp`): qué tapa cada monitor, para la pausa, y dónde
+está el cursor, para el parallax y las partículas que lo siguen. El fondo
+vigila el `plan.txt`, así que `wectl set` y la rotación de `wectl shuffle`
+lo cambian sin reiniciarlo. `wectl start`, `stop`, `gpu` y `status` siguen
+siendo de Plasma. El registro está en
+`$XDG_RUNTIME_DIR/wallpaperengine-hyprland.log`.
+
 ## Cómo funciona
 
 El trabajo se reparte en dos mitades, y esa separación es la decisión de

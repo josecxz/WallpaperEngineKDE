@@ -38,6 +38,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10229` **El camino: otro contexto en el mismo hilo** — libglvnd reparte GL por hilo; qué GPU se elige, qué estado EGL se guarda (la API también) y por qué `~SceneRenderer` libera en el contexto propio.
 - `10318` **El mando: `wectl gpu`, en caliente** — `DedicatedGpu` por la API de Plasma; el plan se suelta y se recarga en la otra GPU sin reiniciar, y los dos fallos que eso destapó (sampler y consultas que sobrevivían al contexto, contadores que se sumaban).
 - `10348` **¿Duerme la dedicada? Steam, btop y el audio HDMI** — la carga de btop con el fondo tapado era Steam y el propio btop (NVML la despierta); la dedicada no se suspende nunca por `audio-fix.conf` (`power_save=0` del audio HDMI). Y el driver no suelta sus descriptores hasta que muere el proceso.
+- `10586` **El fondo en Hyprland: el mismo módulo como superficie layer-shell** — `hyprland/main.qml` pide una capa `background` por monitor con `layer-shell-qt`; la pausa y el cursor salen del IPC de Hyprland (`src/hyprland.cpp`), el plan se recarga al cambiar el fichero y `recargar()` de `wectl` no busca plasmashell si el fondo de Hyprland está vivo.
+- `10596` **El anfitrión** — una `Window` por monitor con `org.kde.layershell` (`LayerBackground`, cuatro anclas, `exclusionZone: -1`); se muestra ya configurada. Medido: nivel 0 bajo waybar, plan en NVIDIA y composición en Intel.
+- `10613` **La pausa y el cursor: el IPC de Hyprland** — `.socket2.sock` dispara la revisión de `j/monitors` + `j/clients` con la rejilla de `VentanasEncima`; `j/cursorpos` cada 16 ms, asíncrono, solo sin pausa. El espacio especial abierto tapa el monitor.
+- `10644` **Cambiar de plan sin plasmashell** — `Loader` + `VigiaArchivo` (inodo y fecha, porque `wectl` renombra el directorio); `shuffle` probaba cinco escenas por tick hasta que `recargar()` aprendió a ver el pid del fondo de Hyprland.
 
 ## CLI, rotación y rutas
 

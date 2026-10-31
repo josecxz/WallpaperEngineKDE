@@ -95,12 +95,33 @@ def poner_plugin(nombre: str) -> None:
             f" d[i].wallpaperPlugin = {json.dumps(nombre)};")
 
 
+# El fondo de Hyprland (`make hyprland`, hyprland/main.qml) deja aqui su pid.
+PID_HYPRLAND = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) \
+    / "wallpaperengine-hyprland.pid"
+
+
+def fondo_hyprland() -> bool:
+    """Si el que pinta el fondo es el proceso de Hyprland y no plasmashell."""
+    try:
+        os.kill(int(PID_HYPRLAND.read_text().strip()), 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def recargar() -> None:
     """Fuerza a Plasma a releer el plan.
 
     Cambiar el fichero no basta: plasmashell no lo vigila, y volver a poner el
     mismo plugin tampoco dispara nada. Hay que salir a otro plugin y volver.
+
+    En Hyprland no hay a quien pedirselo ni hace falta: el fondo vigila el
+    fichero del plan y se recarga solo. Sin este atajo `shuffle` tomaba el
+    "plasmashell no responde" por una escena rota y probaba otras cuatro,
+    cinco planes escritos ---y cinco recargas--- por cada cambio.
     """
+    if fondo_hyprland():
+        return
     poner_plugin(PLUGIN_IMAGEN)
     poner_plugin(PLUGIN)
 

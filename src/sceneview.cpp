@@ -6,6 +6,7 @@
 
 #include "sceneview.h"
 #include "escritorio.h"
+#include "hyprland.h"
 
 #include <QQuickWindow>
 #include <QScreen>
@@ -28,9 +29,12 @@ SceneView::SceneView(QQuickItem *parent)
     // El plan ya trae el color con alfa correcto; sin esto Qt lo compondria
     // otra vez y volveria a oscurecer los bordes.
     setAlphaBlending(false);
-    // El cursor de KWin manda sobre el HoverHandler del QML en cuanto llega la
-    // primera posicion; ver CursorKWin.
+    // El cursor global manda sobre el HoverHandler del QML en cuanto llega la
+    // primera posicion: de KWin en Plasma (CursorKWin), de Hyprland en
+    // Hyprland (CursorHyprland). Fuera de su escritorio cada uno se queda mudo.
     connect(CursorKWin::instancia(), &CursorKWin::movido, this,
+            &SceneView::alMoverCursorGlobal);
+    connect(CursorHyprland::instancia(), &CursorHyprland::movido, this,
             &SceneView::alMoverCursorGlobal);
 }
 

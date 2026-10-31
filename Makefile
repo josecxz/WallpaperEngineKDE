@@ -14,7 +14,8 @@ LIB     := libwallpaperenginerender.so
 ENVDIR  := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/environment.d
 ENVFILE := $(ENVDIR)/50-wallpaperengine.conf
 
-QT_MODULES := Qt6Quick Qt6Qml Qt6Gui Qt6Core Qt6DBus
+# Qt6Network: QLocalSocket, para hablar con el IPC de Hyprland (src/hyprland.cpp).
+QT_MODULES := Qt6Quick Qt6Qml Qt6Gui Qt6Core Qt6DBus Qt6Network
 
 # Decodificacion de video. La alternativa era una tuberia de `ffmpeg`, y no
 # sale: el corpus tiene cuatro videos a 3840x2160 y cuatro a 60 fps, que en
@@ -48,11 +49,13 @@ MOC     := /usr/lib/qt6/moc
 BUILD   := obj
 OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o $(BUILD)/otragpu.o \
            $(BUILD)/escritorio.o $(BUILD)/moc_escritorio.o \
+           $(BUILD)/hyprland.o $(BUILD)/moc_hyprland.o \
            $(BUILD)/weparticles.o $(BUILD)/wevideo.o $(BUILD)/wereloj.o \
            $(BUILD)/wetemblor.o $(BUILD)/wegiro.o $(BUILD)/moc_sceneview.o
 
 .PHONY: all build glexec psysprobe install install-qml install-package \
-        install-env uninstall reload status clean plan indice
+        install-env uninstall reload status clean plan indice \
+        hyprland hyprland-stop
 
 all: build
 
@@ -66,6 +69,9 @@ $(BUILD)/moc_sceneview.cpp: src/sceneview.h | $(BUILD)
 	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
 
 $(BUILD)/moc_escritorio.cpp: src/escritorio.h | $(BUILD)
+	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
+
+$(BUILD)/moc_hyprland.cpp: src/hyprland.h | $(BUILD)
 	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
 
 # plugin.cpp declara su QObject en el propio .cpp, asi que su moc se incluye.
@@ -84,6 +90,9 @@ $(BUILD)/moc_sceneview.o: $(BUILD)/moc_sceneview.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/moc_escritorio.o: $(BUILD)/moc_escritorio.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/moc_hyprland.o: $(BUILD)/moc_hyprland.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
 
 # plugin.cpp incluye su propio .moc, que no puede deducirse de los includes.
@@ -182,6 +191,35 @@ reload: install-qml install-package install-env
 	@echo "plasmashell reiniciado con QML_IMPORT_PATH=$(QMLMOD)"
 
 # ── plan de render ──────────────────────────────────────────────────────────
+# ── Hyprland ────────────────────────────────────────────────────────────────
+# Fuera de Plasma no hay plasmashell que cargue el plugin: `hyprland/main.qml`
+# es el proceso entero, una superficie layer-shell de fondo por monitor con el
+# mismo modulo QML. Lee el mismo plan que el plugin de Plasma (el que escriben
+# `make plan` y `wectl set`) y se recarga solo cuando cambia. Necesita
+# `layer-shell-qt`. Opciones (ver la cabecera de hyprland/main.qml):
+#   make hyprland HYPR_OPCIONES='--pausa 2 --encaje 1 --hud'
+#
+# Para que arranque con la sesion, en hyprland.conf:
+#   exec-once = make -C <este repo> hyprland
+HYPR_PLAN     ?= $(SRC)/contents/scene/plan.txt
+HYPR_OPCIONES ?=
+HYPR_RUN      := $(if $(XDG_RUNTIME_DIR),$(XDG_RUNTIME_DIR),/tmp)
+HYPR_PID      := $(HYPR_RUN)/wallpaperengine-hyprland.pid
+HYPR_LOG      := $(HYPR_RUN)/wallpaperengine-hyprland.log
+
+hyprland: hyprland-stop install-qml
+	@test -n "$$HYPRLAND_INSTANCE_SIGNATURE" || echo "aviso: HYPRLAND_INSTANCE_SIGNATURE vacia; sin pausa ni cursor de Hyprland"
+	@test -f $(HYPR_PLAN) || { echo "no hay plan en $(HYPR_PLAN); haz antes make plan WALLPAPER=<ruta>"; exit 1; }
+	@QML_IMPORT_PATH=$(QMLMOD)$${QML_IMPORT_PATH:+:$${QML_IMPORT_PATH}} QT_FORCE_STDERR_LOGGING=1 \
+		setsid /usr/lib/qt6/bin/qml $(CURDIR)/hyprland/main.qml -- --plan $(HYPR_PLAN) $(HYPR_OPCIONES) \
+		> $(HYPR_LOG) 2>&1 < /dev/null & echo $$! > $(HYPR_PID)
+	@echo "fondo de Hyprland arrancado (pid $$(cat $(HYPR_PID)), registro en $(HYPR_LOG))"
+
+hyprland-stop:
+	@if [ -f $(HYPR_PID) ] && kill -0 $$(cat $(HYPR_PID)) 2>/dev/null; then \
+		kill $$(cat $(HYPR_PID)); echo "fondo de Hyprland parado"; fi
+	@rm -f $(HYPR_PID)
+
 # Ruta del wallpaper a renderizar. Sin valor por defecto: depende de a que se
 # haya suscrito cada uno. `tools/wepaths.py` localiza la biblioteca de Steam.
 WALLPAPER ?=

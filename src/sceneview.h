@@ -97,7 +97,7 @@ class SceneView : public QQuickRhiItem
                NOTIFY encajeChanged)
     // Donde esta el raton DENTRO del item, en 0..1 con la y hacia abajo, y si
     // esta encima siquiera. Lo alimenta el cursor global de KWin (CursorKWin)
-    // y, mientras KWin no haya mandado nada, un HoverHandler del QML: hace falta uno
+    // o de Hyprland (CursorHyprland) y, mientras no haya llegado ninguno, un HoverHandler del QML: hace falta uno
     // que solo mire, porque un MouseArea con hover se quedaria los clics del
     // escritorio. Fuera del fondo el motor conserva la ultima posicion ---no
     // inventa un movimiento--- pero deja de haber raton para los sistemas de
@@ -185,7 +185,7 @@ private:
     QPointF m_puntero = QPointF(0.5, 0.5);
     bool m_punteroPresente = false;
     bool m_gpuDedicada = true;
-    // Si ya llega el cursor de KWin: entonces lo que mande el QML se ignora.
+    // Si ya llega un cursor global (KWin o Hyprland): entonces lo que mande el QML se ignora.
     bool m_cursorKWin = false;
     void ponPuntero(const QPointF &p, bool presente);
 };

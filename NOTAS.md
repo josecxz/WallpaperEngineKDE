@@ -10582,3 +10582,94 @@ fotogramas.
   depende de los fps, y no se ha leído cuántos `update` por segundo da WE.
 - **Un deslizador en una constante de shader de dos o más componentes**: las
   dos copias del corpus no se ponen de acuerdo.
+
+## El fondo en Hyprland: el mismo módulo como superficie layer-shell
+
+En KDE se descartó `wlr-layer-shell` porque el containment de plasmashell es
+opaco y tapa cualquier superficie de fondo («Decisión de arquitectura»). En
+Hyprland es al revés: no hay plasmashell, y layer-shell es **la** forma de
+ser fondo. Lo que sí vale tal cual es el módulo QML: `SceneView` no sabe nada
+de Plasma. Lo de Plasma era solo lo de alrededor: el `WallpaperItem`, el
+modelo de tareas para la pausa, el script de KWin para el cursor y
+`wectl`, que recarga por D-Bus.
+
+### El anfitrión
+
+`hyprland/main.qml` es el proceso entero, lanzado con `/usr/lib/qt6/bin/qml`:
+un `Instantiator` sobre `Qt.application.screens` y, por cada monitor, una
+`Window` con las propiedades adjuntas de `org.kde.layershell` (paquete
+`layer-shell-qt`): capa `LayerBackground`, anclada a los cuatro bordes,
+`exclusionZone: -1` (que no la empuje waybar) y sin teclado. Se muestra en
+`Component.onCompleted`, con las propiedades ya puestas, porque layer-shell
+las lee al crear la superficie. `screenConfiguration` está obsoleta en
+layer-shell-qt 6.8: basta `Window.screen`.
+
+Medido en Hyprland 0.57, eDP-1 1920×1200: `hyprctl layers` da
+`namespace: wallpaperengine` en el nivel 0, debajo de waybar; el plan va en
+la NVIDIA y Qt compone en la Intel, exactamente como en plasmashell
+(`destino=4 (otra GPU)`, 1,6 ms de GPU para el plan de 13 pases de
+`2188295077`).
+
+### La pausa y el cursor: el IPC de Hyprland
+
+`src/hyprland.cpp`. Hyprland publica dos sockets en
+`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`: `.socket.sock` para
+peticiones (lo que hace `hyprctl -j`) y `.socket2.sock`, que emite una línea
+`EVENTO>>DATOS` por cada cambio.
+
+- **`Hyprland`** (la pausa) escucha `.socket2.sock` y, 40 ms después de una
+  ráfaga de eventos, pide `j/monitors` y `j/clients`. Una ventana se ve si
+  está en el espacio activo del monitor, en su espacio especial abierto o
+  fijada (`pinned`). Del resto, mismo modo, rejilla de 32×18 y umbral del
+  92 % contra el área útil (el monitor menos `reserved`) que
+  `VentanasEncima.qml`. Es más fácil que en KWin: no hay «Mostrar el
+  escritorio» ni minimizados que el modelo no refleje. Los eventos de título
+  se ignoran (una terminal cambia de título con cada orden), y hay un repaso
+  cada 2 s por si se pierde alguno.
+- **`CursorHyprland`** pregunta `j/cursorpos` cada 16 ms, de forma asíncrona
+  y con una sola petición a la vez, porque Hyprland no emite eventos de
+  cursor. Alimenta el mismo `alMoverCursorGlobal` que `CursorKWin`. Deja de
+  preguntar cuando todos los fondos están en pausa.
+- Ojo con el espacio especial: si está abierto en el monitor (`magic` en
+  esta configuración, con la terminal dentro), tapa el monitor sea cual sea
+  el espacio normal. Es correcto, porque el fondo no se ve.
+
+Comprobado: con el especial cerrado y un espacio vacío, «dibujando con 0 %
+tapado»; al volver, «en pausa con 100 % tapado». El cursor movido a
+(300, 300) llega como (0,156, 0,250) de 1920×1200.
+
+En Plasma no hay `HYPRLAND_INSTANCE_SIGNATURE` y las dos clases se quedan
+mudas: `disponible = false` y ninguna petición.
+
+### Cambiar de plan sin plasmashell
+
+`SceneView` no sabe cambiar de plan en caliente: `m_planLoaded` no vuelve a
+`false`. En Plasma, `wectl` sale a otro plugin y vuelve, y eso recrea el
+item. Aquí lo hace un `Loader` que se desactiva y se activa cuando
+`VigiaArchivo` ve otro `plan.txt`. `wectl` cambia el plan renombrando
+`scene.nueva/` a `scene/`, y `QFileSystemWatcher` pierde el fichero en cuanto
+desaparece su inodo. Por eso se vigila también el directorio del abuelo, y
+lo que decide es la fecha y el inodo del fichero, 300 ms después del último
+aviso.
+
+**Lo que destapó el temporizador de rotación.** Con el temporizador de
+`wectl shuffle` vivo en Hyprland, cada tick escribía el plan y luego fallaba
+`recargar()`. En esta sesión `org.kde.plasmashell` existe en el bus, pero
+sin `evaluateScript`. `shuffle` tomaba ese error por una escena rota y
+probaba otras cuatro: cinco planes escritos y cinco recargas por tick, con
+el servicio en `failed`. `recargar()` vuelve ahora sin hacer nada si el pid
+de `$XDG_RUNTIME_DIR/wallpaperengine-hyprland.pid` está vivo. No es una
+orden ni una opción nueva de `wectl`, sino el mismo `set`/`shuffle` con otro
+destino. Medido: un tick, un plan, «Finished».
+
+### Lo que queda
+
+- **`wectl start`/`stop`/`gpu`/`status`** siguen hablando con Plasma. En
+  Hyprland son `make hyprland` / `make hyprland-stop`, y la GPU es
+  `--gpu integrada`. No se han tocado porque ampliar `wectl` requiere que se
+  pida.
+- **Sin `test_luminancia` propio**: el anfitrión no cambia el plan ni el
+  ejecutor, así que el oráculo de siempre vale. Lo nuevo es la presentación y
+  se comprobó en vivo con el registro del proceso.
+- **Varios monitores** están escritos (una ventana y un `Hyprland` por
+  pantalla), pero solo se han probado con uno.

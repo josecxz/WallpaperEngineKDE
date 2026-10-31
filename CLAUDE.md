@@ -105,6 +105,8 @@ aguja, tocas los dos a la vez o divergen.
 | `src/glexecutor.cpp` | ejecutor en vivo (port de `glexec.c`) |
 | `src/otragpu.cpp` | el plan en otra GPU: su contexto EGL, leer el fotograma y subirlo a Qt |
 | `src/escritorio.cpp` | le pregunta a KWin cuánta pantalla tapan las ventanas |
+| `src/hyprland.cpp` | lo mismo en Hyprland por su IPC: pausa, cursor, y el vigía del `plan.txt` |
+| `hyprland/main.qml` | el fondo en Hyprland: una superficie layer-shell por monitor (`make hyprland`) |
 | `src/weparticles.c` | simulador, **compartido** por los dos ejecutores |
 | `src/wevideo.c` | decodificador libav, **compartido** por los dos ejecutores |
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
@@ -122,6 +124,7 @@ vídeo.
 make build                     # modulo QML -> obj/libwallpaperenginerender.so
 make install                   # + symlink del paquete + environment.d
 make reload                    # reinstala TODO y reinicia plasmashell
+make hyprland / hyprland-stop  # el fondo en Hyprland (layer-shell), sin plasmashell
 make status                    # enlace, entorno y plugin activo
 make glexec                    # obj/glexec  (ejecutor offline)
 make psysprobe                 # obj/psysprobe (resume un .psys sin dibujarlo)
