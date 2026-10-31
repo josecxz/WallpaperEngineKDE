@@ -10658,18 +10658,46 @@ aviso.
 sin `evaluateScript`. `shuffle` tomaba ese error por una escena rota y
 probaba otras cuatro: cinco planes escritos y cinco recargas por tick, con
 el servicio en `failed`. `recargar()` vuelve ahora sin hacer nada si el pid
-de `$XDG_RUNTIME_DIR/wallpaperengine-hyprland.pid` está vivo. No es una
-orden ni una opción nueva de `wectl`, sino el mismo `set`/`shuffle` con otro
-destino. Medido: un tick, un plan, «Finished».
+de `$XDG_RUNTIME_DIR/wallpaperengine-hyprland.pid` está vivo (luego, en
+Hyprland, siempre; ver «`wectl` en Hyprland»). Medido: un tick, un plan, «Finished».
+
+### `wectl` en Hyprland
+
+Pedido después: que `wectl` entero valga en Hyprland. Las órdenes son las
+mismas; lo que cambia es a quién hablan. `en_hyprland()` mira
+`HYPRLAND_INSTANCE_SIGNATURE` y `XDG_CURRENT_DESKTOP`, que Hyprland exporta
+también al entorno de systemd de usuario, así que vale dentro del servicio de
+la rotación.
+
+**El fondo es una unidad transitoria de systemd** (`systemd-run --user
+--unit=wallpaperengine-hyprland`), no un hijo de `wectl`. El primer intento
+(`setsid` + fichero de pid) funcionaba desde la terminal, pero `shuffle` corre
+en un servicio oneshot, y al terminar systemd mata todo su cgroup: el fondo
+que arrancase la rotación habría muerto con ella. Como unidad, además, se
+reinicia sola (`Restart=on-failure`), con el límite de arranques de systemd
+para no entrar en bucle, y `is-active` sustituye al pid. Comprobado: con el
+fondo parado, el tick de la rotación lo arrancó y siguió vivo después de
+«Finished».
+
+- `set`/`shuffle`: `recargar()` arranca el fondo si no estaba. Si estaba,
+  no hace nada, porque `VigiaArchivo` ya ve el plan nuevo.
+- `start`/`stop`: arrancan y paran la unidad. Al parar queda lo que Hyprland
+  pinte debajo; no hay un «fondo de Plasma» al que volver.
+- `gpu`: en Plasma cambia una propiedad en caliente. Aquí el fondo es otro
+  proceso y no hay canal para eso, así que se guarda en
+  `~/.config/wallpaperengine/hyprland.json` y se reinicia la unidad: menos de
+  un segundo en negro. Medido en los dos sentidos («configurado para dibujar
+  en la GPU de Qt» y vuelta a la NVIDIA).
+- `status`: estado de la unidad y las dos últimas líneas de `SceneView` del
+  registro, que en Hyprland no es el journal de plasmashell sino
+  `$XDG_RUNTIME_DIR/wallpaperengine-hyprland.log`.
+- El resto del panel de ajustes (`--pausa`, `--encaje`...) va en `opciones`
+  del mismo JSON, editado a mano. No se ha añadido ninguna orden para eso.
 
 ### Lo que queda
 
-- **`wectl start`/`stop`/`gpu`/`status`** siguen hablando con Plasma. En
-  Hyprland son `make hyprland` / `make hyprland-stop`, y la GPU es
-  `--gpu integrada`. No se han tocado porque ampliar `wectl` requiere que se
-  pida.
+- **Varios monitores** están escritos (una ventana y un `Hyprland` por
+  pantalla), pero solo se han probado con uno.
 - **Sin `test_luminancia` propio**: el anfitrión no cambia el plan ni el
   ejecutor, así que el oráculo de siempre vale. Lo nuevo es la presentación y
   se comprobó en vivo con el registro del proceso.
-- **Varios monitores** están escritos (una ventana y un `Hyprland` por
-  pantalla), pero solo se han probado con uno.

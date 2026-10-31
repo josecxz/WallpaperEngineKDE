@@ -112,7 +112,7 @@ aguja, tocas los dos a la vez o divergen.
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
 | `src/wetemblor.c` | la curva de `camerashake`, **compartida** por los dos |
 | `src/wegiro.c` | el `angles` que pone la hora (agujas) y el vaivén de `engine.runtime`, **compartido** por los dos |
-| `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`/`gpu`) |
+| `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`/`gpu`); en Hyprland lleva la unidad `wallpaperengine-hyprland` en vez de Plasma |
 
 ## Comandos
 
@@ -124,7 +124,7 @@ vídeo.
 make build                     # modulo QML -> obj/libwallpaperenginerender.so
 make install                   # + symlink del paquete + environment.d
 make reload                    # reinstala TODO y reinicia plasmashell
-make hyprland / hyprland-stop  # el fondo en Hyprland (layer-shell), sin plasmashell
+make hyprland / hyprland-stop  # atajos de `wectl start/stop` en Hyprland (layer-shell)
 make status                    # enlace, entorno y plugin activo
 make glexec                    # obj/glexec  (ejecutor offline)
 make psysprobe                 # obj/psysprobe (resume un .psys sin dibujarlo)

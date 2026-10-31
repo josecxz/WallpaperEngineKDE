@@ -210,30 +210,40 @@ un proceso propio: `hyprland/main.qml` pide al compositor una superficie
 `wlr-layer-shell` en la capa de fondo por cada monitor, con el mismo motor.
 Necesita además `layer-shell-qt`.
 
+`wectl` funciona igual: detecta Hyprland y, en vez de hablar con Plasma,
+lleva ese proceso como unidad de systemd de usuario
+(`wallpaperengine-hyprland`), que se reinicia sola si se cae.
+
 ```sh
-make plan WALLPAPER=<ruta>          # o wectl set / wectl shuffle
-make hyprland                       # construye, instala el módulo y lo arranca
-make hyprland HYPR_OPCIONES='--pausa 2 --encaje 1 --hud'
-make hyprland-stop
+wectl set <id|texto>    # prepara el plan y arranca el fondo si no estaba
+wectl shuffle --cada 30m
+wectl start / stop
+wectl gpu integrated    # reinicia el fondo en la otra gráfica
+wectl status
 ```
 
 Para que arranque con la sesión, en `hyprland.conf`:
 
 ```
-exec-once = make -C /ruta/a/WallpaperEngine hyprland
+exec-once = python3 /ruta/a/WallpaperEngine/tools/wectl.py start
 ```
 
-Opciones (las mismas del panel de ajustes de Plasma): `--pausa 0|1|2`
-(nunca / cuando lo visible tapa la pantalla / con cualquier ventana),
-`--encaje 0|1|2` (cubrir / entera / estirar), `--zoom`, `--despx`, `--despy`,
-`--color`, `--gpu dedicada|integrada` y `--hud`.
+Lo que en Plasma es el panel de ajustes aquí es
+`~/.config/wallpaperengine/hyprland.json`. `gpu` lo escribe `wectl gpu`;
+`opciones` se edita a mano y se aplica con `wectl stop && wectl start`:
+
+```json
+{ "gpu": "dedicada", "opciones": ["--pausa", "2", "--encaje", "1", "--hud"] }
+```
+
+`--pausa 0|1|2` (nunca / cuando lo visible tapa la pantalla / con cualquier
+ventana), `--encaje 0|1|2` (cubrir / entera / estirar), `--zoom`, `--despx`,
+`--despy`, `--color` y `--hud`.
 
 Lo que en Plasma dan KWin y el modelo de tareas aquí lo da el IPC de
 Hyprland (`src/hyprland.cpp`): qué tapa cada monitor, para la pausa, y dónde
 está el cursor, para el parallax y las partículas que lo siguen. El fondo
-vigila el `plan.txt`, así que `wectl set` y la rotación de `wectl shuffle`
-lo cambian sin reiniciarlo. `wectl start`, `stop`, `gpu` y `status` siguen
-siendo de Plasma. El registro está en
+vigila el `plan.txt` y cambia de escena sin reiniciarse. El registro está en
 `$XDG_RUNTIME_DIR/wallpaperengine-hyprland.log`.
 
 ## Cómo funciona

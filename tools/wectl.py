@@ -6,7 +6,7 @@
     wectl shuffle          pone uno al azar; --cada <t> lo repite solo
     wectl shuffletime <t>   ajusta cada cuanto rota, sin cambiar el fondo
     wectl start            vuelve a activar el motor
-    wectl stop             devuelve el escritorio al fondo de Plasma
+    wectl stop             para el motor (en Plasma, vuelve su fondo)
     wectl status           que hay puesto y como va
     wectl gpu [dedicated|integrated]  en que grafica se dibuja el fondo
 
@@ -15,6 +15,11 @@ EN CALIENTE. Es la diferencia importante con `make reload`, que reinicia
 plasmashell entero: ahi se pierden las ventanas de un vistazo, tarda segundos
 y -- probando varios wallpapers seguidos -- agota el limite de arranques de
 systemd y deja el escritorio caido. Con D-Bus nada de eso ocurre.
+
+En Hyprland las mismas ordenes llevan el fondo de `hyprland/main.qml`, que va
+como unidad de systemd de usuario (`wallpaperengine-hyprland`) y se recarga
+solo al cambiar el plan. Se elige por `HYPRLAND_INSTANCE_SIGNATURE` /
+`XDG_CURRENT_DESKTOP`; ver "Hyprland" mas abajo.
 """
 
 from __future__ import annotations
@@ -95,18 +100,113 @@ def poner_plugin(nombre: str) -> None:
             f" d[i].wallpaperPlugin = {json.dumps(nombre)};")
 
 
-# El fondo de Hyprland (`make hyprland`, hyprland/main.qml) deja aqui su pid.
-PID_HYPRLAND = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) \
-    / "wallpaperengine-hyprland.pid"
+# ── Hyprland ────────────────────────────────────────────────────────────────
+#
+# Fuera de Plasma el fondo no es un plugin sino un proceso propio,
+# `hyprland/main.qml`: una superficie layer-shell por monitor con el mismo
+# modulo QML. Va como unidad transitoria de systemd de usuario y no como hijo
+# de `wectl`, por dos razones: `shuffle` corre en un servicio oneshot, y
+# systemd mata todo su cgroup al terminar ---el fondo moriria con el primer
+# cambio---; y asi se reinicia solo si se cae, con el limite de arranques de
+# systemd para no entrar en bucle.
+
+UNIDAD_HYPRLAND = "wallpaperengine-hyprland"
+ANFITRION = RAIZ / "hyprland" / "main.qml"
+QML = Path("/usr/lib/qt6/bin/qml")
+MODULOS_QML = Path.home() / ".local" / "lib" / "qt6" / "qml"
+REGISTRO_HYPRLAND = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) \
+    / "wallpaperengine-hyprland.log"
+# Lo que en Plasma guarda el panel de ajustes. `gpu` lo escribe `wectl gpu`;
+# `opciones` se edita a mano: las de la cabecera de hyprland/main.qml
+# (`["--pausa", "2", "--encaje", "1", "--hud"]`).
+CONFIG_HYPRLAND = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) \
+    / "wallpaperengine" / "hyprland.json"
+
+
+def en_hyprland() -> bool:
+    """Si la sesion es de Hyprland. Vale tambien dentro del servicio de la
+    rotacion: Hyprland exporta su firma al entorno de systemd de usuario."""
+    return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")) \
+        or "hyprland" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+
+
+def _config_hyprland() -> dict:
+    try:
+        datos = json.loads(CONFIG_HYPRLAND.read_text())
+        return datos if isinstance(datos, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _guardar_config_hyprland(datos: dict) -> None:
+    CONFIG_HYPRLAND.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONFIG_HYPRLAND.with_suffix(".tmp")
+    tmp.write_text(json.dumps(datos, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(CONFIG_HYPRLAND)
 
 
 def fondo_hyprland() -> bool:
-    """Si el que pinta el fondo es el proceso de Hyprland y no plasmashell."""
+    """Si el fondo de Hyprland esta en marcha."""
+    r = subprocess.run(["systemctl", "--user", "is-active", "--quiet",
+                        UNIDAD_HYPRLAND], capture_output=True)
+    return r.returncode == 0
+
+
+def hyprland_arrancar() -> None:
+    if fondo_hyprland():
+        return
+    if not (ESCENA / "plan.txt").is_file():
+        raise CtlError("no hay ningun plan preparado; usa `wectl set <wallpaper>`")
+    if not QML.is_file():
+        raise CtlError(f"no se encontro {QML}; instala qt6-declarative")
+    cfg = _config_hyprland()
+    opciones = [str(o) for o in cfg.get("opciones", [])]
+    gpu = "integrada" if cfg.get("gpu") == "integrada" else "dedicada"
+    entorno = {"QT_FORCE_STDERR_LOGGING": "1",
+               "QML_IMPORT_PATH": ":".join(
+                   p for p in (str(MODULOS_QML), os.environ.get("QML_IMPORT_PATH"))
+                   if p)}
+    # Lo que hace falta para hablar con el compositor, por si systemd no lo
+    # tiene: en esta sesion si, pero depende de como se arranque Hyprland.
+    for var in ("WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
+                "XDG_CURRENT_DESKTOP", "XDG_RUNTIME_DIR"):
+        if os.environ.get(var):
+            entorno[var] = os.environ[var]
+    # Una unidad fallida con el mismo nombre impide crear la nueva.
+    subprocess.run(["systemctl", "--user", "reset-failed", UNIDAD_HYPRLAND],
+                   capture_output=True)
+    orden = ["systemd-run", "--user", "--quiet", "--collect",
+             f"--unit={UNIDAD_HYPRLAND}",
+             "--description=Fondo de WallpaperEngine en Hyprland",
+             "-p", "Restart=on-failure", "-p", "RestartSec=2",
+             "-p", f"StandardOutput=truncate:{REGISTRO_HYPRLAND}",
+             "-p", "StandardError=inherit",
+             *[f"--setenv={k}={v}" for k, v in entorno.items()],
+             str(QML), str(ANFITRION), "--",
+             "--plan", str(ESCENA / "plan.txt"), "--gpu", gpu, *opciones]
     try:
-        os.kill(int(PID_HYPRLAND.read_text().strip()), 0)
-    except (OSError, ValueError):
-        return False
-    return True
+        r = subprocess.run(orden, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise CtlError("no se encontro systemd-run; el fondo de Hyprland lo necesita")
+    if r.returncode != 0:
+        raise CtlError(f"no arranco el fondo de Hyprland: {r.stderr.strip()}")
+
+
+def hyprland_parar() -> None:
+    subprocess.run(["systemctl", "--user", "stop", UNIDAD_HYPRLAND],
+                   capture_output=True)
+    subprocess.run(["systemctl", "--user", "reset-failed", UNIDAD_HYPRLAND],
+                   capture_output=True)
+
+
+def _registro_hyprland(patron: str, n: int) -> list[str]:
+    """Las ultimas `n` lineas del motor en el registro del fondo de Hyprland."""
+    try:
+        lineas = REGISTRO_HYPRLAND.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    return [l.split("SceneView:", 1)[1].strip() for l in lineas
+            if "SceneView:" in l and patron in l][-n:]
 
 
 def recargar() -> None:
@@ -116,11 +216,13 @@ def recargar() -> None:
     mismo plugin tampoco dispara nada. Hay que salir a otro plugin y volver.
 
     En Hyprland no hay a quien pedirselo ni hace falta: el fondo vigila el
-    fichero del plan y se recarga solo. Sin este atajo `shuffle` tomaba el
-    "plasmashell no responde" por una escena rota y probaba otras cuatro,
-    cinco planes escritos ---y cinco recargas--- por cada cambio.
+    fichero del plan y se recarga solo; si no estaba en marcha, se arranca.
+    Sin este desvio `shuffle` tomaba el "plasmashell no responde" por una
+    escena rota y probaba otras cuatro, cinco planes escritos ---y cinco
+    recargas--- por cada cambio.
     """
-    if fondo_hyprland():
+    if en_hyprland():
+        hyprland_arrancar()
         return
     poner_plugin(PLUGIN_IMAGEN)
     poner_plugin(PLUGIN)
@@ -756,7 +858,33 @@ def _gpu_en_uso() -> str | None:
     return lineas[-1].split("SceneView:", 1)[1].strip() if lineas else None
 
 
+def _cmd_gpu_hyprland(args) -> int:
+    cfg = _config_hyprland()
+    if args.grafica is None:
+        print(f"configurado   : {cfg.get('gpu', 'dedicada')}")
+    else:
+        cfg["gpu"] = "dedicada" if GPUS[args.grafica] else "integrada"
+        _guardar_config_hyprland(cfg)
+        # Aqui no hay propiedad que cambiar en caliente desde fuera: el fondo
+        # es otro proceso. Se rearranca, que es menos de un segundo de negro.
+        if fondo_hyprland():
+            hyprland_parar()
+            hyprland_arrancar()
+            print(f"configurado   : {cfg['gpu']} (fondo reiniciado)")
+            time.sleep(2.0)
+        else:
+            print(f"configurado   : {cfg['gpu']} (se aplica al arrancar)")
+    lineas = _registro_hyprland("", 50)
+    en_uso = next((l for l in reversed(lineas) if l.startswith((
+        "el fondo se dibuja en", "configurado para dibujar", "no hay otra GPU",
+        "Qt no dibuja"))), None)
+    print(f"en uso        : {en_uso or '(sin datos del motor en el registro)'}")
+    return 0
+
+
 def cmd_gpu(args) -> int:
+    if en_hyprland():
+        return _cmd_gpu_hyprland(args)
     if args.grafica is None:
         valores = _config_gpu()
         pedida = "dedicada" if all(v != "false" for v in valores) else "integrada"
@@ -777,12 +905,21 @@ def cmd_gpu(args) -> int:
 def cmd_start(args) -> int:
     if plan_instalado() is None:
         raise CtlError("no hay ningun plan preparado; usa `wectl set <wallpaper>`")
+    if en_hyprland():
+        andaba = fondo_hyprland()
+        hyprland_arrancar()
+        print(f"motor {'ya estaba ' if andaba else ''}activo: {plan_instalado()}")
+        return 0
     poner_plugin(PLUGIN)
     print(f"motor activo: {plan_instalado()}")
     return 0
 
 
 def cmd_stop(args) -> int:
+    if en_hyprland():
+        hyprland_parar()
+        print("motor parado; el fondo queda en lo que Hyprland pinte debajo")
+        return 0
     poner_plugin(PLUGIN_IMAGEN)
     print("motor parado; el escritorio vuelve al fondo de Plasma")
     return 0
@@ -807,6 +944,18 @@ def cmd_status(args) -> int:
         bolsa = _leer_estado().get("bolsa")
         if bolsa is not None:
             print(f"                 quedan {len(bolsa)} sin repetir")
+    if en_hyprland():
+        andando = fondo_hyprland()
+        print(f"escritorio     : Hyprland (unidad {UNIDAD_HYPRLAND})")
+        print(f"estado         : {'EN MARCHA' if andando else 'parado'}")
+        cfg = _config_hyprland()
+        print(f"gpu            : {cfg.get('gpu', 'dedicada')}"
+              + (f"; opciones {' '.join(map(str, cfg['opciones']))}"
+                 if cfg.get("opciones") else ""))
+        if andando:
+            for linea in _registro_hyprland("", 2):
+                print("  " + linea)
+        return 0
     try:
         activos = plugins_actuales()
     except CtlError as e:

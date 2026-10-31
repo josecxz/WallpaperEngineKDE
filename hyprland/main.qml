@@ -10,17 +10,21 @@
 // (src/hyprland.cpp): que tapa cada monitor, para la pausa, y donde esta el
 // cursor, para el parallax y las particulas que lo siguen.
 //
-// Se lanza con `make hyprland` o, a mano:
+// Lo lanza `wectl start` (o `wectl set`, `wectl shuffle`) como unidad de
+// systemd de usuario `wallpaperengine-hyprland`. A mano, para depurar:
 //
 //   QML_IMPORT_PATH=~/.local/lib/qt6/qml /usr/lib/qt6/bin/qml hyprland/main.qml \
 //       -- --plan <plan.txt> [--pausa 0|1|2] [--encaje 0|1|2] [--zoom 1.0]
 //          [--color '#0b0b0d'] [--gpu dedicada|integrada] [--hud]
 //
+// `wectl` toma `--gpu` de `wectl gpu` y el resto de `opciones` en
+// ~/.config/wallpaperengine/hyprland.json.
+//
 // Las opciones son las del panel de ajustes del plugin de Plasma
 // (plugin/contents/config/main.xml), con los mismos valores por defecto.
 //
 // Cambiar de wallpaper es escribir un plan nuevo en la misma ruta (`make plan`
-// o `wectl set`, que lo deja ahi aunque luego no encuentre plasmashell): el
+// o `wectl set`/`shuffle`): el
 // `VigiaArchivo` lo ve y se vuelve a crear la escena. Es lo mismo que hace
 // `wectl` en Plasma al salir a otro plugin y volver: el SceneView no sabe
 // cambiar de plan en caliente, uno nuevo si.

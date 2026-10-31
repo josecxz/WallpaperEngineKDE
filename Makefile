@@ -194,31 +194,15 @@ reload: install-qml install-package install-env
 # ── Hyprland ────────────────────────────────────────────────────────────────
 # Fuera de Plasma no hay plasmashell que cargue el plugin: `hyprland/main.qml`
 # es el proceso entero, una superficie layer-shell de fondo por monitor con el
-# mismo modulo QML. Lee el mismo plan que el plugin de Plasma (el que escriben
-# `make plan` y `wectl set`) y se recarga solo cuando cambia. Necesita
-# `layer-shell-qt`. Opciones (ver la cabecera de hyprland/main.qml):
-#   make hyprland HYPR_OPCIONES='--pausa 2 --encaje 1 --hud'
-#
-# Para que arranque con la sesion, en hyprland.conf:
-#   exec-once = make -C <este repo> hyprland
-HYPR_PLAN     ?= $(SRC)/contents/scene/plan.txt
-HYPR_OPCIONES ?=
-HYPR_RUN      := $(if $(XDG_RUNTIME_DIR),$(XDG_RUNTIME_DIR),/tmp)
-HYPR_PID      := $(HYPR_RUN)/wallpaperengine-hyprland.pid
-HYPR_LOG      := $(HYPR_RUN)/wallpaperengine-hyprland.log
-
-hyprland: hyprland-stop install-qml
-	@test -n "$$HYPRLAND_INSTANCE_SIGNATURE" || echo "aviso: HYPRLAND_INSTANCE_SIGNATURE vacia; sin pausa ni cursor de Hyprland"
-	@test -f $(HYPR_PLAN) || { echo "no hay plan en $(HYPR_PLAN); haz antes make plan WALLPAPER=<ruta>"; exit 1; }
-	@QML_IMPORT_PATH=$(QMLMOD)$${QML_IMPORT_PATH:+:$${QML_IMPORT_PATH}} QT_FORCE_STDERR_LOGGING=1 \
-		setsid /usr/lib/qt6/bin/qml $(CURDIR)/hyprland/main.qml -- --plan $(HYPR_PLAN) $(HYPR_OPCIONES) \
-		> $(HYPR_LOG) 2>&1 < /dev/null & echo $$! > $(HYPR_PID)
-	@echo "fondo de Hyprland arrancado (pid $$(cat $(HYPR_PID)), registro en $(HYPR_LOG))"
+# mismo modulo QML. Lo lleva `wectl` (start/stop/set/shuffle/gpu/status), como
+# unidad de systemd de usuario; estos targets son atajos. Necesita
+# `layer-shell-qt`. Para que arranque con la sesion, en hyprland.conf:
+#   exec-once = python3 <este repo>/tools/wectl.py start
+hyprland: install-qml
+	@python3 tools/wectl.py start
 
 hyprland-stop:
-	@if [ -f $(HYPR_PID) ] && kill -0 $$(cat $(HYPR_PID)) 2>/dev/null; then \
-		kill $$(cat $(HYPR_PID)); echo "fondo de Hyprland parado"; fi
-	@rm -f $(HYPR_PID)
+	@python3 tools/wectl.py stop
 
 # Ruta del wallpaper a renderizar. Sin valor por defecto: depende de a que se
 # haya suscrito cada uno. `tools/wepaths.py` localiza la biblioteca de Steam.

@@ -42,6 +42,7 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10596` **El anfitrión** — una `Window` por monitor con `org.kde.layershell` (`LayerBackground`, cuatro anclas, `exclusionZone: -1`); se muestra ya configurada. Medido: nivel 0 bajo waybar, plan en NVIDIA y composición en Intel.
 - `10613` **La pausa y el cursor: el IPC de Hyprland** — `.socket2.sock` dispara la revisión de `j/monitors` + `j/clients` con la rejilla de `VentanasEncima`; `j/cursorpos` cada 16 ms, asíncrono, solo sin pausa. El espacio especial abierto tapa el monitor.
 - `10644` **Cambiar de plan sin plasmashell** — `Loader` + `VigiaArchivo` (inodo y fecha, porque `wectl` renombra el directorio); `shuffle` probaba cinco escenas por tick hasta que `recargar()` aprendió a ver el pid del fondo de Hyprland.
+- `10664` **`wectl` en Hyprland** — las mismas órdenes; el fondo es la unidad transitoria `wallpaperengine-hyprland` porque un hijo del servicio oneshot de la rotación moriría con él; `gpu` reinicia la unidad y se guarda en `~/.config/wallpaperengine/hyprland.json`.
 
 ## CLI, rotación y rutas
 
