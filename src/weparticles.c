@@ -618,15 +618,17 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
     }
 
     if (s->maxcount < 1) s->maxcount = 1;
-    /* Tope duro. El corpus llega a declarar 50000 particulas, y a 6 vertices de
-     * 17 floats cada una eso son 20 MB de VBO reescritos por fotograma. 8192
-     * dan 3.3 MB y ya son mas particulas de las que se distinguen en pantalla.
-     * Recorta la densidad de un par de sistemas; quedarse sin ancho de banda de
-     * memoria en el escritorio seria peor. */
+    /* Tope duro. El corpus llega a declarar 50000 particulas, que cuando cada
+     * una eran 6 vertices de 17 floats sumaban 20 MB de VBO reescritos por
+     * fotograma. Instanciadas son 15 floats por particula ---50000 serian
+     * 3 MB---, pero el tope sigue: 8192 ya son mas particulas de las que se
+     * distinguen en pantalla, y lo que cuesta ahora es simularlas y
+     * dibujarlas, no subirlas. Recorta la densidad de un par de sistemas
+     * (Voyage, Empress, Makima). */
     if (s->maxcount > 8192) s->maxcount = 8192;
 
-    size_t v_por_particula = WE_PSYS_VERTICES_POR_PARTICULA;
-    size_t floats = WE_PSYS_FLOATS_POR_VERTICE;
+    size_t v_por_particula = 1;
+    size_t floats = WE_PSYS_FLOATS_POR_PARTICULA;
     if (s->cinta == 1) {
         /* `rope` no guarda historial: une las particulas vivas, asi que da a
          * lo sumo `maxcount - 1` tramos, y cada uno son `subdiv + 1` quads.
@@ -635,7 +637,7 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
         if (s->maxcount > 1024) s->maxcount = 1024;
         if (s->subdiv < 0) s->subdiv = 0;
         if (s->subdiv > 32) s->subdiv = 32;
-        v_por_particula *= (size_t)(s->subdiv + 1);
+        v_por_particula = WE_PSYS_VERTICES_POR_QUAD * (size_t)(s->subdiv + 1);
         floats = WE_PSYS_FLOATS_CINTA;
         s->orden = calloc((size_t)s->maxcount, sizeof *s->orden);
         if (!s->orden) { we_psys_free(s); return NULL; }
@@ -648,7 +650,7 @@ WeParticleSystem *we_psys_load(const char *path, int *piezas_desconocidas)
          * de 8192 y 8 puntos serian 35 MB de VBO reescritos por fotograma; el
          * corpus no pasa de 512 particulas en un sistema de cinta. */
         if (s->maxcount > 1024) s->maxcount = 1024;
-        v_por_particula *= (size_t)(s->puntos - 1);
+        v_por_particula = WE_PSYS_VERTICES_POR_QUAD * (size_t)(s->puntos - 1);
         floats = WE_PSYS_FLOATS_CINTA;
         s->hist = calloc((size_t)s->maxcount * s->puntos * WE_HIST_FLOATS,
                          sizeof *s->hist);
@@ -1482,14 +1484,11 @@ static int construye(WeParticleSystem *s)
 
     float *w = s->verts;
     int n = 0;
-    /* Las cuatro esquinas del sprite. La UV va directa al muestreo y ademas
-     * define el quad en el vertice: `-up*(v-0.5)` pone v=0 arriba, que es la
-     * fila 0 de la textura sin voltear --- por eso las texturas de particula se
-     * suben sin el volteo comun. */
-    static const float esq[6][2] = {
-        {0, 0}, {1, 0}, {0, 1},
-        {0, 1}, {1, 0}, {1, 1},
-    };
+    /* Un registro por particula; las esquinas las pone el shader con
+     * `gl_VertexID` (ver weparticles.h). La UV de la esquina define el quad en
+     * el vertice: `-up*(v-0.5)` pone v=0 arriba, que es la fila 0 de la
+     * textura sin voltear --- por eso las texturas de particula se suben sin el
+     * volteo comun. */
 
     for (int i = 0; i < s->maxcount; i++) {
         Particula *q = &s->p[i];
@@ -1504,27 +1503,23 @@ static int construye(WeParticleSystem *s)
         if (tam <= 0.0f || alfa <= 0.001f)
             continue;
 
-        for (int k = 0; k < 6; k++) {
-            w[0] = q->pos[0] + desp[0];
-            w[1] = q->pos[1] + desp[1];
-            w[2] = q->pos[2] + desp[2];
-            w[3] = esq[k][0];
-            w[4] = esq[k][1];
-            w[5] = q->rot[2];
-            w[6] = tam;
-            w[7] = q->rot[0];
-            w[8] = q->rot[1];
-            w[9] = col[0]; w[10] = col[1]; w[11] = col[2]; w[12] = alfa;
-            w[13] = q->vel[0]; w[14] = q->vel[1]; w[15] = q->vel[2];
-            /* El shader saca el fotograma de la hoja de este valor, con un
-             * `frac` por delante. En modo `randomframe` cada particula se queda
-             * en uno fijo --- lluvia, escombros, petalos: 89 sistemas cuyo
-             * sprite no debe animarse, solo variar entre particulas. */
-            w[16] = s->anim_modo == 1 ? azar_fijo(q->semilla, 99)
-                                      : vn * s->anim_mult;
-            w += WE_PSYS_FLOATS_POR_VERTICE;
-            n++;
-        }
+        w[0] = q->pos[0] + desp[0];
+        w[1] = q->pos[1] + desp[1];
+        w[2] = q->pos[2] + desp[2];
+        w[3] = q->rot[2];
+        w[4] = tam;
+        w[5] = q->rot[0];
+        w[6] = q->rot[1];
+        w[7] = col[0]; w[8] = col[1]; w[9] = col[2]; w[10] = alfa;
+        w[11] = q->vel[0]; w[12] = q->vel[1]; w[13] = q->vel[2];
+        /* El shader saca el fotograma de la hoja de este valor, con un `frac`
+         * por delante. En modo `randomframe` cada particula se queda en uno
+         * fijo --- lluvia, escombros, petalos: 89 sistemas cuyo sprite no debe
+         * animarse, solo variar entre particulas. */
+        w[14] = s->anim_modo == 1 ? azar_fijo(q->semilla, 99)
+                                  : vn * s->anim_mult;
+        w += WE_PSYS_FLOATS_POR_PARTICULA;
+        n++;
     }
     s->n_verts = n;
     return n;
@@ -1863,14 +1858,26 @@ int we_psys_update(WeParticleSystem *s, float t)
         }
     }
 
-    /* Paso fijo: el resultado no puede depender de a cuantos fotogramas por
-     * segundo vaya el escritorio, ni diferir entre el ejecutor offline y el
-     * de plasmashell. */
-    while (dt > 0.0f) {
-        float h = dt > PASO ? PASO : dt;
-        paso_con_hijos(s, h);
-        s->reloj += h;
-        dt -= h;
+    /* El tramo se reparte en pasos IGUALES, tantos como pasos de 1/60 caben
+     * redondeando, y como poco uno: cada paso dura entre 0,67 y 1,5 veces
+     * PASO, y la simulacion depende poco de a cuantos fotogramas por segundo
+     * vaya el escritorio.
+     *
+     * Antes eran pasos de PASO mas el resto como un paso aparte, y ese resto
+     * costaba lo mismo que un paso entero ---la turbulencia se evalua igual
+     * en uno de 1,5 ms que en uno de 16,7---: a 55 fps salian 2 pasos por
+     * fotograma en vez de 1,09, y a 60 fps el `float` del reloj dejaba restos
+     * de 4e-7 s que eran 1,32. Medido en "Voyage", 13 ms de simulacion por
+     * fotograma. Ver NOTAS, "Los pasos de la simulacion". */
+    if (dt > 0.0f) {
+        int n = (int)lroundf(dt / PASO);
+        if (n < 1)
+            n = 1;
+        const float h = dt / (float)n;
+        for (int i = 0; i < n; i++) {
+            paso_con_hijos(s, h);
+            s->reloj += h;
+        }
     }
     return construye(s);
 }
@@ -1887,5 +1894,5 @@ int we_psys_cinta(const WeParticleSystem *s)
 
 int we_psys_floats_por_vertice(const WeParticleSystem *s)
 {
-    return s && s->cinta ? WE_PSYS_FLOATS_CINTA : WE_PSYS_FLOATS_POR_VERTICE;
+    return s && s->cinta ? WE_PSYS_FLOATS_CINTA : WE_PSYS_FLOATS_POR_PARTICULA;
 }

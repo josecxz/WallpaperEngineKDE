@@ -106,6 +106,32 @@ def encaje(video: tuple[int, int], pantalla: tuple[int, int]) -> tuple[float, fl
     return vw * escala / pw, vh * escala / ph
 
 
+def tamano_textura(video: tuple[int, int], pantalla: tuple[int, int] | None) -> tuple[int, int]:
+    """A que tamano pedir los fotogramas al decodificador. Nunca mas que el nativo.
+
+    El video se ve CUBRIENDO la pantalla (`encaje`), asi que de un 4K en un
+    monitor de 1920x1200 se ven 2133x1200 pixeles. Pedirlo nativo era
+    convertir de YUV a RGBA y subir a la GPU 33 MB por fotograma para que el
+    shader los encogiera a 0,55x ---y sin mipmaps, con dientes---: el 31 % de
+    ese trabajo era el que llegaba a verse. `swscale` convierte y reduce en una
+    sola pasada y filtra bien al reducir. Medido con `ffmpeg -benchmark`, la
+    conversion es mas cara que decodificar: ver NOTAS, "El video, al tamano al
+    que se ve".
+
+    Sin pantalla (un render offline sin `--pantalla`) el lienzo es el propio
+    video y sale el nativo. No se amplia nunca: eso lo hace la GPU gratis.
+    """
+    vw, vh = video
+    if not pantalla or vw <= 0 or vh <= 0:
+        return vw, vh
+    pw, ph = pantalla
+    escala = max(pw / vw, ph / vh)
+    if escala >= 1.0:
+        return vw, vh
+    # Pares: el 4:2:0 parte el croma en bloques de 2x2.
+    return max(2, 2 * round(vw * escala / 2)), max(2, 2 * round(vh * escala / 2))
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)

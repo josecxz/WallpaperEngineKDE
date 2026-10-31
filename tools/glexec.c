@@ -130,6 +130,9 @@ static void bind_mip_sampler(int unidad, GLuint tex)
 }
 static GLuint composite_prog;
 static int object_open;
+/* Si algun pase del objeto ha escrito en el compuesto; si no, no se compone.
+ * Ver `m_objetoDibujo` en src/glexecutor.h. */
+static int objeto_dibujo;
 /* Colocacion del objeto en curso: los pases corren en el espacio de la capa
  * (su buffer representa el rectangulo de la capa) y esta matriz lo lleva al
  * lienzo una unica vez, al componer. Identidad para planes sin ella. */
@@ -450,11 +453,12 @@ static void load_psys(int id, const char *path)
     glBindVertexArray(psys[id].vao);
     glGenBuffers(1, &psys[id].vbo);
     glBindBuffer(GL_ARRAY_BUFFER, psys[id].vbo);
-    /* Dos layouts, uno por shader; ver weparticles.h. El sistema dice cual. */
+    /* Dos layouts, uno por shader; ver weparticles.h. El sistema dice cual.
+     * El del sprite es un registro por particula, instanciado: divisor 1. */
     const GLsizei paso = we_psys_floats_por_vertice(psys[id].sys) * sizeof(float);
     typedef struct { int loc, n, off; } Attr;
     static const Attr sprite[] = {
-        {0, 3, 0}, {2, 4, 3}, {3, 2, 7}, {4, 4, 9}, {5, 4, 13},
+        {0, 3, 0}, {2, 2, 3}, {3, 2, 5}, {4, 4, 7}, {5, 4, 11},
     };
     static const Attr cinta[] = {
         {0, 4, 0}, {2, 4, 4}, {4, 4, 8}, {5, 4, 12}, {6, 4, 16}, {7, 4, 20},
@@ -468,6 +472,7 @@ static void load_psys(int id, const char *path)
         glVertexAttribPointer(attr[i].loc, attr[i].n, GL_FLOAT, GL_FALSE, paso,
                               (void *)(size_t)(attr[i].off * sizeof(float)));
         glEnableVertexAttribArray(attr[i].loc);
+        glVertexAttribDivisor(attr[i].loc, we_psys_cinta(psys[id].sys) ? 0 : 1);
     }
     glBindVertexArray(quad_vao);
 }
@@ -493,7 +498,10 @@ static int draw_psys(int id, float t)
     } else {
         glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, we_psys_vertices(psys[id].sys));
     }
-    glDrawArrays(GL_TRIANGLES, 0, nv);
+    if (we_psys_cinta(psys[id].sys))
+        glDrawArrays(GL_TRIANGLES, 0, nv);
+    else
+        glDrawArraysInstanced(GL_TRIANGLES, 0, WE_PSYS_ESQUINAS, nv);
     glBindVertexArray(quad_vao);
     return 1;
 }
@@ -612,6 +620,9 @@ static GLuint link_program(const char *vp, const char *fp)
     glBindAttribLocation(prog, 0, "a_Position");
     glBindAttribLocation(prog, 1, "a_TexCoord");
     glBindAttribLocation(prog, 2, "a_TexCoordVec4");
+    /* El sprite instanciado: (rotacion z, tamano) en el sitio de
+     * `a_TexCoordVec4`, que el plan reescribe como macro (weparticles.h). */
+    glBindAttribLocation(prog, 2, "a_RotTamParticula");
     glBindAttribLocation(prog, 3, "a_TexCoordC2");
     glBindAttribLocation(prog, 4, "a_Color");
     glBindAttribLocation(prog, 5, "a_TexCoordVec4C1");
@@ -679,6 +690,8 @@ static void flush_object(void)
     object_open = 0;
     if (obj_solo_buffer)
         return;          /* su resultado ya se copio a su buffer con nombre */
+    if (!objeto_dibujo)
+        return;          /* transparente entero: componerlo no cambia nada */
     glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
     glViewport(0, 0, scene_rt.w, scene_rt.h);
     glUseProgram(composite_prog);
@@ -767,11 +780,12 @@ static void begin_object(void)
         fprintf(stderr, "\n");
     }
     object_open = 1;
+    /* Solo el "anterior": cada pase limpia su destino antes de dibujar. Ver
+     * `beginObject` en src/glexecutor.cpp. */
+    objeto_dibujo = 0;
     glClearColor(0, 0, 0, 0);
-    for (int i = 0; i < 2; i++) {
-        glBindFramebuffer(GL_FRAMEBUFFER, compo[i].fbo);
-        glClear(GL_COLOR_BUFFER_BIT);
-    }
+    glBindFramebuffer(GL_FRAMEBUFFER, compo[compo_cur].fbo);
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 
 static GLuint cached_program(const char *vp, const char *fp)
@@ -1180,6 +1194,8 @@ int main(int argc, char **argv)
             if (sscanf(line, "%*s %127s %127s", src, dst) == 2) {
                 Target *s = strcmp(src, "prev") == 0 ? &compo[compo_cur] : find_rt(src);
                 Target *d = strcmp(dst, "prev") == 0 ? &compo[compo_cur] : find_rt(dst);
+                if (d == &compo[compo_cur])
+                    objeto_dibujo = 1;
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, s->fbo);
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, d->fbo);
                 glBlitFramebuffer(0, 0, s->w, s->h, 0, 0, d->w, d->h,
@@ -1333,6 +1349,8 @@ int main(int argc, char **argv)
 
             int to_screen = strcmp(target, "SCREEN") == 0;
             Target *dst = to_screen ? &compo[compo_cur ^ 1] : find_rt(target);
+            if (to_screen)
+                objeto_dibujo = 1;
 
             glBindFramebuffer(GL_FRAMEBUFFER, dst->fbo);
             glViewport(0, 0, dst->w, dst->h);

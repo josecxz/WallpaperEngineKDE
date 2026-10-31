@@ -54,10 +54,10 @@ int main(int argc, char **argv)
     int nv = we_psys_update(s, strtof(argv[2], NULL));
     const float *v = we_psys_vertices(s);
     int paso = we_psys_floats_por_vertice(s);
-    /* Un vertice por particula basta: los seis del quad comparten centro y
-     * velocidad. En las cintas cada quad es un SEGMENTO, asi que el resumen
+    /* Un sprite es un registro por particula (se dibuja instanciado). En las
+     * cintas cada quad de seis vertices es un SEGMENTO, asi que el resumen
      * cuenta segmentos y no particulas; se avisa abajo. */
-    const int por_particula = WE_PSYS_VERTICES_POR_PARTICULA;
+    const int por_particula = we_psys_cinta(s) ? WE_PSYS_VERTICES_POR_QUAD : 1;
 
     printf("piezas sin reconocer: %d\n", desconocidas);
     printf("%s: %d vertices, %d %s\n", argv[1], nv, nv / por_particula,
@@ -78,7 +78,7 @@ int main(int argc, char **argv)
         int n = 0;
         for (int i = 0; i < nv; i += por_particula) {
             const float *w = v + (size_t)i * paso;
-            double vx = w[13], vy = w[14], vz = w[15];
+            double vx = w[11], vy = w[12], vz = w[13];
             double r = sqrt(vx * vx + vy * vy + vz * vz);
             sx += vx; sy += vy; rap += r;
             cx += w[0]; cy += w[1];

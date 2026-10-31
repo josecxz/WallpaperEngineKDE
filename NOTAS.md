@@ -10927,8 +10927,9 @@ da 3,6 W, y con el fondo en pausa 5,5 W.
   consumo**: a 30 fps sale igual que a 60, con 4–17 W menos. `medir_vivo`
   guarda ahora los vatios y los MHz de la NVIDIA, y esa es la cifra que
   manda para la batería. La de la CPU (RAPL) pide root y no se lee.
-- Los 2 W de la pausa (5,5 frente a 3,6 sin fondo) quedan para el punto de
-  la pausa.
+- ~~Los 2 W de la pausa (5,5 frente a 3,6 sin fondo) quedan para el punto de
+  la pausa.~~ **Corregido después: no existen.** Ver «La pausa en
+  Hyprland».
 
 `medir_vivo.py` mide ahora con el tope por defecto (60). La línea de base
 para los siguientes puntos es `base-fps60.json`: 55 + 55 fps, 65 % de CPU,
@@ -11211,3 +11212,377 @@ Alrededor de un 4 % menos, **dentro del ruido**, como las trazas del punto
 4. Se queda: son 213 llamadas a GL menos por fotograma y pantalla, sin
 riesgo comprobado. La CPU por fotograma que queda (~1,7 ms) no está en los
 uniforms.
+
+## Los pasos de la simulación
+
+Punto 7 de la auditoría: lo que cuesta simular las partículas.
+
+### Dónde mirar
+
+`WE_MEDIDAS` cuenta ahora el tiempo de `drawPsys` por fotograma
+(`particulas_ms`) y, dentro de él, lo de subir los vértices
+(`particulas_subir_ms`). Las escenas con más partículas del corpus, por
+`maxcount` sumado: *Voyage* (`3053927686`, 151.230), *Empress of Grace*
+(102.141), *Makima* (100.216), *Jinx* (96 sistemas) y la lluvia de *EVA*
+(`2587542891`). Medidas en eDP-1 solo, a 55 fps: partículas 0,3–0,8 ms en
+casi todas, **4,5 ms en EVA y 13,2 ms en Voyage**, que no llegaba a los 55
+fps y pasaba del 100 % de un núcleo.
+
+### Lo que hacía Voyage
+
+Sin `perf` ni `valgrind` aquí, con un banco en C sobre el mismo
+`src/weparticles.c` (55 pasos por segundo, 5 s de calentamiento y 5 s
+cronometrados) y `gprof`:
+
+- Seis sistemas casi iguales (`s002`–`s007`: 7.950 partículas por segundo,
+  hasta 1 s de vida, ~4.150 vivas) cuestan **1,83 ms cada uno**.
+- El **80 %** es la turbulencia: `rotacional` evalúa el ruido 12 veces
+  (diferencias finitas con h = 0,5) y cada evaluación hace 8 hashes.
+- Y había **dos pasos por fotograma**: 1.100 llamadas a `paso` en 551
+  fotogramas.
+
+### El resto que costaba un paso entero
+
+`we_psys_update` daba pasos de `PASO` (1/60) y el resto **como un paso
+más**, y la turbulencia cuesta lo mismo en un paso de 1,5 ms que en uno de
+16,7. Pasos por fotograma, con el reloj en `float` como el del QML:
+
+| cadencia | antes | de ellos, restos de menos de medio paso | ideal |
+|---|---|---|---|
+| 30 fps | 2,32 | 0,32 | 2,00 |
+| 55 fps | **2,00** | 1,00 | 1,09 |
+| 60 fps | **1,32** | 0,32 | 1,00 |
+| 165 fps | 1,00 | 1,00 | 0,36 |
+
+A 60 fps, los restos son de 4·10⁻⁷ s: el `float` del reloj. El comentario
+del bucle decía «paso fijo: el resultado no puede depender de los fps», y el
+paso de resto hacía justo eso.
+
+**Ahora el tramo se reparte en `n = round(dt / PASO)` pasos iguales**, al
+menos uno: cada paso dura entre 0,67 y 1,5 veces `PASO`, y a 55–60 fps sale
+uno por fotograma. No se acumula el resto: así el movimiento no se cuantiza
+a 1/60 ni se queda un fotograma atrás. Se descartó compartir hashes entre
+las evaluaciones del rotacional sin cambiar el resultado: daría ~9 %. Y
+cambiar a derivadas analíticas cambiaría el campo sobre el que está ajustado
+`FACTOR_TURBULENCIA`.
+
+**Las cintas no cambian**: el historial se graba por tiempo (`t_hist`, que
+cuenta atrás desde `intervalo`), no por paso. Antes, a 55 fps, el paso de
+resto no llegaba a grabar punto, así que sigue saliendo uno por fotograma.
+
+### Lo medido
+
+- **Banco**: los sistemas de Voyage de 1,96 a **0,96 ms**, con los mismos
+  vértices vivos (~25.000, la misma densidad). Los de EVA, de 0,19 a 0,15.
+- **`test_weparticles`**: OK.
+- **`test_luminancia`** con `--referencia` guardada justo antes con el
+  simulador viejo: 133 escenas, **0 regresiones**, 0 apagadas y la misma
+  sospechosa de siempre (`3274519787`). De las 10 que imprime la tabla, 9
+  dan la misma media y una se mueve un 0,5 %. `src/weparticles.c` es
+  compartido, así que esto cubre también el offline.
+- **En vivo**, intercalado tres y tres, con las dos pantallas:
+
+| | fps | CPU por fotograma | CPU del proceso |
+|---|---|---|---|
+| Voyage, antes | 39–45 | 20,1–23,7 ms | 235–246 % |
+| Voyage, después | 46–52 | 13,6–16,9 ms | 202–213 % |
+| EVA, antes | 55 | 6,6–6,8 ms | 85–86 % |
+| EVA, después | 55 | 6,5–7,1 ms | 84–89 % |
+
+### Lo que queda
+
+- **EVA no cambia** porque su simulación ya era barata. Lo suyo es **subir
+  vértices**: ~19 sistemas de 30.000 vértices, 570.000 por fotograma y
+  pantalla. Son 1,75 ms de `glBufferSubData` de los ~4 ms de partículas.
+  Escribir los vértices directamente en un buffer mapeado ahorraría una
+  copia.
+- **Voyage ya no la limita la CPU sino la NVIDIA**: 13–14 ms de GPU por
+  fotograma y pantalla, ~28 ms con las dos, más que los 18 ms de 55 fps, y
+  ~60 W. Es dibujar 150.000 vértices de partículas con mucha
+  superposición, y es asunto del lado de la GPU.
+- Los ~8 ms que siguen siendo simulación en Voyage (más que los ~6 del
+  banco, por los dos hilos de render a la vez) se podrían repartir entre
+  núcleos. Eso baja el tiempo por fotograma, no la energía.
+
+## Las partículas, instanciadas
+
+Lo que quedaba del punto 7: con la simulación ya barata, la lluvia de EVA
+(`2587542891`) seguía gastando ~4 ms de partículas por fotograma y
+pantalla, y 1,75 ms de ellos eran **subir vértices**.
+
+### Por qué tanto
+
+Cada sprite eran **6 vértices de 17 floats** (dos triángulos sin índices) y
+de esos 17 solo dos cambiaban entre esquinas: la UV de la esquina. 408 bytes
+escritos por `construye` y subidos por `glBufferSubData` por partícula,
+donde bastan 60. EVA tiene 7 sistemas de 5.000 partículas: ~210.000
+vértices, ~14 MB por fotograma y pantalla.
+
+Se pensaron tres caminos: un buffer mapeado (quita la copia del driver,
+pero no el `memcpy`), índices (4 vértices en vez de 6, un 33 %) e
+**instanciar** (un registro por partícula, ~85 %). Se eligió el tercero.
+
+### Cómo
+
+- **`weparticles`**: un sprite es un registro de **15 floats** por
+  partícula (`WE_PSYS_FLOATS_POR_PARTICULA`): el vértice de antes sin la
+  esquina, en el mismo orden. `we_psys_update` devuelve partículas en un
+  sprite y vértices en una cinta. Las cintas no cambian.
+- **Los dos ejecutores** (`glexec.c` y `glexecutor.cpp`, a la vez): divisor
+  1 en todos los atributos del sprite y
+  `glDrawArraysInstanced(GL_TRIANGLES, 0, 6, n)`.
+- **El shader**: `genericparticle.vert` lee `a_TexCoordVec4` = (u, v,
+  rotación z, tamaño), con la esquina en `xy`, y un atributo sale entero de
+  un solo buffer. `werender.py` (`instanciar_particula`), al emitir el
+  plan, cambia la declaración por `in vec2 a_RotTamParticula` y una macro
+  con el mismo nombre: `#define a_TexCoordVec4
+  vec4(WE_ESQUINAS[gl_VertexID], a_RotTamParticula)`, con las seis esquinas
+  que escribía el simulador, en su orden. El resto del shader no se entera.
+  Los ejecutores atan `a_RotTamParticula` a la posición 2.
+- **Los lectores del formato**: `test_weparticles.py` (la velocidad pasa del
+  float 13 al 11) y `psysprobe.c`.
+
+Un shader de partícula que use `a_TexCoordVec4` sin esa declaración pierde
+el pase con una nota, en vez de dibujarse mal en silencio. En el corpus no
+hay ninguno: **los 814 sistemas de sprite usan `genericparticle`** y lo
+declaran como `vec4`.
+
+**Los planes de antes no valen con el módulo nuevo**: su shader espera el
+vértice viejo. Al actualizar hay que regenerarlos (`wectl set`/`shuffle`,
+`make plan`); la rotación lo hace sola en su siguiente cambio.
+
+### Comprobado
+
+- **Offline, byte a byte**: EVA, Voyage, Jinx (96 sistemas), GODDES y Halo
+  renderizados a `--time 3` con la versión anterior (en un `worktree`) y con
+  la instanciada dan **PNG idénticos**, y con contenido (medias de 52 a
+  115).
+- **`test_weparticles`**: OK. **`test_luminancia`** contra la referencia de
+  antes del punto 7: 133 escenas, **0 regresiones**.
+
+### Lo medido
+
+Intercalado tres y tres, las dos pantallas:
+
+| | CPU por fotograma | partículas (subir) | GPU por fotograma | fps | proceso | NVIDIA |
+|---|---|---|---|---|---|---|
+| EVA, antes | 6,3–6,6 ms | 3,9–4,2 (1,7–1,8) ms | 5,5–5,9 ms | 55 | 83 % | 36 W |
+| EVA, instanciado | 3,3–3,6 ms | 1,3–1,4 (0,36) ms | 2,9–3,2 ms | 55 | 48 % | 31 W |
+| Voyage, antes | 14,9–16,9 ms | 10,4–11,7 (2,2–2,3) ms | 13,8–15,3 ms | 45–49 | 207–218 % | 61–63 W |
+| Voyage, instanciado | 10,6–11,4 ms | 7,0–7,7 (0,4) ms | 9,5–10,5 ms | 53–54 | 173–178 % | 64–65 W |
+
+Baja también la **GPU**: la NVIDIA lee 6,8 veces menos datos de vértice. Y
+`construye`, en el banco, de 0,147 a 0,077 ms por sistema de EVA.
+
+### Dos medidas que se contaminaban
+
+La primera tanda dio una de EVA «antes» con 97,6 % de CPU (las otras, 83)
+y una de Voyage que falló. **La rotación**: `wectl shuffle`, cada 2
+minutos aquí, arranca el fondo normal si lo encuentra parado, y
+`medir_vivo` lo para para medir. Si el temporizador saltaba en medio,
+había **dos fondos dibujando a la vez**. `medir_vivo` para ahora también
+el temporizador y lo deja como estaba. Las medidas de los puntos
+anteriores pudieron llevar alguna así. Las conclusiones aguantan (los
+efectos medidos son del 30 al 60 %, y las medidas de cada caso coincidían
+entre sí), pero un valor suelto disparado de entonces puede ser esto.
+
+## El vídeo, al tamaño al que se ve
+
+Punto 8 de la auditoría: el vídeo se decodifica y se convierte por CPU.
+Medido en eDP-1 solo: *Blade Runner* 4K, 61 % de un núcleo; *Home* 4K,
+83 %; *Irelia* 1080p60, 55 %. *Jeanne*, sin vídeo, 17 %.
+
+### Dónde se va
+
+Cuatro pasos por fotograma de vídeo: decodificar (libav, hilos
+automáticos), convertir de YUV a RGBA con `swscale`, subir la textura a la
+NVIDIA y copiar a la integrada. Con `ffmpeg -benchmark` sobre 10 s de vídeo,
+en % de un núcleo:
+
+| vídeo | decodificar | + RGBA nativo (antes) | + RGBA 1920×1080 |
+|---|---|---|---|
+| *Home* 4K H.264 24 fps | 51 % | 145 % | 97 % |
+| *Blade Runner* 4K MPEG-4 24 fps | 23 % | 104 % | 54 % |
+| *Irelia* 1080p H.264 60 fps | 28 % | 50 % | 48 % |
+
+**Convertir cuesta más que decodificar.** Y el plan de un wallpaper de vídeo
+pedía el vídeo **nativo** (`video 0 … 0 0`): un 4K se convertía a 33 MB de
+RGBA por fotograma, se subía así, y el shader lo encogía a 0,55× para
+cubrir una pantalla de 1920×1200, sin mipmaps. Llegaba a verse el 31 % de
+ese trabajo.
+
+### El cambio
+
+`wevideo.tamano_textura`: el plan pide al decodificador el tamaño al que el
+vídeo **se ve** cubriendo el lienzo, y nunca más que el nativo (ampliar lo
+hace la GPU gratis). Las medidas van en pares por el 4:2:0. Un 4K en
+1920×1200 sale a 2134×1200. `swscale` convierte y reduce en una sola pasada
+y filtra bien al reducir. Sin pantalla (un render offline sin `--pantalla`)
+el lienzo es el vídeo y sale el nativo. Solo para los 15 wallpapers de tipo
+vídeo: una capa `IS_VIDEO` de una escena lleva el tamaño de su `.tex` y
+puede estar escalada dentro de la escena.
+
+Con zoom en el encaje (`Zoom` > 1), la textura queda por debajo de lo que
+se ve. Es un caso raro y no se ha tratado.
+
+### Comprobado
+
+- Los 15 wallpapers de vídeo, offline a `--pantalla 1920x1200` y
+  `--time 3`, con el plan viejo y el nuevo: **9 idénticos** (los que no
+  pasan de la pantalla, para los que el plan no cambia), y los **6 de 4K**
+  con PSNR de 37,5 a 45,3 dB y la media de luz entre +0,5 y +0,7 (1–1,5 %).
+  Es el filtrado: reducir con `swscale` en vez de muestrear una textura 4K
+  sin mipmaps.
+- `test_luminancia` no sirve aquí: renderiza sin pantalla, y sin pantalla la
+  textura sale nativa como antes. Se lanzó y se paró por eso.
+- **`test_wevideo` falla en 3 fotogramas de `3047352572`** (*Pattern*, una
+  capa `IS_VIDEO`: «el fotograma no es el de ffmpeg», diferencia media ~1 y
+  máxima 255). **Ya fallaba antes**: falla igual sin este cambio, la prueba
+  compila `src/wevideo.c` por su cuenta, y ni ese fichero ni la prueba han
+  cambiado desde `V1.0.0`. Huele a una actualización de ffmpeg/swscale del
+  sistema. Queda pendiente aparte; los demás vídeos pasan.
+
+### Lo medido
+
+Intercalado tres y tres, las dos pantallas (cada una decodifica su copia):
+
+| | CPU del proceso | CPU de render por fotograma | GPU por fotograma | NVIDIA |
+|---|---|---|---|---|
+| *Home*, antes | 178–182 % | 5,7–6,0 ms | 3,3–3,9 ms | 33–34 W |
+| *Home*, después | 140–141 % | 2,8–2,9 ms | 1,1–1,6 ms | 18–20 W |
+| *Blade Runner*, antes | 132–134 % | 5,6–5,9 ms | 3,2–3,9 ms | 34 W |
+| *Blade Runner*, después | 98–102 % | 2,9–3,1 ms | 1,1–1,7 ms | 19–21 W |
+
+La NVIDIA baja ~15 W: subirle 33 MB por fotograma la tenía a alta
+frecuencia.
+
+### Lo que queda
+
+- **La conversión, en la GPU**: subir los planos Y/U/V y pasarlos a RGB en
+  un shader quitaría `swscale` entero. Pero toca los dos ejecutores y
+  `wevideo.c`, y los píxeles dejarían de ser los de `ffmpeg`, que es el
+  oráculo de `test_wevideo`.
+- **Decodificar por hardware** (VAAPI en la integrada): quitaría el 23–51 %
+  de la decodificación.
+- **Con dos pantallas en modo `mismo`, el vídeo se decodifica dos veces**,
+  una por pantalla.
+
+## Los relojes, el texto y la hora en cada fotograma
+
+Punto 9 de la auditoría: que relojes y texto no se rehagan en cada
+fotograma. **Ya estaba bien; no se cambia nada.**
+
+- **Relojes** (`updateClocks`): se rehacen cuando cambia el tramo que la
+  plantilla distingue (el minuto, o el segundo con `%S`), y suben unas
+  decenas de vértices. `localtime_r` solo al rehacer.
+- **La hora de las agujas** (`we_hora_del_dia`): un `clock_gettime` y un
+  `localtime_r` por fotograma, para todas a la vez.
+- **Las mallas animadas** (`skinMeshes`) se deforman por CPU en cada
+  fotograma, pero son pocos miles de vértices: decenas de µs.
+
+Medido en eDP-1 con las dos escenas del corpus con más capas de texto con
+script: *Lonely Cat* (`3299228616`, 60 capas, 58 relojes) gasta **1,58 ms
+de CPU por fotograma**, 0,8 de ellos la copia entre GPUs, y 17 % de
+proceso. *Arknights* (`3462491575`, 16 capas) gasta 2,8 ms, pero por otra
+cosa: **144 pases, 110 objetos, 71 sistemas de partículas y 5 mallas
+animadas**. Su CPU es el envío de GL de todo eso, que es el punto 6 (los
+cambios de estado entre pases), y es la escena con la que medirlo.
+
+## La pausa en Hyprland
+
+Punto 10 de la auditoría: en Plasma se midió que la pausa deja el motor de
+render a 0,0 % («No dibujar lo que no se ve»). En Hyprland no se había
+medido, y una medida de 12 s del tope de fotogramas daba la NVIDIA a
+5,5 W en pausa frente a 3,6 sin fondo.
+
+`medir_vivo` mide sin pausa a propósito, así que esto se midió aparte, con
+sus mismas funciones y además la CPU **por hilo** del proceso. Tres y tres
+intercaladas de 20 s, con las dos pantallas tapadas por ventanas («en pausa
+con 100 % tapado» en las dos) y el temporizador de rotación parado:
+
+| | CPU proceso | integrada (proceso) | Hyprland CPU / integrada | NVIDIA | VRAM |
+|---|---|---|---|---|---|
+| sin fondo | — | — | 2,20–2,25 % / 0,96–0,97 % | 2,86–2,93 W a 210 MHz | 54 MiB |
+| en pausa | 0,10–0,15 % | 0 % | 2,25–2,35 % / 0,95–0,98 % | 2,86–2,92 W a 210 MHz | 551–561 MiB |
+
+- **La pausa llega a cero**: la NVIDIA gasta lo mismo que sin fondo, a su
+  frecuencia mínima; la integrada, nada; Hyprland, lo mismo.
+- Del proceso solo queda el hilo principal al 0,1 %: la revisión de
+  ventanas cada 2 s (`j/monitors` y `j/clients` por el IPC, una por
+  pantalla). El cursor no se pregunta en pausa.
+- **Los «2 W de más» eran un artefacto**: aquella medida duró 12 s, justo
+  después de una tanda de medidas, con la tarjeta aún sin bajar de
+  frecuencia.
+- Queda ocupada la **VRAM**, ~500 MiB con las texturas de los dos planes.
+  Es memoria, no energía, y soltarla obligaría a recargar el plan entero al
+  destapar.
+
+No se cambia nada.
+
+## El objeto que no dibuja no se compone
+
+Punto 6 de la auditoría: los cambios de estado de GL entre pases. Hacía
+falta una escena donde se notaran, y el punto 9 la dio: *Arknights*
+(`3462491575`), con 144 pases, 110 objetos, 71 sistemas de partículas y 5
+mallas animadas.
+
+### Dónde va la CPU de `render()`
+
+`WE_MEDIDAS` desglosa ahora `render()`: `render_ms`, `previo_ms` (mallas,
+relojes, vídeo) y `objetos_ms` (empezar cada objeto y componer el
+anterior). En eDP-1: 2,0 ms en `render()`, de ellos **0,96 en los objetos**
+(~8,7 µs cada uno) y ~1,0 en los 144 pases y las partículas.
+
+### Lo que se hacía de más
+
+- `beginObject` **limpiaba los dos buffers del ping-pong** del objeto
+  (`m_compo[0]` y `[1]`), del tamaño del lienzo, con su cambio de FBO cada
+  uno. Solo hace falta el «anterior» (`m_compo[m_compoCur]`): es el que lee
+  el primer pase como `previous` y el que se compone si no hay pases. El
+  otro lo limpia el primer pase que escribe en él, porque los dos
+  ejecutores limpian el destino de cada pase antes de dibujar.
+- Un objeto que no escribía en el compuesto **se componía igual**: un lienzo
+  transparente mezclado sobre la escena. Ahora `m_objetoDibujo` (y
+  `objeto_dibujo` en `glexec.c`) lo salta.
+
+En los dos ejecutores a la vez, para que el offline siga siendo el
+oráculo.
+
+### Comprobado
+
+Offline a `--time 3`, contra el commit anterior en un `worktree`: **PNG
+idénticos byte a byte** en *Arknights*, *Jeanne*, *Sci-Fi City*, *God of
+War* (`2868108515`, desenfoque), *After Sunset* (`3210875135`, luces) y
+*Katana Girl* (`3238423642`). `3047352572` sale distinta, pero **ya no era
+determinista**: dos renders seguidos del ejecutor viejo difieren en 11.496
+píxeles (viejo contra nuevo, 13.346). Es su capa de vídeo *Pattern*, la
+misma que falla en `test_wevideo` («El vídeo, al tamaño al que se ve»).
+Pendiente aparte.
+
+### Lo medido
+
+*Arknights*, las dos pantallas, intercalado tres y tres:
+
+| | CPU por fotograma (HDMI / eDP) | GPU por fotograma | proceso |
+|---|---|---|---|
+| antes | 4,12–4,40 / 3,92–4,28 ms | 6,9–7,0 / 6,2–6,4 ms | 55–58 % |
+| después | 3,60–3,65 / 3,48–3,57 ms | 6,6–6,7 / 5,95–5,96 ms | 50–51 % |
+
+CPU un 14 % menos. La GPU solo un 5 %: en NVIDIA un `glClear` es casi
+gratis, porque marca el buffer limpio sin escribirlo.
+
+### Lo que queda, y es lo grande
+
+**Cada capa se dibuja en buffers del tamaño del lienzo**, aunque ocupe un
+rincón, y se encoge al componer (`object` lleva la colocación; los pases
+corren en el espacio de la capa). En *Arknights*: 110 composiciones y 144
+pases de 2,56 Mpx por fotograma y pantalla, con la NVIDIA a **63 W y
+2550 MHz**. Dar a cada objeto buffers del tamaño de su capa en pantalla
+quitaría la mayor parte de ese trabajo. Pero cambia cómo los dos ejecutores
+reservan y recorren los buffers de objeto, y los efectos que leen
+`_rt_FullFrameBuffer` o las coordenadas de pantalla tendrían que seguir
+cuadrando. No se ha empezado.
+
+Una caché de estado de GL (no repetir el programa, la mezcla, las texturas
+y los samplers que ya están puestos) quitaría parte de los ~1,9 ms de CPU
+restantes. Es menos que lo de arriba.

@@ -129,21 +129,20 @@ int main(int argc, char **argv)
     int paso = we_psys_floats_por_vertice(s);
     double cx = 0, cy = 0;
     int n = 0, dentro = 0;
-    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+    for (int i = 0; i < nv; i += 1) {
         cx += v[(size_t)i * paso];
         cy += v[(size_t)i * paso + 1];
         n++;
     }
-    /* Los vertices son las esquinas del quad, no el centro de la particula:
-     * se promedian las de cada una antes de medir la distancia. */
-    for (int i = 0; radio >= 0 && i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+    /* Un registro por particula (sprite instanciado): su centro. */
+    for (int i = 0; radio >= 0 && i < nv; i += 1) {
         double x = 0, y = 0;
-        for (int k = 0; k < WE_PSYS_VERTICES_POR_PARTICULA; k++) {
+        for (int k = 0; k < 1; k++) {
             x += v[(size_t)(i + k) * paso];
             y += v[(size_t)(i + k) * paso + 1];
         }
-        x /= WE_PSYS_VERTICES_POR_PARTICULA;
-        y /= WE_PSYS_VERTICES_POR_PARTICULA;
+        x /= 1;
+        y /= 1;
         if ((x - p[0]) * (x - p[0]) + (y - p[1]) * (y - p[1]) < radio * radio)
             dentro++;
     }
@@ -204,17 +203,17 @@ int main(int argc, char **argv)
     float t = (float)atof(argv[7]);
     int np = 0, nh = 0;
     for (int f = 0; f <= (int)(t * 30.0f + 0.5f); f++) {
-        np = we_psys_update(pa, f / 30.0f) / WE_PSYS_VERTICES_POR_PARTICULA;
-        nh = we_psys_update(h, f / 30.0f) / WE_PSYS_VERTICES_POR_PARTICULA;
+        np = we_psys_update(pa, f / 30.0f) / 1;
+        nh = we_psys_update(h, f / 30.0f) / 1;
     }
     const float *vp = we_psys_vertices(pa), *vh = we_psys_vertices(h);
     int fp = we_psys_floats_por_vertice(pa), fh = we_psys_floats_por_vertice(h);
     double suma = 0;
     for (int i = 0; i < nh; i++) {
-        const float *q = vh + (size_t)i * WE_PSYS_VERTICES_POR_PARTICULA * fh;
+        const float *q = vh + (size_t)i * 1 * fh;
         double mejor = 1e30;
         for (int j = 0; j < np; j++) {
-            const float *r = vp + (size_t)j * WE_PSYS_VERTICES_POR_PARTICULA * fp;
+            const float *r = vp + (size_t)j * 1 * fp;
             double d = hypot(q[0] * e - r[0], q[1] * e - r[1]);
             if (d < mejor) mejor = d;
         }
@@ -401,7 +400,7 @@ int main(int argc, char **argv)
     const float *v = we_psys_vertices(s);
     int paso = we_psys_floats_por_vertice(s);
     int caja = 0, esfera = 0, fuera = 0;
-    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+    for (int i = 0; i < nv; i += 1) {
         const float *w = v + (size_t)i * paso;
         if (w[0] > 1000.0f) caja++;
         else if (hypotf(w[0], w[1]) < 300.0f) esfera++;
@@ -541,14 +540,14 @@ int main(int argc, char **argv)
     int paso = we_psys_floats_por_vertice(s);
     double m[3] = {0, 0, 0}, dev = 0;
     int n = 0;
-    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA, n++)
+    for (int i = 0; i < nv; i += 1, n++)
         for (int k = 0; k < 3; k++)
-            m[k] += v[(size_t)i * paso + 13 + k];
+            m[k] += v[(size_t)i * paso + 11 + k];
     for (int k = 0; k < 3 && n; k++)
         m[k] /= n;
-    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA)
+    for (int i = 0; i < nv; i += 1)
         for (int k = 0; k < 3; k++)
-            dev = fmax(dev, fabs(v[(size_t)i * paso + 13 + k] - m[k]));
+            dev = fmax(dev, fabs(v[(size_t)i * paso + 11 + k] - m[k]));
     setlocale(LC_NUMERIC, "C");
     printf("%d %d %.5f %.5f %.5f %.5f\n", desconocidas, n, m[0], m[1], m[2], dev);
     return 0;
@@ -735,7 +734,7 @@ int main(int argc, char **argv)
     int paso = we_psys_floats_por_vertice(s);
     int n = 0;
     double peor = 0.0;
-    for (int i = 0; i < nv; i += WE_PSYS_VERTICES_POR_PARTICULA) {
+    for (int i = 0; i < nv; i += 1) {
         const float *w = v + (size_t)i * paso;
         double d = sqrt((w[0] - e[0]) * (w[0] - e[0]) + (w[1] - e[1]) * (w[1] - e[1])
                         + (w[2] - e[2]) * (w[2] - e[2]));
