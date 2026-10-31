@@ -52,6 +52,9 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10820` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10842` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
 - `10860` **La línea de base** — 163 fps en eDP-1, 110 % de un núcleo, y la copia entre GPUs pesa más que dibujar el plan.
+- `10876` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
+- `10882` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
+- `2885` **Lo medido** — la tabla por tope; 55 y no 60 porque el reloj late a 165 Hz; la NVIDIA bimodal a 60; el coste por fotograma sube al bajar fps, así que «% ocupada» no mide consumo y los vatios sí.
 
 ## CLI, rotación y rutas
 

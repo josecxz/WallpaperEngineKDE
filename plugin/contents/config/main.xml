@@ -48,6 +48,14 @@
       <label>Dibujar el fondo en la grafica dedicada</label>
       <default>true</default>
     </entry>
+    <!-- Tope de fotogramas por segundo; 0, sin tope (al ritmo del monitor).
+         60 por defecto: medido en un portatil con panel de 165 Hz, sin tope
+         la dedicada gastaba ~52 W y con 60, 24-37 W. Ver NOTAS, "El tope de
+         fotogramas". -->
+    <entry name="FpsMax" type="Int">
+      <label>Fotogramas por segundo como mucho</label>
+      <default>60</default>
+    </entry>
   </group>
 
 </kcfg>

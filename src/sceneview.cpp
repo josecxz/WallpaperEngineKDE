@@ -58,7 +58,24 @@ void SceneView::setTime(qreal t)
         return;
     m_time = t;
     Q_EMIT timeChanged();
+    // El tope. El 0,9 da holgura al latido: con 60 en un panel de 165 Hz
+    // (6,06 ms) se dibuja uno de cada tres latidos ---55 por segundo, siempre
+    // con el mismo paso---; exigir 16,67 ms exactos alternaria tres y cuatro
+    // latidos, y eso se ve como tirones. Un tiempo que va hacia atras es otro
+    // reloj (la escena se ha recreado) y pide fotograma siempre.
+    if (m_fpsMax > 0 && m_tPedido >= 0 && t >= m_tPedido && t - m_tPedido < 0.9 / m_fpsMax)
+        return;
+    m_tPedido = t;
     update();     // pide un fotograma nuevo
+}
+
+void SceneView::setFpsMax(qreal v)
+{
+    v = qMax<qreal>(0, v);
+    if (qFuzzyCompare(1 + v, 1 + m_fpsMax))
+        return;
+    m_fpsMax = v;
+    Q_EMIT fpsMaxChanged();
 }
 
 // Los cinco piden un fotograma al cambiar, y ese `update()` no es opcional:

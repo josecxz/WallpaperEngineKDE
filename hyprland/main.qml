@@ -15,7 +15,7 @@
 //
 //   QML_IMPORT_PATH=~/.local/lib/qt6/qml /usr/lib/qt6/bin/qml hyprland/main.qml \
 //       -- --plan <plan.txt> [--pausa 0|1|2] [--encaje 0|1|2] [--zoom 1.0]
-//          [--color '#0b0b0d'] [--gpu dedicada|integrada] [--hud]
+//          [--color '#0b0b0d'] [--gpu dedicada|integrada] [--fps 60] [--hud]
 //
 // `wectl` toma `--gpu` de `wectl gpu` y el resto de `opciones` en
 // ~/.config/wallpaperengine/hyprland.json.
@@ -64,6 +64,9 @@ QtObject {
     readonly property real despY: parseFloat(opcion("despy", "0"))
     readonly property string color: opcion("color", "#0b0b0d")
     readonly property bool gpuDedicada: opcion("gpu", "dedicada") !== "integrada"
+    // Tope de fotogramas por segundo; 0, sin tope (el ritmo del monitor). 60
+    // por defecto, como el plugin de Plasma (config/main.xml, `FpsMax`).
+    readonly property real fpsMax: parseFloat(opcion("fps", "60"))
     readonly property bool hud: opcion("hud", false)
 
     property VigiaArchivo vigia: VigiaArchivo { ruta: app.plan }
@@ -148,6 +151,7 @@ QtObject {
                     desplazamientoX: app.despX
                     desplazamientoY: app.despY
                     gpuDedicada: app.gpuDedicada
+                    fpsMax: app.fpsMax
                     colorBarras: app.color
 
                     // Respaldo: con Hyprland manda CursorHyprland y esto se

@@ -10872,3 +10872,61 @@ propósito: el fondo va al ritmo del monitor (163 fotogramas por segundo en
 eDP-1), y de los ~4,5 ms de CPU por fotograma, **~3,2 ms son la copia entre
 GPUs**. Es más que lo que tarda la NVIDIA en dibujar el plan entero
 (1,3 ms).
+
+## El tope de fotogramas
+
+Punto 1 de la auditoría. El reloj del QML (`FrameAnimation`) late con el
+compositor, y cada latido que cambia `time` pedía un fotograma entero del
+plan: **163 por segundo** en el panel de 165 Hz de eDP-1, para un fondo.
+
+### El tope
+
+`SceneView.fpsMax` (0, sin tope). `setTime` sigue guardando el tiempo en
+cada latido, pero solo llama a `update()` si desde el último fotograma
+pedido ha pasado al menos `0,9 / fpsMax`. El 0,9 da holgura al latido: con
+60 sobre 165 Hz (6,06 ms) se dibuja uno de cada tres latidos, siempre con el
+mismo paso. Exigir 16,67 ms exactos alternaría tres y cuatro latidos, y eso
+se ve como tirones. Un tiempo que va hacia atrás es una escena recreada y
+pide fotograma siempre.
+
+Que Qt **no** siga componiendo a 165 Hz sin nosotros lo dice `fdinfo`: el
+render de la integrada baja en proporción a los fotogramas (28 → 18 → 13 %).
+Si el item no se ensucia, el bucle de render no dibuja.
+
+**Por defecto, 60**, elegido por el usuario con las cifras de abajo: en el
+plugin de Plasma `FpsMax` en `config/main.xml`, con su control en el panel
+(0 = «Sin tope»), y en Hyprland `--fps` del anfitrión, que se cambia en
+`opciones` de `hyprland.json`.
+
+### Lo medido
+
+Con `medir_vivo.py --wallpaper 2788165557`, dos o tres medidas por valor.
+La potencia es la de la NVIDIA entera (`nvidia-smi power.draw`); sin fondo
+da 3,6 W, y con el fondo en pausa 5,5 W.
+
+| tope | fps (eDP-1 + HDMI) | CPU del proceso | render Intel | NVIDIA |
+|---|---|---|---|---|
+| sin tope | 162 + 60 | 110–115 % | 28 % | 52 W a 2550 MHz |
+| 60 | 55 + 55 | 65–68 % | 18–20 % | 23–37 W |
+| 30 | 30 + 30 | 46 % | 13 % | 20 W a ~1400 MHz |
+
+- **Con 60 salen 55 en las dos pantallas**, también en el HDMI de 60 Hz.
+  El reloj de las dos ventanas late al ritmo del panel de 165 Hz, y tres
+  latidos son 18,2 ms. Para el HDMI, eso es un fotograma nuevo cada 1,1
+  refrescos. No se ha visto tirón, pero no se ha medido, y queda anotado.
+- **Con 60, la NVIDIA es bimodal**: en una medida se quedó a 2550 MHz
+  (37 W) y en otras bajó a ~1400 (23–24 W). Es la gestión de energía del
+  driver, no el motor.
+- **El coste por fotograma SUBE al bajar los fps**: la GPU pasa de 1,3 ms a
+  2,9 ms con 30, y la CPU de 4,1 a 6,1 ms. Las dos gráficas bajan de
+  frecuencia con menos carga. Por eso **«% ocupada» no vale para medir
+  consumo**: a 30 fps sale igual que a 60, con 4–17 W menos. `medir_vivo`
+  guarda ahora los vatios y los MHz de la NVIDIA, y esa es la cifra que
+  manda para la batería. La de la CPU (RAPL) pide root y no se lee.
+- Los 2 W de la pausa (5,5 frente a 3,6 sin fondo) quedan para el punto de
+  la pausa.
+
+`medir_vivo.py` mide ahora con el tope por defecto (60). La línea de base
+para los siguientes puntos es `base-fps60.json`: 55 + 55 fps, 65 % de CPU,
+17,6 % de la Intel y 22,9 W. Ojo al comparar: la del punto anterior era sin
+tope.
