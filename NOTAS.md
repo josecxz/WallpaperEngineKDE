@@ -11518,3 +11518,71 @@ con 100 % tapado» en las dos) y el temporizador de rotación parado:
   destapar.
 
 No se cambia nada.
+
+## El objeto que no dibuja no se compone
+
+Punto 6 de la auditoría: los cambios de estado de GL entre pases. Hacía
+falta una escena donde se notaran, y el punto 9 la dio: *Arknights*
+(`3462491575`), con 144 pases, 110 objetos, 71 sistemas de partículas y 5
+mallas animadas.
+
+### Dónde va la CPU de `render()`
+
+`WE_MEDIDAS` desglosa ahora `render()`: `render_ms`, `previo_ms` (mallas,
+relojes, vídeo) y `objetos_ms` (empezar cada objeto y componer el
+anterior). En eDP-1: 2,0 ms en `render()`, de ellos **0,96 en los objetos**
+(~8,7 µs cada uno) y ~1,0 en los 144 pases y las partículas.
+
+### Lo que se hacía de más
+
+- `beginObject` **limpiaba los dos buffers del ping-pong** del objeto
+  (`m_compo[0]` y `[1]`), del tamaño del lienzo, con su cambio de FBO cada
+  uno. Solo hace falta el «anterior» (`m_compo[m_compoCur]`): es el que lee
+  el primer pase como `previous` y el que se compone si no hay pases. El
+  otro lo limpia el primer pase que escribe en él, porque los dos
+  ejecutores limpian el destino de cada pase antes de dibujar.
+- Un objeto que no escribía en el compuesto **se componía igual**: un lienzo
+  transparente mezclado sobre la escena. Ahora `m_objetoDibujo` (y
+  `objeto_dibujo` en `glexec.c`) lo salta.
+
+En los dos ejecutores a la vez, para que el offline siga siendo el
+oráculo.
+
+### Comprobado
+
+Offline a `--time 3`, contra el commit anterior en un `worktree`: **PNG
+idénticos byte a byte** en *Arknights*, *Jeanne*, *Sci-Fi City*, *God of
+War* (`2868108515`, desenfoque), *After Sunset* (`3210875135`, luces) y
+*Katana Girl* (`3238423642`). `3047352572` sale distinta, pero **ya no era
+determinista**: dos renders seguidos del ejecutor viejo difieren en 11.496
+píxeles (viejo contra nuevo, 13.346). Es su capa de vídeo *Pattern*, la
+misma que falla en `test_wevideo` («El vídeo, al tamaño al que se ve»).
+Pendiente aparte.
+
+### Lo medido
+
+*Arknights*, las dos pantallas, intercalado tres y tres:
+
+| | CPU por fotograma (HDMI / eDP) | GPU por fotograma | proceso |
+|---|---|---|---|
+| antes | 4,12–4,40 / 3,92–4,28 ms | 6,9–7,0 / 6,2–6,4 ms | 55–58 % |
+| después | 3,60–3,65 / 3,48–3,57 ms | 6,6–6,7 / 5,95–5,96 ms | 50–51 % |
+
+CPU un 14 % menos. La GPU solo un 5 %: en NVIDIA un `glClear` es casi
+gratis, porque marca el buffer limpio sin escribirlo.
+
+### Lo que queda, y es lo grande
+
+**Cada capa se dibuja en buffers del tamaño del lienzo**, aunque ocupe un
+rincón, y se encoge al componer (`object` lleva la colocación; los pases
+corren en el espacio de la capa). En *Arknights*: 110 composiciones y 144
+pases de 2,56 Mpx por fotograma y pantalla, con la NVIDIA a **63 W y
+2550 MHz**. Dar a cada objeto buffers del tamaño de su capa en pantalla
+quitaría la mayor parte de ese trabajo. Pero cambia cómo los dos ejecutores
+reservan y recorren los buffers de objeto, y los efectos que leen
+`_rt_FullFrameBuffer` o las coordenadas de pantalla tendrían que seguir
+cuadrando. No se ha empezado.
+
+Una caché de estado de GL (no repetir el programa, la mezcla, las texturas
+y los samplers que ya están puestos) quitaría parte de los ~1,9 ms de CPU
+restantes. Es menos que lo de arriba.

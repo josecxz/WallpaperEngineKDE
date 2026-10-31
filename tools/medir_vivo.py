@@ -263,6 +263,8 @@ def _por_pantalla(lineas: list[dict]) -> dict[str, dict]:
                              if all("particulas_ms" in l for l in ls) else None,
             "particulas_subir_ms": round(pond("particulas_subir_ms", "fotogramas"), 3)
                                    if all("particulas_subir_ms" in l for l in ls) else None,
+            **{k: round(pond(k, "fotogramas"), 3) for k in ("render_ms", "previo_ms", "objetos_ms")
+               if all(k in l for l in ls)},
             "leer_ms": round(pond("leer_ms", "copias"), 3) if copias else None,
             "subir_ms": round(pond("subir_ms", "copias"), 3) if copias else None,
             "intervalos": len(ls),
@@ -300,7 +302,10 @@ def _imprimir(r: dict) -> None:
               f"(max {v['cpu_max_ms']:.1f})   gpu {v['gpu_ms']} ms "
               f"(max {v['gpu_max_ms']:.1f}) = {v['gpu_ocupada_pct']} % ocupada   "
               f"copia leer {v['leer_ms']} subir {v['subir_ms']} ms   "
-              f"particulas {v.get('particulas_ms')} ms (subir {v.get('particulas_subir_ms')})")
+              f"particulas {v.get('particulas_ms')} ms (subir {v.get('particulas_subir_ms')})"
+              + (f"\n             render {v['render_ms']} ms = previo {v['previo_ms']}"
+                 f" + objetos {v['objetos_ms']} + pases y particulas"
+                 if "render_ms" in v else ""))
     pr = r["proceso"]
     print(f"  proceso    cpu {pr['cpu_pct']:.1f} % de un nucleo   rss {pr['rss_mb']:.0f} MB")
     co = r.get("compositor") or {}
@@ -335,7 +340,7 @@ def _comparar(antes: dict, ahora: dict) -> None:
             continue
         a, b = antes["pantallas"][p], ahora["pantallas"][p]
         for k in ("fps", "cpu_ms", "gpu_ms", "gpu_ocupada_pct", "leer_ms", "subir_ms",
-                  "particulas_ms"):
+                  "particulas_ms", "render_ms", "objetos_ms"):
             fila(f"{p} {k}", a.get(k), b.get(k))
     fila("proceso cpu_pct", antes["proceso"]["cpu_pct"], ahora["proceso"]["cpu_pct"])
     fila("proceso rss_mb", antes["proceso"]["rss_mb"], ahora["proceso"]["rss_mb"])

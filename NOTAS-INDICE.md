@@ -95,6 +95,12 @@ make indice                       # reescribe los números desde NOTAS.md
 - `3072` **Lo que queda** — conversión en la GPU, VAAPI, y el vídeo decodificado dos veces con dos pantallas.
 - `11470` **Los relojes, el texto y la hora en cada fotograma** — ya estaba bien: los relojes se rehacen por tramo. *Lonely Cat* con 58 relojes, 1,58 ms por fotograma; *Arknights* (144 pases, 71 sistemas) es la escena para el punto 6.
 - `11491` **La pausa en Hyprland** — llega a cero: el proceso al 0,1 %, la integrada a 0 y la NVIDIA a 2,9 W y 210 MHz, igual que sin fondo. Los «2 W de más» del tope eran un artefacto de una medida corta. Queda ocupada la VRAM (~500 MiB).
+- `11522` **El objeto que no dibuja no se compone** — `beginObject` limpiaba los dos buffers del ping-pong y bastaba uno; un objeto vacío se componía igual. *Arknights* 14 % menos de CPU, PNG idénticos. Lo grande queda: cada capa se dibuja a tamaño de lienzo (63 W).
+- `11529` **Dónde va la CPU de `render()`** — `render_ms`, `previo_ms` y `objetos_ms` en `WE_MEDIDAS`.
+- `11536` **Lo que se hacía de más** — el `glClear` del buffer que limpia el primer pase, y la composición de un objeto transparente.
+- `11354` **Comprobado** — PNG idénticos en 6 escenas; `3047352572` no es determinista ni sin el cambio (su vídeo *Pattern*).
+- `2885` **Lo medido** — intercalado tres y tres en *Arknights*.
+- `11574` **Lo que queda, y es lo grande** — buffers de objeto del tamaño de su capa; y una caché de estado de GL.
 
 ## CLI, rotación y rutas
 

@@ -130,6 +130,9 @@ static void bind_mip_sampler(int unidad, GLuint tex)
 }
 static GLuint composite_prog;
 static int object_open;
+/* Si algun pase del objeto ha escrito en el compuesto; si no, no se compone.
+ * Ver `m_objetoDibujo` en src/glexecutor.h. */
+static int objeto_dibujo;
 /* Colocacion del objeto en curso: los pases corren en el espacio de la capa
  * (su buffer representa el rectangulo de la capa) y esta matriz lo lleva al
  * lienzo una unica vez, al componer. Identidad para planes sin ella. */
@@ -687,6 +690,8 @@ static void flush_object(void)
     object_open = 0;
     if (obj_solo_buffer)
         return;          /* su resultado ya se copio a su buffer con nombre */
+    if (!objeto_dibujo)
+        return;          /* transparente entero: componerlo no cambia nada */
     glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
     glViewport(0, 0, scene_rt.w, scene_rt.h);
     glUseProgram(composite_prog);
@@ -775,11 +780,12 @@ static void begin_object(void)
         fprintf(stderr, "\n");
     }
     object_open = 1;
+    /* Solo el "anterior": cada pase limpia su destino antes de dibujar. Ver
+     * `beginObject` en src/glexecutor.cpp. */
+    objeto_dibujo = 0;
     glClearColor(0, 0, 0, 0);
-    for (int i = 0; i < 2; i++) {
-        glBindFramebuffer(GL_FRAMEBUFFER, compo[i].fbo);
-        glClear(GL_COLOR_BUFFER_BIT);
-    }
+    glBindFramebuffer(GL_FRAMEBUFFER, compo[compo_cur].fbo);
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 
 static GLuint cached_program(const char *vp, const char *fp)
@@ -1188,6 +1194,8 @@ int main(int argc, char **argv)
             if (sscanf(line, "%*s %127s %127s", src, dst) == 2) {
                 Target *s = strcmp(src, "prev") == 0 ? &compo[compo_cur] : find_rt(src);
                 Target *d = strcmp(dst, "prev") == 0 ? &compo[compo_cur] : find_rt(dst);
+                if (d == &compo[compo_cur])
+                    objeto_dibujo = 1;
                 glBindFramebuffer(GL_READ_FRAMEBUFFER, s->fbo);
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, d->fbo);
                 glBlitFramebuffer(0, 0, s->w, s->h, 0, 0, d->w, d->h,
@@ -1341,6 +1349,8 @@ int main(int argc, char **argv)
 
             int to_screen = strcmp(target, "SCREEN") == 0;
             Target *dst = to_screen ? &compo[compo_cur ^ 1] : find_rt(target);
+            if (to_screen)
+                objeto_dibujo = 1;
 
             glBindFramebuffer(GL_FRAMEBUFFER, dst->fbo);
             glViewport(0, 0, dst->w, dst->h);

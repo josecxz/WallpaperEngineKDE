@@ -133,6 +133,14 @@ public:
     // de arriba sirve al HUD, pero no se puede comparar entre dos medidas.
     // Milisegundos de CPU en las particulas (simular y subir los vertices)
     // desde la ultima llamada, y los pone a cero. Para `WE_MEDIDAS`.
+    // Milisegundos de CPU por partes de `render()` desde la ultima llamada,
+    // y los pone a cero: lo previo (mallas, relojes, video), los objetos
+    // (`beginObject` y su composicion) y el total. Para `WE_MEDIDAS`.
+    void tomarMsRender(double *previo, double *objetos, double *total)
+    {
+        *previo = m_msPrevio; *objetos = m_msObjetos; *total = m_msRenderTotal;
+        m_msPrevio = m_msObjetos = m_msRenderTotal = 0;
+    }
     double tomarMsParticulas(double *subida = nullptr)
     {
         const double ms = m_msParticulas;
@@ -444,6 +452,9 @@ private:
     Compose m_compose = Compose::Normal;
     bool m_soloBuffer = false;
     bool m_objectOpen = false;
+    // Si algun pase del objeto ha escrito en el compuesto. Si no, componerlo
+    // seria mezclar un lienzo transparente sobre la escena: se salta.
+    bool m_objetoDibujo = false;
     bool m_hasObjectMarks = false;
     int m_compoCur = 0;
     GlName m_vao = 0, m_vbo = 0;
@@ -522,6 +533,7 @@ private:
     int m_gpuAjena = 0;
     double m_gpuMs = -1;
     double m_gpuSuma = 0, m_gpuMax = 0;
+    double m_msPrevio = 0, m_msObjetos = 0, m_msRenderTotal = 0;
     double m_msParticulas = 0;          // simular y subir, en total
     double m_msSubidaParticulas = 0;    // de ello, subir los vertices
     int m_gpuN = 0;

@@ -287,6 +287,8 @@ void SceneRenderer::contarMedida(double msCpu)
         m_exec.tomarMuestrasGpu(d1, i1, d2);
         m_otra.tomarMuestrasCopia(d1, d3, i1);
         m_exec.tomarMsParticulas();
+        double a, b, c;
+        m_exec.tomarMsRender(&a, &b, &c);
         return;
     }
     m_medidaFotos++;
@@ -301,15 +303,18 @@ void SceneRenderer::contarMedida(double msCpu)
     m_otra.tomarMuestrasCopia(leer, subir, copias);
     double subidaParticulas = 0;
     const double particulas = m_exec.tomarMsParticulas(&subidaParticulas);
+    double previo = 0, objetos = 0, renderTotal = 0;
+    m_exec.tomarMsRender(&previo, &objetos, &renderTotal);
     const int n = qMax(1, m_medidaFotos);
     qInfo("SceneView: medida pantalla=%s seg=%.2f fotogramas=%d fps=%.2f "
           "cpu_ms=%.3f cpu_max=%.3f gpu_ms=%.3f gpu_max=%.3f gpu_muestras=%d "
-          "leer_ms=%.3f subir_ms=%.3f copias=%d particulas_ms=%.3f particulas_subir_ms=%.3f",
+          "leer_ms=%.3f subir_ms=%.3f copias=%d particulas_ms=%.3f particulas_subir_ms=%.3f "
+          "render_ms=%.3f previo_ms=%.3f objetos_ms=%.3f",
           qPrintable(m_pantalla.isEmpty() ? QStringLiteral("?") : m_pantalla),
           dur / 1000.0, m_medidaFotos, m_medidaFotos * 1000.0 / dur,
           m_medidaCpu / n, m_medidaCpuMax, gpuN ? gpuSuma / gpuN : -1.0, gpuMax, gpuN,
           copias ? leer / copias : 0.0, copias ? subir / copias : 0.0, copias,
-          particulas / n, subidaParticulas / n);
+          particulas / n, subidaParticulas / n, renderTotal / n, previo / n, objetos / n);
     m_medidaInicio = ahora;
     m_medidaFotos = 0;
     m_medidaCpu = m_medidaCpuMax = 0;

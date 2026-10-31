@@ -775,11 +775,16 @@ void GlExecutor::beginObject()
     // donde los nueve objetos declaran `copybackground`, eso mezclaba el fondo
     // nueve veces. Los efectos que necesitan el fondo lo leen del buffer de
     // escena por su nombre (_rt_FullFrameBuffer).
+    // Solo el buffer "anterior" (`m_compo[m_compoCur]`): es el que lee el
+    // primer pase como `previous` y el que se compone si el objeto no dibuja
+    // nada. El otro no hace falta: cada pase limpia su destino antes de
+    // dibujar. Limpiar los dos eran dos `glClear` del lienzo entero por
+    // objeto, y con 110 objetos (3462491575) ~560 Mpx por fotograma; ver
+    // NOTAS, "El objeto que no dibuja no se compone".
+    m_objetoDibujo = false;
     glClearColor(0, 0, 0, 0);
-    for (const Target &t : m_compo) {
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t.fbo);
-        glClear(GL_COLOR_BUFFER_BIT);
-    }
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_compo[m_compoCur].fbo);
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 
 void GlExecutor::flushObjectToScene()
@@ -789,6 +794,8 @@ void GlExecutor::flushObjectToScene()
     m_objectOpen = false;
     if (m_soloBuffer)
         return;          // su resultado ya se copio a su buffer con nombre
+    if (!m_objetoDibujo)
+        return;          // transparente entero: componerlo no cambia nada
     glBindFramebuffer(GL_FRAMEBUFFER, m_scene.fbo);
     glViewport(0, 0, m_scene.w, m_scene.h);
     glUseProgram(m_composite);
@@ -1461,10 +1468,20 @@ void GlExecutor::updateVideos(float time)
     }
 }
 
+namespace {
+inline double relojMs()
+{
+    timespec t{};
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+}  // namespace
+
 void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
 {
     if (!m_ready)
         return;
+    const double tRender = relojMs();
 
     gpuTimerBegin();
     // El temblor de camara va antes que el puntero: WE suma la posicion del
@@ -1483,9 +1500,11 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     timespec ahora{};
     clock_gettime(CLOCK_REALTIME, &ahora);
     const double horaDelDia = we_hora_del_dia(ahora.tv_sec, ahora.tv_nsec);
+    const double tPrevio = relojMs();
     skinMeshes(time);
     updateClocks();
     updateVideos(time);
+    m_msPrevio += relojMs() - tPrevio;
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -1511,7 +1530,9 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
         if (op.kind == Op::BeginObject) {
             // El flush del objeto anterior usa SU colocacion: primero
             // componer, despues adoptar la del que empieza.
+            const double tObj = relojMs();
             beginObject();
+            m_msObjetos += relojMs() - tObj;
             memcpy(m_placement, op.placement, sizeof m_placement);
             // Una aguja: la colocacion del plan lleva el angulo guardado y
             // esto la gira al de la hora. Va antes que lo que sigue, que solo
@@ -1563,12 +1584,16 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, d.fbo);
             glBlitFramebuffer(0, 0, s.w, s.h, 0, 0, d.w, d.h,
                               GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            if (op.copyDst == kCompo)
+                m_objetoDibujo = true;
             continue;
         }
         if (!op.program)
             continue;
 
         const bool toScreen = op.targetIndex == kCompo;
+        if (toScreen)
+            m_objetoDibujo = true;
         const Target &dst = toScreen ? m_compo[m_compoCur ^ 1] : resolveTarget(op.targetIndex);
 
         glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
@@ -1793,6 +1818,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
     }
 
     gpuTimerEnd();
+    m_msRenderTotal += relojMs() - tRender;
 }
 
 const GlExecutor::MeshSpec *GlExecutor::meshFor(int id) const
