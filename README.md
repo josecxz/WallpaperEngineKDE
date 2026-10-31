@@ -33,6 +33,11 @@ SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
   el motor cuando no queda fondo a la vista —también con dos ventanas en
   mosaico, donde ninguna está maximizada (98,2 % → 0,1 % de la GPU)—. Al
   destapar sigue donde estaba.
+- **En la gráfica dedicada**, si el portátil tiene dos: el escritorio sigue en
+  la integrada y el fondo se dibuja en la otra, que le pasa el fotograma ya
+  hecho. Con una escena de 51 pases, la integrada pasa de 33 ms por fotograma
+  ---y 30 fps--- a 1,2 ms, y el fondo va a 165 fps. `wectl gpu integrated` lo
+  devuelve a la integrada en caliente, por ejemplo para ahorrar batería.
 
 No soporta wallpapers de tipo web, ni audio: ni el reactivo ni la pista de
 sonido de los vídeos.
@@ -103,6 +108,9 @@ wectl set <id|texto>    prepara uno y lo pone en el escritorio
 wectl shuffle           pone uno al azar de toda la biblioteca
 wectl shuffletime <t>    ajusta cada cuánto rota, sin cambiar el fondo
 wectl start / stop      activa o para el motor
+wectl gpu [dedicated|integrated]
+                        en qué gráfica se dibuja; sin nada, la configurada y la
+                        que se usa (también `nvidia` / `intel`)
 wectl status            qué hay puesto y cómo va
 ```
 
@@ -194,6 +202,49 @@ la escena de 8K                          85,0 ms -> 12,2 ms
 La imagen es la misma: de las 129 escenas renderizadas a las dos resoluciones,
 128 difieren menos de un 2%. No hay nada que configurar; si no se puede
 averiguar el tamaño de la pantalla, se dibuja al lienzo del autor como antes.
+
+## En Hyprland
+
+Fuera de Plasma no hay plasmashell que cargue el plugin, así que el fondo es
+un proceso propio: `hyprland/main.qml` pide al compositor una superficie
+`wlr-layer-shell` en la capa de fondo por cada monitor, con el mismo motor.
+Necesita además `layer-shell-qt`.
+
+`wectl` funciona igual: detecta Hyprland y, en vez de hablar con Plasma,
+lleva ese proceso como unidad de systemd de usuario
+(`wallpaperengine-hyprland`), que se reinicia sola si se cae.
+
+```sh
+wectl set <id|texto>    # prepara el plan y arranca el fondo si no estaba
+wectl shuffle --cada 30m
+wectl start / stop
+wectl gpu integrated    # reinicia el fondo en la otra gráfica
+wectl status
+```
+
+Para que arranque con la sesión, en `hyprland.conf`:
+
+```
+exec-once = python3 /ruta/a/WallpaperEngine/tools/wectl.py start
+```
+
+Lo que en Plasma es el panel de ajustes aquí es
+`~/.config/wallpaperengine/hyprland.json`. `gpu` lo escribe `wectl gpu`;
+`opciones` se edita a mano y se aplica con `wectl stop && wectl start`:
+
+```json
+{ "gpu": "dedicada", "opciones": ["--pausa", "2", "--encaje", "1", "--hud"] }
+```
+
+`--pausa 0|1|2` (nunca / cuando lo visible tapa la pantalla / con cualquier
+ventana), `--encaje 0|1|2` (cubrir / entera / estirar), `--zoom`, `--despx`,
+`--despy`, `--color` y `--hud`.
+
+Lo que en Plasma dan KWin y el modelo de tareas aquí lo da el IPC de
+Hyprland (`src/hyprland.cpp`): qué tapa cada monitor, para la pausa, y dónde
+está el cursor, para el parallax y las partículas que lo siguen. El fondo
+vigila el `plan.txt` y cambia de escena sin reiniciarse. El registro está en
+`$XDG_RUNTIME_DIR/wallpaperengine-hyprland.log`.
 
 ## Cómo funciona
 

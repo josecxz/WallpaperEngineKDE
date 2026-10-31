@@ -14,7 +14,8 @@ LIB     := libwallpaperenginerender.so
 ENVDIR  := $(if $(XDG_CONFIG_HOME),$(XDG_CONFIG_HOME),$(HOME)/.config)/environment.d
 ENVFILE := $(ENVDIR)/50-wallpaperengine.conf
 
-QT_MODULES := Qt6Quick Qt6Qml Qt6Gui Qt6Core Qt6DBus
+# Qt6Network: QLocalSocket, para hablar con el IPC de Hyprland (src/hyprland.cpp).
+QT_MODULES := Qt6Quick Qt6Qml Qt6Gui Qt6Core Qt6DBus Qt6Network
 
 # Decodificacion de video. La alternativa era una tuberia de `ffmpeg`, y no
 # sale: el corpus tiene cuatro videos a 3840x2160 y cuatro a 60 fps, que en
@@ -41,17 +42,20 @@ CXXFLAGS := -O2 -fPIC -std=c++20 -Wall -Wextra -Wno-unused-parameter -MMD -MP \
 # sobre la .so mapeada (ver install-qml).
 CFLAGS   := -O2 -fPIC -std=c11 -Wall -Wextra -MMD -MP $(AV_CFLAGS)
 LDFLAGS  := -shared -Wl,-z,nodelete
-LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL $(AV_LIBS) -lpthread
+# -lEGL: el plan puede ir en otra GPU con su propio contexto (src/otragpu.cpp).
+LDLIBS   := $(shell pkg-config --libs $(QT_MODULES)) -lGL -lEGL $(AV_LIBS) -lpthread
 
 MOC     := /usr/lib/qt6/moc
 BUILD   := obj
-OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o \
+OBJS    := $(BUILD)/glexecutor.o $(BUILD)/sceneview.o $(BUILD)/plugin.o $(BUILD)/otragpu.o \
            $(BUILD)/escritorio.o $(BUILD)/moc_escritorio.o \
+           $(BUILD)/hyprland.o $(BUILD)/moc_hyprland.o \
            $(BUILD)/weparticles.o $(BUILD)/wevideo.o $(BUILD)/wereloj.o \
            $(BUILD)/wetemblor.o $(BUILD)/wegiro.o $(BUILD)/moc_sceneview.o
 
 .PHONY: all build glexec psysprobe install install-qml install-package \
-        install-env uninstall reload status clean plan indice
+        install-env uninstall reload status clean plan indice \
+        hyprland hyprland-stop
 
 all: build
 
@@ -65,6 +69,9 @@ $(BUILD)/moc_sceneview.cpp: src/sceneview.h | $(BUILD)
 	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
 
 $(BUILD)/moc_escritorio.cpp: src/escritorio.h | $(BUILD)
+	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
+
+$(BUILD)/moc_hyprland.cpp: src/hyprland.h | $(BUILD)
 	$(MOC) $(shell pkg-config --cflags-only-I $(QT_MODULES)) $< -o $@
 
 # plugin.cpp declara su QObject en el propio .cpp, asi que su moc se incluye.
@@ -83,6 +90,9 @@ $(BUILD)/moc_sceneview.o: $(BUILD)/moc_sceneview.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
 
 $(BUILD)/moc_escritorio.o: $(BUILD)/moc_escritorio.cpp | $(BUILD)
+	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
+
+$(BUILD)/moc_hyprland.o: $(BUILD)/moc_hyprland.cpp | $(BUILD)
 	$(CXX) $(CXXFLAGS) -Isrc -c $< -o $@
 
 # plugin.cpp incluye su propio .moc, que no puede deducirse de los includes.
@@ -181,6 +191,19 @@ reload: install-qml install-package install-env
 	@echo "plasmashell reiniciado con QML_IMPORT_PATH=$(QMLMOD)"
 
 # ── plan de render ──────────────────────────────────────────────────────────
+# ── Hyprland ────────────────────────────────────────────────────────────────
+# Fuera de Plasma no hay plasmashell que cargue el plugin: `hyprland/main.qml`
+# es el proceso entero, una superficie layer-shell de fondo por monitor con el
+# mismo modulo QML. Lo lleva `wectl` (start/stop/set/shuffle/gpu/status), como
+# unidad de systemd de usuario; estos targets son atajos. Necesita
+# `layer-shell-qt`. Para que arranque con la sesion, en hyprland.conf:
+#   exec-once = python3 <este repo>/tools/wectl.py start
+hyprland: install-qml
+	@python3 tools/wectl.py start
+
+hyprland-stop:
+	@python3 tools/wectl.py stop
+
 # Ruta del wallpaper a renderizar. Sin valor por defecto: depende de a que se
 # haya suscrito cada uno. `tools/wepaths.py` localiza la biblioteca de Steam.
 WALLPAPER ?=

@@ -167,7 +167,13 @@ class Scene:
         return [p for o in self.objects for p in o.passes]
 
 
-def _refrescar_valores_de_usuario(nodo, properties: dict) -> None:
+# Los campos de una capa en los que un deslizador reparte su numero por todas
+# las componentes; ver `_refrescar_valores_de_usuario`.
+CAMPOS_REPARTIDOS = ("origin", "scale", "angles")
+
+
+def _refrescar_valores_de_usuario(nodo, properties: dict, campo: str = "",
+                                  capa: bool = False) -> None:
     """Pone al dia la copia de todo campo atado a una propiedad configurable.
 
     Un campo del `scene.json` puede venir como
@@ -189,18 +195,75 @@ def _refrescar_valores_de_usuario(nodo, properties: dict) -> None:
     quien lea `user` ---`is_visible`--- siga viendo lo mismo. Si `user` no
     nombra una propiedad conocida, la copia se queda: es lo que el autor tenia
     en pantalla, y hay wallpapers donde `user` es a su vez un objeto.
+
+    Un deslizador da UN numero, y puede estar atado a un campo de tres: la
+    `scale` de un grupo. La copia dice que hace WE con el: `0.40300 0.40300
+    0.40300` para un deslizador en 0.403, el mismo numero en cada componente.
+    Poner el numero suelto dejaba la y y la z en 1 ---`_floats` rellena con
+    unos---, y el grupo de widgets de `3462491575` se estiraba en alto hasta
+    sacar de la pantalla la mitad de su contenido. Son 3 campos en 2 escenas.
+    Solo en la colocacion de una capa (`CAMPOS_REPARTIDOS`): en una constante
+    de shader la copia no dice lo mismo ---el `repeat` de `2311315748` guarda
+    `0.3 1` con el deslizador en 0.3---, y ahi se deja el numero suelto.
     """
     if isinstance(nodo, dict):
         clave = nodo.get("user")
         if isinstance(clave, str) and "value" in nodo:
             prop = properties.get(clave)
             if isinstance(prop, dict) and "value" in prop:
-                nodo["value"] = prop["value"]
-        for v in nodo.values():
-            _refrescar_valores_de_usuario(v, properties)
+                nuevo = prop["value"]
+                copia = nodo["value"]
+                if (campo in CAMPOS_REPARTIDOS and isinstance(nuevo, (int, float))
+                        and not isinstance(nuevo, bool)
+                        and isinstance(copia, str) and len(copia.split()) > 1):
+                    nuevo = " ".join([repr(float(nuevo))] * len(copia.split()))
+                nodo["value"] = nuevo
+        # `campo` es el nombre del campo solo si cuelga de una capa de
+        # `objects`: una constante de shader tambien puede llamarse `scale`.
+        for k, v in nodo.items():
+            if k == "objects" and isinstance(v, list):
+                for o in v:
+                    _refrescar_valores_de_usuario(o, properties, capa=True)
+            else:
+                _refrescar_valores_de_usuario(v, properties, k if capa else "")
     elif isinstance(nodo, list):
         for v in nodo:
             _refrescar_valores_de_usuario(v, properties)
+
+
+def _hornear_scripts_fijos(data: dict) -> None:
+    """Pone en el `value` de cada campo con script lo que el script devuelve,
+    cuando eso no cambia nunca (`wescript.valor_fijo_de`).
+
+    Un script que coloca ---`value.x = scriptProperties.x *
+    engine.canvasSize.x`--- da lo mismo en todos los fotogramas, y lo que WE
+    dibuja es eso y no el `value`, que es la colocacion que la capa tenia en
+    el editor antes de pasar por el script. Va despues de
+    `_refrescar_valores_de_usuario` porque las `scriptproperties` atadas a
+    una propiedad del usuario tienen que llegar al script ya resueltas.
+
+    El `script` se queda: quien lo mire despues (`vaiven_de`,
+    `giro_por_hora`) ve un campo que ya no cambia con el tiempo.
+    """
+    import wescript
+    proj = (data.get("general") or {}).get("orthogonalprojection")
+    lienzo = None
+    if isinstance(proj, dict) and proj.get("auto") is not True:
+        w, h = proj.get("width"), proj.get("height")
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool)
+               for v in (w, h)):
+            lienzo = (float(w), float(h))
+    for o in data.get("objects") or []:
+        if not isinstance(o, dict):
+            continue
+        for campo in wescript.CAMPOS_FIJOS:
+            r = wescript.valor_fijo_de(o, campo, lienzo)
+            if r is None:
+                continue
+            if len(r) == 1:
+                o[campo]["value"] = r[0]
+            else:
+                o[campo]["value"] = " ".join(f"{v:.17g}" for v in r)
 
 
 def _valor_animado(anim: dict, t: float):
@@ -584,6 +647,7 @@ def load_scene(res: AssetResolver, strict: bool = False,
         props = {}
     scene.properties = props or {}
     _refrescar_valores_de_usuario(data, scene.properties)
+    _hornear_scripts_fijos(data)
     if tiempo is not None:
         _evaluar_animaciones(data, tiempo)
 

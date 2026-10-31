@@ -3888,13 +3888,19 @@ Por orden de lo que más se nota:
    de `angles` y de
    `origin`](#un-campo-que-oscila-con-engineruntime-el-vaivén-de-angles-y-de-origin)—;
    las dos capas de `3577990983` con el mismo vaivén y con hijos, no.
+   **Empezado** también lo que no cambia: un script que da siempre lo mismo
+   se evalúa al cargar y sustituye al `value`, como los 19 `origin` que
+   colocan con deslizadores el widget de `3462491575` —ver [Los scripts que
+   colocan](#los-scripts-que-colocan-un-valor-que-no-cambia-se-evalúa-una-vez)—.
 4. ~~Reproducir vídeo~~ **hecho**: `src/wevideo.c` lo decodifica con libav y lo
    comparten los dos ejecutores; las 3 escenas con textura de vídeo se mueven y
    los 15 wallpapers de tipo vídeo entran en la biblioteca —ver [Vídeo de
    verdad](#vídeo-de-verdad-un-decodificador-compartido-y-dos-entregas-distintas)—.
    Queda el **audio** (pista AAC en dos de las tres escenas y en los 15
    wallpapers) y la **decodificación por hardware**: hoy todo va por CPU.
-5. **Elegir la GPU que renderiza** (ver abajo).
+5. ~~**Elegir la GPU que renderiza**~~ **hecho**, por un tercer camino: el
+   plan en otro contexto del mismo hilo y el fotograma por la CPU. Ver [El fondo
+   en la dedicada](#el-fondo-en-la-dedicada-el-plan-en-otra-gpu-y-el-fotograma-por-la-cpu).
 6. ~~Reflejos y luces de tubo~~ **hecho**: el reflejo solo pedía la pirámide de
    mipmaps del buffer de escena, y el tubo venía en `controlpoint` desde el
    principio. Del sistema de iluminación quedan los **focos** y las
@@ -4001,6 +4007,11 @@ del mismo:
   fondo no se ve. Semana larga, y **con un riesgo que puede tumbarlo**: que Mesa
   no pueda importar el dmabuf que exporta NVIDIA. Se resuelve con una sonda de
   ~150 líneas antes de comprometerse.
+
+**Resuelto:** la sonda dijo que no ---NVIDIA solo dibuja en su formato en
+bloques y la integrada solo lee lineal---, y el fondo va en la dedicada por un
+tercer camino que no estaba aquí. Ver [El fondo en la
+dedicada](#el-fondo-en-la-dedicada-el-plan-en-otra-gpu-y-el-fotograma-por-la-cpu).
 
 ## El anillo del vórtice, y las dos velocidades que faltaban
 
@@ -10188,3 +10199,527 @@ medidas de esta sección se miran a 10 s.
   recorte central y no la enseña.
 - **Los focos y las direccionales** en `LightingV1`: el generador los tiene;
   aquí siguen apagando la iluminación porque ninguna escena los trae.
+
+## El fondo en la dedicada: el plan en otra GPU y el fotograma por la CPU
+
+[Elegir la GPU que renderiza](#elegir-la-gpu-que-renderiza) dejaba dos caminos
+y una sonda pendiente: si Mesa podía importar el dmabuf que exporta NVIDIA. Se
+hizo la sonda, y el camino del dmabuf **no existe** en esta máquina. El fondo
+va ahora en la dedicada por un tercero, que no estaba en la lista.
+
+### La sonda: NVIDIA no escribe nada que la integrada sepa leer
+
+Unas 200 líneas fuera del repo: NVIDIA pinta cuatro cuadrantes de colores, un
+segundo proceso con el ICD de Mesa importa el fd y los lee. Con el driver
+615.78 y la UHD de Raptor Lake:
+
+| intento | resultado |
+|---|---|
+| exportar una textura GL de NVIDIA | modifier `0x0300000000e08014` (bloques de NVIDIA): Mesa la **rechaza**, `EGL_BAD_MATCH` |
+| bo GBM LINEAR de NVIDIA para dibujar | `RENDERING \| LINEAR` no se puede pedir; `LINEAR` solo, sí |
+| bo LINEAR de Intel, importado en NVIDIA | lo importa **solo para muestrear**: `GL_INVALID_OPERATION` al atarlo a `TEXTURE_2D`, FBO incompleto |
+| bo LINEAR del propio NVIDIA | lo mismo |
+| por la CPU, 2560×1440 | 1,19 ms leer en NVIDIA (dos PBO), 2,03 ms subir en Intel |
+
+El GL de NVIDIA **solo dibuja en su formato en bloques**, y la integrada solo
+lee lineal. Quedaría Vulkan en NVIDIA ---copiar a una imagen LINEAR, que como
+destino de transferencia sí podría valer--- con la interoperabilidad GL↔Vulkan
+de por medio; no se probó, porque la CPU ya cabía.
+
+### El camino: otro contexto en el mismo hilo
+
+La GPU la elige libglvnd por proceso al cargar el driver, pero **las llamadas
+GL las reparte por hilo** según el contexto actual, y `glexecutor.cpp` llama a
+`gl*` directamente. Así que no hace falta otro proceso ni otro hilo: dentro de
+`beginExternal()`, `src/otragpu.cpp` guarda el contexto de Qt (Mesa), pone uno
+suyo sobre la otra GPU, ejecuta el plan en un FBO propio del tamaño del item,
+lo lee con `glReadPixels`, devuelve el contexto a Qt y lo sube a una textura
+que copia con un blit al framebuffer de Qt. Sin fotograma de retraso: todo
+pasa en el mismo `render()`.
+
+- **Qué GPU.** La primera de `eglQueryDevicesEXT` con nodo de render, que no
+  sea software y cuyo `GL_RENDERER` no sea el de Qt. Mesa enumera también el
+  nodo de NVIDIA, donde no tiene driver: falla al inicializar y se pasa al
+  siguiente. Sin otra GPU, o con `wectl gpu integrated` (abajo), se dibuja en
+  la de Qt como antes. Dos GPU idénticas no se distinguen por el renderer: se quedaría en
+  la de Qt.
+- **El contexto es GL 3.3 core**, el de `tools/glexec.c`. En un portátil
+  híbrido el plan en vivo corre ahora en el mismo driver y el mismo tipo de
+  contexto que el render offline (`werender.py` no fuerza Mesa).
+- **Lo que hay que guardar** al cambiar de contexto es todo el estado EGL del
+  hilo de Qt: display, superficies de lectura y escritura, contexto **y la
+  API** de `eglBindAPI`, que también es por hilo.
+- **Liberar.** El destructor de `GlExecutor` decide mirando
+  `QOpenGLContext::currentContext()`, que es contabilidad de Qt y seguiría
+  diciendo «hay contexto» con el de NVIDIA sin poner. `~SceneRenderer` entra
+  en el propio, libera el plan ahí y sale; el de `GlExecutor` ya no tiene nada
+  que hacer. Sin `eglTerminate`: el display de un dispositivo es único en el
+  proceso y lo puede estar usando el fondo de otra pantalla.
+- **La locale** no cambia nada: `wereloj.c` hace `uselocale` en cada llamada y
+  todo sigue en el mismo hilo.
+
+### Lo medido
+
+En el arnés QML (no en plasmashell), 1600×900, a 165 Hz:
+
+| *High Noon Irelia* | fps | integrada ocupada | ms de integrada por fotograma |
+|---|---|---|---|
+| ventana de Qt vacía, animada | 165 | 7,4 % | 0,45 |
+| antes: todo en la integrada | **30** | **100 %** | **33,0** |
+| ahora: el plan en NVIDIA | **165** | **20,2 %** | **1,22** |
+
+Medido con `/proc/<pid>/fdinfo` del i915, por `drm-client-id` y tomando el
+máximo de cada cliente: sumar los fd de un mismo cliente da más del 100 %. El
+0,8 ms de diferencia con la ventana vacía es la subida y el blit. El 20 % que
+queda es por ir a 165 fps; a 30 serían ~4 %. NVIDIA, dibujando: ~17,8 W y
+37 %; en pausa vuelve a los 4,0 W del reposo, con el plan aún cargado (201
+MiB con esta escena, 689 MiB con la escena en marcha según `nvidia-smi`).
+
+**El corpus**, con el mismo arnés, el fotograma 60 volcado con `glReadPixels`
+desde el contexto de Qt ---no con `grabToImage`---, en NVIDIA y con
+`WE_GPU=qt` (la variable de entonces; hoy, `wectl gpu integrated`):
+
+- 153 directorios, **148 planes**: NVIDIA elegida en 148/148, 0 salidas con
+  error, 0 coredumps. **0 errores de GL que solo salgan en NVIDIA**: los tres
+  que hay (`0x502` tras componer, en `2317494988`, `3810943704` y
+  `3811980360`) salen igual en la integrada. Alfa 255 en todos. Mediana de la
+  diferencia, 0,073 sobre 255.
+- 16 escenas se repitieron dos veces por modo, porque diferían en más de un 1 %
+  de píxeles o no llegaban a volcar. Siete dan 0,0 en todo: era el arnés
+  volcando momentos distintos. NVIDIA es **determinista** (nvidia contra
+  nvidia, 0,0 en 13 de 15); la integrada no (hasta un 10,8 % contra sí misma)
+  porque se salta fotogramas y eso mueve el tiempo y las partículas. La que
+  más difería, `3810943704` (26 %), es la misma imagen desplazada: difieren
+  los bordes, igual que contra sí misma, y el reloj marca otro minuto.
+- `3047352572` (260 pases a 4K) no llega a 60 fotogramas en la integrada en
+  400 tics; en NVIDIA sí.
+- Redimensionar el item a mitad (1600×900 → 1000×700 → 1700×1000 → 1600×900),
+  tres veces: sin errores y el último fotograma a su tamaño.
+
+### Lo que queda
+
+- **Que la dedicada duerma en pausa.** No se pudo medir: Steam y un proceso
+  de Proton la tienen abierta y está `active` con o sin fondo. (Luego: ni
+  sin ellos duerme, por el audio HDMI; ver [¿Duerme la
+  dedicada?](#duerme-la-dedicada-steam-btop-y-el-audio-hdmi).) Con 201 MiB el
+  plan está justo en el umbral de `DynamicPowerManagementVideoMemoryThreshold`
+  (200); soltar los recursos al pausar y recargarlos al destapar (el `init`
+  son ~100–300 ms) es lo que lo aseguraría.
+- **Leer sin esperar.** `glReadPixels` es síncrono (~1,6–2,4 ms en el hilo de
+  render a 1600×900). Dos PBO alternos lo bajan, pero mostrarían el fotograma
+  anterior: un fotograma de retraso, y en pausa el último no saldría nunca.
+- **Subir sin copiar en la integrada**: `/dev/udmabuf` existe; un memfd
+  importado como dmabuf lineal se muestrea sin `glTexSubImage2D`. Sin probar.
+- **La regla de los dos drivers cambia de lado**: con dos GPU, el plan en vivo
+  va en NVIDIA. Los tests de shader que fuerzan Mesa siguen siendo el oráculo
+  de `wectl gpu integrated` y de las máquinas sin dedicada, y el render offline pasa a
+  predecir el escritorio también en el driver.
+
+### El mando: `wectl gpu`, en caliente
+
+Pedido expresamente (la regla de `wectl`): `wectl gpu dedicated|integrated`
+---o `nvidia`/`intel`--- escribe `DedicatedGpu` en la configuración del
+fondo por la API de scripting de Plasma, la misma puerta que el resto de
+`wectl`. Sin argumento dice qué hay configurado y qué está usando el motor,
+leído de su línea en el registro **de plasmashell** (`_COMM=plasmashell`: el
+arnés escribe las mismas líneas y la primera versión las confundía). La
+variable `WE_GPU` desaparece: dos sitios decidiendo lo mismo.
+
+El cambio no reinicia nada. `SceneView.gpuDedicada` pide fotograma al cambiar
+---con el escritorio tapado también, como el encaje---, y en ese `render()`
+`soltarPlan()` libera el plan en el contexto donde vive y vuelve todo al
+estado del primer fotograma: se decide la GPU, se carga y se compila allí.
+
+Cargar un segundo plan en el mismo ejecutor no lo había hecho nadie, y
+destapó dos fallos que solo se ven al cambiar de contexto:
+
+- **El sampler de mipmaps y las consultas del cronómetro** no se liberaban:
+  se crean la primera vez que hacen falta y sobrevivían a
+  `releaseResources()`. En el contexto nuevo sus nombres no existen:
+  `GL_INVALID_OPERATION` en el primer fotograma tras cada cambio y, peor, el
+  reflejo leyendo `_rt_MipMappedFrameBuffer` sin su filtro.
+- **Los contadores de diagnóstico se sumaban**: 237 → 474 → 711 uniforms
+  activos tras dos cambios. `loadPlan()` ponía a cero unos y no otros.
+
+Medido en el arnés, tres veces: dedicada → integrada → dedicada → integrada
+con el reloj parado; cada cambio recarga en la GPU pedida, `glError=0x0` en
+todos y sin coredumps.
+
+### ¿Duerme la dedicada? Steam, btop y el audio HDMI
+
+Con el motor ya instalado, btop enseñaba la NVIDIA con carga con el escritorio
+tapado. **No era el fondo**, y llegar ahí pasó por tres capas:
+
+- **El fondo en pausa no toca la GPU.** `nvidia-smi pmon` 10 s: ningún proceso
+  con actividad, plasmashell incluido. Y la prueba A/B con `wectl gpu` en
+  caliente da lo mismo: 16,6 % y 4,10 W con el fondo en la integrada, 12,5 % y
+  4,16 W en la dedicada en pausa. Es el suelo de reposo (P8), el mismo que se
+  midió por la tarde antes de instalar nada.
+- **Steam** (su `steamwebhelper`, 155 MiB) y el Wallpaper Engine de Windows
+  bajo Proton tenían la dedicada abierta: de ahí el 10–17 %. Cerrándolos se va.
+- **btop y `nvidia-smi` la despiertan.** Para enseñar el uso consultan NVML
+  cada segundo, y cada consulta saca a la GPU de su estado de reposo. Medir si
+  duerme solo vale leyendo `/sys/bus/pci/devices/<dGPU>/power/runtime_status`
+  y `runtime_suspended_time`, que no la tocan.
+
+Y aun sin nada de eso ---Steam y btop cerrados, plasmashell reiniciado una vez
+con el fondo en la integrada y **0 descriptores** sobre NVIDIA--- la dedicada
+**no se suspende nunca**: `runtime_suspended_time` en 0 desde el arranque. La
+causa es de la máquina, no del motor: `/etc/modprobe.d/audio-fix.conf`, sin
+paquete que lo reclame,
+
+```
+options snd_hda_intel power_save=0 power_save_controller=N
+```
+
+apaga el ahorro de **todos** los controladores HDA, también el audio HDMI que
+la NVIDIA lleva dentro (`01:00.1`). Mientras esa función está despierta, el
+kernel no puede suspender la GPU entera. Es el arreglo típico del chasquido de
+los altavoces al despertar el controlador; no se ha tocado. Las salidas que
+hay: subir `power_save` a mano para probar (se pierde al reiniciar), quitar
+del controlador solo la función HDMI de la NVIDIA (sin sonido por ese HDMI), o
+dejarlo, con la dedicada en ~4 W de reposo con fondo o sin él.
+
+**Lo que sí es del motor, y queda abierto:** el driver de NVIDIA **no suelta
+sus descriptores** mientras viva el proceso. Medido con una sonda aparte:
+
+| paso | descriptores `/dev/nvidia*` |
+|---|---|
+| inicio | 0 |
+| solo **enumerar** los dispositivos EGL | 5 |
+| inicializar el display de NVIDIA | 7 |
+| con contexto | 18 |
+| contexto destruido + `eglTerminate` | **18** |
+| `eglReleaseThread` | 12 |
+
+Así que plasmashell, en cuanto ha usado la dedicada una vez, la tiene abierta
+hasta que se reinicia, aunque `wectl gpu integrated` destruya el contexto.
+Si eso impide suspenderla no se puede medir mientras el audio HDMI la tenga
+despierta. Según lo que diga:
+
+- **si un descriptor ocioso basta para impedirlo**, la única salida es el
+  renderizador en un **proceso aparte** que muera al pausar o al pasar a la
+  integrada: el driver no los suelta de otra forma;
+- **si solo lo impide un contexto vivo**, basta destruirlo en pausa y
+  recrearlo al destapar (`init` de 50–300 ms);
+- y en los dos casos, `abrir()` enumera dispositivos aunque luego no elija la
+  NVIDIA: con la configuración en la integrada desde el arranque no se llama, y
+  plasmashell no la abre nunca.
+
+#### Con el ahorro del audio puesto, tampoco
+
+Para medir si el motor la mantendría despierta hacía falta que la dedicada
+pudiera dormir. Se subió `power_save` a mano (`1` y `Y`, se pierde al
+reiniciar) y se midió con un proceso aparte ---no plasmashell--- en cuatro
+estados, cada uno 30–35 s, leyendo solo `/sys` y con btop y Steam cerrados:
+
+| estado | suspendida |
+|---|---|
+| nada abierto | 0 ms |
+| descriptores ociosos, contexto destruido | 0 ms |
+| contexto vivo, 64 MiB, sin dibujar | 0 ms |
+| contexto vivo, 400 MiB, sin dibujar | 0 ms |
+
+El códec HDMI sí se apaga ahora (1450 s apagado), pero el **controlador** de
+audio de la NVIDIA (`01:00.1`, que cuelga de la GPU como consumidor) solo
+llegó a suspenderse 4,6 s justo tras el cambio y no volvió a hacerlo, y la GPU
+con él. Así que `audio-fix.conf` **no es el único** bloqueo. Los sospechosos
+que quedan son de la máquina: `nvidia-powerd` (el reparto de potencia CPU/GPU
+de Dynamic Boost, en marcha desde el arranque) y el `card1` que Xwayland tiene
+abierto. Probarlos es parar un servicio o reiniciar Xwayland, y se dejó.
+
+**La respuesta a si es culpa del motor: no.** Sin nada del motor abierto la
+dedicada tampoco duerme. Lo que sigue sin respuesta es si, en una máquina
+donde sí duerma, los descriptores que el driver no suelta la mantendrían
+despierta; la tabla de arriba no lo distingue porque ni el caso «nada
+abierto» llega a dormir.
+
+## Los scripts que colocan: un valor que no cambia se evalúa una vez
+
+**El síntoma.** En `3462491575` (Arknights, Kal'tsit y Mon3tr) el widget de
+la hora salía amontonado en el centro: «FRIDAY» con la fecha encima, el
+texto del autor debajo, y el reloj no se veía. Sus 19 `origin` con script
+son el mismo, copiado de capa en capa:
+
+```js
+value.x = scriptProperties.x * engine.canvasSize.x;
+value.y = scriptProperties.y * engine.canvasSize.y;
+return value;
+```
+
+`x` e `y` son deslizadores atados a propiedades del usuario (`x1` = −0,268
+para la hora, `y2` = −0,574...). WE ejecuta el script en cada fotograma, da
+siempre lo mismo y dibuja eso. Aquí se dibujaba el `value`, que es donde
+estaba la capa en el editor **antes** del script: −488 108 para la hora,
+cuando el script dice −1029 −1240.
+
+No hace falta nada en el ejecutor. Si el script devuelve siempre lo mismo,
+basta con evaluarlo al cargar la escena y poner el resultado en lugar de la
+copia, antes de colocar nada.
+
+**El censo.** Hay 186 campos con script en `origin`, `scale`, `angles`,
+`color` y `alpha` de las 133 escenas. Con lo de abajo dan un valor fijo
+**20 campos en 2 escenas**: los 19 de `3462491575` y la capa `定位` de
+`3521337568`. El resto lee el tiempo (`frametime`, `runtime`), el ratón, el
+audio o la música, otras capas (`getParent`, `thisScene`), o acumula entre
+fotogramas.
+
+### Lo que cambia
+
+- **`tools/wescript.py`**:
+  - `engine.canvasSize`, el `width` x `height` de `orthogonalprojection`.
+    La definición de tipos que trae la propia instalación de WE
+    (`ui/dist/monaco/autocomplete/lib.sceneScript.d.ts`) dice «Size of the
+    canvas/full wallpaper in pixels (2D scenes only)». Solo existe si quien
+    evalúa lo da; un texto que lo lea sigue siendo ScriptError.
+  - `new Vec2(...)` y `new Vec3(...)`, como objetos `{x, y, z}`, sin
+    métodos: `copy()` o `add()` siguen siendo ScriptError.
+  - El espacio duro (U+00A0) y el BOM como blancos, igual que en JS. El
+    script de `定位` lo trae entre tokens.
+  - `valor_fijo` y `valor_fijo_de`. Llaman a `init(value)` si existe (según
+    la misma definición de tipos, se llama una vez al crear el objeto) y
+    luego a `update`. El resultado se acepta solo si sale igual con seis
+    `runtime` entre 0 y 600 s, con dos días y horas distintos, y con otra
+    entrada (`value` + 37). Con esa otra entrada, cada componente tiene que
+    salir igual o, si el script la dejaba pasar, ser la que entró: en WE la
+    entrada es la salida del fotograma anterior, y en reposo las dos lecturas
+    dan lo mismo. `angles` entra en grados y vuelve en radianes, como en
+    `vaiven_de`.
+  - **Un script con manejadores de sucesos no se evalúa** (`_es_suceso`:
+    `cursor*`, `media*`, `applyUserProperties`, `applyGeneralSettings`,
+    `resizeScreen`). Lo que devuelve en reposo es lo de antes del primer
+    suceso, y en WE el suceso llega. Sin esta regla, los 8 `color` del panel
+    de música de `3210875135` salían **negros**: su color lo pone
+    `mediaThumbnailChanged` con la carátula de lo que suena, y antes de eso
+    vale `Vec3(0, 0, 0)`.
+- **`tools/wescene.py`**:
+  - `_hornear_scripts_fijos`, justo detrás de `_refrescar_valores_de_usuario`,
+    porque las `scriptproperties` tienen que llegar al script con el valor
+    del usuario. El `script` se queda en el campo, y `vaiven_de` y
+    `giro_por_hora` ven un campo que ya no cambia.
+  - **Un deslizador atado a la `scale` de una capa reparte su número** por
+    las tres componentes. Al colocar bien el widget apareció un segundo
+    fallo, que ya estaba antes: el grupo `组件` tiene su `scale` atada a un
+    deslizador (0,403). Se ponía el número suelto, `_floats` rellenaba y y z
+    con unos, y el grupo se estiraba 2,5 veces en alto. La copia del autor
+    dice lo que hace WE: `0.40300 0.40300 0.40300`. Lo mismo pasa en los 3
+    campos así del corpus (`origin`, `scale` y `angles` de una capa; solo
+    hay `scale`, en 2 escenas).
+
+### Lo que se descartó
+
+- **Repartir también en las constantes de shader.** Allí la copia no dice
+  lo mismo: el `repeat` del efecto `scroll` de `2311315748` guarda `0.3 1`
+  con el deslizador en 0,3, y el `scale` de `blurprecise` en `2317494988`
+  guarda `0 0` con el deslizador en 1. La primera versión repartía por el
+  nombre de la clave y cambiaba las dos. Ahora solo se reparte en los campos
+  que cuelgan de una capa de `objects`, y en el shader el número sigue suelto
+  como antes.
+- **Evaluar los scripts con sucesos «en reposo»**, por lo de los colores
+  negros de arriba.
+- **Ejecutar `applyUserProperties` al cargar.** Según la definición de tipos
+  se llama una vez al cargar con las propiedades, y daría los 4 `origin` de
+  `2537500835`. Pero esos leen `engine.screenResolution`, que en WE es la
+  pantalla y no el lienzo: un lienzo de 1920x1080 en una pantalla de
+  2560x1600 pondría el reloj fuera de su sitio también en WE. Queda para
+  cuando se pueda comparar.
+
+### Lo medido
+
+- **`test_wescript.py`**, sección nueva «valor fijo». Los sintéticos aceptan:
+  - el deslizador por el lienzo, un `Vec3` nuevo, `init` que guarda la
+    base, cambiar solo la y, `alpha` y `angles` en grados.
+
+  Y rechazan:
+  - devolver lo mismo que se guardó, leer `runtime`, leer la hora, leer el
+    `value`, acumular, no devolver, devolver un número en un vector y leer
+    `screenResolution`;
+  - un suceso del ratón, uno de la música y `applyUserProperties`.
+
+  En el corpus salen exactamente `{3462491575: 19, 3521337568: 1}` de los
+  186 campos.
+- **Lo que no tenía que cambiar.** Relojes, hojas por hora, giros y vaivenes
+  de las 133 escenas, evaluados con la base (`git archive` de `b9ed235`) y
+  con la rama: las **174** formas, idénticas.
+- **Las escenas cargadas** (`load_scene`, el `raw` de cada objeto, base
+  contra rama, 133 escenas): cambian solo `3462491575` (los 19 objetos con
+  `origin` por script; uno de ellos, el grupo `组件`, lleva además la `scale`
+  repartida), `3521337568` 1342, y `2311315748` 27. En esta última la `scale` pasa de `1` a `1.0 1.0 1.0`,
+  que es el mismo número.
+- **`3521337568` `定位`**: su `x` está atada a `newproperty`, que en
+  `project.json` es el **booleano** de la animación de entrada, así que el
+  script da `true * 3840`. No se entiende qué hace WE con un booleano en un
+  deslizador, pero da igual: el render es **idéntico píxel a píxel** antes y
+  después, porque la capa no dibuja nada visible.
+- **`3462491575`, a 1920x1080**: 53201 píxeles cambian solo con los
+  `origin`. Con el reparto de la `scale`, el widget queda como una columna
+  en la esquina de arriba a la izquierda: «FRIDAY», la fecha, la hora (que
+  antes no se veía) y el texto del autor, en proporción.
+- **Luz** (`test_luminancia.py`, base contra rama, ICD por defecto, que es
+  NVIDIA): 133/133 renderizadas, **0 regresiones**, 0 apagadas, y la misma
+  sospechosa que en la base (`3459506773`). Solo `3462491575` se mueve de
+  verdad: media de 131,0 a 129,9 y razón contra la vista previa de 1,183 a
+  1,173, porque el texto deja de amontonarse en el centro. Las demás
+  diferencias son de ±0,1 en la media, en escenas con reloj o partículas:
+  `3521337568` da 0,01 aquí y fue idéntica píxel a píxel con el tiempo
+  fijo.
+
+### Lo que queda
+
+- **Una capa hija sin `origin` va al centro del lienzo** e ignora a su
+  padre (`werender.py`, «sin origin declarado: al centro»). Son **34 hijos
+  en 10 escenas**. En `3462491575` es el «FPS 60» (`帧率显示`): su padre lo
+  manda fuera de la pantalla (los deslizadores `x5` = 1,181 e `y5` = 1,138
+  del autor), pero él se queda en el centro. Hay que leer en el motor qué
+  `origin` por defecto tiene un hijo antes de tocarlo.
+- **Los scripts que leen a otra capa** (`thisLayer.getParent().scale`, en
+  `3238423642` y `3210875135`): con la `scale` del padre positiva dan el
+  mismo `value`, pero hace falta `getParent` para decirlo.
+- **`applyUserProperties` al cargar**, por lo de `screenResolution` de
+  arriba.
+- **El rebote de `2262142032`**: 9 `origin` que suben 0,021 y bajan 0,022
+  **por fotograma** entre dos topes. Es una onda triangular cuyo periodo
+  depende de los fps, y no se ha leído cuántos `update` por segundo da WE.
+- **Un deslizador en una constante de shader de dos o más componentes**: las
+  dos copias del corpus no se ponen de acuerdo.
+
+## El fondo en Hyprland: el mismo módulo como superficie layer-shell
+
+En KDE se descartó `wlr-layer-shell` porque el containment de plasmashell es
+opaco y tapa cualquier superficie de fondo («Decisión de arquitectura»). En
+Hyprland es al revés: no hay plasmashell, y layer-shell es **la** forma de
+ser fondo. Lo que sí vale tal cual es el módulo QML: `SceneView` no sabe nada
+de Plasma. Lo de Plasma era solo lo de alrededor: el `WallpaperItem`, el
+modelo de tareas para la pausa, el script de KWin para el cursor y
+`wectl`, que recarga por D-Bus.
+
+### El anfitrión
+
+`hyprland/main.qml` es el proceso entero, lanzado con `/usr/lib/qt6/bin/qml`:
+un `Instantiator` sobre `Qt.application.screens` y, por cada monitor, una
+`Window` con las propiedades adjuntas de `org.kde.layershell` (paquete
+`layer-shell-qt`): capa `LayerBackground`, anclada a los cuatro bordes,
+`exclusionZone: -1` (que no la empuje waybar) y sin teclado. Se muestra en
+`Component.onCompleted`, con las propiedades ya puestas, porque layer-shell
+las lee al crear la superficie. `screenConfiguration` está obsoleta en
+layer-shell-qt 6.8: basta `Window.screen`.
+
+Medido en Hyprland 0.57, eDP-1 1920×1200: `hyprctl layers` da
+`namespace: wallpaperengine` en el nivel 0, debajo de waybar; el plan va en
+la NVIDIA y Qt compone en la Intel, exactamente como en plasmashell
+(`destino=4 (otra GPU)`, 1,6 ms de GPU para el plan de 13 pases de
+`2188295077`).
+
+### La pausa y el cursor: el IPC de Hyprland
+
+`src/hyprland.cpp`. Hyprland publica dos sockets en
+`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`: `.socket.sock` para
+peticiones (lo que hace `hyprctl -j`) y `.socket2.sock`, que emite una línea
+`EVENTO>>DATOS` por cada cambio.
+
+- **`Hyprland`** (la pausa) escucha `.socket2.sock` y, 40 ms después de una
+  ráfaga de eventos, pide `j/monitors` y `j/clients`. Una ventana se ve si
+  está en el espacio activo del monitor, en su espacio especial abierto o
+  fijada (`pinned`). Del resto, mismo modo, rejilla de 32×18 y umbral del
+  92 % contra el área útil (el monitor menos `reserved`) que
+  `VentanasEncima.qml`. Es más fácil que en KWin: no hay «Mostrar el
+  escritorio» ni minimizados que el modelo no refleje. Los eventos de título
+  se ignoran (una terminal cambia de título con cada orden), y hay un repaso
+  cada 2 s por si se pierde alguno.
+- **`CursorHyprland`** pregunta `j/cursorpos` cada 16 ms, de forma asíncrona
+  y con una sola petición a la vez, porque Hyprland no emite eventos de
+  cursor. Alimenta el mismo `alMoverCursorGlobal` que `CursorKWin`. Deja de
+  preguntar cuando todos los fondos están en pausa.
+- Ojo con el espacio especial: si está abierto en el monitor (`magic` en
+  esta configuración, con la terminal dentro), tapa el monitor sea cual sea
+  el espacio normal. Es correcto, porque el fondo no se ve.
+
+Comprobado: con el especial cerrado y un espacio vacío, «dibujando con 0 %
+tapado»; al volver, «en pausa con 100 % tapado». El cursor movido a
+(300, 300) llega como (0,156, 0,250) de 1920×1200.
+
+En Plasma no hay `HYPRLAND_INSTANCE_SIGNATURE` y las dos clases se quedan
+mudas: `disponible = false` y ninguna petición.
+
+### Cambiar de plan sin plasmashell
+
+`SceneView` no sabe cambiar de plan en caliente: `m_planLoaded` no vuelve a
+`false`. En Plasma, `wectl` sale a otro plugin y vuelve, y eso recrea el
+item. Aquí lo hace un `Loader` que se desactiva y se activa cuando
+`VigiaArchivo` ve otro `plan.txt`. `wectl` cambia el plan renombrando
+`scene.nueva/` a `scene/`, y `QFileSystemWatcher` pierde el fichero en cuanto
+desaparece su inodo. Por eso se vigila también el directorio del abuelo, y
+lo que decide es la fecha y el inodo del fichero, 300 ms después del último
+aviso.
+
+**Lo que destapó el temporizador de rotación.** Con el temporizador de
+`wectl shuffle` vivo en Hyprland, cada tick escribía el plan y luego fallaba
+`recargar()`. En esta sesión `org.kde.plasmashell` existe en el bus, pero
+sin `evaluateScript`. `shuffle` tomaba ese error por una escena rota y
+probaba otras cuatro: cinco planes escritos y cinco recargas por tick, con
+el servicio en `failed`. `recargar()` vuelve ahora sin hacer nada si el pid
+de `$XDG_RUNTIME_DIR/wallpaperengine-hyprland.pid` está vivo (luego, en
+Hyprland, siempre; ver «`wectl` en Hyprland»). Medido: un tick, un plan, «Finished».
+
+### `wectl` en Hyprland
+
+Pedido después: que `wectl` entero valga en Hyprland. Las órdenes son las
+mismas; lo que cambia es a quién hablan. `en_hyprland()` mira
+`HYPRLAND_INSTANCE_SIGNATURE` y `XDG_CURRENT_DESKTOP`, que Hyprland exporta
+también al entorno de systemd de usuario, así que vale dentro del servicio de
+la rotación.
+
+**El fondo es una unidad transitoria de systemd** (`systemd-run --user
+--unit=wallpaperengine-hyprland`), no un hijo de `wectl`. El primer intento
+(`setsid` + fichero de pid) funcionaba desde la terminal, pero `shuffle` corre
+en un servicio oneshot, y al terminar systemd mata todo su cgroup: el fondo
+que arrancase la rotación habría muerto con ella. Como unidad, además, se
+reinicia sola (`Restart=on-failure`), con el límite de arranques de systemd
+para no entrar en bucle, y `is-active` sustituye al pid. Comprobado: con el
+fondo parado, el tick de la rotación lo arrancó y siguió vivo después de
+«Finished».
+
+- `set`/`shuffle`: `recargar()` arranca el fondo si no estaba. Si estaba,
+  no hace nada, porque `VigiaArchivo` ya ve el plan nuevo.
+- `start`/`stop`: arrancan y paran la unidad. Al parar queda lo que Hyprland
+  pinte debajo; no hay un «fondo de Plasma» al que volver.
+- `gpu`: en Plasma cambia una propiedad en caliente. Aquí el fondo es otro
+  proceso y no hay canal para eso, así que se guarda en
+  `~/.config/wallpaperengine/hyprland.json` y se reinicia la unidad: menos de
+  un segundo en negro. Medido en los dos sentidos («configurado para dibujar
+  en la GPU de Qt» y vuelta a la NVIDIA).
+- `status`: estado de la unidad y las dos últimas líneas de `SceneView` del
+  registro, que en Hyprland no es el journal de plasmashell sino
+  `$XDG_RUNTIME_DIR/wallpaperengine-hyprland.log`.
+- El resto del panel de ajustes (`--pausa`, `--encaje`...) va en `opciones`
+  del mismo JSON, editado a mano. No se ha añadido ninguna orden para eso.
+
+### Dos monitores: las dos capas iban al primero
+
+Al conectar un segundo monitor (HDMI-A-3, 1920×1080 a la derecha), el
+`Instantiator` sí creó la segunda ventana (dos `SceneView` en el registro),
+pero `hyprctl layers` puso las **dos** en eDP-1 y dejó el HDMI vacío. Fallaban
+dos cosas a la vez:
+
+- **layer-shell-qt no mira `Window.screen`**: el monitor de la superficie lo
+  decide su propiedad `LayerShell.Window.screen` (con
+  `wantsToBeOnActiveScreen: false`). Sin ella, cada superficie va donde diga
+  el compositor.
+- **`Qt.application.screens` no da `QScreen`** sino `QQuickScreenInfo`:
+  «Unable to assign QQuickScreenInfo to QScreen». `Hyprland.pantalla` busca
+  el `QScreen` por el nombre del conector (el mismo en Qt y en Hyprland), y
+  `Window.screen` se queda con el `QQuickScreenInfo`, que es lo que acepta
+  («Unable to assign QScreen to QQuickScreenInfo» al revés). Tiene que estar
+  bien también este, porque `alMoverCursorGlobal` traduce el cursor con
+  `window()->screen()`.
+
+Medido: una capa por monitor (`0 0 1920 1200` y `1920 0 1920 1080`); con
+`--pausa 0`, el cursor en (2880, 540) da (0,5, 0,5) presente en el HDMI y
+ausente en eDP-1, y en (480, 300), (0,25, 0,25) en eDP-1. En caliente, con
+`hyprctl output create headless`: aparece la tercera capa en `3840 0`, y al
+quitar la salida desaparece sin coredump.
+
+### Lo que queda
+- **Sin `test_luminancia` propio**: el anfitrión no cambia el plan ni el
+  ejecutor, así que el oráculo de siempre vale. Lo nuevo es la presentación y
+  se comprobó en vivo con el registro del proceso.

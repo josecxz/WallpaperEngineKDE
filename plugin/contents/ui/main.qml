@@ -96,6 +96,7 @@ WallpaperItem {
         zoom: root.configuration.Zoom
         desplazamientoX: root.configuration.OffsetX
         desplazamientoY: root.configuration.OffsetY
+        gpuDedicada: root.configuration.DedicatedGpu !== false
         colorBarras: root.configuration.Color || "#0b0b0d"
 
         // Donde esta el raton, para las capas que lo persiguen: las

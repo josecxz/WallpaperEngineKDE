@@ -4,6 +4,7 @@
 #include <qqml.h>
 
 #include "escritorio.h"
+#include "hyprland.h"
 #include "sceneview.h"
 
 class WallpaperEnginePlugin : public QQmlExtensionPlugin
@@ -16,6 +17,8 @@ public:
     {
         qmlRegisterType<SceneView>(uri, 1, 0, "SceneView");
         qmlRegisterType<Escritorio>(uri, 1, 0, "Escritorio");
+        qmlRegisterType<Hyprland>(uri, 1, 0, "Hyprland");
+        qmlRegisterType<VigiaArchivo>(uri, 1, 0, "VigiaArchivo");
     }
 };
 

@@ -149,6 +149,12 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
         m.reloj = nullptr;
     }
     m_psysCount = m_psysUnknownParts = m_psysCursorCount = 0;
+    // Los contadores de diagnostico son de ESTE plan. Hasta que el plan se
+    // pudo cambiar de GPU nadie cargaba dos en el mismo ejecutor, y se
+    // sumaban: 237, 474, 711 uniforms activos tras dos cambios.
+    m_liveUniforms = m_droppedUniforms = 0;
+    m_meshCount = m_meshPassCount = m_meshAnimCount = 0;
+    m_log.clear();
     // Los sistemas son otros: hay que volver a decirles donde esta el raton.
     m_punteroRepartido = false;
     m_punteroVisto = false;
@@ -1849,5 +1855,18 @@ void GlExecutor::releaseResources()
     if (m_vbo) glDeleteBuffers(1, &m_vbo);
     if (m_vao) glDeleteVertexArrays(1, &m_vao);
     m_vbo = m_vao = 0;
+    // El sampler y las consultas del cronometro se crean la primera vez que
+    // hacen falta y no los soltaba nadie. Con el plan cambiando de GPU, sus
+    // nombres pasaban al contexto nuevo sin existir en el: GL_INVALID_OPERATION
+    // y el reflejo leyendo sin su filtro de mipmaps.
+    if (m_mipSampler) glDeleteSamplers(1, &m_mipSampler);
+    m_mipSampler = 0;
+    if (m_gpuQuery[0]) glDeleteQueries(2, m_gpuQuery);
+    m_gpuQuery[0] = m_gpuQuery[1] = 0;
+    m_gpuPend[0] = m_gpuPend[1] = false;
+    m_gpuCur = 0;
+    m_gpuActive = false;
+    m_gpuOff = false;
+    m_gpuMs = -1;   // otra GPU, otra medida
     m_ready = false;
 }

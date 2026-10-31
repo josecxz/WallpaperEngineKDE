@@ -307,6 +307,103 @@ def vaivenes_del_corpus(fallos: list[str]) -> None:
         fallos.append(f"vaivenes del corpus: aceptados {aceptados}")
 
 
+def fijo(cuerpo: str, campo: str = "origin", modulo: str = "",
+         valor="10.00000 20.00000 0.00000", props=None):
+    """`valor_fijo_de` de un `update` sintético en `campo`, en un lienzo de
+    3840x2160."""
+    return wescript.valor_fijo_de({campo: {
+        "script": f"{modulo} export function update(value) {{ {cuerpo} }}",
+        "value": valor, "scriptproperties": props or {}}}, campo, (3840.0, 2160.0))
+
+
+FIJOS = [
+    # (qué, campo, cuerpo de update, módulo, lo que tiene que salir)
+    ("deslizador por el lienzo", "origin",
+     "value.x = scriptProperties.x * engine.canvasSize.x;"
+     "value.y = scriptProperties.y * engine.canvasSize.y; return value;", "",
+     [-1029.12, -1239.84, 0.0]),
+    ("un Vec3 nuevo", "origin", "return new Vec3(1, 2, value.z);", "", [1.0, 2.0, 0.0]),
+    ("con init", "origin", "return new Vec3(base.x * 2, base.y, base.z);",
+     "let base; export function init(value) { base = value; }", [20.0, 20.0, 0.0]),
+    ("solo la y", "origin", "value.y = 7; return value;", "", [10.0, 7.0, 0.0]),
+    ("alpha", "alpha", "return 0.25;", "", [0.25]),
+    ("angles en grados", "angles", "value.z = 90; return value;", "",
+     [10.0, 20.0, 1.5707963267948966]),
+    ("lo mismo que guardó", "origin", "return value;", "", None),
+    ("lee engine.runtime", "origin", "value.y = engine.runtime; return value;", "", None),
+    ("lee la hora", "origin", "value.y = new Date().getHours(); return value;", "", None),
+    ("lee el value", "origin", "value.y = value.y + 1; return value;", "", None),
+    ("acumula", "origin", "n = n + 1; value.y = n; return value;", "let n = 0;", None),
+    ("no devuelve", "origin", "value.y = 3;", "", None),
+    ("devuelve un número", "origin", "return 3;", "", None),
+    ("sin lienzo en el motor", "origin", "value.x = engine.screenResolution.x; return value;",
+     "", None),
+    ("con un suceso del ratón", "origin", "return new Vec3(1, 2, 3);",
+     "export function cursorClick(e) {}", None),
+    ("con un suceso de la música", "color", "return c;",
+     "let c = new Vec3(0, 0, 0); export function mediaThumbnailChanged(e) "
+     "{ c = e.primaryColor; }", None),
+    ("con applyUserProperties", "origin", "return new Vec3(1, 2, 3);",
+     "export function applyUserProperties(p) {}", None),
+]
+
+# Los campos del corpus que dan un valor fijo, por escena: los 19 `origin`
+# que coloca un deslizador en `3462491575` y la capa `定位` de `3521337568`.
+FIJOS_CORPUS = {"3462491575": 19, "3521337568": 1}
+
+
+def fijos_del_corpus(fallos: list[str]) -> None:
+    """Los campos con script del corpus, con las propiedades del usuario ya
+    puestas como hace `wescene`: quién da valor fijo, y que sean los de
+    `FIJOS_CORPUS`."""
+    import wescene
+    vistos, por_escena = 0, {}
+    for d in sorted(wepaths.we_workshop().iterdir()):
+        p = d / "scene.pkg"
+        if not p.is_file():
+            continue
+        _, ents = pkg_inspect.read_pkg(str(p))
+        sj = [e for e in ents if e["name"] == "scene.json"]
+        s = json.loads(sj[0]["data"]) if sj else {}
+        try:
+            props = json.loads((d / "project.json").read_text()).get(
+                "general", {}).get("properties", {})
+        except (OSError, ValueError):
+            props = {}
+        wescene._refrescar_valores_de_usuario(s, props or {})
+        proj = (s.get("general") or {}).get("orthogonalprojection") or {}
+        lienzo = (float(proj["width"]), float(proj["height"])) \
+            if "width" in proj and "height" in proj else None
+        for o in s.get("objects") or []:
+            for campo in wescript.CAMPOS_FIJOS:
+                a = o.get(campo) if isinstance(o, dict) else None
+                if not (isinstance(a, dict) and isinstance(a.get("script"), str)):
+                    continue
+                vistos += 1
+                if wescript.valor_fijo_de(o, campo, lienzo) is not None:
+                    por_escena[d.name] = por_escena.get(d.name, 0) + 1
+    ok = por_escena == FIJOS_CORPUS
+    print(f"  {'ok' if ok else 'MAL':3} campos con script: {vistos}, fijos: {por_escena}")
+    if not ok:
+        fallos.append(f"fijos del corpus: {por_escena}")
+
+
+def deslizador_en_un_vector(fallos: list[str]) -> None:
+    """Un deslizador atado a un campo de tres componentes las pone todas."""
+    import wescene
+    escena = {"objects": [{"scale": {"user": "s", "value": "1.00000 1.00000 1.00000"},
+                           "alpha": {"user": "a", "value": 1.0}}]}
+    wescene._refrescar_valores_de_usuario(
+        escena, {"s": {"type": "slider", "value": 0.403},
+                 "a": {"type": "slider", "value": 0.5}})
+    o = escena["objects"][0]
+    r = (o["scale"]["value"], o["alpha"]["value"])
+    ok = r == ("0.403 0.403 0.403", 0.5)
+    print(f"  {'ok' if ok else 'MAL':3} {'deslizador en una scale':32} {r}")
+    if not ok:
+        fallos.append(f"deslizador en un vector: {r}")
+
+
 # Las agujas del corpus: lo único que la forma puede aceptar.
 AGUJAS = {("2396319149", 362), ("2396319149", 368), ("2396319149", 371)}
 
@@ -463,6 +560,19 @@ def main() -> int:
     if r is not None:
         fallos.append(f"vaiven cambia tras muchas llamadas: {r}")
     vaivenes_del_corpus(fallos)
+
+    print("── valor fijo ──")
+    for que, campo, cuerpo, modulo, espera in FIJOS:
+        valor = "1.0" if campo == "alpha" else "10.00000 20.00000 0.00000"
+        r = fijo(cuerpo, campo, modulo, valor,
+                 {"x": -0.268, "y": -0.574} if "deslizador" in que else None)
+        ok = (r == espera if espera is None or r is None else
+              len(r) == len(espera) and all(abs(x - y) <= 1e-9 for x, y in zip(r, espera)))
+        print(f"  {'ok' if ok else 'MAL':3} {que:32} {r}")
+        if not ok:
+            fallos.append(f"valor fijo {que}: {r} y tenía que ser {espera}")
+    deslizador_en_un_vector(fallos)
+    fijos_del_corpus(fallos)
 
     print("── capas del corpus con engine ──")
     con, sin = corpus(fallos)

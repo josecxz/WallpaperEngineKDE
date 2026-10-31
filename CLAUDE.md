@@ -25,12 +25,16 @@ y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
    motor). Se itera con el renderizador offline y solo al final `make reload`.
 4. **Las capturas de pantalla y `grabToImage` mienten**: dan falsos negativos.
    Lo que decide es `tools/test_luminancia.py`, que renderiza y mide la luz.
-5. **Los dos ejecutores no usan el mismo driver.** El escritorio corre sobre
-   **Mesa**; aquí el ICD por defecto es **NVIDIA** (`10_nvidia.json` va antes
-   que `50_mesa.json`). Los tests de shader ya lo fuerzan con
-   `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;
-   `werender.py` y `test_luminancia.py` **no**. Comparar los dos ejecutores sin
-   igualar el driver inventa fallos que no existen.
+5. **Qué driver ejecuta qué.** plasmashell corre sobre **Mesa** (la
+   integrada), pero desde `src/otragpu.cpp` el plan en vivo va en **NVIDIA**
+   con su propio contexto GL 3.3 core ---el mismo que `glexec`--- y Qt solo
+   compone el fotograma. Con `wectl gpu integrated`, o sin segunda GPU, el plan vuelve a
+   Mesa. Offline el ICD por defecto es **NVIDIA** (`10_nvidia.json` va antes
+   que `50_mesa.json`): `werender.py` y `test_luminancia.py` no lo cambian, y
+   los tests de shader fuerzan Mesa con
+   `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`,
+   que sigue siendo el oráculo de `wectl gpu integrated`. Comparar ejecutores sin igualar
+   el driver inventa fallos que no existen.
 6. **`plasmashell` cambia la locale.** Qt hace `setlocale(LC_ALL, "")` y este
    escritorio es `es_ES`: `strtof` en C lee `0.5` como `0`. Ninguna prueba
    offline lo ve, porque fuera de plasmashell la locale es `C`. (`NOTAS.md:970`)
@@ -99,13 +103,16 @@ aguja, tocas los dos a la vez o divergen.
 | `tools/werender.py` | **el hub**: une todo, `--emit-plan`, renderiza a PNG |
 | `src/sceneview.cpp` | `QQuickRhiItem`; `synchronize()` es el único punto sin carrera |
 | `src/glexecutor.cpp` | ejecutor en vivo (port de `glexec.c`) |
+| `src/otragpu.cpp` | el plan en otra GPU: su contexto EGL, leer el fotograma y subirlo a Qt |
 | `src/escritorio.cpp` | le pregunta a KWin cuánta pantalla tapan las ventanas |
+| `src/hyprland.cpp` | lo mismo en Hyprland por su IPC: pausa, cursor, y el vigía del `plan.txt` |
+| `hyprland/main.qml` | el fondo en Hyprland: una superficie layer-shell por monitor (`make hyprland`) |
 | `src/weparticles.c` | simulador, **compartido** por los dos ejecutores |
 | `src/wevideo.c` | decodificador libav, **compartido** por los dos ejecutores |
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
 | `src/wetemblor.c` | la curva de `camerashake`, **compartida** por los dos |
 | `src/wegiro.c` | el `angles` que pone la hora (agujas) y el vaivén de `engine.runtime`, **compartido** por los dos |
-| `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`) |
+| `tools/wectl.py` | CLI de uso diario (`list`/`set`/`shuffle`/`start`/`stop`/`status`/`gpu`); en Hyprland lleva la unidad `wallpaperengine-hyprland` en vez de Plasma |
 
 ## Comandos
 
@@ -117,6 +124,7 @@ vídeo.
 make build                     # modulo QML -> obj/libwallpaperenginerender.so
 make install                   # + symlink del paquete + environment.d
 make reload                    # reinstala TODO y reinicia plasmashell
+make hyprland / hyprland-stop  # atajos de `wectl start/stop` en Hyprland (layer-shell)
 make status                    # enlace, entorno y plugin activo
 make glexec                    # obj/glexec  (ejecutor offline)
 make psysprobe                 # obj/psysprobe (resume un .psys sin dibujarlo)

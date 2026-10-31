@@ -6,14 +6,20 @@
     wectl shuffle          pone uno al azar; --cada <t> lo repite solo
     wectl shuffletime <t>   ajusta cada cuanto rota, sin cambiar el fondo
     wectl start            vuelve a activar el motor
-    wectl stop             devuelve el escritorio al fondo de Plasma
+    wectl stop             para el motor (en Plasma, vuelve su fondo)
     wectl status           que hay puesto y como va
+    wectl gpu [dedicated|integrated]  en que grafica se dibuja el fondo
 
 Todo pasa por la API de scripting de Plasma via D-Bus, que aplica el cambio
 EN CALIENTE. Es la diferencia importante con `make reload`, que reinicia
 plasmashell entero: ahi se pierden las ventanas de un vistazo, tarda segundos
 y -- probando varios wallpapers seguidos -- agota el limite de arranques de
 systemd y deja el escritorio caido. Con D-Bus nada de eso ocurre.
+
+En Hyprland las mismas ordenes llevan el fondo de `hyprland/main.qml`, que va
+como unidad de systemd de usuario (`wallpaperengine-hyprland`) y se recarga
+solo al cambiar el plan. Se elige por `HYPRLAND_INSTANCE_SIGNATURE` /
+`XDG_CURRENT_DESKTOP`; ver "Hyprland" mas abajo.
 """
 
 from __future__ import annotations
@@ -94,12 +100,130 @@ def poner_plugin(nombre: str) -> None:
             f" d[i].wallpaperPlugin = {json.dumps(nombre)};")
 
 
+# ── Hyprland ────────────────────────────────────────────────────────────────
+#
+# Fuera de Plasma el fondo no es un plugin sino un proceso propio,
+# `hyprland/main.qml`: una superficie layer-shell por monitor con el mismo
+# modulo QML. Va como unidad transitoria de systemd de usuario y no como hijo
+# de `wectl`, por dos razones: `shuffle` corre en un servicio oneshot, y
+# systemd mata todo su cgroup al terminar ---el fondo moriria con el primer
+# cambio---; y asi se reinicia solo si se cae, con el limite de arranques de
+# systemd para no entrar en bucle.
+
+UNIDAD_HYPRLAND = "wallpaperengine-hyprland"
+ANFITRION = RAIZ / "hyprland" / "main.qml"
+QML = Path("/usr/lib/qt6/bin/qml")
+MODULOS_QML = Path.home() / ".local" / "lib" / "qt6" / "qml"
+REGISTRO_HYPRLAND = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) \
+    / "wallpaperengine-hyprland.log"
+# Lo que en Plasma guarda el panel de ajustes. `gpu` lo escribe `wectl gpu`;
+# `opciones` se edita a mano: las de la cabecera de hyprland/main.qml
+# (`["--pausa", "2", "--encaje", "1", "--hud"]`).
+CONFIG_HYPRLAND = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) \
+    / "wallpaperengine" / "hyprland.json"
+
+
+def en_hyprland() -> bool:
+    """Si la sesion es de Hyprland. Vale tambien dentro del servicio de la
+    rotacion: Hyprland exporta su firma al entorno de systemd de usuario."""
+    return bool(os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")) \
+        or "hyprland" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+
+
+def _config_hyprland() -> dict:
+    try:
+        datos = json.loads(CONFIG_HYPRLAND.read_text())
+        return datos if isinstance(datos, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _guardar_config_hyprland(datos: dict) -> None:
+    CONFIG_HYPRLAND.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONFIG_HYPRLAND.with_suffix(".tmp")
+    tmp.write_text(json.dumps(datos, indent=2, ensure_ascii=False) + "\n")
+    tmp.replace(CONFIG_HYPRLAND)
+
+
+def fondo_hyprland() -> bool:
+    """Si el fondo de Hyprland esta en marcha."""
+    r = subprocess.run(["systemctl", "--user", "is-active", "--quiet",
+                        UNIDAD_HYPRLAND], capture_output=True)
+    return r.returncode == 0
+
+
+def hyprland_arrancar() -> None:
+    if fondo_hyprland():
+        return
+    if not (ESCENA / "plan.txt").is_file():
+        raise CtlError("no hay ningun plan preparado; usa `wectl set <wallpaper>`")
+    if not QML.is_file():
+        raise CtlError(f"no se encontro {QML}; instala qt6-declarative")
+    cfg = _config_hyprland()
+    opciones = [str(o) for o in cfg.get("opciones", [])]
+    gpu = "integrada" if cfg.get("gpu") == "integrada" else "dedicada"
+    entorno = {"QT_FORCE_STDERR_LOGGING": "1",
+               "QML_IMPORT_PATH": ":".join(
+                   p for p in (str(MODULOS_QML), os.environ.get("QML_IMPORT_PATH"))
+                   if p)}
+    # Lo que hace falta para hablar con el compositor, por si systemd no lo
+    # tiene: en esta sesion si, pero depende de como se arranque Hyprland.
+    for var in ("WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
+                "XDG_CURRENT_DESKTOP", "XDG_RUNTIME_DIR"):
+        if os.environ.get(var):
+            entorno[var] = os.environ[var]
+    # Una unidad fallida con el mismo nombre impide crear la nueva.
+    subprocess.run(["systemctl", "--user", "reset-failed", UNIDAD_HYPRLAND],
+                   capture_output=True)
+    orden = ["systemd-run", "--user", "--quiet", "--collect",
+             f"--unit={UNIDAD_HYPRLAND}",
+             "--description=Fondo de WallpaperEngine en Hyprland",
+             "-p", "Restart=on-failure", "-p", "RestartSec=2",
+             "-p", f"StandardOutput=truncate:{REGISTRO_HYPRLAND}",
+             "-p", "StandardError=inherit",
+             *[f"--setenv={k}={v}" for k, v in entorno.items()],
+             str(QML), str(ANFITRION), "--",
+             "--plan", str(ESCENA / "plan.txt"), "--gpu", gpu, *opciones]
+    try:
+        r = subprocess.run(orden, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise CtlError("no se encontro systemd-run; el fondo de Hyprland lo necesita")
+    if r.returncode != 0:
+        raise CtlError(f"no arranco el fondo de Hyprland: {r.stderr.strip()}")
+
+
+def hyprland_parar() -> None:
+    subprocess.run(["systemctl", "--user", "stop", UNIDAD_HYPRLAND],
+                   capture_output=True)
+    subprocess.run(["systemctl", "--user", "reset-failed", UNIDAD_HYPRLAND],
+                   capture_output=True)
+
+
+def _registro_hyprland(patron: str, n: int) -> list[str]:
+    """Las ultimas `n` lineas del motor en el registro del fondo de Hyprland."""
+    try:
+        lineas = REGISTRO_HYPRLAND.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    return [l.split("SceneView:", 1)[1].strip() for l in lineas
+            if "SceneView:" in l and patron in l][-n:]
+
+
 def recargar() -> None:
     """Fuerza a Plasma a releer el plan.
 
     Cambiar el fichero no basta: plasmashell no lo vigila, y volver a poner el
     mismo plugin tampoco dispara nada. Hay que salir a otro plugin y volver.
+
+    En Hyprland no hay a quien pedirselo ni hace falta: el fondo vigila el
+    fichero del plan y se recarga solo; si no estaba en marcha, se arranca.
+    Sin este desvio `shuffle` tomaba el "plasmashell no responde" por una
+    escena rota y probaba otras cuatro, cinco planes escritos ---y cinco
+    recargas--- por cada cambio.
     """
+    if en_hyprland():
+        hyprland_arrancar()
+        return
     poner_plugin(PLUGIN_IMAGEN)
     poner_plugin(PLUGIN)
 
@@ -702,15 +826,100 @@ def cmd_shuffle(args) -> int:
                    + "\n".join(errores))
 
 
+# Lo que acepta `wectl gpu`, a lo que guarda la clave `DedicatedGpu`. Los
+# nombres de marca son los de un portatil Intel + NVIDIA; lo que se elige de
+# verdad es "la de plasmashell" u "otra", sea cual sea (src/otragpu.h).
+GPUS = {"dedicated": True, "dedicada": True, "nvidia": True,
+        "integrated": False, "integrada": False, "intel": False}
+
+
+def _config_gpu(valor: bool | None = None) -> list[str]:
+    """Escribe `DedicatedGpu` en todos los escritorios, si se da, y la lee."""
+    grupo = json.dumps(["Wallpaper", PLUGIN, "General"])
+    escribe = (f" d[i].writeConfig('DedicatedGpu', {json.dumps(valor)});"
+               if valor is not None else "")
+    salida = _script(
+        "var o = []; var d = desktops();"
+        "for (var i = 0; i < d.length; i++) {"
+        f" d[i].currentConfigGroup = {grupo};{escribe}"
+        " o.push(String(d[i].readConfig('DedicatedGpu', true))); }"
+        "print(o.join(' '));")
+    return salida.split()
+
+
+def _gpu_en_uso() -> str | None:
+    """La ultima linea del motor que dice donde dibuja, si la hay."""
+    # Solo plasmashell: el arnes QML escribe las mismas lineas en el registro.
+    reg = subprocess.run(
+        ["journalctl", "--user", "-b", "--no-pager", "-n", "1", "_COMM=plasmashell", "-g",
+         "SceneView: (el fondo se dibuja en|configurado para dibujar|no hay otra GPU|Qt no dibuja)"],
+        capture_output=True, text=True)
+    lineas = [l for l in reg.stdout.splitlines() if "SceneView:" in l]
+    return lineas[-1].split("SceneView:", 1)[1].strip() if lineas else None
+
+
+def _cmd_gpu_hyprland(args) -> int:
+    cfg = _config_hyprland()
+    if args.grafica is None:
+        print(f"configurado   : {cfg.get('gpu', 'dedicada')}")
+    else:
+        cfg["gpu"] = "dedicada" if GPUS[args.grafica] else "integrada"
+        _guardar_config_hyprland(cfg)
+        # Aqui no hay propiedad que cambiar en caliente desde fuera: el fondo
+        # es otro proceso. Se rearranca, que es menos de un segundo de negro.
+        if fondo_hyprland():
+            hyprland_parar()
+            hyprland_arrancar()
+            print(f"configurado   : {cfg['gpu']} (fondo reiniciado)")
+            time.sleep(2.0)
+        else:
+            print(f"configurado   : {cfg['gpu']} (se aplica al arrancar)")
+    lineas = _registro_hyprland("", 50)
+    en_uso = next((l for l in reversed(lineas) if l.startswith((
+        "el fondo se dibuja en", "configurado para dibujar", "no hay otra GPU",
+        "Qt no dibuja"))), None)
+    print(f"en uso        : {en_uso or '(sin datos del motor en el registro)'}")
+    return 0
+
+
+def cmd_gpu(args) -> int:
+    if en_hyprland():
+        return _cmd_gpu_hyprland(args)
+    if args.grafica is None:
+        valores = _config_gpu()
+        pedida = "dedicada" if all(v != "false" for v in valores) else "integrada"
+        print(f"configurado   : {pedida}")
+    else:
+        dedicada = GPUS[args.grafica]
+        _config_gpu(dedicada)
+        # El motor la cambia en el siguiente fotograma, sin recargar: el
+        # SceneView pide uno al cambiar la propiedad, aunque este en pausa.
+        print(f"configurado   : {'dedicada' if dedicada else 'integrada'}"
+              " (se aplica en el siguiente fotograma)")
+        time.sleep(1.0)
+    en_uso = _gpu_en_uso()
+    print(f"en uso        : {en_uso or '(sin datos del motor en el registro)'}")
+    return 0
+
+
 def cmd_start(args) -> int:
     if plan_instalado() is None:
         raise CtlError("no hay ningun plan preparado; usa `wectl set <wallpaper>`")
+    if en_hyprland():
+        andaba = fondo_hyprland()
+        hyprland_arrancar()
+        print(f"motor {'ya estaba ' if andaba else ''}activo: {plan_instalado()}")
+        return 0
     poner_plugin(PLUGIN)
     print(f"motor activo: {plan_instalado()}")
     return 0
 
 
 def cmd_stop(args) -> int:
+    if en_hyprland():
+        hyprland_parar()
+        print("motor parado; el fondo queda en lo que Hyprland pinte debajo")
+        return 0
     poner_plugin(PLUGIN_IMAGEN)
     print("motor parado; el escritorio vuelve al fondo de Plasma")
     return 0
@@ -735,6 +944,18 @@ def cmd_status(args) -> int:
         bolsa = _leer_estado().get("bolsa")
         if bolsa is not None:
             print(f"                 quedan {len(bolsa)} sin repetir")
+    if en_hyprland():
+        andando = fondo_hyprland()
+        print(f"escritorio     : Hyprland (unidad {UNIDAD_HYPRLAND})")
+        print(f"estado         : {'EN MARCHA' if andando else 'parado'}")
+        cfg = _config_hyprland()
+        print(f"gpu            : {cfg.get('gpu', 'dedicada')}"
+              + (f"; opciones {' '.join(map(str, cfg['opciones']))}"
+                 if cfg.get("opciones") else ""))
+        if andando:
+            for linea in _registro_hyprland("", 2):
+                print("  " + linea)
+        return 0
     try:
         activos = plugins_actuales()
     except CtlError as e:
@@ -779,6 +1000,12 @@ def main() -> int:
                    help="30m, 2h, 90s, 1d; un numero suelto son minutos")
     s.add_argument("--parar", action="store_true", help="para la rotacion")
     s.set_defaults(fn=cmd_shuffletime)
+
+    s = sub.add_parser("gpu", help="en que grafica se dibuja el fondo")
+    s.add_argument("grafica", nargs="?", choices=sorted(GPUS), metavar="GRAFICA",
+                   help="dedicated (nvidia) o integrated (intel); sin nada, "
+                        "dice cual esta configurada y cual se usa")
+    s.set_defaults(fn=cmd_gpu)
 
     for nombre, fn, ayuda in (("start", cmd_start, "activa el motor"),
                               ("stop", cmd_stop, "para el motor"),
