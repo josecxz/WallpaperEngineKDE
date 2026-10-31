@@ -127,6 +127,14 @@ public:
     // quede atras. Con el fondo 4K medimos 166 fps en el HUD mientras la
     // integrada estaba al 98%. Negativo mientras no haya medida.
     double diagGpuMs() const { return m_gpuMs; }
+    // Las muestras crudas del cronometro desde la ultima llamada (suma, numero
+    // y maximo, en ms), y las pone a cero. Para `WE_MEDIDAS`: la media movil
+    // de arriba sirve al HUD, pero no se puede comparar entre dos medidas.
+    void tomarMuestrasGpu(double &suma, int &n, double &max)
+    {
+        suma = m_gpuSuma; n = m_gpuN; max = m_gpuMax;
+        m_gpuSuma = 0; m_gpuN = 0; m_gpuMax = 0;
+    }
     // Cuantas veces fallo al abrir la consulta; >0 explica un
     // "sin medida" que si no seria mudo.
     int diagGpuFallos() const { return m_gpuFallos; }
@@ -490,6 +498,8 @@ private:
     int m_gpuSaltos = 0;
     int m_gpuAjena = 0;
     double m_gpuMs = -1;
+    double m_gpuSuma = 0, m_gpuMax = 0;
+    int m_gpuN = 0;
     int m_diagBlitError = 0;
     int m_diagTargets = 0;
     int m_droppedUniforms = 0;

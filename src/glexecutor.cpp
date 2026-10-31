@@ -1342,6 +1342,9 @@ void GlExecutor::gpuTimerPoll()
         const double ms = double(ns) / 1.0e6;
         // Media movil: un fotograma suelto no dice nada y el numero baila.
         m_gpuMs = m_gpuMs < 0 ? ms : m_gpuMs * 0.9 + ms * 0.1;
+        m_gpuSuma += ms;
+        m_gpuN++;
+        m_gpuMax = std::max(m_gpuMax, ms);
     }
 }
 

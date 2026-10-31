@@ -47,6 +47,11 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10727` **Un wallpaper distinto en cada pantalla** — `wectl pantallas mismo|independiente` (solo Hyprland): un plan por monitor en `plugin/contents/pantallas/`, `VigiaArchivo.existe` para caer al compartido, `shuffle` reparte de la misma bolsa y `set` pone el mismo en todas.
 - `10734` **Cómo** — `preparar` con destino, `--planes` en el anfitrión, el `Loader` que solo recarga el plan de su monitor y el `existe` hacia abajo cuando `set` borra los propios.
 - `10761` **La resolución, que en Hyprland no se leía** — sin `kscreen-doctor` los planes salían al lienzo del autor (hasta 7680×4320); ahora `hyprctl -j monitors`, y cada plan propio a su monitor.
+- `10799` **La vara de medir del rendimiento** — `WE_MEDIDAS` en el motor (fotogramas ejecutados, CPU, GPU y copia por intervalo, en sumas crudas) y `tools/medir_vivo.py` (escena fija, sin pausa, `fdinfo` del i915; la NVIDIA no publica `fdinfo`). Ruido medido, regla del 10 % y la línea de base.
+- `10806` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
+- `10820` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
+- `10842` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
+- `10860` **La línea de base** — 163 fps en eDP-1, 110 % de un núcleo, y la copia entre GPUs pesa más que dibujar el plan.
 
 ## CLI, rotación y rutas
 

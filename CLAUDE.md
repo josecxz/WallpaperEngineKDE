@@ -155,6 +155,7 @@ make plan WALLPAPER=<ruta>     # deja plan.txt en plugin/contents/scene/
 | `test_wescript.py` | lo que dice JS en casos sintéticos del intérprete, y qué capas con `engine` dan reloj |
 | `test_wevideo.py` | `ffprobe` para las dimensiones y `ffmpeg` para los píxeles, sobre los 18 vídeos del corpus |
 | `test_luminancia.py obj/glexec` | **el que decide**: renderiza y mide la luz. `--guardar luz.json` / `--referencia luz.json` caza regresiones |
+| `medir_vivo.py --wallpaper <id>` | **rendimiento en vivo** (solo Hyprland): fotogramas, CPU, GPU y copia por pantalla con `WE_MEDIDAS`, más `fdinfo`. `--guardar` / `--comparar`; ruido y regla del 10 % en NOTAS («La vara de medir») |
 
 `test_wescene` y `test_weshader` tardan; van con `timeout 1800`.
 

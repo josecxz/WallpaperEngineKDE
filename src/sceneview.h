@@ -22,7 +22,7 @@
 class SceneRenderer : public QQuickRhiItemRenderer
 {
 public:
-    SceneRenderer() = default;
+    SceneRenderer();
     // Con el plan en otra GPU, sus recursos solo se liberan con el contexto
     // de esa GPU puesto: el destructor de GlExecutor mira el de Qt.
     ~SceneRenderer() override;
@@ -62,6 +62,19 @@ private:
     float m_puntero[2] = {0.5f, 0.5f};
     bool m_punteroPresente = false;
     double m_gpuPublicado = -1;   // ultimo valor mandado al item
+
+    // `WE_MEDIDAS=<segundos>`: cada tantos segundos, una linea
+    // `SceneView: medida ...` con lo que costo este fondo en ese intervalo
+    // ---fotogramas ejecutados de verdad, CPU del render, GPU por el
+    // cronometro y la copia entre GPUs---, en sumas crudas y no en medias
+    // moviles, para que dos medidas se puedan comparar. La lee
+    // tools/medir_vivo.py. Sin la variable no se cuenta nada.
+    double m_medidaSeg = 0;
+    QString m_pantalla;            // copiado en synchronize(), para la linea
+    double m_medidaInicio = -1;    // ms del reloj monotono
+    int m_medidaFotos = 0;
+    double m_medidaCpu = 0, m_medidaCpuMax = 0;
+    void contarMedida(double msCpu);
 };
 
 class SceneView : public QQuickRhiItem

@@ -63,6 +63,13 @@ public:
     // Milisegundos de CPU de los dos pasos de copia, media movil.
     double msLeer() const { return m_msLeer; }
     double msPresentar() const { return m_msPresentar; }
+    // Suma de los dos pasos y numero de copias desde la ultima llamada; las
+    // pone a cero. Para `WE_MEDIDAS`.
+    void tomarMuestrasCopia(double &leer, double &presentar, int &n)
+    {
+        leer = m_sumaLeer; presentar = m_sumaPresentar; n = m_nCopias;
+        m_sumaLeer = m_sumaPresentar = 0; m_nCopias = 0;
+    }
 
 private:
     // Tipos de EGL como `void *` para no meter EGL ---y lo que arrastra--- en
@@ -82,4 +89,6 @@ private:
     QByteArray m_pixeles;
 
     double m_msLeer = 0.0, m_msPresentar = 0.0;
+    double m_sumaLeer = 0.0, m_sumaPresentar = 0.0;
+    int m_nCopias = 0;
 };

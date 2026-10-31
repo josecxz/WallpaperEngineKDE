@@ -168,7 +168,9 @@ void OtraGpu::leer()
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
     glReadPixels(0, 0, m_w, m_h, GL_RGBA, GL_UNSIGNED_BYTE, m_pixeles.data());
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    acumula(m_msLeer, ahoraMs() - t0);
+    const double ms = ahoraMs() - t0;
+    acumula(m_msLeer, ms);
+    m_sumaLeer += ms;
 }
 
 void OtraGpu::presentar(unsigned qtFbo)
@@ -218,7 +220,10 @@ void OtraGpu::presentar(unsigned qtFbo)
     // ahi al volver de endExternal().
     glBindFramebuffer(GL_FRAMEBUFFER, qtFbo);
     glViewport(0, 0, m_w, m_h);
-    acumula(m_msPresentar, ahoraMs() - t0);
+    const double ms = ahoraMs() - t0;
+    acumula(m_msPresentar, ms);
+    m_sumaPresentar += ms;
+    m_nCopias++;
 }
 
 void OtraGpu::liberarDentro()

@@ -10795,3 +10795,80 @@ Con eDP-1 (1920×1200) y HDMI-A-3 (1920×1080):
   siguiente `shuffle`: nadie le prepara uno al conectarse.
 - **Elegir a mano el wallpaper de una pantalla concreta** (`set` con un
   monitor) no está: no se ha pedido.
+
+## La vara de medir del rendimiento
+
+Primer punto de la auditoría de rendimiento: decidir **cómo** se mide, antes
+de tocar nada, para que el antes y el después de cada cambio se puedan
+comparar. Había instrumentos buenos sueltos y ninguna forma de repetir una
+medida.
+
+### Qué vale y qué no
+
+- **El fps del HUD no vale**: es el reloj de QML («El HUD decía 166 fps»).
+- **El cronómetro de GPU sí** (`GL_TIME_ELAPSED` leído sin esperar), pero
+  solo salía una vez, al fotograma 200, y como media móvil.
+- **`fdinfo` sí, para la integrada**: el i915 publica `drm-engine-render`
+  por cliente DRM (sumando cada cliente una vez, no cada descriptor). **La
+  NVIDIA no**: el driver propietario (615.78) no publica nada por cliente en
+  `fdinfo`. De ella queda el cronómetro del motor y `nvidia-smi pmon`, que
+  muestrea por proceso y es grueso. Sirve de contraste, no de medida.
+- **Nadie contaba los fotogramas que se ejecutan de verdad**, y es el dato
+  del que dependen los demás: el coste de un fondo es coste por fotograma ×
+  fotogramas por segundo.
+
+### Los dos instrumentos
+
+- **En el motor, `WE_MEDIDAS=<segundos>`**: cada `SceneRenderer` escribe cada
+  tantos segundos `SceneView: medida pantalla=… fotogramas=… fps=… cpu_ms=…
+  gpu_ms=… leer_ms=… subir_ms=…`. Son sumas crudas del intervalo (el
+  cronómetro y la copia guardan ahora también sumas, además de su media
+  móvil), y `cpu_ms` es el tiempo de pared de `render()` entero: simulación,
+  envío de GL y la copia entre GPUs. Sin la variable no se cuenta nada.
+- **Fuera, `tools/medir_vivo.py`**: prepara un wallpaper fijo en la caché
+  (`--wallpaper <id>`, siempre de nuevo, porque el plan depende de la
+  versión), para el fondo normal, lanza uno aparte (`wallpaperengine-medida`)
+  **sin pausa** y con el mismo plan en todas las pantallas, calienta 5 s,
+  mide 15–20 s (líneas del motor, `fdinfo`, CPU y RSS del proceso, `pmon`),
+  guarda un JSON y vuelve a poner el fondo que había. `--comparar` saca la
+  diferencia contra otro JSON. Sin pausa, para que el resultado no dependa
+  de qué ventanas haya encima.
+
+Un fallo del primer intento, por si vuelve: las dos pantallas salían con el
+**mismo** nombre (`HDMI-A-3`) y se sumaban, 110 fps «en un monitor de 60 Hz».
+El nombre se tomaba en la primera sincronía, cuando la ventana aún tiene la
+pantalla por defecto. Ahora se lee en cada una.
+
+### El ruido
+
+Tres medidas seguidas de *Jeanne d'Arc* (`2788165557`, la escena de
+referencia: 31 pases, 5 sistemas de partículas, mallas animadas) sin cambiar
+nada:
+
+| | ruido entre medidas |
+|---|---|
+| fps | < 0,5 % |
+| CPU del proceso | ~2 % |
+| ms de CPU / de GPU por fotograma | hasta 8 % |
+| render de la integrada (`fdinfo`) | ~4 % |
+| ms de la subida de la copia (~1 ms) | hasta 10 % |
+| RSS | ±7 % entre procesos |
+
+**Regla de la auditoría:** un cambio cuenta si mueve una métrica más de un
+10 % y en la misma dirección en tres medidas. Con menos, es ruido.
+
+### La línea de base
+
+eDP-1 a 165 Hz y HDMI-A-3 a 60 Hz, plan en la NVIDIA, `git 513ca75`:
+
+```
+HDMI-A-3   60.0 fps   cpu 5.2 ms   gpu 1.5 ms ( 9 % ocupada)   copia leer 2.7 subir 1.1 ms
+eDP-1     162.9 fps   cpu 4.1 ms   gpu 1.3 ms (20 % ocupada)   copia leer 2.2 subir 0.9 ms
+proceso   110 % de un núcleo   350 MB   i915 render 27 %   nvidia sm (pmon) 47–51 %
+```
+
+Ya se ve hacia dónde van los siguientes puntos, sin haberlos medido aún a
+propósito: el fondo va al ritmo del monitor (163 fotogramas por segundo en
+eDP-1), y de los ~4,5 ms de CPU por fotograma, **~3,2 ms son la copia entre
+GPUs**. Es más que lo que tarda la NVIDIA en dibujar el plan entero
+(1,3 ms).
