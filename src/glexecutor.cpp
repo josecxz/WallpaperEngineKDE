@@ -514,6 +514,9 @@ bool GlExecutor::buildProgram(Op &op)
     // declara `a_TexCoord` y ningun otro shader declara estas, asi que ningun
     // programa ve dos nombres en la misma localizacion.
     glBindAttribLocation(prog, 2, "a_TexCoordVec4");
+    // El sprite instanciado: (rotacion z, tamano) en el sitio de
+    // `a_TexCoordVec4`, que el plan reescribe como macro (weparticles.h).
+    glBindAttribLocation(prog, 2, "a_RotTamParticula");
     glBindAttribLocation(prog, 3, "a_TexCoordC2");
     glBindAttribLocation(prog, 4, "a_Color");
     glBindAttribLocation(prog, 5, "a_TexCoordVec4C1");
@@ -932,9 +935,10 @@ bool GlExecutor::initialize(QString *error)
         glGenBuffers(1, &p.vbo);
         glBindBuffer(GL_ARRAY_BUFFER, p.vbo);
         // Dos layouts, uno por shader; ver weparticles.h. El sistema dice cual.
+        // El del sprite es un registro por particula, instanciado: divisor 1.
         struct Attr { int loc, n, off; };
         static const Attr sprite[] = {
-            {0, 3, 0}, {2, 4, 3}, {3, 2, 7}, {4, 4, 9}, {5, 4, 13},
+            {0, 3, 0}, {2, 2, 3}, {3, 2, 5}, {4, 4, 7}, {5, 4, 11},
         };
         static const Attr cinta[] = {
             {0, 4, 0}, {2, 4, 4}, {4, 4, 8}, {5, 4, 12}, {6, 4, 16}, {7, 4, 20},
@@ -948,6 +952,7 @@ bool GlExecutor::initialize(QString *error)
             glVertexAttribPointer(attr[i].loc, attr[i].n, GL_FLOAT, GL_FALSE, paso,
                                   reinterpret_cast<void *>(size_t(attr[i].off) * sizeof(float)));
             glEnableVertexAttribArray(attr[i].loc);
+            glVertexAttribDivisor(attr[i].loc, esCinta ? 0 : 1);
         }
         ++m_psysCount;
         if (we_psys_cursor(p.sys))
@@ -1830,7 +1835,10 @@ bool GlExecutor::drawPsys(int id, float time)
     clock_gettime(CLOCK_MONOTONIC, &t1);
     m_msParticulas += (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
     m_msSubidaParticulas += (t1.tv_sec - ts.tv_sec) * 1e3 + (t1.tv_nsec - ts.tv_nsec) / 1e6;
-    glDrawArrays(GL_TRIANGLES, 0, nv);
+    if (we_psys_cinta(p.sys))
+        glDrawArrays(GL_TRIANGLES, 0, nv);
+    else
+        glDrawArraysInstanced(GL_TRIANGLES, 0, WE_PSYS_ESQUINAS, nv);
     glBindVertexArray(m_vao);
     return true;
 }

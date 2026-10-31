@@ -450,11 +450,12 @@ static void load_psys(int id, const char *path)
     glBindVertexArray(psys[id].vao);
     glGenBuffers(1, &psys[id].vbo);
     glBindBuffer(GL_ARRAY_BUFFER, psys[id].vbo);
-    /* Dos layouts, uno por shader; ver weparticles.h. El sistema dice cual. */
+    /* Dos layouts, uno por shader; ver weparticles.h. El sistema dice cual.
+     * El del sprite es un registro por particula, instanciado: divisor 1. */
     const GLsizei paso = we_psys_floats_por_vertice(psys[id].sys) * sizeof(float);
     typedef struct { int loc, n, off; } Attr;
     static const Attr sprite[] = {
-        {0, 3, 0}, {2, 4, 3}, {3, 2, 7}, {4, 4, 9}, {5, 4, 13},
+        {0, 3, 0}, {2, 2, 3}, {3, 2, 5}, {4, 4, 7}, {5, 4, 11},
     };
     static const Attr cinta[] = {
         {0, 4, 0}, {2, 4, 4}, {4, 4, 8}, {5, 4, 12}, {6, 4, 16}, {7, 4, 20},
@@ -468,6 +469,7 @@ static void load_psys(int id, const char *path)
         glVertexAttribPointer(attr[i].loc, attr[i].n, GL_FLOAT, GL_FALSE, paso,
                               (void *)(size_t)(attr[i].off * sizeof(float)));
         glEnableVertexAttribArray(attr[i].loc);
+        glVertexAttribDivisor(attr[i].loc, we_psys_cinta(psys[id].sys) ? 0 : 1);
     }
     glBindVertexArray(quad_vao);
 }
@@ -493,7 +495,10 @@ static int draw_psys(int id, float t)
     } else {
         glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, we_psys_vertices(psys[id].sys));
     }
-    glDrawArrays(GL_TRIANGLES, 0, nv);
+    if (we_psys_cinta(psys[id].sys))
+        glDrawArrays(GL_TRIANGLES, 0, nv);
+    else
+        glDrawArraysInstanced(GL_TRIANGLES, 0, WE_PSYS_ESQUINAS, nv);
     glBindVertexArray(quad_vao);
     return 1;
 }
@@ -612,6 +617,9 @@ static GLuint link_program(const char *vp, const char *fp)
     glBindAttribLocation(prog, 0, "a_Position");
     glBindAttribLocation(prog, 1, "a_TexCoord");
     glBindAttribLocation(prog, 2, "a_TexCoordVec4");
+    /* El sprite instanciado: (rotacion z, tamano) en el sitio de
+     * `a_TexCoordVec4`, que el plan reescribe como macro (weparticles.h). */
+    glBindAttribLocation(prog, 2, "a_RotTamParticula");
     glBindAttribLocation(prog, 3, "a_TexCoordC2");
     glBindAttribLocation(prog, 4, "a_Color");
     glBindAttribLocation(prog, 5, "a_TexCoordVec4C1");

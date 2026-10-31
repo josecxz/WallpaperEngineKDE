@@ -11302,3 +11302,85 @@ resto no llegaba a grabar punto, así que sigue saliendo uno por fotograma.
 - Los ~8 ms que siguen siendo simulación en Voyage (más que los ~6 del
   banco, por los dos hilos de render a la vez) se podrían repartir entre
   núcleos. Eso baja el tiempo por fotograma, no la energía.
+
+## Las partículas, instanciadas
+
+Lo que quedaba del punto 7: con la simulación ya barata, la lluvia de EVA
+(`2587542891`) seguía gastando ~4 ms de partículas por fotograma y
+pantalla, y 1,75 ms de ellos eran **subir vértices**.
+
+### Por qué tanto
+
+Cada sprite eran **6 vértices de 17 floats** (dos triángulos sin índices) y
+de esos 17 solo dos cambiaban entre esquinas: la UV de la esquina. 408 bytes
+escritos por `construye` y subidos por `glBufferSubData` por partícula,
+donde bastan 60. EVA tiene 7 sistemas de 5.000 partículas: ~210.000
+vértices, ~14 MB por fotograma y pantalla.
+
+Se pensaron tres caminos: un buffer mapeado (quita la copia del driver,
+pero no el `memcpy`), índices (4 vértices en vez de 6, un 33 %) e
+**instanciar** (un registro por partícula, ~85 %). Se eligió el tercero.
+
+### Cómo
+
+- **`weparticles`**: un sprite es un registro de **15 floats** por
+  partícula (`WE_PSYS_FLOATS_POR_PARTICULA`): el vértice de antes sin la
+  esquina, en el mismo orden. `we_psys_update` devuelve partículas en un
+  sprite y vértices en una cinta. Las cintas no cambian.
+- **Los dos ejecutores** (`glexec.c` y `glexecutor.cpp`, a la vez): divisor
+  1 en todos los atributos del sprite y
+  `glDrawArraysInstanced(GL_TRIANGLES, 0, 6, n)`.
+- **El shader**: `genericparticle.vert` lee `a_TexCoordVec4` = (u, v,
+  rotación z, tamaño), con la esquina en `xy`, y un atributo sale entero de
+  un solo buffer. `werender.py` (`instanciar_particula`), al emitir el
+  plan, cambia la declaración por `in vec2 a_RotTamParticula` y una macro
+  con el mismo nombre: `#define a_TexCoordVec4
+  vec4(WE_ESQUINAS[gl_VertexID], a_RotTamParticula)`, con las seis esquinas
+  que escribía el simulador, en su orden. El resto del shader no se entera.
+  Los ejecutores atan `a_RotTamParticula` a la posición 2.
+- **Los lectores del formato**: `test_weparticles.py` (la velocidad pasa del
+  float 13 al 11) y `psysprobe.c`.
+
+Un shader de partícula que use `a_TexCoordVec4` sin esa declaración pierde
+el pase con una nota, en vez de dibujarse mal en silencio. En el corpus no
+hay ninguno: **los 814 sistemas de sprite usan `genericparticle`** y lo
+declaran como `vec4`.
+
+**Los planes de antes no valen con el módulo nuevo**: su shader espera el
+vértice viejo. Al actualizar hay que regenerarlos (`wectl set`/`shuffle`,
+`make plan`); la rotación lo hace sola en su siguiente cambio.
+
+### Comprobado
+
+- **Offline, byte a byte**: EVA, Voyage, Jinx (96 sistemas), GODDES y Halo
+  renderizados a `--time 3` con la versión anterior (en un `worktree`) y con
+  la instanciada dan **PNG idénticos**, y con contenido (medias de 52 a
+  115).
+- **`test_weparticles`**: OK. **`test_luminancia`** contra la referencia de
+  antes del punto 7: 133 escenas, **0 regresiones**.
+
+### Lo medido
+
+Intercalado tres y tres, las dos pantallas:
+
+| | CPU por fotograma | partículas (subir) | GPU por fotograma | fps | proceso | NVIDIA |
+|---|---|---|---|---|---|---|
+| EVA, antes | 6,3–6,6 ms | 3,9–4,2 (1,7–1,8) ms | 5,5–5,9 ms | 55 | 83 % | 36 W |
+| EVA, instanciado | 3,3–3,6 ms | 1,3–1,4 (0,36) ms | 2,9–3,2 ms | 55 | 48 % | 31 W |
+| Voyage, antes | 14,9–16,9 ms | 10,4–11,7 (2,2–2,3) ms | 13,8–15,3 ms | 45–49 | 207–218 % | 61–63 W |
+| Voyage, instanciado | 10,6–11,4 ms | 7,0–7,7 (0,4) ms | 9,5–10,5 ms | 53–54 | 173–178 % | 64–65 W |
+
+Baja también la **GPU**: la NVIDIA lee 6,8 veces menos datos de vértice. Y
+`construye`, en el banco, de 0,147 a 0,077 ms por sistema de EVA.
+
+### Dos medidas que se contaminaban
+
+La primera tanda dio una de EVA «antes» con 97,6 % de CPU (las otras, 83)
+y una de Voyage que falló. **La rotación**: `wectl shuffle`, cada 2
+minutos aquí, arranca el fondo normal si lo encuentra parado, y
+`medir_vivo` lo para para medir. Si el temporizador saltaba en medio,
+había **dos fondos dibujando a la vez**. `medir_vivo` para ahora también
+el temporizador y lo deja como estaba. Las medidas de los puntos
+anteriores pudieron llevar alguna así. Las conclusiones aguantan (los
+efectos medidos son del 30 al 60 %, y las medidas de cada caso coincidían
+entre sí), pero un valor suelto disparado de entonces puede ser esto.

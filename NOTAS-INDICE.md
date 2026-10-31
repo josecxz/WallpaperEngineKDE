@@ -80,7 +80,13 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11230` **Lo que hacía Voyage** — banco + `gprof`: la turbulencia es el 80 % (12 ruidos × 8 hashes por partícula y paso), y había dos pasos por fotograma.
 - `11243` **El resto que costaba un paso entero** — la tabla de pasos por cadencia; pasos iguales en vez de acumular; las cintas graban por tiempo y no cambian.
 - `2885` **Lo medido** — banco, `test_weparticles`, `test_luminancia` con referencia, y en vivo intercalado.
-- `3072` **Lo que queda** — EVA es subir 570.000 vértices; Voyage ya la limita la NVIDIA (28 ms de GPU con dos pantallas, ~60 W).
+- `3072` **Lo que queda** — EVA es subir vértices (resuelto después, instanciando); Voyage ya la limita la NVIDIA (28 ms de GPU con dos pantallas, ~60 W).
+- `11306` **Las partículas, instanciadas** — un registro de 15 floats por partícula en vez de 6 vértices de 17; el shader se reescribe con una macro `a_TexCoordVec4` sobre `gl_VertexID`. EVA de 83 % a 48 % de CPU, Voyage de 47 a 53 fps; PNG offline idénticos. Los planes viejos hay que regenerarlos.
+- `11312` **Por qué tanto** — 408 bytes por partícula donde bastan 60; los tres caminos.
+- `10734` **Cómo** — `weparticles`, los dos ejecutores, `instanciar_particula` en `werender.py` y los lectores; los 814 sprites del corpus usan `genericparticle`.
+- `11353` **Comprobado** — PNG idénticos byte a byte en 5 escenas, `test_weparticles` y `test_luminancia` sin regresiones.
+- `2885` **Lo medido** — la tabla de EVA y Voyage; baja también la GPU.
+- `11376` **Dos medidas que se contaminaban** — la rotación arrancaba el fondo normal en medio de una medida; `medir_vivo` para ahora el temporizador.
 
 ## CLI, rotación y rutas
 

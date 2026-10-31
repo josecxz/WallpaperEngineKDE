@@ -1020,6 +1020,34 @@ TIPOS_DE_LUZ = {
 TUBO_POR_DEFECTO = [0.0, 0.0, 0.0]
 
 
+
+# El vertice de un sprite de particulas, instanciado (ver src/weparticles.h).
+#
+# El shader de WE recibe `a_TexCoordVec4` = (u, v, rotacion z, tamano): la
+# esquina del quad en `xy` y dos datos de la particula en `zw`. Un atributo sale
+# entero de un solo buffer, asi que con un registro por particula la esquina no
+# puede venir de ahi. Se cambia la declaracion por la mitad de la particula
+# (`a_RotTamParticula`, por instancia) y una macro con el MISMO nombre que pone
+# la esquina a partir de `gl_VertexID`: el resto del shader ---el de WE o el de
+# un autor--- sigue leyendo `a_TexCoordVec4` sin enterarse. Las esquinas son las
+# que escribia antes el simulador, en el mismo orden.
+_ATRIBUTO_ESQUINA = re.compile(r"^[ \t]*in[ \t]+vec4[ \t]+a_TexCoordVec4[ \t]*;[ \t]*$", re.M)
+_ESQUINA_INSTANCIADA = (
+    "in vec2 a_RotTamParticula;\n"
+    "const vec2 WE_ESQUINAS[6] = vec2[6](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0),\n"
+    "                                    vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(1.0, 1.0));\n"
+    "#define a_TexCoordVec4 vec4(WE_ESQUINAS[gl_VertexID], a_RotTamParticula)")
+
+
+def instanciar_particula(vert: str) -> str:
+    """El shader de vertices de un sprite, para dibujarlo instanciado."""
+    nuevo, n = _ATRIBUTO_ESQUINA.subn(_ESQUINA_INSTANCIADA, vert, count=1)
+    if n == 0 and re.search(r"\ba_TexCoordVec4\b", vert):
+        # Lo usa sin declararlo como se espera: dibujarlo instanciado le daria
+        # basura en la esquina. Que se vea, no que salga mal en silencio.
+        raise ValueError("shader de particula con a_TexCoordVec4 sin la declaracion esperada")
+    return nuevo
+
 class Luz(NamedTuple):
     """Una luz de la escena, ya en coordenadas del lienzo."""
     tipo: str
@@ -2850,6 +2878,13 @@ class Renderer:
         except Exception:
             self.stats["sin_shader"] += 1
             return
+        if particula and not cinta:
+            try:
+                vert = instanciar_particula(vert)
+            except ValueError as e:
+                self.notes.append(f"[{obj.name}] {e}")
+                self.stats["sin_shader"] += 1
+                return
 
         n = self.stats["pases"]
         vp = self.tmp / f"p{n:03d}.vert"

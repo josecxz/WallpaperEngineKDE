@@ -390,6 +390,15 @@ def main() -> int:
     if not args.sin_fondo and not (args.plan / "plan.txt").is_file():
         raise SystemExit(f"no hay plan en {args.plan}")
 
+    # La rotacion (`wectl shuffle` cada x minutos) arranca el fondo normal si
+    # lo encuentra parado, y en medio de una medida eso son DOS fondos
+    # dibujando a la vez: pasaba, y una medida salio con 97 % de CPU en vez de
+    # 83. Se para el temporizador mientras se mide y se deja como estaba.
+    temporizador = f"{wectl.UNIDAD}.timer"
+    habia_rotacion = subprocess.run(["systemctl", "--user", "is-active", "--quiet",
+                                     temporizador]).returncode == 0
+    if habia_rotacion:
+        subprocess.run(["systemctl", "--user", "stop", temporizador], capture_output=True)
     habia_fondo = wectl.fondo_hyprland()
     if habia_fondo:
         wectl.hyprland_parar()
@@ -423,6 +432,9 @@ def main() -> int:
         _parar()
         if habia_fondo:
             wectl.hyprland_arrancar()
+        if habia_rotacion:
+            subprocess.run(["systemctl", "--user", "start", temporizador],
+                           capture_output=True)
 
     dur = t1 - t0
     pct = lambda a, b: {k: round((b[k] - a.get(k, 0)) / (dur * 1e9) * 100, 1)
