@@ -234,6 +234,12 @@ private:
         Compose compose = Compose::Normal;
         // La capa no se compone: solo deja su resultado en un buffer con nombre.
         bool soloBuffer = false;
+        // Su unico pase dibuja directamente sobre la escena, sin buffer propio
+        // ni composicion. Lo decide werender: `va_directo_a_la_escena`.
+        bool directo = false;
+        // Pase: el programa lee la escena o `prev` con un sampler ACTIVO. Un
+        // objeto `directo` no puede dibujarlo sobre la escena; va a su buffer.
+        bool leeEscena = false;
         // Anclaje (BeginObject): la capa cuelga de un hueso del puppet de otra,
         // asi que su colocacion no es fija. `placement` trae la del instante en
         // que se horneo el plan y esto corrige, por fotograma, lo que el hueso
@@ -408,7 +414,7 @@ private:
 
     qsizetype targetIndex(const QString &name);   // crea el target si no existe
     bool buildCompositeProgram();
-    void beginObject();
+    void beginObject(bool directo = false);
     const Target &resolveTarget(qsizetype index) const;
     void bindMipSampler(int unidad, GlName tex);
     void flushObjectToScene();
@@ -451,6 +457,7 @@ private:
     float m_placement[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     Compose m_compose = Compose::Normal;
     bool m_soloBuffer = false;
+    bool m_directo = false;     // ver Op::directo
     bool m_objectOpen = false;
     // Si algun pase del objeto ha escrito en el compuesto. Si no, componerlo
     // seria mezclar un lienzo transparente sobre la escena: se salta.

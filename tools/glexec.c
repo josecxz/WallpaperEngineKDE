@@ -25,7 +25,7 @@
  *   paralaje <kx> <ky>                 amount*depth de la capa en curso
  *   temblor <ax> <ay> <vel> <rug>      `camerashake`: la camara tiembla
  *   tiembla                            la capa en curso la mueve la camara
- *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
+ *   object <copiafondo> <16 floats> <composicion> <solo_buffer> <directo>
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
  *   giro <a> <b> <c> <base> <hora> <w> <h>   gira con la hora (wegiro.h)
@@ -147,6 +147,9 @@ static float obj_mvp[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 static int obj_aditivo;
 /* colorBlendMode aparte: la capa no se compone, solo deja su buffer. */
 static int obj_solo_buffer;
+/* El objeto dibuja su unico pase directamente sobre la escena, sin buffer
+ * propio ni composicion. Lo decide werender (`va_directo_a_la_escena`). */
+static int obj_directo;
 
 static GLuint quad_vao, quad_vbo;
 
@@ -771,7 +774,7 @@ static void traza_buffers(int frame)
 
 static int n_objetos = 0;
 
-static void begin_object(void)
+static void begin_object(int directo)
 {
     flush_object();
     if (getenv("WE_TRACE")) {
@@ -783,7 +786,11 @@ static void begin_object(void)
     /* Solo el "anterior": cada pase limpia su destino antes de dibujar. Ver
      * `beginObject` en src/glexecutor.cpp. */
     objeto_dibujo = 0;
+    obj_directo = directo;
+    /* El color de limpiar es estado: los pases lo dan por puesto. */
     glClearColor(0, 0, 0, 0);
+    if (directo)
+        return;          /* no usa su buffer: nada que limpiar */
     glBindFramebuffer(GL_FRAMEBUFFER, compo[compo_cur].fbo);
     glClear(GL_COLOR_BUFFER_BIT);
 }
@@ -1020,12 +1027,12 @@ int main(int argc, char **argv)
             /* El flush del objeto anterior usa SU matriz: primero componer,
              * despues adoptar la del que empieza. */
             float m[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-            int copybg = 0, adit = 0, solo = 0;
+            int copybg = 0, adit = 0, solo = 0, directo = 0;
             int n = sscanf(line,
-                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d",
+                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d %d",
                 &copybg, m+0,m+1,m+2,m+3, m+4,m+5,m+6,m+7,
-                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit, &solo);
-            begin_object();
+                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit, &solo, &directo);
+            begin_object(n >= 20 ? directo : 0);
             if (n >= 17)
                 memcpy(obj_mvp, m, sizeof m);
             obj_aditivo = (n >= 18) ? adit : 0;
@@ -1347,15 +1354,33 @@ int main(int argc, char **argv)
                 }
             }
 
-            int to_screen = strcmp(target, "SCREEN") == 0;
-            Target *dst = to_screen ? &compo[compo_cur ^ 1] : find_rt(target);
+            /* Directo: los sprites van a la escena, que no se limpia ---es
+             * lo que hay detras---, y el par del objeto no cambia de turno.
+             * Salvo si el programa LEE la escena o `prev` con un sampler
+             * activo: entonces va a su buffer como siempre. Ver
+             * `va_directo_a_la_escena` en werender.py. */
+            int lee_escena = 0;
+            for (int i = 0; i < n_samplers; i++) {
+                const char *s = samplers[i].src;
+                if ((strcmp(s, "prev") == 0
+                     || strcmp(s, "rt:_rt_FullFrameBuffer") == 0
+                     || strcmp(s, "rt:_rt_MipMappedFrameBuffer") == 0)
+                    && glGetUniformLocation(prog, samplers[i].uni) >= 0)
+                    lee_escena = 1;
+            }
+            int directo = obj_directo && !lee_escena && strcmp(target, "SCREEN") == 0;
+            int to_screen = !directo && strcmp(target, "SCREEN") == 0;
+            Target *dst = directo ? &scene_rt
+                        : to_screen ? &compo[compo_cur ^ 1] : find_rt(target);
             if (to_screen)
                 objeto_dibujo = 1;
 
             glBindFramebuffer(GL_FRAMEBUFFER, dst->fbo);
             glViewport(0, 0, dst->w, dst->h);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+            if (!directo) {
+                glClearColor(0, 0, 0, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
             glUseProgram(prog);
             set_blend(blend);
 
