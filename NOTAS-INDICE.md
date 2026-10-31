@@ -55,45 +55,46 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10880` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
 - `10886` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
 - `2885` **Lo medido** — la tabla por tope; 55 y no 60 porque el reloj late a 165 Hz; la NVIDIA bimodal a 60; el coste por fotograma sube al bajar fps, así que «% ocupada» no mide consumo y los vatios sí.
-- `10938` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
-- `10945` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
-- `10966` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
+- `10939` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
+- `10946` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
+- `10967` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
 - `2885` **Lo medido** — `leer` de 3,11 a 0,03 ms; la «subida» de la integrada, corregida después: no existe; la NVIDIA igual.
-- `10997` **Los 2,5 puntos de la integrada** — no existían: nueve medidas intercaladas de síncrona/PBO/PBO+copia dan lo mismo en la integrada; era una línea de base suelta. La integrada baila de 570 a 870 MHz y ±10 %. Desde aquí, antes y después intercalados.
-- `11002` **Las hipótesis** — frecuencia, memoria de origen u otro trabajo; `medir_vivo` guarda ahora MHz y RC6 de la integrada.
+- `10998` **Los 2,5 puntos de la integrada** — no existían: nueve medidas intercaladas de síncrona/PBO/PBO+copia dan lo mismo en la integrada; era una línea de base suelta. La integrada baila de 570 a 870 MHz y ±10 %. Desde aquí, antes y después intercalados.
+- `11003` **Las hipótesis** — frecuencia, memoria de origen u otro trabajo; `medir_vivo` guarda ahora MHz y RC6 de la integrada.
 - `2885` **Lo medido** — la tabla de los tres modos; copiar el PBO a un búfer propio cuesta 13 puntos de CPU.
-- `11042` **De paso, para el punto 3** — HDMI-A-3 cuelga de la NVIDIA: su fotograma va y vuelve por la integrada sin necesidad.
-- `11049` **Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro** — la segunda pantalla suma casi entera en el proceso (+13 % CPU, +370 MiB); el HDMI en la NVIDIA le cuesta a Hyprland el 40 % de la integrada. Cerrado medido, sin cambiar el motor.
-- `11054` **Lo que faltaba en la vara de medir** — Hyprland (CPU, i915, pmon), VRAM, `--sin-fondo` y `--solo` en el anfitrión; y zsh, que no parte `$x`.
+- `11043` **De paso, para el punto 3** — HDMI-A-3 cuelga de la NVIDIA: su fotograma va y vuelve por la integrada sin necesidad.
+- `11050` **Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro** — la segunda pantalla suma casi entera en el proceso (+13 % CPU, +370 MiB); el HDMI en la NVIDIA le cuesta a Hyprland el 40 % de la integrada. Cerrado medido, sin cambiar el motor.
+- `11055` **Lo que faltaba en la vara de medir** — Hyprland (CPU, i915, pmon), VRAM, `--sin-fondo` y `--solo` en el anfitrión; y zsh, que no parte `$x`.
 - `2885` **Lo medido** — la tabla por pantalla y sin fondo.
-- `11094` **Qué se puede hacer, y qué se hizo** — dibujar una vez para las dos solo vale en modo `mismo`; no se hizo.
-- `11110` **Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma** — ninguna `glReadPixels` corre en marcha; sí 46 `qgetenv` y 14 `glGetUniformLocation` por fotograma, ahora leídos al cargar. Dentro del ruido.
-- `11115` **Lo que hay** — las cinco lecturas y a qué variable obedecen; las consultas por fotograma no esperan a la GPU.
-- `11127` **Lo que sí se pagaba, aunque poco** — el cerrojo del entorno disputado por dos hilos, y la búsqueda de `src` por nombre.
+- `11095` **Qué se puede hacer, y qué se hizo** — dibujar una vez para las dos solo vale en modo `mismo`; no se hizo.
+- `11111` **Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma** — ninguna `glReadPixels` corre en marcha; sí 46 `qgetenv` y 14 `glGetUniformLocation` por fotograma, ahora leídos al cargar. Dentro del ruido.
+- `11116` **Lo que hay** — las cinco lecturas y a qué variable obedecen; las consultas por fotograma no esperan a la GPU.
+- `11128` **Lo que sí se pagaba, aunque poco** — el cerrojo del entorno disputado por dos hilos, y la búsqueda de `src` por nombre.
 - `2885` **Lo medido** — A/B intercalado cambiando el `.so`: 1–3 % menos, dentro del ruido.
-- `11153` **Los uniforms constantes, una vez al cargar** — un programa por pase conserva sus uniforms: `resolve` sube las constantes y los samplers una vez y el bucle solo `g_Time` y los marcados (227 → 14 llamadas por fotograma). ~4 % de CPU, dentro del ruido.
-- `11160` **Por qué se puede** — sin programas compartidos; los valores solo se escriben al leer el plan; las hojas ya iban aparte.
-- `11176` **Comprobado que el render no cambia** — `glGetUniform*` al fotograma 100 en 12 escenas: cero distintos. Los 16 «distintos» de Sci-Fi City eran uniforms duplicados en el plan (`g_UserAlpha` dos veces por pase) y los de las hojas.
+- `11154` **Los uniforms constantes, una vez al cargar** — un programa por pase conserva sus uniforms: `resolve` sube las constantes y los samplers una vez y el bucle solo `g_Time` y los marcados (227 → 14 llamadas por fotograma). ~4 % de CPU, dentro del ruido.
+- `11161` **Por qué se puede** — sin programas compartidos; los valores solo se escriben al leer el plan; las hojas ya iban aparte.
+- `11177` **Comprobado que el render no cambia** — `glGetUniform*` al fotograma 100 en 12 escenas: cero distintos. Los 16 «distintos» de Sci-Fi City eran uniforms duplicados en el plan (`g_UserAlpha` dos veces por pase) y los de las hojas.
 - `2885` **Lo medido** — A/B intercalado: ~4 % menos, dentro del ruido.
-- `11215` **Los pasos de la simulación** — el resto del tramo era un paso entero más: 2 pasos por fotograma a 55 fps (1,32 a 60). Ahora `round(dt/PASO)` pasos iguales: Voyage de 20–24 a 14–17 ms de CPU por fotograma; 0 regresiones de luz en 133 escenas.
-- `11219` **Dónde mirar** — `particulas_ms` y `particulas_subir_ms` en `WE_MEDIDAS`; las escenas con más partículas.
-- `11230` **Lo que hacía Voyage** — banco + `gprof`: la turbulencia es el 80 % (12 ruidos × 8 hashes por partícula y paso), y había dos pasos por fotograma.
-- `11243` **El resto que costaba un paso entero** — la tabla de pasos por cadencia; pasos iguales en vez de acumular; las cintas graban por tiempo y no cambian.
+- `11216` **Los pasos de la simulación** — el resto del tramo era un paso entero más: 2 pasos por fotograma a 55 fps (1,32 a 60). Ahora `round(dt/PASO)` pasos iguales: Voyage de 20–24 a 14–17 ms de CPU por fotograma; 0 regresiones de luz en 133 escenas.
+- `11220` **Dónde mirar** — `particulas_ms` y `particulas_subir_ms` en `WE_MEDIDAS`; las escenas con más partículas.
+- `11231` **Lo que hacía Voyage** — banco + `gprof`: la turbulencia es el 80 % (12 ruidos × 8 hashes por partícula y paso), y había dos pasos por fotograma.
+- `11244` **El resto que costaba un paso entero** — la tabla de pasos por cadencia; pasos iguales en vez de acumular; las cintas graban por tiempo y no cambian.
 - `2885` **Lo medido** — banco, `test_weparticles`, `test_luminancia` con referencia, y en vivo intercalado.
 - `3072` **Lo que queda** — EVA es subir vértices (resuelto después, instanciando); Voyage ya la limita la NVIDIA (28 ms de GPU con dos pantallas, ~60 W).
-- `11306` **Las partículas, instanciadas** — un registro de 15 floats por partícula en vez de 6 vértices de 17; el shader se reescribe con una macro `a_TexCoordVec4` sobre `gl_VertexID`. EVA de 83 % a 48 % de CPU, Voyage de 47 a 53 fps; PNG offline idénticos. Los planes viejos hay que regenerarlos.
-- `11312` **Por qué tanto** — 408 bytes por partícula donde bastan 60; los tres caminos.
+- `11307` **Las partículas, instanciadas** — un registro de 15 floats por partícula en vez de 6 vértices de 17; el shader se reescribe con una macro `a_TexCoordVec4` sobre `gl_VertexID`. EVA de 83 % a 48 % de CPU, Voyage de 47 a 53 fps; PNG offline idénticos. Los planes viejos hay que regenerarlos.
+- `11313` **Por qué tanto** — 408 bytes por partícula donde bastan 60; los tres caminos.
 - `10734` **Cómo** — `weparticles`, los dos ejecutores, `instanciar_particula` en `werender.py` y los lectores; los 814 sprites del corpus usan `genericparticle`.
-- `11353` **Comprobado** — PNG idénticos byte a byte en 5 escenas, `test_weparticles` y `test_luminancia` sin regresiones.
+- `11354` **Comprobado** — PNG idénticos byte a byte en 5 escenas, `test_weparticles` y `test_luminancia` sin regresiones.
 - `2885` **Lo medido** — la tabla de EVA y Voyage; baja también la GPU.
-- `11376` **Dos medidas que se contaminaban** — la rotación arrancaba el fondo normal en medio de una medida; `medir_vivo` para ahora el temporizador.
-- `11388` **El vídeo, al tamaño al que se ve** — convertir YUV→RGBA costaba más que decodificar, y el plan pedía el vídeo nativo: ahora el tamaño con que cubre la pantalla. *Home* 4K de 180 % a 140 % de CPU y la NVIDIA de 34 a 19 W.
-- `11394` **Dónde se va** — `ffmpeg -benchmark`: decodificar frente a convertir, en tres vídeos.
-- `10945` **El cambio** — `wevideo.tamano_textura`, nunca más que el nativo; solo los wallpapers de vídeo, no las capas `IS_VIDEO`.
-- `11353` **Comprobado** — 15 vídeos offline: 9 idénticos, 6 de 4K a 37–45 dB. `test_wevideo` falla en *Pattern* (`3047352572`) desde antes de este cambio.
+- `11377` **Dos medidas que se contaminaban** — la rotación arrancaba el fondo normal en medio de una medida; `medir_vivo` para ahora el temporizador.
+- `11389` **El vídeo, al tamaño al que se ve** — convertir YUV→RGBA costaba más que decodificar, y el plan pedía el vídeo nativo: ahora el tamaño con que cubre la pantalla. *Home* 4K de 180 % a 140 % de CPU y la NVIDIA de 34 a 19 W.
+- `11395` **Dónde se va** — `ffmpeg -benchmark`: decodificar frente a convertir, en tres vídeos.
+- `10946` **El cambio** — `wevideo.tamano_textura`, nunca más que el nativo; solo los wallpapers de vídeo, no las capas `IS_VIDEO`.
+- `11354` **Comprobado** — 15 vídeos offline: 9 idénticos, 6 de 4K a 37–45 dB. `test_wevideo` falla en *Pattern* (`3047352572`) desde antes de este cambio.
 - `2885` **Lo medido** — intercalado tres y tres.
 - `3072` **Lo que queda** — conversión en la GPU, VAAPI, y el vídeo decodificado dos veces con dos pantallas.
-- `11469` **Los relojes, el texto y la hora en cada fotograma** — ya estaba bien: los relojes se rehacen por tramo. *Lonely Cat* con 58 relojes, 1,58 ms por fotograma; *Arknights* (144 pases, 71 sistemas) es la escena para el punto 6.
+- `11470` **Los relojes, el texto y la hora en cada fotograma** — ya estaba bien: los relojes se rehacen por tramo. *Lonely Cat* con 58 relojes, 1,58 ms por fotograma; *Arknights* (144 pases, 71 sistemas) es la escena para el punto 6.
+- `11491` **La pausa en Hyprland** — llega a cero: el proceso al 0,1 %, la integrada a 0 y la NVIDIA a 2,9 W y 210 MHz, igual que sin fondo. Los «2 W de más» del tope eran un artefacto de una medida corta. Queda ocupada la VRAM (~500 MiB).
 
 ## CLI, rotación y rutas
 

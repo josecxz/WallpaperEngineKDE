@@ -10927,8 +10927,9 @@ da 3,6 W, y con el fondo en pausa 5,5 W.
   consumo**: a 30 fps sale igual que a 60, con 4–17 W menos. `medir_vivo`
   guarda ahora los vatios y los MHz de la NVIDIA, y esa es la cifra que
   manda para la batería. La de la CPU (RAPL) pide root y no se lee.
-- Los 2 W de la pausa (5,5 frente a 3,6 sin fondo) quedan para el punto de
-  la pausa.
+- ~~Los 2 W de la pausa (5,5 frente a 3,6 sin fondo) quedan para el punto de
+  la pausa.~~ **Corregido después: no existen.** Ver «La pausa en
+  Hyprland».
 
 `medir_vivo.py` mide ahora con el tope por defecto (60). La línea de base
 para los siguientes puntos es `base-fps60.json`: 55 + 55 fps, 65 % de CPU,
@@ -11486,3 +11487,34 @@ proceso. *Arknights* (`3462491575`, 16 capas) gasta 2,8 ms, pero por otra
 cosa: **144 pases, 110 objetos, 71 sistemas de partículas y 5 mallas
 animadas**. Su CPU es el envío de GL de todo eso, que es el punto 6 (los
 cambios de estado entre pases), y es la escena con la que medirlo.
+
+## La pausa en Hyprland
+
+Punto 10 de la auditoría: en Plasma se midió que la pausa deja el motor de
+render a 0,0 % («No dibujar lo que no se ve»). En Hyprland no se había
+medido, y una medida de 12 s del tope de fotogramas daba la NVIDIA a
+5,5 W en pausa frente a 3,6 sin fondo.
+
+`medir_vivo` mide sin pausa a propósito, así que esto se midió aparte, con
+sus mismas funciones y además la CPU **por hilo** del proceso. Tres y tres
+intercaladas de 20 s, con las dos pantallas tapadas por ventanas («en pausa
+con 100 % tapado» en las dos) y el temporizador de rotación parado:
+
+| | CPU proceso | integrada (proceso) | Hyprland CPU / integrada | NVIDIA | VRAM |
+|---|---|---|---|---|---|
+| sin fondo | — | — | 2,20–2,25 % / 0,96–0,97 % | 2,86–2,93 W a 210 MHz | 54 MiB |
+| en pausa | 0,10–0,15 % | 0 % | 2,25–2,35 % / 0,95–0,98 % | 2,86–2,92 W a 210 MHz | 551–561 MiB |
+
+- **La pausa llega a cero**: la NVIDIA gasta lo mismo que sin fondo, a su
+  frecuencia mínima; la integrada, nada; Hyprland, lo mismo.
+- Del proceso solo queda el hilo principal al 0,1 %: la revisión de
+  ventanas cada 2 s (`j/monitors` y `j/clients` por el IPC, una por
+  pantalla). El cursor no se pregunta en pausa.
+- **Los «2 W de más» eran un artefacto**: aquella medida duró 12 s, justo
+  después de una tanda de medidas, con la tarjeta aún sin bajar de
+  frecuencia.
+- Queda ocupada la **VRAM**, ~500 MiB con las texturas de los dos planes.
+  Es memoria, no energía, y soltarla obligaría a recargar el plan entero al
+  destapar.
+
+No se cambia nada.
