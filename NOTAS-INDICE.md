@@ -445,6 +445,16 @@ make indice                       # reescribe los números desde NOTAS.md
 
 ## Pendiente
 
+- `11706` **Pendiente: lo que queda de la auditoría de rendimiento** — restos del punto 6 (`g_TexelSize`, buffers `_rt_Half…` del lienzo, caché de estado de GL), puntos 11 a 17, y el vídeo *Pattern* (`3047352572`) que no es determinista.
+- `11711` **Restos del punto 6** — `g_TexelSize` del lienzo, `_rt_Half…` del lienzo y la caché de estado de GL.
+- `11725` **11. El IPC de Hyprland** — `j/cursorpos` cada 16 ms y `j/clients` por ráfaga: medir y espaciar.
+- `11732` **12. Que la NVIDIA pueda dormir** — si la pausa deja algo que la mantenga despierta.
+- `11739` **13. Tiempo de `wectl set` y `shuffle`** — 1–20 s por escena; perfilar `emit_plan`.
+- `11745` **14. Tamaño del plan en disco** — ~200 MB de `.rgba`; frente a subir DXT/BC tal cual.
+- `11751` **15. Tiempo de carga en el motor** — 23–517 ms de `init`; `glProgramBinary`.
+- `11756` **16. Recarga del plan** — recrear el `SceneView` y el contexto de la otra GPU en cada cambio.
+- `11761` **17. Resolución del plan (verificar, no rehacer)** — que nada salga ampliado ni a más resolución de la que se ve.
+- `11766` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`), no determinista.
 - `4528` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — el diámetro del destello, la lluvia que sale de un punto y la estela corta.
 - `4534` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
 - `4580` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.

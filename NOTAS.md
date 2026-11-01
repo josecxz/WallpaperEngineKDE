@@ -11702,3 +11702,69 @@ medir»: para medir desde un `worktree`, el fondo normal se repone a mano.
 - Los buffers con nombre de un efecto (`_rt_Half…`) siguen siendo fracción
   del lienzo, no de la capa.
 - La caché de estado de GL de la sección anterior.
+
+## Pendiente: lo que queda de la auditoría de rendimiento
+
+Hechos: 18, 1, 2, 3, 4, 5, 7, 8, 9, 10 y 6. Lo que queda, en el orden de la
+lista original.
+
+### Restos del punto 6
+
+- **`g_TexelSize` es el texel del lienzo**, no el del buffer de la capa.
+  Los desenfoques que lo cruzan con `g_Texture0Resolution` (la cuenta
+  `ratio` de `emit_pass`) siguen viendo lo mismo que antes de los buffers
+  por capa. Hacerlo «correcto» cambia la imagen: medir con
+  `test_luminancia` y contra los previews antes de tocarlo.
+- **Los buffers con nombre de un efecto** (`_rt_Half…`, `_rt_Quarter…`)
+  siguen siendo fracción del lienzo (`find_rt` / `targetIndex`), no de la
+  capa. Una capa pequeña con desenfoque sigue pagando medio lienzo.
+- **Caché de estado de GL**: no repetir el programa, la mezcla, las
+  texturas y los samplers que ya están puestos. Quitaría parte de los
+  ~1,9 ms de CPU de *Arknights* que no son pases.
+
+### 11. El IPC de Hyprland
+
+El cursor se pregunta (`j/cursorpos`) cada 16 ms, y cada ráfaga de eventos
+dispara una revisión con `j/monitors` y `j/clients`. Medir lo que cuesta a
+Hyprland y al proceso, y ver si se puede espaciar sin que el parallax vaya
+a saltos.
+
+### 12. Que la NVIDIA pueda dormir
+
+Hoy no se suspende nunca, por `audio-fix.conf` y algo más (ver «Medir si
+duerme la dedicada»). Revisar si el motor en pausa deja algo que la
+mantenga despierta: contextos, consultas de cronómetro abiertas o los
+~500 MiB de VRAM del punto 10.
+
+### 13. Tiempo de `wectl set` y `shuffle`
+
+Entre 1 y 20 s por escena, y en modo `independiente` se paga una vez por
+monitor. Perfilar `emit_plan`: LZ4/DXT, escritura de `.rgba` o traducción
+de shaders.
+
+### 14. Tamaño del plan en disco
+
+~200 MB por wallpaper, casi todo `.rgba` sin comprimir, y puede haber tres
+planes a la vez. Medir la lectura frente a subir la textura comprimida
+(DXT/BC) tal cual.
+
+### 15. Tiempo de carga en el motor
+
+`init` entre 23 y 517 ms. Ver qué pesa: compilar shaders, subir texturas o
+generar mipmaps. Valorar una caché de programas (`glProgramBinary`).
+
+### 16. Recarga del plan
+
+Cada cambio recrea el `SceneView` entero, y con él el contexto de la otra
+GPU. Medir el parpadeo y el coste.
+
+### 17. Resolución del plan (verificar, no rehacer)
+
+Comprobar con el corpus que ninguna escena sale ampliada ni a más
+resolución de la que se ve, en Plasma y en Hyprland.
+
+### Fuera de la lista
+
+- **`3047352572`, el vídeo *Pattern***: no es determinista offline y falla
+  en `test_wevideo` desde V1.0.0. Mueve su luz media entre renders (50,0 →
+  47,6 en la última pasada) y ensucia cualquier comparación del corpus.
