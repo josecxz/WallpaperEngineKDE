@@ -25,7 +25,9 @@
  *   paralaje <kx> <ky>                 amount*depth de la capa en curso
  *   temblor <ax> <ay> <vel> <rug>      `camerashake`: la camara tiembla
  *   tiembla                            la capa en curso la mueve la camara
- *   object <copiafondo> <16 floats> <composicion> <solo_buffer>
+ *   object <copiafondo> <16 floats> <composicion> <solo_buffer> <directo> <w> <h>
+ *                                      <w> <h>: el buffer del objeto; sin
+ *                                      ellos, el del lienzo
  *   anclaje <malla> <hueso> <px> <py> <bx> <by> <e00> <e01> <e10> <e11>
  *                                      el objeto cuelga de un hueso de <malla>
  *   giro <a> <b> <c> <base> <hora> <w> <h>   gira con la hora (wegiro.h)
@@ -95,9 +97,31 @@ static WeVideo *videos[MAX_TEX];
 static float video_time = 0.0f;
 
 /* Buffer acumulado del objeto, con ping-pong: no se puede leer y escribir
- * la misma textura en un pase. */
-static Target compo[2];
+ * la misma textura en un pase. Hay un par por tamano: cada objeto dibuja en
+ * el del tamano que ocupa en pantalla, que le da el plan (ver
+ * `repartir_buffers_de_objeto` en werender.py). El primero es el del lienzo.
+ * `compo` apunta al del objeto en curso. */
+#define MAX_PARES 64
+static Target pares[MAX_PARES][2];
+static int n_pares;
+static Target *compo = pares[0];
 static int compo_cur;
+
+static Target make_target(const char *name, int w, int h);
+
+static Target *par_de(int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return pares[0];
+    for (int i = 0; i < n_pares; i++)
+        if (pares[i][0].w == w && pares[i][0].h == h)
+            return pares[i];
+    if (n_pares == MAX_PARES)
+        return pares[0];
+    pares[n_pares][0] = make_target("_compo_a", w, h);
+    pares[n_pares][1] = make_target("_compo_b", w, h);
+    return pares[n_pares++];
+}
 
 /* Buffer donde se acumulan todos los objetos. Sin el, cada objeto pisaba al
  * anterior en el par ping-pong y solo sobrevivia la ultima capa. */
@@ -147,6 +171,9 @@ static float obj_mvp[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 static int obj_aditivo;
 /* colorBlendMode aparte: la capa no se compone, solo deja su buffer. */
 static int obj_solo_buffer;
+/* El objeto dibuja su unico pase directamente sobre la escena, sin buffer
+ * propio ni composicion. Lo decide werender (`va_directo_a_la_escena`). */
+static int obj_directo;
 
 static GLuint quad_vao, quad_vbo;
 
@@ -771,7 +798,7 @@ static void traza_buffers(int frame)
 
 static int n_objetos = 0;
 
-static void begin_object(void)
+static void begin_object(int directo, int w, int h)
 {
     flush_object();
     if (getenv("WE_TRACE")) {
@@ -783,7 +810,12 @@ static void begin_object(void)
     /* Solo el "anterior": cada pase limpia su destino antes de dibujar. Ver
      * `beginObject` en src/glexecutor.cpp. */
     objeto_dibujo = 0;
+    obj_directo = directo;
+    compo = par_de(w, h);
+    /* El color de limpiar es estado: los pases lo dan por puesto. */
     glClearColor(0, 0, 0, 0);
+    if (directo)
+        return;          /* no usa su buffer: nada que limpiar */
     glBindFramebuffer(GL_FRAMEBUFFER, compo[compo_cur].fbo);
     glClear(GL_COLOR_BUFFER_BIT);
 }
@@ -1000,8 +1032,8 @@ int main(int argc, char **argv)
 
         if (strcmp(kw, "canvas") == 0) {
             sscanf(line, "%*s %d %d", &canvas_w, &canvas_h);
-            compo[0] = make_target("_compo_a", canvas_w, canvas_h);
-            compo[1] = make_target("_compo_b", canvas_w, canvas_h);
+            n_pares = 0;
+            compo = par_de(canvas_w, canvas_h);
             scene_rt = make_target("_scene", canvas_w, canvas_h);
             init_composite();
             glBindFramebuffer(GL_FRAMEBUFFER, scene_rt.fbo);
@@ -1020,12 +1052,13 @@ int main(int argc, char **argv)
             /* El flush del objeto anterior usa SU matriz: primero componer,
              * despues adoptar la del que empieza. */
             float m[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-            int copybg = 0, adit = 0, solo = 0;
+            int copybg = 0, adit = 0, solo = 0, directo = 0, bw = 0, bh = 0;
             int n = sscanf(line,
-                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d",
+                "%*s %d %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %d %d %d %d %d",
                 &copybg, m+0,m+1,m+2,m+3, m+4,m+5,m+6,m+7,
-                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit, &solo);
-            begin_object();
+                m+8,m+9,m+10,m+11, m+12,m+13,m+14,m+15, &adit, &solo, &directo,
+                &bw, &bh);
+            begin_object(n >= 20 ? directo : 0, n >= 22 ? bw : 0, n >= 22 ? bh : 0);
             if (n >= 17)
                 memcpy(obj_mvp, m, sizeof m);
             obj_aditivo = (n >= 18) ? adit : 0;
@@ -1180,11 +1213,12 @@ int main(int argc, char **argv)
              * que pase exacto se pierde la imagen. */
             char path[512];
             if (sscanf(line, "%*s %511s", path) == 1) {
-                unsigned char *px = malloc((size_t)canvas_w * canvas_h * 4);
-                glBindFramebuffer(GL_FRAMEBUFFER, compo[compo_cur].fbo);
-                glReadPixels(0, 0, canvas_w, canvas_h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+                Target *c = &compo[compo_cur];
+                unsigned char *px = malloc((size_t)c->w * c->h * 4);
+                glBindFramebuffer(GL_FRAMEBUFFER, c->fbo);
+                glReadPixels(0, 0, c->w, c->h, GL_RGBA, GL_UNSIGNED_BYTE, px);
                 FILE *o = fopen(path, "wb");
-                if (o) { fwrite(px, 1, (size_t)canvas_w * canvas_h * 4, o); fclose(o); }
+                if (o) { fwrite(px, 1, (size_t)c->w * c->h * 4, o); fclose(o); }
                 free(px);
             }
         } else if (strcmp(kw, "copy") == 0) {
@@ -1347,15 +1381,33 @@ int main(int argc, char **argv)
                 }
             }
 
-            int to_screen = strcmp(target, "SCREEN") == 0;
-            Target *dst = to_screen ? &compo[compo_cur ^ 1] : find_rt(target);
+            /* Directo: los sprites van a la escena, que no se limpia ---es
+             * lo que hay detras---, y el par del objeto no cambia de turno.
+             * Salvo si el programa LEE la escena o `prev` con un sampler
+             * activo: entonces va a su buffer como siempre. Ver
+             * `va_directo_a_la_escena` en werender.py. */
+            int lee_escena = 0;
+            for (int i = 0; i < n_samplers; i++) {
+                const char *s = samplers[i].src;
+                if ((strcmp(s, "prev") == 0
+                     || strcmp(s, "rt:_rt_FullFrameBuffer") == 0
+                     || strcmp(s, "rt:_rt_MipMappedFrameBuffer") == 0)
+                    && glGetUniformLocation(prog, samplers[i].uni) >= 0)
+                    lee_escena = 1;
+            }
+            int directo = obj_directo && !lee_escena && strcmp(target, "SCREEN") == 0;
+            int to_screen = !directo && strcmp(target, "SCREEN") == 0;
+            Target *dst = directo ? &scene_rt
+                        : to_screen ? &compo[compo_cur ^ 1] : find_rt(target);
             if (to_screen)
                 objeto_dibujo = 1;
 
             glBindFramebuffer(GL_FRAMEBUFFER, dst->fbo);
             glViewport(0, 0, dst->w, dst->h);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
+            if (!directo) {
+                glClearColor(0, 0, 0, 0);
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
             glUseProgram(prog);
             set_blend(blend);
 

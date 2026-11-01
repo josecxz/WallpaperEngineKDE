@@ -11586,3 +11586,119 @@ cuadrando. No se ha empezado.
 Una caché de estado de GL (no repetir el programa, la mezcla, las texturas
 y los samplers que ya están puestos) quitaría parte de los ~1,9 ms de CPU
 restantes. Es menos que lo de arriba.
+
+## Partículas directas y buffers del tamaño de la capa
+
+Lo grande del punto 6, «Lo que queda» de la sección anterior. En
+*Arknights* (`3462491575`) el gasto no estaba en las capas de imagen,
+sino en las partículas: **71 de sus 110 objetos son sistemas de partículas**,
+cada uno con su propio buffer del tamaño del lienzo, limpiado y luego
+mezclado entero sobre la escena. Son 71 lienzos por fotograma para unos
+cientos de sprites. Se arreglan dos cosas, por separado.
+
+### Un sistema de partículas de un solo pase va directo a la escena
+
+Si el objeto es un único pase de partículas, componerlo da lo mismo que
+dibujar sus sprites sobre la escena:
+
+- `premul_additive` con composición 3: el buffer acumula `Σ c·a` y se suma a
+  la escena. Sumar los sprites uno a uno da lo mismo, también con la
+  saturación a 1 (todo es positivo) y también en 8 bits: la escena ya está en
+  la rejilla de 1/255, y redondear `s + x` es `s +` redondear `x`.
+- `premul_alpha` con composición 2: `over` en premultiplicado es asociativo.
+  Es exacto en reales; en 8 bits redondea en otro orden.
+
+`werender` lo decide (`va_directo_a_la_escena`) y lo escribe como campo
+`directo` de la línea `object`. Quedan fuera: más de un pase, leer `prev`,
+cualquier cosa que mueva la colocación en el ejecutor (`paralaje`,
+`tiembla`, `anclaje`, `giro`, `vaiven`), las copias a buffers con nombre y
+las capas que solo llenan su buffer.
+
+**Leer la escena no lo decide el plan.** Los 71 sistemas de *Arknights*
+enlazan `g_Texture3` a `_rt_FullFrameBuffer` porque los metadatos de
+`genericparticle` lo piden, pero con `REFRACT 0` el shader ni lo declara.
+Solo el enlazador lo sabe. Los dos ejecutores miran si ese sampler (o
+`prev`) está activo en el programa y, si lo está, dibujan el pase en el
+buffer del objeto como siempre (`leeEscena` / `lee_escena`).
+
+Sobre las 133 escenas, a `--time 3`, contra `main`: **92 idénticas byte a
+byte**. 6 ya variaban entre dos renders del código viejo (`2396319149`,
+`2778830023`, `2821288001`, `3082427731`, `3521337568`, `3577990983`), y 4 dan
+diferencias de redondeo del `over`: como mucho 13 niveles, con media ≤ 1,1
+(`1444777554`, `1877658892`, `2367577039`, `3047352572`). El resto, 1 o 2
+niveles.
+
+### El buffer de cada objeto, del tamaño al que se ve
+
+Los pases de un objeto corren en el espacio de su capa y la matriz de
+`object` lo coloca al componer, así que el contenido del buffer no depende
+de su resolución: los shaders muestrean en UV y ningún shader del corpus
+mira `gl_FragCoord` (buscado en los `scene.pkg` y en los assets). Los
+uniforms no cambian: `g_Texture0Resolution` de `previous` ya decía el tamaño
+de la capa, y `g_TexelSize` sigue siendo el del lienzo.
+
+`repartir_buffers_de_objeto` añade `<w> <h>` a cada `object`: dos veces lo
+que ocupa en pantalla (`|M (1,0)|`, `|M (0,1)|` en píxeles de dibujo),
+redondeado a 16 y con el lienzo como tope. Cada tamaño distinto es un par
+que el ejecutor crea una vez. Para que la memoria no crezca con el número de
+capas, los pares extra no pasan de **4 lienzos**: se admiten primero los
+pequeños, que son los que más ahorran por byte. El que no cabe usa el par
+admitido más pequeño que lo contiene, o el del lienzo. Se decide en
+Python, con el plan entero, porque un ejecutor que lee en streaming solo
+podría repartir en orden de aparición.
+
+**Por qué ×2 y no ×1.** A 1:1 la capa se remuestrea dos veces (textura →
+buffer → pantalla, la segunda a medio píxel) y sale blanda a simple vista.
+Antes no pasaba porque un buffer del lienzo para una capa pequeña era un
+sobremuestreo enorme: 6× en una de 336 px de ancho. Lo que se midió en
+*Arknights* fue el gradiente medio de un recorte con pelo y trazos finos:
+
+| buffer | nitidez | píxeles de los pases de imagen |
+|---|---|---|
+| lienzo (antes) | 13,25 | 184 Mpx |
+| tamaño en pantalla ×1 | 10,32 | ~70 Mpx |
+| ×1,5 | 11,94 | |
+| ×2 | 12,73 | 106 Mpx |
+| la textura de la capa (como WE) | 12,72 | |
+
+Con ×2 se pierde **un 4 % de nitidez**; se aceptó a cambio de lo que ahorra
+en vivo (abajo).
+
+### Lo medido
+
+*Arknights*, las dos pantallas, con el tope de 60 fps, intercalado:
+
+| | GPU por fotograma (HDMI / eDP) | CPU por fotograma | proceso | NVIDIA | VRAM |
+|---|---|---|---|---|---|
+| `main` (×2) | 6,67 / 6,08–6,10 ms | 3,59–3,83 ms | 51–53 % | 63,5–63,7 W a 2550 MHz | 733–753 MiB |
+| partículas directas (×3) | 3,44–3,53 / 3,15–3,19 ms | 2,60–2,83 ms | 40 % | 54,7–55,4 W a 2550 MHz | 741–751 MiB |
+| + buffers por capa (×3) | 2,89–2,98 / 2,65–2,67 ms | 2,78–3,12 ms | 42–44 % | 38,0–38,5 W a 2240 MHz | 836–846 MiB |
+
+- Partículas directas: GPU a la mitad y CPU un 25 % menos, sin cambiar la
+  imagen.
+- Buffers por capa: otro 15 % de GPU, y sobre todo la potencia: **de 55 a
+  38 W**, porque la NVIDIA deja de ir a su frecuencia máxima. Cuestan ~90 MiB
+  de VRAM (los pares) y algo de CPU, por debajo del 10 %.
+- En total, de `main` a ahora: **63,5 → 38 W** y la GPU de 6,7 a 2,9 ms por
+  fotograma.
+
+`test_luminancia` sobre las 133, con las dos cosas, contra `main`: 0
+regresiones, 0 apagadas, la sospechosa de siempre (`3274519787`). 10
+escenas mueven su luz media más de 0,05 y 3 más de 0,5: `3047352572`
+(50,0 → 47,6, la del vídeo *Pattern*, que ya variaba sola), `2367577039`
+(+0,7, la niebla de partículas del redondeo de arriba) y `3097749052`
+(−0,6). `test_werender`, `test_giro` y `test_weparticles` pasan.
+
+La primera medida de `main` falló al arrancar: el `wectl` de un `worktree`
+no tiene plan propio y no sabe volver a poner el fondo. Ver «La vara de
+medir»: para medir desde un `worktree`, el fondo normal se repone a mano.
+
+### Lo que queda
+
+- `g_TexelSize` sigue siendo el texel del lienzo y no el del buffer del
+  objeto. Los desenfoques que lo cruzan con `g_Texture0Resolution` (la
+  cuenta `ratio` de `emit_pass`) siguen viendo lo mismo que antes. Hacerlo
+  «correcto» cambiaría la imagen y es otro tema.
+- Los buffers con nombre de un efecto (`_rt_Half…`) siguen siendo fracción
+  del lienzo, no de la capa.
+- La caché de estado de GL de la sección anterior.

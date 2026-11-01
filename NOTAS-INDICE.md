@@ -101,6 +101,9 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11354` **Comprobado** — PNG idénticos en 6 escenas; `3047352572` no es determinista ni sin el cambio (su vídeo *Pattern*).
 - `2885` **Lo medido** — intercalado tres y tres en *Arknights*.
 - `11574` **Lo que queda, y es lo grande** — buffers de objeto del tamaño de su capa; y una caché de estado de GL.
+- `11590` **Partículas directas y buffers del tamaño de la capa** — lo grande del punto 6. *Arknights*: NVIDIA de 63,5 a 38 W, GPU de 6,7 a 2,9 ms por fotograma; `test_luminancia` sin regresiones.
+- `11599` **Un sistema de partículas de un solo pase va directo a la escena** — `directo` en `object`; sumar o superponer sprites da lo mismo que componer su buffer. Si el programa lee la escena con un sampler activo lo decide el ejecutor, no el plan. 92 de 133 idénticas.
+- `11631` **El buffer de cada objeto, del tamaño al que se ve** — `<w> <h>` en `object`: ×2 lo que ocupa en pantalla, tope el lienzo, 4 lienzos de pares extra. Por qué ×2: a 1:1 sale blanda (nitidez 13,25 → 10,32; ×2 12,73).
 
 ## CLI, rotación y rutas
 
