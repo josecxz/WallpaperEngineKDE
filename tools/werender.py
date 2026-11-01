@@ -1129,12 +1129,10 @@ def por_tipo(luces: list[Luz]) -> dict[str, list[Luz]]:
 def layer_size(obj, canvas: tuple[int, int]) -> tuple[float, float]:
     """Tamano del rectangulo de la capa en pixeles, sin escala ni colocacion.
 
-    El buffer de trabajo del objeto (`compo[]` en los dos ejecutores) es
-    SIEMPRE del tamano del lienzo, sea cual sea el rectangulo declarado ---no
-    hay un buffer por objeto del tamano de su capa, es un par fijo que se
-    limpia y se reutiliza en cada `object`---, y eso vale igual para un
-    `composelayer`: lo que cambia con la MVP real del pase base es solo que
-    UV lee de `_rt_FullFrameBuffer`, no el tamano de lo que escribe.
+    Es lo que dice `g_Texture0Resolution` de `previous`, no el tamano real
+    del buffer de trabajo del objeto: ese lo decide
+    `repartir_buffers_de_objeto` por lo que la capa ocupa en pantalla. Los
+    shaders muestrean en UV, asi que las dos cosas no tienen que coincidir.
     """
     if obj.raw.get("_passthrough"):
         return float(canvas[0]), float(canvas[1])
@@ -1214,6 +1212,83 @@ def va_directo_a_la_escena(lineas: list[str]) -> bool:
             return False
     return (pases == 1 and psys and target == "SCREEN"
             and (blend, t[18]) in _DIRECTO_PARES)
+
+
+# ── el buffer de cada objeto, del tamano al que se ve ───────────────────────
+#
+# Los pases de un objeto corren en el espacio de su capa y la matriz de
+# `object` lo lleva al lienzo al componer. Ese buffer era siempre del tamano
+# del lienzo: una capa que ocupa un rincon se dibujaba ---con todos sus
+# efectos--- a pantalla completa y se encogia al final.
+#
+# Ahora cada objeto pide `COMPO_SOBREMUESTREO` veces el tamano que ocupa en
+# pantalla: la longitud de los dos ejes del buffer una vez colocados,
+# `|M (1,0)|` y `|M (0,1)|` en pixeles de dibujo. Nunca mas que el lienzo,
+# para no gastar mas que antes; una capa agrandada sigue con el del lienzo.
+#
+# Por que 2 y no 1: a 1:1 la capa se remuestrea dos veces ---textura ->
+# buffer -> pantalla, la segunda con desplazamiento de medio pixel--- y sale
+# blanda a simple vista. Antes no pasaba porque un buffer del lienzo para
+# una capa pequena era un sobremuestreo enorme. Medido en *Arknights*
+# (gradiente medio de un recorte): lienzo 13,25, x1 10,32, x1,5 11,94,
+# x2 12,73. Se acepto x2: un 4 % menos de nitidez por 17 W (ver NOTAS).
+#
+# El contenido no depende de la resolucion del buffer: los shaders muestrean
+# en UV y ninguno del corpus mira `gl_FragCoord`. Los uniforms tampoco
+# cambian: `g_Texture0Resolution` de `previous` ya decia el tamano de la capa
+# (ver `emit_pass`), y `g_TexelSize` sigue siendo el del lienzo.
+#
+# Cada tamano distinto es un par de buffers que el ejecutor crea una vez.
+# Para que la memoria no crezca con el numero de capas, los tamanos se
+# redondean a `COMPO_REDONDEO` y el total de los pares extra no pasa de
+# `COMPO_PRESUPUESTO` lienzos. Se admiten primero los pequenos, que son los
+# que mas ahorran por byte; el que no cabe usa el par mas pequeno ya admitido
+# que lo contiene, y como ultimo recurso el del lienzo.
+COMPO_REDONDEO = 16
+COMPO_PRESUPUESTO = 4.0
+COMPO_SOBREMUESTREO = 2.0
+
+
+def _tamano_en_pantalla(m: list[float], pw: int, ph: int) -> tuple[int, int]:
+    q = COMPO_REDONDEO
+    w = COMPO_SOBREMUESTREO * math.hypot(m[0] * pw, m[4] * ph)
+    h = COMPO_SOBREMUESTREO * math.hypot(m[1] * pw, m[5] * ph)
+    w = min(pw, max(q, q * math.ceil(w / q)))
+    h = min(ph, max(q, q * math.ceil(h / q)))
+    return int(w), int(h)
+
+
+def repartir_buffers_de_objeto(body: list[str], pixeles: tuple[int, int]) -> int:
+    """Anade `<w> <h>` a cada linea `object` del cuerpo: el buffer en el que
+    el ejecutor dibuja ese objeto. Devuelve cuantos tamanos distintos hay."""
+    pw, ph = pixeles
+    objetos = []
+    for i, linea in enumerate(body):
+        if not linea.startswith("object "):
+            continue
+        t = linea.split()
+        # Las que vienen sin `directo` (el bloom) lo llevan a 0.
+        t += ["0"] * (21 - len(t))
+        body[i] = " ".join(t)
+        tam = (pw, ph)
+        if t[20] != "1":
+            tam = _tamano_en_pantalla([float(x) for x in t[2:18]], pw, ph)
+        objetos.append((i, tam))
+    lienzo = pw * ph
+    admitidos = {(pw, ph)}
+    extra = 0
+    for w, h in sorted({tam for _, tam in objetos}, key=lambda s: s[0] * s[1]):
+        if (w, h) in admitidos:
+            continue
+        if extra + 2 * w * h <= COMPO_PRESUPUESTO * lienzo:
+            admitidos.add((w, h))
+            extra += 2 * w * h
+    for i, (w, h) in objetos:
+        if (w, h) not in admitidos:
+            w, h = min((a for a in admitidos if a[0] >= w and a[1] >= h),
+                       key=lambda a: a[0] * a[1])
+        body[i] += f" {w} {h}"
+    return len(admitidos)
 
 
 # Nombres con los que un shader pide lo que ya hay dibujado detras. No son
@@ -3900,6 +3975,8 @@ class Renderer:
             self.stats["psys_hijo"] += 1
         if not only_base and max_passes is None:
             self._emit_bloom(general, sresolver)
+        self.stats["buffers_objeto"] = repartir_buffers_de_objeto(self.body,
+                                                                  self.pixeles)
         self.stats["canvas"] = canvas
         self.stats["pixeles"] = self.pixeles
         # Se devuelve lo que MIDE el volcado, que son los pixeles de dibujo.

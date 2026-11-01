@@ -297,6 +297,10 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             // se compone sobre la escena, que la muestreara otra por nombre.
             op.soloBuffer = tok.size() >= 20 && tok[19] == QLatin1String("1");
             op.directo = tok.size() >= 21 && tok[20] == QLatin1String("1");
+            if (tok.size() >= 23) {
+                op.compoW = tok[21].toInt();
+                op.compoH = tok[22].toInt();
+            }
             m_ops.append(op);
         } else if (kw == QLatin1String("anclaje") && tok.size() >= 11
                    && !m_ops.isEmpty()
@@ -758,7 +762,7 @@ const GlExecutor::Target &GlExecutor::resolveTarget(qsizetype index) const
     return m_targets.at(index);
 }
 
-void GlExecutor::beginObject(bool directo)
+void GlExecutor::beginObject(bool directo, int par)
 {
     flushObjectToScene();
     if (m_frame < m_traza) {
@@ -787,6 +791,7 @@ void GlExecutor::beginObject(bool directo)
     // NOTAS, "El objeto que no dibuja no se compone".
     m_objetoDibujo = false;
     m_directo = directo;
+    m_compo = m_pares.data() + 2 * par;
     // El color de limpiar es estado: los pases lo dan por puesto.
     glClearColor(0, 0, 0, 0);
     if (directo)
@@ -1036,11 +1041,28 @@ bool GlExecutor::initialize(QString *error)
         glGenerateMipmap(GL_TEXTURE_2D);
     }
 
-    for (Target &t : m_compo) {
-        t.w = m_canvasW;
-        t.h = m_canvasH;
-        makeTarget(&t.tex, &t.fbo, t.w, t.h);
-    }
+    // Un par por tamano distinto de objeto; el 0, el del lienzo.
+    m_pares.clear();
+    auto par = [this](int w, int h) {
+        if (w <= 0 || h <= 0)
+            return 0;
+        for (qsizetype i = 0; i < m_pares.size(); i += 2)
+            if (m_pares[i].w == w && m_pares[i].h == h)
+                return int(i / 2);
+        for (int k = 0; k < 2; ++k) {
+            Target t;
+            t.w = w;
+            t.h = h;
+            makeTarget(&t.tex, &t.fbo, w, h);
+            m_pares.append(t);
+        }
+        return int(m_pares.size() / 2 - 1);
+    };
+    par(m_canvasW, m_canvasH);
+    for (Op &op : m_ops)
+        if (op.kind == Op::BeginObject)
+            op.par = par(op.compoW, op.compoH);
+    m_compo = m_pares.data();
     m_scene.w = m_canvasW;
     m_scene.h = m_canvasH;
     makeTarget(&m_scene.tex, &m_scene.fbo, m_scene.w, m_scene.h);
@@ -1539,7 +1561,7 @@ void GlExecutor::render(GlName targetFbo, int viewW, int viewH, float time)
             // El flush del objeto anterior usa SU colocacion: primero
             // componer, despues adoptar la del que empieza.
             const double tObj = relojMs();
-            beginObject(op.directo);
+            beginObject(op.directo, op.par);
             m_msObjetos += relojMs() - tObj;
             memcpy(m_placement, op.placement, sizeof m_placement);
             // Una aguja: la colocacion del plan lleva el angulo guardado y
@@ -1910,11 +1932,12 @@ void GlExecutor::releaseResources()
     }
     m_targets.clear();
     m_targetByName.clear();
-    for (Target &t : m_compo) {
+    for (Target &t : m_pares) {
         if (t.tex) glDeleteTextures(1, &t.tex);
         if (t.fbo) glDeleteFramebuffers(1, &t.fbo);
-        t = Target();
     }
+    m_pares.clear();
+    m_compo = nullptr;
     if (m_scene.tex) glDeleteTextures(1, &m_scene.tex);
     if (m_scene.fbo) glDeleteFramebuffers(1, &m_scene.fbo);
     m_scene = Target();

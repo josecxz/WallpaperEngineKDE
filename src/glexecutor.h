@@ -237,6 +237,11 @@ private:
         // Su unico pase dibuja directamente sobre la escena, sin buffer propio
         // ni composicion. Lo decide werender: `va_directo_a_la_escena`.
         bool directo = false;
+        // El buffer del objeto: el tamano que ocupa en pantalla, que da el
+        // plan (`repartir_buffers_de_objeto` en werender.py); 0 = el lienzo.
+        // `par` es su indice en `m_pares`, resuelto en `initialize`.
+        int compoW = 0, compoH = 0;
+        int par = 0;
         // Pase: el programa lee la escena o `prev` con un sampler ACTIVO. Un
         // objeto `directo` no puede dibujarlo sobre la escena; va a su buffer.
         bool leeEscena = false;
@@ -414,7 +419,7 @@ private:
 
     qsizetype targetIndex(const QString &name);   // crea el target si no existe
     bool buildCompositeProgram();
-    void beginObject(bool directo = false);
+    void beginObject(bool directo = false, int par = 0);
     const Target &resolveTarget(qsizetype index) const;
     void bindMipSampler(int unidad, GlName tex);
     void flushObjectToScene();
@@ -445,7 +450,11 @@ private:
     int m_psysCount = 0, m_psysUnknownParts = 0, m_psysCursorCount = 0;
     QVector<Target> m_targets;              // indexable y estable
     QHash<QString, qsizetype> m_targetByName;
-    Target m_compo[2];      // buffer del objeto en curso (ping-pong)
+    // Un par ping-pong por tamano de objeto, seguidos: el par i son
+    // `m_pares[2i]` y `[2i+1]`; el 0 es el del lienzo. No cambia de tamano
+    // despues de `initialize`, asi que `m_compo` puede apuntar dentro.
+    QVector<Target> m_pares;
+    Target *m_compo = nullptr;  // el par del objeto en curso (ping-pong)
     Target m_scene;         // acumulado de todos los objetos
     GlName m_composite = 0; // programa para componer objeto -> escena
     // Filtro mipmap para quien lee `_rt_MipMappedFrameBuffer`. Va aparte de la
