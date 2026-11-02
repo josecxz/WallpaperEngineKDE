@@ -132,6 +132,7 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
         }
     }
     m_textures.clear();
+    m_rtDeclarado.clear();
     // Los simuladores son memoria propia, no handles de GL: se pueden soltar
     // aqui, sin contexto activo.
     for (PsysSpec &p : m_psys)
@@ -188,6 +189,10 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             for (int i = 0; i < 3; ++i)
                 m_fondo[i] = tok[i + 1].toFloat();
             m_fondo[3] = 1.0f;
+        } else if (kw == QLatin1String("rt") && tok.size() >= 4) {
+            const int w = tok[2].toInt(), h = tok[3].toInt();
+            if (w > 0 && h > 0)
+                m_rtDeclarado.insert(tok[1], QSize(w, h));
         } else if (kw == QLatin1String("tex") && tok.size() >= 5) {
             TexSpec t;
             t.path = tok[2];
@@ -498,6 +503,10 @@ qsizetype GlExecutor::targetIndex(const QString &name)
     Target t;
     t.w = qMax(1, m_canvasW / div);
     t.h = qMax(1, m_canvasH / div);
+    if (const auto d = m_rtDeclarado.constFind(name); d != m_rtDeclarado.constEnd()) {
+        t.w = d->width();
+        t.h = d->height();
+    }
     makeTarget(&t.tex, &t.fbo, t.w, t.h);
 
     const qsizetype idx = m_targets.size();

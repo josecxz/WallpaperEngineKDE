@@ -20,6 +20,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QSize>
 #include <QString>
 #include <QVector>
 
@@ -438,6 +439,9 @@ private:
     QHash<int, TexSpec> m_textures;
     QHash<int, MeshSpec> m_meshes;
     QHash<int, PsysSpec> m_psys;
+    // `rt <nombre> <w> <h>`: el tamano que declara el effect.json de un buffer
+    // con nombre. Sin linea, `targetIndex` lo deduce del nombre.
+    QHash<QString, QSize> m_rtDeclarado;
     // `psyspadre`: (hijo, padre, rafaga). Se aplica cuando los dos sistemas ya
     // estan cargados; a partir de ahi el padre da el paso de los dos.
     // Una linea `psyspadre`: que sistema cuelga de cual, y como. Los campos

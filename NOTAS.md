@@ -11710,17 +11710,9 @@ lista original.
 
 ### Restos del punto 6
 
-- **`g_TexelSize` es el texel del lienzo**, no el del buffer de la capa.
-  Los desenfoques que lo cruzan con `g_Texture0Resolution` (la cuenta
-  `ratio` de `emit_pass`) siguen viendo lo mismo que antes de los buffers
-  por capa. Hacerlo «correcto» cambia la imagen: medir con
-  `test_luminancia` y contra los previews antes de tocarlo.
-- **Los buffers con nombre de un efecto** (`_rt_Half…`, `_rt_Quarter…`)
-  siguen siendo fracción del lienzo (`find_rt` / `targetIndex`), no de la
-  capa. Una capa pequeña con desenfoque sigue pagando medio lienzo.
-- **Caché de estado de GL**: no repetir el programa, la mezcla, las
-  texturas y los samplers que ya están puestos. Quitaría parte de los
-  ~1,9 ms de CPU de *Arknights* que no son pases.
+Revisados: la caché de estado, descartada al medir; `g_TexelSize` y los
+`_rt_…` por capa, sin tocar; y de paso, los buffers que declara cada efecto,
+arreglado. Ver «Los restos del punto 6».
 
 ### 11. El IPC de Hyprland
 
@@ -12128,4 +12120,74 @@ eDP-1 a 1920×1200, escala 1), y se leyó esa línea.
 - La **escala fraccionaria** (`scale` ≠ 1) tampoco se ha visto: `wectl` toma
   los píxeles del modo y el motor dibuja a los físicos, así que debería
   cuadrar, pero aquí la escala es 1.
+
+## Los restos del punto 6
+
+### La caché de estado de GL: no compensa
+
+En el ejecutor en vivo **cada pase tiene su propio programa**
+(`buildProgram`), así que `glUseProgram` no se repite nunca, y los destinos
+tampoco se repiten entre pases seguidos. Contado sobre el plan de
+*Arknights* (`3462491575`, 144 pases): lo evitable son **95 cambios de mezcla
+iguales al anterior** (~190 llamadas baratas) y **una** textura que ya estaba
+en su unidad. Unas decenas de µs de los ~3,5 ms de CPU por fotograma: menos
+del 1 %, lejos de la regla del 10 %. No se hace.
+
+### `g_TexelSize`: no se toca
+
+La premisa del pendiente era que lo «correcto» sería el texel del buffer de
+la capa. **La única medida contra WE dice lo contrario**: el radio del bloom
+de `2821288001` cuadra con el texel de PANTALLA («`g_TexelSize` es el texel de
+PANTALLA, y lo dice la captura»), que es lo que se emite. Para los efectos de
+capa no hay oráculo: los previews son pequeños y `test_luminancia` no ve el
+radio de un desenfoque. Y va atado a lo siguiente: encoger un `_rt_Half…`
+sin cambiar `g_TexelSize` dejaría los taps saltando texels del buffer
+pequeño. Sin captura de WE de un desenfoque de capa, se queda así.
+
+### Los `_rt_…` por capa: poco, y sin oráculo
+
+Contados los píxeles de cada pase del corpus a 1920×1200: los buffers con
+nombre son **461 Mpx por fotograma frente a 8215** de los pases de capa
+(5 %); hacerlos fracción de la capa quitaría 136 Mpx, el **1,6 %**. En unas
+pocas escenas sí se notaría (`3624164256` −30 % de píxeles, `3597772384`
+−20 %, `3237641967` −16 %, `3210875135` −13 %), pero cambia la imagen por lo
+mismo que `g_TexelSize`. No se hace.
+
+### Lo que sí: los buffers que declara cada efecto
+
+Revisando lo anterior salió que **no se leía un campo del formato**. Cada
+`effect.json` declara sus buffers en `fbos`, con `scale` (el divisor),
+`width`/`height` fijos o `fit`, y nosotros el tamaño lo sacábamos **del
+nombre** («Half» → ½, «Quarter» → ¼). En los efectos de WE coinciden, pero
+los del Workshop que traen los paquetes usan otros nombres:
+
+- `bokeh_blur` (4 escenas): `_downscaled1/2` y `_coc` con `scale: 4`;
+- un `bloom` (3 escenas) que encadena `blur_start_2` … `blur_end_16`, con
+  `scale` de 2 a 16.
+
+Por el nombre salían **todos a lienzo completo**. En una cadena de bloom eso
+no es solo coste: el desenfoque se calcula a resolución completa y el halo
+sale mucho más estrecho que el que dibuja el efecto.
+
+Ahora `wescene` guarda lo declarado (`Scene.fbos`, por el nombre que usan los
+pases, alias de `unique` incluido), `werender.rt_size` lo usa y el plan lleva
+una línea `rt <nombre> <w> <h>` por buffer declarado, que los dos
+ejecutores respetan al crearlo (sin línea, por el nombre, como antes). `fit`
+(solo `cursorripple`, una escena) no se entiende aún y se queda por el
+nombre; `width`/`height` (`glitter`) no lo usa ninguna escena.
+
+- **Corpus**, 133 escenas en Mesa contra `HEAD`, píxel a píxel: 105
+  idénticas, 24 que solo cambian en la hora, y **4 que cambian de verdad**:
+  `2867316322` (media 162,6 → 191,5), `3053927686` (62,5 → 62,8),
+  `3577990983` (41,55 → 41,69) y `3146507587` (19,43 → 19,46). Las tres
+  últimas se mueven hacia su preview. `2970694180`, que también lleva
+  `bokeh_blur`, sale idéntica (el efecto no llega a dibujar).
+- **`2867316322`** cambia de aspecto: antes un halo estrecho, ahora el
+  resplandor ancho y suave de un bloom de cinco escalas. Su razón con el
+  preview pasa de 1,05 a 1,24, pero aquí no decide: el preview es un GIF de
+  192×192 con otro encuadre (un primer plano), con ese mismo aspecto lavado.
+  Lo que sostiene el cambio es leer el campo literal en vez de adivinarlo.
+- **En vivo**, `2867316322`, intercalado A/B dos y dos: GPU **4,65 → 3,98 ms**
+  por fotograma (−14 %) y la NVIDIA de **21,5 a 17,4 W** (1350 → 1050 MHz). La
+  CPU no cambia.
 

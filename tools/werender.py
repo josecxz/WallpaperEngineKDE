@@ -1447,12 +1447,31 @@ def resolucion_de_dibujo(canvas: tuple[int, int],
     return (max(1, int(round(canvas[0] * k))), max(1, int(round(canvas[1] * k))))
 
 
-def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
-    """WE codifica el divisor de resolucion en el nombre del render target.
+def rt_size(name: str, canvas: tuple[int, int],
+            fbos: dict[str, dict] | None = None) -> tuple[int, int]:
+    """El tamano de un buffer con nombre de un efecto.
 
-    Tiene que coincidir con lo que hace glexec al crearlos, o los shaders
-    reciben una resolucion que no corresponde a la textura que muestrean.
+    Lo manda lo que DECLARA su `effect.json` (`fbos`): `width`/`height` fijos
+    o `scale`, el divisor del lienzo. Solo si no declara nada se deduce del
+    nombre, que es la convencion de los efectos de WE (`_rt_Half...` lleva
+    `scale: 2`) pero no la de los del Workshop: el `bokeh_blur` de 4 escenas
+    llama `_downscaled1` y `_coc` a buffers de `scale: 4`, y un `bloom` de 3
+    escenas encadena `blur_start_2` ... `blur_end_16`. Por el nombre salian
+    todos a lienzo completo. `fit` (un solo efecto, `cursorripple`) no se
+    entiende aun y se deja por el nombre. Ver NOTAS, «Los buffers que declara
+    cada efecto».
+
+    El plan lleva el tamano en una linea `rt`, asi que los ejecutores no
+    tienen que deducir nada; sin ella hacen lo mismo que el final de esta
+    funcion.
     """
+    d = (fbos or {}).get(name) or {}
+    if isinstance(d.get("width"), int) and isinstance(d.get("height"), int) \
+            and d["width"] > 0 and d["height"] > 0:
+        return d["width"], d["height"]
+    escala = d.get("scale")
+    if isinstance(escala, (int, float)) and escala >= 1:
+        return max(1, int(canvas[0] // escala)), max(1, int(canvas[1] // escala))
     div = 1
     if "Half" in name:
         div = 2
@@ -1817,6 +1836,7 @@ class Renderer:
         # rapidez por defecto de `turbulentvelocityrandom`.
         self.ortografica = True
         self.pixeles: tuple[int, int] = (1920, 1080)
+        self.fbos: dict[str, dict] = {}     # lo pone `_build`; ver `rt_size`
         self.pantalla = resolucion
         # Luces de la escena y su ambiente; los rellena `_build` al leerla.
         self.luces: list[Luz] = []
@@ -3178,7 +3198,7 @@ class Renderer:
                     # los slots 1 y 2 derivan `v_TexCoord.zw` de ella, y a cero
                     # muestrean fuera del buffer: el efecto lee transparente y
                     # se anula.
-                    rw, rh = rt_size(name, self.pixeles)
+                    rw, rh = rt_size(name, self.pixeles, self.fbos)
                     self.body.append(
                         f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
             elif str(meta.get(uni, {}).get("default", "")) in (
@@ -3207,7 +3227,7 @@ class Renderer:
                 # contiene lo mismo que el de WE.
                 b = str(meta[uni]["default"])
                 src = f"rt:{b}"
-                rw, rh = rt_size(b, self.pixeles)
+                rw, rh = rt_size(b, self.pixeles, self.fbos)
                 self.body.append(f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
                 if b == "_rt_MipMappedFrameBuffer":
                     # El nivel mas alto de la piramide. El shader lo usa como
@@ -3231,7 +3251,7 @@ class Renderer:
                     k = self.pixeles[0] / max(1, self.canvas[0])
                     w, h = max(1, round(lw * k)), max(1, round(lh * k))
                 else:
-                    w, h = rt_size(b, self.pixeles)
+                    w, h = rt_size(b, self.pixeles, self.fbos)
                 self.body.append(
                     f"u4f g_Texture{slot}Resolution {w} {h} {w} {h}")
             if src is None:
@@ -3539,7 +3559,7 @@ class Renderer:
         # -- el del escritorio -- lo propagaba, asi que 3146507587 se veia bien
         # en el render offline y se desvanecia a negro en vivo. La misma escena,
         # renderizada offline forzando Mesa, se desvanecia igual.
-        tw, th = rt_size(p.target, self.pixeles) if p.target else self.pixeles
+        tw, th = rt_size(p.target, self.pixeles, self.fbos) if p.target else self.pixeles
         self.body.append(f"u2f g_TexelSize {1.0 / max(1, tw):.9g} "
                          f"{1.0 / max(1, th):.9g}")
         hoja = self._hoja_por_hora(obj, hoja_tex) if hoja_tex else None
@@ -3768,7 +3788,7 @@ class Renderer:
         def pase(vp: Path, fp: Path, destino: str, fuente: str,
                  extra: tuple[str, ...] = ()) -> None:
             fw, fh = ((w, h) if fuente in BUFFERS_DEL_MOTOR
-                      else rt_size(fuente, self.pixeles))
+                      else rt_size(fuente, self.pixeles, self.fbos))
             self.body.append("pass")
             self.body.append(f"prog {vp} {fp}")
             self.body.append(f"target {destino}")
@@ -3837,6 +3857,12 @@ class Renderer:
         self.ambiente = amb
         self.cielo = (_floats(general.get("skylightcolor")) + amb)[:3]
         self.lines.append(f"canvas {self.pixeles[0]} {self.pixeles[1]}")
+        # Los buffers con nombre cuyo tamano declara su efecto: el ejecutor los
+        # crea a este tamano en vez de deducirlo del nombre (`rt_size`).
+        self.fbos = scene.fbos
+        for nombre in sorted(self.fbos):
+            w, h = rt_size(nombre, self.pixeles, self.fbos)
+            self.lines.append(f"rt {nombre} {w} {h}")
         # Con que color, OPACO, empieza cada fotograma: el `clearcolor` de la
         # escena, salvo que `clearenabled` lo apague. Antes se empezaba en
         # (0, 0, 0, 0), y no era solo el color de lo que ninguna capa cubre:

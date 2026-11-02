@@ -110,6 +110,10 @@ static int en_tope(int v, int tope, const char *que)
 
 static Target rts[MAX_RT];
 static int n_rts;
+/* Tamanos que declara el plan (`rt <nombre> <w> <h>`): lo que pide el
+ * `effect.json` de cada buffer. Sin linea, el tamano sale del nombre. */
+static struct { char name[128]; int w, h; } rt_decl[MAX_RT];
+static int n_rt_decl;
 static GLuint textures[MAX_TEX];
 /* Videos abiertos, indexados por el MISMO id que las texturas: para el resto
  * del ejecutor una capa de video es una textura corriente que ademas cambia. */
@@ -628,6 +632,11 @@ static Target *find_rt(const char *name)
         div = 8;
     if (n_rts == MAX_RT)
         fuera_de_tope("buffer con nombre", n_rts, MAX_RT);
+    for (int i = 0; i < n_rt_decl; i++)
+        if (strcmp(rt_decl[i].name, name) == 0) {
+            rts[n_rts] = make_target(name, rt_decl[i].w, rt_decl[i].h);
+            return &rts[n_rts++];
+        }
     rts[n_rts] = make_target(name, canvas_w / div, canvas_h / div);
     return &rts[n_rts++];
 }
@@ -1220,6 +1229,16 @@ int main(int argc, char **argv)
             char path[512];
             if (sscanf(line, "%*s %d %511s %d %d", &id, path, &w, &h) == 4)
                 textures[en_tope(id, MAX_TEX, "video")] = load_video(id, path, w, h);
+        } else if (strcmp(kw, "rt") == 0 && !in_pass) {
+            char nombre[128];
+            int w, h;
+            if (sscanf(line, "%*s %127s %d %d", nombre, &w, &h) == 3 && w > 0 && h > 0) {
+                en_tope(n_rt_decl, MAX_RT, "rt declarado");
+                snprintf(rt_decl[n_rt_decl].name, sizeof rt_decl[n_rt_decl].name, "%s", nombre);
+                rt_decl[n_rt_decl].w = w;
+                rt_decl[n_rt_decl].h = h;
+                n_rt_decl++;
+            }
         } else if (strcmp(kw, "videotime") == 0) {
             sscanf(line, "%*s %f", &video_time);
         } else if (strncmp(kw, "reloj", 5) == 0 && !in_pass) {
