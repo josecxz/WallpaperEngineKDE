@@ -11724,10 +11724,11 @@ lista original.
 
 ### 11. El IPC de Hyprland
 
-El cursor se pregunta (`j/cursorpos`) cada 16 ms, y cada ráfaga de eventos
+~~El cursor se pregunta (`j/cursorpos`) cada 16 ms, y cada ráfaga de eventos
 dispara una revisión con `j/monitors` y `j/clients`. Medir lo que cuesta a
 Hyprland y al proceso, y ver si se puede espaciar sin que el parallax vaya
-a saltos.
+a saltos.~~ Medido: no cuesta nada que se vea, y no se cambia. Ver «El IPC
+de Hyprland, medido», abajo.
 
 ### 12. Que la NVIDIA pueda dormir
 
@@ -11855,4 +11856,72 @@ bytes más de cola, y `wevideo_paso()` dice cuántos píxeles ocupa una fila.
 Los dos ejecutores suben con `GL_UNPACK_ROW_LENGTH` (y lo devuelven a 0:
 `otragpu.cpp` deja puesto otro valor), sin copia extra. `test_wevideo`: 57/57
 fotogramas idénticos a ffmpeg, por primera vez desde `V1.0.0`.
+
+
+## El IPC de Hyprland, medido
+
+Punto 11 de la auditoría. Cerrado **sin cambiar el motor**: lo que se probó
+no mejora nada medible, y se deshizo.
+
+### Cuánto cuesta cada petición
+
+Con un cliente sintético (Python, conexión nueva por petición, como hace
+`CursorHyprland`) a 62 peticiones por segundo, contra el `/proc/<pid>/stat`
+de Hyprland, con el fondo vivo de fondo (línea base: Hyprland al 1,85 % de un
+núcleo):
+
+| petición | Hyprland | cliente | latencia mediana / p99 | bytes |
+|---|---|---|---|---|
+| `j/cursorpos` | +0,5 puntos | ~1 % | 0,35 / 1,7 ms | 34 |
+| `j/monitors` | +0,75 | ~1 % | 0,36 / 1,7 ms | 1440 |
+| `j/clients` | +0,7 | ~1 % | 0,40 / 1,9 ms | 902 |
+
+O sea, unos 80–120 µs de CPU de Hyprland por petición.
+
+### Cuántas hay
+
+- **Cursor**: 62 por segundo mientras haya un fondo sin pausa.
+- **Revisión** (`j/monitors` + `j/clients`, síncronas en el hilo de la GUI):
+  el repaso de cada 2 s y una por ráfaga de eventos, **por monitor** (cada
+  pantalla tiene su `Hyprland` y piden lo mismo). Escuchando `.socket2.sock`
+  30 s con una terminal activa: 128 eventos, 32 ráfagas. Hyprland vuelve a
+  emitir `activewindow`/`activewindowv2` cada vez que la ventana activa
+  **cambia de título**, aunque sea la misma ventana, así que ignorar
+  `windowtitle` no evita la revisión: ~1 por segundo y monitor. Son ~4
+  peticiones por segundo por monitor: despreciable al lado del cursor.
+
+### Lo que se probó: preguntar el cursor solo si el plan lo lee
+
+La idea: casi la mitad de las escenas no leen el ratón, y el sondeo les cuesta
+igual. Se clasificó el corpus con el criterio que habría de usar el ejecutor:
+un uniform **vivo** con marca de puntero o de parallax (no vale cualquiera:
+`werender` pone `g_PointerPosition` en todos los pases y casi ningún shader lo
+lee), un `psyspuntero`, o una capa con `paralaje` distinto de cero y la cámara
+con influencia (la línea `parallax` **no** sirve: sale en todos los planes,
+con el retardo y la influencia de la escena, la use o no). Resultado:
+**64 de 133 escenas no leen el ratón**; de las demás, 46 por partículas, 28
+por `paralaje` y 15 por shaders.
+
+Se implementó (`GlExecutor::usaRaton`, `CursorHyprland::usa`; el sondeo
+solo con un fondo sin pausa **y** una escena que lo lea) y el registro
+confirmó que dejaba de preguntar. Medido con `medir_vivo` en `2464842912`
+(no lee el ratón, 32 pases, solo eDP-1), intercalado A/B tres y tres:
+
+| | A (pregunta 62/s) | B (no pregunta) |
+|---|---|---|
+| proceso | 21,8 / 21,8 / 21,8 % | 22,8 / 22,6 / 23,0 % |
+| CPU por fotograma | 2,30–2,33 ms | 2,33–2,35 ms |
+| Hyprland | 7,8 / 7,3 / 7,6 % | 7,9 / 7,8 / 7,9 % |
+| i915 render | 13,3–13,4 % | 13,9 % |
+
+Mismos 55 fps. **No hay ganancia**: diferencias del 1–5 % y en contra. Los
+~0,5 puntos del cliente sintético no aparecen con el motor real. Que B salga
+algo peor apunta a que las 62 interrupciones por segundo mantienen la CPU en
+una frecuencia o un reposo algo más alto, pero eso **no se ha medido**. Por
+la regla de la vara de medir, el cambio no entra. El parche (~200 líneas de
+diff) no se guarda en el repositorio; con esta sección basta para rehacerlo.
+
+**Lección**: el coste aislado de una pieza (un microbenchmark) no dice lo que
+pesa dentro del proceso. Aquí el sintético prometía medio punto de Hyprland
+y en vivo no se vio ni eso.
 
