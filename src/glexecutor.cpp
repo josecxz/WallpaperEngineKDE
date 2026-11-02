@@ -1493,8 +1493,12 @@ void GlExecutor::updateVideos(float time)
         if (wevideo_frame(t.dec, double(time), &px) <= 0 || !px)
             continue;
         glBindTexture(GL_TEXTURE_2D, t.id);
+        // Las filas van con relleno (ver `wevideo_paso`), y el contexto de Qt
+        // puede traer otro ROW_LENGTH puesto: se fija y se devuelve a 0.
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, wevideo_paso(t.dec));
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t.w, t.h,
                         GL_RGBA, GL_UNSIGNED_BYTE, px);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     }
 }
 

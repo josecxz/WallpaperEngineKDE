@@ -925,9 +925,12 @@ static void video_all(void)
         if (wevideo_frame(videos[i], video_time, &px) <= 0 || !px)
             continue;
         glBindTexture(GL_TEXTURE_2D, textures[i]);
+        /* Las filas van con relleno: ver `wevideo_paso`. */
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, wevideo_paso(videos[i]));
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                         wevideo_ancho(videos[i]), wevideo_alto(videos[i]),
                         GL_RGBA, GL_UNSIGNED_BYTE, px);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     }
 }
 

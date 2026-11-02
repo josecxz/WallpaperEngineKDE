@@ -76,7 +76,11 @@ int main(int argc, char **argv)
     if (wevideo_frame(v, atof(argv[3]), &px) < 0 || !px) return 1;
     FILE *f = fopen(argv[4], "wb");
     if (!f) return 1;
-    fwrite(px, 1, (size_t)wevideo_ancho(v) * wevideo_alto(v) * 4, f);
+    /* Fila a fila: el hueco lleva relleno (`wevideo_paso`), y el fichero de
+     * salida es el RGBA pegado que compara el test. */
+    for (int y = 0; y < wevideo_alto(v); y++)
+        fwrite(px + (size_t)y * wevideo_paso(v) * 4, 1,
+               (size_t)wevideo_ancho(v) * 4, f);
     fclose(f);
     printf("%d %d %.6f\n", wevideo_ancho(v), wevideo_alto(v), wevideo_duracion(v));
     wevideo_close(v);
