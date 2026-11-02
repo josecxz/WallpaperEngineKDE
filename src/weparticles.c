@@ -306,8 +306,11 @@ static float sujeta(float v, float a, float b) { return v < a ? a : (v > b ? b :
  * `snoise1`. */
 static float ruido_hash(int x, int y, int z, int c)
 {
-    unsigned int h = (unsigned int)(x * 374761393 + y * 668265263 + z * 2147483647
-                                    + c * 1274126177);
+    /* En `unsigned`: con `int` la suma desborda, que en C es indefinido
+     * (UBSan lo caza en `3047352572`). Los bits son los mismos que daba el
+     * envoltorio de antes. */
+    unsigned int h = (unsigned int)x * 374761393u + (unsigned int)y * 668265263u
+                   + (unsigned int)z * 2147483647u + (unsigned int)c * 1274126177u;
     h = (h ^ (h >> 13)) * 1274126177u;
     return ((h ^ (h >> 16)) & 0xffffff) / 8388608.0f - 1.0f;   /* -1..1 */
 }
