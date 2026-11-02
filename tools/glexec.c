@@ -884,19 +884,36 @@ static void init_quad(void)
     glEnableVertexAttribArray(1);
 }
 
-static GLuint load_texture(const char *path, int w, int h)
+/* `canales` es 1, 2 o 4 (`canales_de` en werender.py): una mascara de un
+ * canal va como GL_R8 y el *swizzle* la devuelve como (r, r, r, 1), la de dos
+ * como GL_RG8 y (r, g, 0, 1); exactamente lo que daba el RGBA de antes. Lo
+ * mismo hace `GlExecutor::initialize`. */
+static GLuint load_texture(const char *path, int w, int h, int canales)
 {
+    if (canales != 1 && canales != 2)
+        canales = 4;
     long len;
     char *data = slurp(path, &len);
-    if (!data || len < (long)w * h * 4) {
-        fprintf(stderr, "textura corta: %s (%ld < %d)\n", path, len, w * h * 4);
+    if (!data || len < (long)w * h * canales) {
+        fprintf(stderr, "textura corta: %s (%ld < %d)\n", path, len, w * h * canales);
         free(data);
         return 0;
     }
     GLuint t;
     glGenTextures(1, &t);
     glBindTexture(GL_TEXTURE_2D, t);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    if (canales == 4) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    } else {
+        /* Filas de w o 2w bytes: sin esto GL las supone de 4 en 4. */
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, canales == 1 ? GL_R8 : GL_RG8, w, h, 0,
+                     canales == 1 ? GL_RED : GL_RG, GL_UNSIGNED_BYTE, data);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        const GLint gris[4] = {GL_RED, GL_RED, GL_RED, GL_ONE};
+        const GLint dos[4] = {GL_RED, GL_GREEN, GL_ZERO, GL_ONE};
+        glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, canales == 1 ? gris : dos);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -1175,10 +1192,10 @@ int main(int argc, char **argv)
             obj_mvp[3] -= 2.0f * temblor_dx;
             obj_mvp[7] -= 2.0f * temblor_dy;
         } else if (strcmp(kw, "tex") == 0) {
-            int id, w, h;
+            int id, w, h, canales = 4;
             char path[512];
-            if (sscanf(line, "%*s %d %511s %d %d", &id, path, &w, &h) == 4)
-                textures[en_tope(id, MAX_TEX, "textura")] = load_texture(path, w, h);
+            if (sscanf(line, "%*s %d %511s %d %d %d", &id, path, &w, &h, &canales) >= 4)
+                textures[en_tope(id, MAX_TEX, "textura")] = load_texture(path, w, h, canales);
         } else if (strcmp(kw, "frame") == 0) {
             /* Abre un fotograma: cierra el objeto que quedara pendiente del
              * anterior y limpia la escena, exactamente lo que hace render()

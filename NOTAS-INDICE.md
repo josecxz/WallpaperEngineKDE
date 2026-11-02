@@ -449,21 +449,26 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11711` **Restos del punto 6** — `g_TexelSize` del lienzo, `_rt_Half…` del lienzo y la caché de estado de GL.
 - `11725` **11. El IPC de Hyprland** — hecho: medido, no se cambia.
 - `11733` **12. Que la NVIDIA pueda dormir** — la parte del motor, hecha; la del sistema, abierta.
-- `11742` **13. Tiempo de `wectl set` y `shuffle`** — 1–20 s por escena; perfilar `emit_plan`.
-- `11748` **14. Tamaño del plan en disco** — ~200 MB de `.rgba`; frente a subir DXT/BC tal cual.
-- `11754` **15. Tiempo de carga en el motor** — 23–517 ms de `init`; `glProgramBinary`.
-- `11759` **16. Recarga del plan** — recrear el `SceneView` y el contexto de la otra GPU en cada cambio.
-- `11764` **17. Resolución del plan (verificar, no rehacer)** — que nada salga ampliado ni a más resolución de la que se ve.
-- `11769` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`): hecho, y no era el vídeo.
-- `11775` **Las tablas de glexec y el paso de swscale** — `3047352572` salía de dos maneras al azar y `test_wevideo` fallaba en *Pattern*: dos fallos sin relación.
-- `11783` **El render no determinista: `textures[64]`** — `MAX_TEX` 64 y 96 texturas: `tex:80` leía punteros de `videos[]` (ASLR). Topes holgados y rebasarlos aborta; `3097749052` deja de salir en silueta negra. Lo cazó ASan+UBSan, no la bisección.
-- `11838` **`test_wevideo`: el paso de swscale con ffmpeg 9** — con paso `w*4` swscale deja columnas sin escribir o escribe fuera del hueco (en vivo, cada fotograma). Filas a múltiplo de 64 bytes y `GL_UNPACK_ROW_LENGTH`.
-- `11863` **El IPC de Hyprland, medido** — ~100 µs de Hyprland por petición; `activewindow` se repite con cada cambio de título. Preguntar el cursor solo si el plan lo lee (64 de 133 no lo leen) no mejora nada en vivo, intercalado A/B: se deshizo. El microbenchmark prometía medio punto que no apareció.
-- `11868` **Cuánto cuesta cada petición** — cliente sintético a 62/s: +0,5–0,75 puntos de Hyprland, 0,35 ms de latencia.
-- `11883` **Cuántas hay** — 62/s de cursor; la revisión, ~1/s por monitor por los `activewindow` repetidos.
-- `11895` **Lo que se probó: preguntar el cursor solo si el plan lo lee** — criterio (uniforms vivos, `psyspuntero`, `paralaje`; la línea `parallax` no vale), 64/133 sin ratón, y la medida A/B que lo descarta.
-- `11931` **La NVIDIA en pausa, medida** — 0 interrupciones de la NVIDIA en pausa, igual que sin fondo; el hilo de render no se despierta. Queda retenido el contexto y su VRAM, sin medir si impide dormir.
-- `11960` **Lo del sistema, para cuando se aborde** — `Runtime D3 status: Disabled by default`: falta `NVreg_DynamicPowerManagement`; con `audio-fix.conf` y lo no identificado, tres causas, ninguna del motor.
+- `11742` **13. Tiempo de `wectl set` y `shuffle`** — hecho: 3,5 veces más rápido.
+- `11749` **14. Tamaño del plan en disco** — hecho: −29 % con las texturas de uno y dos canales; DXT tal cual, descartado.
+- `11756` **15. Tiempo de carga en el motor** — medido: subir texturas es el 75–80 %; `glProgramBinary`, descartado.
+- `11763` **16. Recarga del plan** — recrear el `SceneView` y el contexto de la otra GPU en cada cambio.
+- `11768` **17. Resolución del plan (verificar, no rehacer)** — que nada salga ampliado ni a más resolución de la que se ve.
+- `11773` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`): hecho, y no era el vídeo.
+- `11779` **Las tablas de glexec y el paso de swscale** — `3047352572` salía de dos maneras al azar y `test_wevideo` fallaba en *Pattern*: dos fallos sin relación.
+- `11787` **El render no determinista: `textures[64]`** — `MAX_TEX` 64 y 96 texturas: `tex:80` leía punteros de `videos[]` (ASLR). Topes holgados y rebasarlos aborta; `3097749052` deja de salir en silueta negra. Lo cazó ASan+UBSan, no la bisección.
+- `11842` **`test_wevideo`: el paso de swscale con ffmpeg 9** — con paso `w*4` swscale deja columnas sin escribir o escribe fuera del hueco (en vivo, cada fotograma). Filas a múltiplo de 64 bytes y `GL_UNPACK_ROW_LENGTH`.
+- `11867` **El IPC de Hyprland, medido** — ~100 µs de Hyprland por petición; `activewindow` se repite con cada cambio de título. Preguntar el cursor solo si el plan lo lee (64 de 133 no lo leen) no mejora nada en vivo, intercalado A/B: se deshizo. El microbenchmark prometía medio punto que no apareció.
+- `11872` **Cuánto cuesta cada petición** — cliente sintético a 62/s: +0,5–0,75 puntos de Hyprland, 0,35 ms de latencia.
+- `11887` **Cuántas hay** — 62/s de cursor; la revisión, ~1/s por monitor por los `activewindow` repetidos.
+- `11899` **Lo que se probó: preguntar el cursor solo si el plan lo lee** — criterio (uniforms vivos, `psyspuntero`, `paralaje`; la línea `parallax` no vale), 64/133 sin ratón, y la medida A/B que lo descarta.
+- `11935` **La NVIDIA en pausa, medida** — 0 interrupciones de la NVIDIA en pausa, igual que sin fondo; el hilo de render no se despierta. Queda retenido el contexto y su VRAM, sin medir si impide dormir.
+- `11964` **Lo del sistema, para cuando se aborde** — `Runtime D3 status: Disabled by default`: falta `NVreg_DynamicPowerManagement`; con `audio-fix.conf` y lo no identificado, tres causas, ninguna del motor.
+- `11977` **Los puntos 13 a 15: el plan, su tamaño y su carga** — los tres eran bytes de textura y Python lento.
+- `11983` **13. Lo que tarda `emit_plan`** — LZ4 en C, traducciones recordadas, `inv(G)` una vez, `bincount`: corpus 319 → 90 s, planes idénticos. El `TypeError` tragado por `emit_pass` que borró todos los pases.
+- `12025` **15. Qué pesa en el `init`** — desglose por fases en el registro; subir texturas es el 75–80 %, compilar casi nada.
+- `12047` **14. Qué ocupa el plan, y lo que se hizo** — DXT es el 9 % de los bytes; R8/RG88 expandidas a RGBA el 28 %. `canales_de` y `GL_R8`/`GL_RG8` con swizzle: −29 % de bytes, −12–33 % de `init`, −165 MiB de VRAM, imagen idéntica.
+- `12082` **Fuera de estos puntos** — `test_wectl` falla en cuatro comprobaciones del cambio de plan desde antes de `91dc02b`.
 - `4528` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — el diámetro del destello, la lluvia que sale de un punto y la estela corta.
 - `4534` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
 - `4580` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.

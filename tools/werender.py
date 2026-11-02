@@ -1357,6 +1357,28 @@ void main() {
 """
 
 
+def canales_de(rgba: "np.ndarray") -> int:
+    """Cuantos canales de verdad tiene una textura RGBA: 1, 2 o 4.
+
+    Las mascaras R8 y RG88 de WE salen de `wetex` como (r, r, r, 255) y
+    (r, g, 0, 255), y subirlas asi gastaba 4 bytes por pixel donde bastan 1 o
+    2: el 29 % de los bytes de textura del corpus, en disco, al leer, al subir
+    y en VRAM. Se decide mirando los PIXELES FINALES, no el formato de origen,
+    asi que es exacto por construccion pase lo que pase antes (recortes,
+    margenes, el espejo de las `flowmask`): el ejecutor sube `GL_R8` o
+    `GL_RG8` con un *swizzle* que devuelve justo estos valores. Ver NOTAS,
+    «Texturas de uno y dos canales».
+    """
+    a = rgba.reshape(-1, 4)
+    if not (a[:, 3] == 255).all():
+        return 4
+    if (a[:, 0] == a[:, 1]).all() and (a[:, 1] == a[:, 2]).all():
+        return 1
+    if (a[:, 2] == 0).all():
+        return 2
+    return 4
+
+
 def niveles_mipmap(w: int, h: int) -> int:
     """Cuantos niveles tiene la piramide de un buffer de w x h.
 
@@ -1981,9 +2003,14 @@ class Renderer:
         i = self._n_tex
         self._n_tex += 1
         path = self.tmp / f"tex{i:03d}.rgba"
-        path.write_bytes(rgba.tobytes())
+        canales = canales_de(rgba)
+        if canales == 4:
+            path.write_bytes(rgba.tobytes())
+        else:
+            path.write_bytes(np.ascontiguousarray(rgba[:, :, :canales]).tobytes())
         self._tex_dims[i] = (rgba.shape[1], rgba.shape[0])
-        self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}")
+        self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}"
+                          + (f" {canales}" if canales != 4 else ""))
         return i, rgba.shape[1], rgba.shape[0]
 
 

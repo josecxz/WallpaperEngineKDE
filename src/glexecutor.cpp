@@ -193,6 +193,8 @@ bool GlExecutor::loadPlan(const QString &path, QString *error)
             t.path = tok[2];
             t.w = tok[3].toInt();
             t.h = tok[4].toInt();
+            if (tok.size() >= 6 && (tok[5] == QLatin1String("1") || tok[5] == QLatin1String("2")))
+                t.canales = tok[5].toInt();
             m_textures.insert(tok[1].toInt(), t);
         } else if (kw == QLatin1String("video") && tok.size() >= 5) {
             // Mismo espacio de ids que `tex`: el resto del plan la nombra con
@@ -855,6 +857,16 @@ bool GlExecutor::initialize(QString *error)
     // cuanto cuesta y decidir si merece hacerlo asincrono.
     QElapsedTimer timer;
     timer.start();
+    // El desglose del `init` por fases, en ms de pared del hilo de render. GL
+    // es diferido: lo que la GPU haga despues (los mipmaps, compilar si el
+    // driver lo aplaza) no cae aqui sino en el primer fotograma.
+    qint64 marca = 0;
+    auto vuelta = [&timer, &marca](double &acumulado) {
+        const qint64 ahora = timer.nsecsElapsed();
+        acumulado += (ahora - marca) / 1e6;
+        marca = ahora;
+    };
+    m_initFases = {};
 
     // Quad en NDC con UV 0..1. Todos los pases son fullscreen.
     static const float verts[] = {
@@ -938,6 +950,7 @@ bool GlExecutor::initialize(QString *error)
     for (const Op &op : m_ops)
         if (op.kind == Op::Pass && op.mesh >= 0)
             ++m_meshPassCount;
+    vuelta(m_initFases.mallas);
 
     // Sistemas de particulas. El VBO nace vacio y se redimensiona en el primer
     // fotograma que necesite mas: el numero de particulas vivas sube y baja.
@@ -1025,21 +1038,47 @@ bool GlExecutor::initialize(QString *error)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
             continue;
         }
+        vuelta(m_initFases.particulas);   // lo de antes de esta textura
         const QByteArray data = readAll(t.path);
-        if (data.size() < qsizetype(t.w) * t.h * 4) {
+        vuelta(m_initFases.leerTexturas);
+        if (data.size() < qsizetype(t.w) * t.h * t.canales) {
             m_log += QStringLiteral("textura corta: %1\n").arg(t.path);
             continue;
         }
         glGenTextures(1, &t.id);
         glBindTexture(GL_TEXTURE_2D, t.id);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, t.w, t.h, 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, data.constData());
+        if (t.canales == 4) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, t.w, t.h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, data.constData());
+        } else {
+            // Una mascara de uno o dos canales: GL_R8/GL_RG8 y un swizzle que
+            // la devuelve como el RGBA de antes, (r, r, r, 1) o (r, g, 0, 1).
+            // Lo mismo que `load_texture` en glexec.c. Las filas son de w o 2w
+            // bytes: sin ALIGNMENT 1, GL las supone de 4 en 4.
+            // El contexto puede ser el de Qt (camino de Mesa): se devuelve el
+            // estado que hubiera.
+            GLint alineado = 4, fila = 0;
+            glGetIntegerv(GL_UNPACK_ALIGNMENT, &alineado);
+            glGetIntegerv(GL_UNPACK_ROW_LENGTH, &fila);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+            glTexImage2D(GL_TEXTURE_2D, 0, t.canales == 1 ? GL_R8 : GL_RG8, t.w, t.h, 0,
+                         t.canales == 1 ? GL_RED : GL_RG, GL_UNSIGNED_BYTE, data.constData());
+            glPixelStorei(GL_UNPACK_ALIGNMENT, alineado);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, fila);
+            const GLint gris[4] = {GL_RED, GL_RED, GL_RED, GL_ONE};
+            const GLint dos[4] = {GL_RED, GL_GREEN, GL_ZERO, GL_ONE};
+            glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, t.canales == 1 ? gris : dos);
+        }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         glGenerateMipmap(GL_TEXTURE_2D);
+        vuelta(m_initFases.subirTexturas);
+        m_initFases.bytesTexturas += double(data.size());
     }
+    vuelta(m_initFases.particulas);   // videos y lo que quede tras la ultima
 
     // Un par por tamano distinto de objeto; el 0, el del lienzo.
     m_pares.clear();
@@ -1067,6 +1106,7 @@ bool GlExecutor::initialize(QString *error)
     m_scene.h = m_canvasH;
     makeTarget(&m_scene.tex, &m_scene.fbo, m_scene.w, m_scene.h);
     buildCompositeProgram();
+    vuelta(m_initFases.buffers);
 
     // Compilar y resolver aqui, no en el primer render: asi el coste no cae
     // sobre un fotograma en mitad de la animacion.
@@ -1082,8 +1122,11 @@ bool GlExecutor::initialize(QString *error)
             op.copyDstName.clear();
             continue;
         }
-        if (buildProgram(op))
+        const bool ok = buildProgram(op);
+        vuelta(m_initFases.compilar);
+        if (ok)
             resolve(op);
+        vuelta(m_initFases.resolver);
     }
 
     m_initMs = int(timer.elapsed());

@@ -11741,20 +11741,24 @@ abierta y no es de este repositorio.
 
 ### 13. Tiempo de `wectl set` y `shuffle`
 
-Entre 1 y 20 s por escena, y en modo `independiente` se paga una vez por
+~~Entre 1 y 20 s por escena, y en modo `independiente` se paga una vez por
 monitor. Perfilar `emit_plan`: LZ4/DXT, escritura de `.rgba` o traducción
-de shaders.
+de shaders.~~ Hecho: 3,5 veces más rápido. Ver «Los puntos 13 a 15: el
+plan, su tamaño y su carga».
 
 ### 14. Tamaño del plan en disco
 
-~200 MB por wallpaper, casi todo `.rgba` sin comprimir, y puede haber tres
+~~~200 MB por wallpaper, casi todo `.rgba` sin comprimir, y puede haber tres
 planes a la vez. Medir la lectura frente a subir la textura comprimida
-(DXT/BC) tal cual.
+(DXT/BC) tal cual.~~ Hecho: −29 % de bytes de textura con las de uno y dos
+canales; DXT tal cual, descartado (solo el 9 % de los bytes). Ver abajo.
 
 ### 15. Tiempo de carga en el motor
 
-`init` entre 23 y 517 ms. Ver qué pesa: compilar shaders, subir texturas o
-generar mipmaps. Valorar una caché de programas (`glProgramBinary`).
+~~`init` entre 23 y 517 ms. Ver qué pesa: compilar shaders, subir texturas o
+generar mipmaps. Valorar una caché de programas (`glProgramBinary`).~~
+Medido: el 75–80 % es subir texturas; `glProgramBinary`, descartado. Baja
+un 12–33 % con lo del 14. Ver abajo.
 
 ### 16. Recarga del plan
 
@@ -11968,4 +11972,117 @@ HDMI siempre encendido) y lo que la mantenía despierta incluso con
 `power_save=1` (sin identificar; sospechosos `nvidia-powerd` y el `card1` de
 Xwayland). Solo con RTD3 encendido tiene sentido volver a mirar el contexto
 y la VRAM del motor.
+
+
+## Los puntos 13 a 15: el plan, su tamaño y su carga
+
+Tres puntos de la auditoría que resultaron ser casi uno: lo que tarda en
+hacerse el plan (`wectl set`), lo que ocupa y lo que tarda el motor en
+cargarlo.
+
+### 13. Lo que tarda `emit_plan`
+
+Perfilado con `cProfile` sobre el corpus (153 directorios; los 20 que fallan
+son de tipo web y demás no soportados): **LZ4 en Python** se llevaba el
+39,5 %, **traducir shaders** el 36,6 %, las hojas de sprites por tiempo el 10 %
+(casi todo su propio LZ4) y las **mallas animadas** el 7,6 %. La doble copia
+de ficheros (temporal → directorio del plan) y la sustitución de rutas
+(`fix`) no llegan al 3 % juntas, aunque lo parecían.
+
+Cuatro cambios, ninguno toca lo que sale:
+
+- **LZ4 con la `liblz4` del sistema** por `ctypes` (`wetex._cargar_liblz4`),
+  con el decodificador de Python de reserva (`_lz4_python`). Los 1859 bloques
+  del corpus, 3,7 GB, dan los mismos bytes; 111 s → 0,9 s.
+- **`Renderer._traducir`** recuerda las traducciones de la escena: una
+  escena repite efectos (`3047352572` pide 518 traducciones y solo 86 son
+  distintas). Una caché por `Resolver`, porque los `#include` pueden venir
+  del paquete. Cuidado al tocarlo: el primer intento usaba el `Resolver` como
+  parte de la clave, no es *hashable*, y el `TypeError` lo tragaba el
+  `except` de `emit_pass`: todos los pases del corpus desaparecieron sin
+  ruido. Lo vio la comparación del corpus.
+- **`inv(G_j)`** (la pose de reposo) se calculaba en cada clave de la
+  animación: 1,3 millones de inversas de 4×4 en `2637739953`. Ahora una por
+  malla.
+- **`_smooth_weights`** suma con `np.bincount` por columna en vez de
+  `np.add.at`: mismo orden de suma, mismos bits, y `add.at` se llevaba 4,8 s
+  en `3047352572`.
+
+El oráculo: el plan de las 148 escenas generables, fichero a fichero, por
+hash. Idéntico salvo las mallas de texto de los relojes (`text*.bin`, que
+llevan la hora de cuando se hacen; `plan.txt` y todo lo demás, iguales).
+
+| | antes | ahora |
+|---|---|---|
+| corpus | 319 s | **90 s** |
+| mediana por escena | 0,99 s | **0,33 s** |
+| la peor | 38,4 s (`3577990983`) | **8,0 s** (`3047352572`) |
+
+Queda en cabeza el skinning de las mallas animadas (`_skin_matrices`
+compone la jerarquía clave a clave en Python), en las dos escenas que
+pasan de 5 s.
+
+### 15. Qué pesa en el `init`
+
+Para verlo, el `init` lleva ahora un desglose por fases en el registro
+(`SceneView: init por fases (ms)`: mallas, partículas y vídeos, leer
+texturas con sus MB, subirlas, buffers, compilar, resolver). Son ms de pared
+del hilo de render: lo que la GPU haga en diferido no cae ahí. Medido en
+vivo (NVIDIA) en 8 escenas, dos cargas cada una:
+
+| escena | plan | init | leer | **subir** | compilar |
+|---|---|---|---|---|---|
+| `3577990983` | 453 MB | 280 ms | 54 | **213** | 5–14 |
+| `3047352572` | 342 MB | 250 ms | 35 | **185** | 16–25 |
+| `3146507587` | 422 MB | 240 ms | 46 | **188** | 4 |
+| `2788165557` | 218 MB | 147 ms | 25 | **115** | 2–7 |
+| `973101892` | 42 MB | 38 ms | 6 | **30** | 1–6 |
+
+El **75–80 % es subir texturas** (`glTexImage2D` + `glGenerateMipmap`,
+~0,5 ms por MB) y el ~20 % leerlas. Compilar apenas pesa: el driver tiene su
+propia caché de shaders, así que **`glProgramBinary` no merece la pena**.
+Un wallpaper de vídeo carga en 11 ms. O sea, que el 14 y el 15 son lo
+mismo: bytes de textura.
+
+### 14. Qué ocupa el plan, y lo que se hizo
+
+17,1 GB entre todos los planes del corpus, mediana de 75 MB, el mayor de
+587 MB (un vídeo); el 86 % son `.rgba`. La idea de la lista era subir el
+DXT del `.tex` tal cual. **Descartada al medir**: solo el **9 %** de los bytes
+de textura viene de DXT. El 62 % son RGBA8888, casi todo imágenes JPG/PNG
+dentro del `.tex`, y el **28 %** son R8 y RG88, máscaras de uno y dos canales
+que `wetex` expande a `(r, r, r, 255)` y `(r, g, 0, 255)`: 4 bytes por
+píxel donde bastan 1 o 2.
+
+`canales_de` en `werender.py` mira los **píxeles finales** de cada textura
+(alfa siempre 255 y R = G = B, o alfa 255 y B = 0) y la guarda con 1 o 2
+canales; la línea es `tex <id> <ruta> <w> <h> [canales]`, sin el campo un
+plan viejo sigue valiendo. Los dos ejecutores la suben como `GL_R8` /
+`GL_RG8` con un *swizzle* (`R,R,R,1` y `R,G,0,1`) que devuelve exactamente
+lo de antes, con `GL_UNPACK_ALIGNMENT` a 1 (el ejecutor en vivo devuelve el
+estado que hubiera: en Mesa el contexto es el de Qt). Decidirlo por los
+píxeles y no por el formato de origen lo hace exacto pase lo que pase antes
+(recortes, márgenes, el espejo de las `flowmask`), y además pilla imágenes
+RGBA que en realidad son grises.
+
+- **Bytes de textura del corpus: 14,7 → 10,4 GB (−29 %)**, mediana −26 %
+  por escena. Comprobarlo cuesta 3 s en todo el corpus.
+- **`init` en vivo**: `3577990983` 280 → 242 ms, `3047352572` 250 → 202,
+  `3146507587` 240 → 186, `2788165557` 147 → 130, `2464842912` 62 → 42
+  (−12 a −33 %).
+- **VRAM** (`3146507587`, `medir_vivo` intercalado A/B dos y dos): 824 →
+  659 MiB. La CPU por fotograma no cambia.
+- **La imagen**: las 133 escenas renderizadas con `HEAD` y con el cambio, en
+  Mesa, comparadas píxel a píxel: **idénticas** salvo las 26 que muestran la
+  hora (25 relojes y fechas, y `2396319149`, con agujas de `engine.timeOfDay`
+  que ni dos renders del mismo código repiten). Seis escenas con muchas
+  máscaras, también idénticas en NVIDIA: `glGenerateMipmap` promedia un
+  `R8` igual que el RGBA de antes, al menos en estos dos drivers.
+
+### Fuera de estos puntos
+
+- `test_wectl` falla en cuatro comprobaciones del «cambio de plan» (el
+  sobrante del anterior, el plan que no cambia, el escritorio sin plan tras
+  un fallo, dos cambios a la vez). **Ya fallaba en `91dc02b`**, antes de todo
+  esto; sin mirar.
 
