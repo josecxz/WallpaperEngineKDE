@@ -11732,10 +11732,12 @@ de Hyprland, medido», abajo.
 
 ### 12. Que la NVIDIA pueda dormir
 
-Hoy no se suspende nunca, por `audio-fix.conf` y algo más (ver «Medir si
+~~Hoy no se suspende nunca, por `audio-fix.conf` y algo más (ver «Medir si
 duerme la dedicada»). Revisar si el motor en pausa deja algo que la
 mantenga despierta: contextos, consultas de cronómetro abiertas o los
-~500 MiB de VRAM del punto 10.
+~500 MiB de VRAM del punto 10.~~ La parte del motor, hecha: en pausa no le
+manda nada. Ver «La NVIDIA en pausa, medida», abajo. La del sistema sigue
+abierta y no es de este repositorio.
 
 ### 13. Tiempo de `wectl set` y `shuffle`
 
@@ -11924,4 +11926,46 @@ diff) no se guarda en el repositorio; con esta sección basta para rehacerlo.
 **Lección**: el coste aislado de una pieza (un microbenchmark) no dice lo que
 pesa dentro del proceso. Aquí el sintético prometía medio punto de Hyprland
 y en vivo no se vio ni eso.
+
+
+## La NVIDIA en pausa, medida
+
+Punto 12 de la auditoría, la parte del motor: si el fondo en pausa le manda
+algo a la dedicada. Sin `strace` ni `perf` (y con `ptrace_scope` a 1) no se
+puede trazar el proceso, y `nvidia-smi` la despierta, así que se mide de
+lado: las **interrupciones de la NVIDIA** en `/proc/interrupts` (la IRQ
+`nvidia`; la GPU interrumpe cuando se le manda trabajo) y los **cambios de
+contexto por hilo** del proceso (`/proc/<pid>/task/*/status`). El anfitrión
+de medida va con `--pausa 2`, que pausa con cualquier ventana en el monitor,
+y con el plan de *Jeanne d'Arc* (`2788165557`); 20 s por estado:
+
+| estado | IRQ de la NVIDIA | despertares del proceso | CPU |
+|---|---|---|---|
+| sin fondo | 0,0 /s | — | — |
+| **en pausa** | **0,0 /s** | 5,9 /s, todos del hilo principal | 0,05 % |
+| dibujando | 56 /s | 2898 /s (render, Wayland, principal) | 15,9 % |
+
+En pausa el motor **no le manda nada**: las mismas interrupciones que sin
+fondo, y el hilo de render (`QSGRenderThread`) no se despierta ni una vez.
+Cuadra con el código: con el reloj de QML parado `setTime` no pide fotograma,
+el ratón no pide fotograma por diseño, y sin `update()` `render()` no corre.
+Lo que sigue vivo es CPU: el repaso de 2 s y las revisiones por evento de
+`Hyprland`. Dibujando, una interrupción por fotograma: el instrumento ve el
+trabajo cuando lo hay.
+
+Lo que el motor sí retiene en pausa es el **contexto EGL de la NVIDIA y su
+VRAM** (~500 MiB, punto 10). No está medido si eso impide la suspensión, ni
+se puede medir aquí: ver abajo.
+
+### Lo del sistema, para cuando se aborde
+
+`/proc/driver/nvidia/gpus/*/power` dice **`Runtime D3 status: Disabled by
+default`**: el driver no tiene activada la suspensión en caliente (RTD3), y
+hace falta `NVreg_DynamicPowerManagement` en modprobe para encenderla. Sin
+eso la dedicada no duerme nunca, haga lo que haga cualquier proceso. Con
+esta ya son tres causas, ninguna del motor: esta, `audio-fix.conf` (el audio
+HDMI siempre encendido) y lo que la mantenía despierta incluso con
+`power_save=1` (sin identificar; sospechosos `nvidia-powerd` y el `card1` de
+Xwayland). Solo con RTD3 encendido tiene sentido volver a mirar el contexto
+y la VRAM del motor.
 
