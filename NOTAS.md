@@ -11767,8 +11767,11 @@ GPU. Medir el parpadeo y el coste.
 
 ### 17. Resolución del plan (verificar, no rehacer)
 
-Comprobar con el corpus que ninguna escena sale ampliada ni a más
-resolución de la que se ve, en Plasma y en Hyprland.
+~~Comprobar con el corpus que ninguna escena sale ampliada ni a más
+resolución de la que se ve, en Plasma y en Hyprland.~~ Verificado en
+Hyprland con un monitor: las 148, a 1,00. Quedan dos casos sin probar (Plasma
+con un panel girado, dos monitores distintos). Ver «La resolución,
+verificada».
 
 ### Fuera de la lista
 
@@ -12085,4 +12088,44 @@ RGBA que en realidad son grises.
   sobrante del anterior, el plan que no cambia, el escritorio sin plan tras
   un fallo, dos cambios a la vez). **Ya fallaba en `91dc02b`**, antes de todo
   esto; sin mirar.
+
+
+## La resolución, verificada
+
+Punto 17 de la auditoría. El oráculo es el propio motor en vivo: al cambiar
+el encaje traza `GlExecutor: encaje=… escena WxH -> se ve cWxcH … ->
+destino dWxdH … de vWxvH`. Se cargó cada wallpaper de la biblioteca (los 148
+que `wectl` puede poner, vídeos incluidos) en el anfitrión de medida, con el
+plan hecho a la resolución que pone `wectl` (`resolucion_de_pantalla`, aquí
+eDP-1 a 1920×1200, escala 1), y se leyó esa línea.
+
+- **Las 148, a 1,00 exacto**: ni una ampliada ni una reducida en el blit
+  final. Todas en «cubrir», destino 1920×1200.
+- **Lo que se dibuja y no se ve** es solo lo que «cubrir» recorta por la
+  diferencia de proporción: mediana ×1,11 (16:9 en un panel 16:10). Los
+  extremos son escenas verticales: `2946362143` dibuja 1920×3813 y se ven
+  1200 filas (×3,18), `2870014907` y `2866586232` ×2,84, `2834289732`
+  (4267×1200) ×2,22. Dibujar solo lo visible cambiaría la proyección de todo
+  para tres o cuatro escenas; no se hace.
+
+### Lo que no se ha podido probar aquí
+
+- **Plasma.** Bajo Hyprland `kscreen-doctor -j` no da salidas, así que su
+  camino solo se ha leído. Y leyéndolo hay un hueco: `resolucion_de_pantalla`
+  toma el `size` del modo actual **sin mirar la rotación**, y el camino de
+  Hyprland sí la mira (`transform`). Un panel vertical en Plasma pediría el
+  plan apaisado, y una escena apaisada saldría ampliada por la altura. Sin
+  arreglar: no se puede comprobar el campo de rotación de `kscreen-doctor`
+  sin un Plasma delante.
+- **Dos monitores en modo `mismo`.** El plan compartido se hace al monitor
+  de **más área**. El factor que no amplía en ninguno es el máximo de los
+  `k` de cada monitor, y eso es justo lo que sale de pasar el **máximo por
+  dimensión** (ancho máximo, alto máximo): el de más área puede quedarse
+  corto en una dimensión y nunca se pasa. Con eDP-1 (1920×1200) y HDMI-A-3
+  (1920×1080) da lo mismo, porque gana en las dos; con un panel vertical
+  junto a uno apaisado, no. Sin cambiar: no estaba conectado el segundo
+  monitor para medirlo.
+- La **escala fraccionaria** (`scale` ≠ 1) tampoco se ha visto: `wectl` toma
+  los píxeles del modo y el motor dibuja a los físicos, así que debería
+  cuadrar, pero aquí la escala es 1.
 
