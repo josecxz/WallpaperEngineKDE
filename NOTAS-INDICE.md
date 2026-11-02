@@ -445,7 +445,7 @@ make indice                       # reescribe los números desde NOTAS.md
 
 ## Pendiente
 
-- `11706` **Pendiente: lo que queda de la auditoría de rendimiento** — restos del punto 6 (`g_TexelSize`, buffers `_rt_Half…` del lienzo, caché de estado de GL), puntos 11 a 17, y el vídeo *Pattern* (`3047352572`) que no es determinista.
+- `11706` **Pendiente: lo que queda de la auditoría de rendimiento** — restos del punto 6 (`g_TexelSize`, buffers `_rt_Half…` del lienzo, caché de estado de GL), puntos 11 a 17, y el vídeo *Pattern* (`3047352572`), ya resuelto.
 - `11711` **Restos del punto 6** — `g_TexelSize` del lienzo, `_rt_Half…` del lienzo y la caché de estado de GL.
 - `11725` **11. El IPC de Hyprland** — `j/cursorpos` cada 16 ms y `j/clients` por ráfaga: medir y espaciar.
 - `11732` **12. Que la NVIDIA pueda dormir** — si la pausa deja algo que la mantenga despierta.
@@ -454,7 +454,10 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11751` **15. Tiempo de carga en el motor** — 23–517 ms de `init`; `glProgramBinary`.
 - `11756` **16. Recarga del plan** — recrear el `SceneView` y el contexto de la otra GPU en cada cambio.
 - `11761` **17. Resolución del plan (verificar, no rehacer)** — que nada salga ampliado ni a más resolución de la que se ve.
-- `11766` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`), no determinista.
+- `11766` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`): hecho, y no era el vídeo.
+- `11772` **Las tablas de glexec y el paso de swscale** — `3047352572` salía de dos maneras al azar y `test_wevideo` fallaba en *Pattern*: dos fallos sin relación.
+- `11780` **El render no determinista: `textures[64]`** — `MAX_TEX` 64 y 96 texturas: `tex:80` leía punteros de `videos[]` (ASLR). Topes holgados y rebasarlos aborta; `3097749052` deja de salir en silueta negra. Lo cazó ASan+UBSan, no la bisección.
+- `11835` **`test_wevideo`: el paso de swscale con ffmpeg 9** — con paso `w*4` swscale deja columnas sin escribir o escribe fuera del hueco (en vivo, cada fotograma). Filas a múltiplo de 64 bytes y `GL_UNPACK_ROW_LENGTH`.
 - `4528` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — el diámetro del destello, la lluvia que sale de un punto y la estela corta.
 - `4534` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
 - `4580` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.

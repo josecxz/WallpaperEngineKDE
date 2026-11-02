@@ -11765,6 +11765,94 @@ resolución de la que se ve, en Plasma y en Hyprland.
 
 ### Fuera de la lista
 
-- **`3047352572`, el vídeo *Pattern***: no es determinista offline y falla
-  en `test_wevideo` desde V1.0.0. Mueve su luz media entre renders (50,0 →
-  47,6 en la última pasada) y ensucia cualquier comparación del corpus.
+- ~~**`3047352572`, el vídeo *Pattern***~~: hecho, y no era el vídeo. Ver
+  «Las tablas de glexec y el paso de swscale», abajo.
+
+
+## Las tablas de glexec y el paso de swscale
+
+`3047352572` (Cyberpunk 2077 – Phantom Liberty) tenía dos síntomas, y se
+habían metido los dos en el saco de su vídeo *Pattern*: `test_wevideo` fallaba
+en sus fotogramas y el render offline salía con 50,0 o con 47,6 de luz, al
+azar. Eran dos fallos sin relación, y el grave no tenía nada que ver con el
+vídeo.
+
+### El render no determinista: `textures[64]`
+
+Con el mismo `plan.txt` y el mismo `glexec` salían exactamente **dos**
+imágenes, en NVIDIA y en Mesa por igual. No eran ni ruido del driver ni
+memoria de GPU sin inicializar, y tampoco seguían al reloj. Biseccionando los
+72 objetos del plan (de un fotograma; ~6 s por ejecución, 6 ejecuciones por
+variante) hacían falta la cabeza del dragón (malla 16) y el sistema de
+partículas anclado a ella, más cualquier otro objeto. Lo que dio la causa fue
+compilar `glexec` con `-fsanitize=address,undefined`:
+
+    tools/glexec.c:1372: index 80 out of bounds for type 'GLuint [64]'
+
+`MAX_TEX` era 64 y el plan trae **96** texturas. Al cargar, las de id ≥ 64 se
+descartaban sin avisar; al enlazar, `textures[atoi(...)]` no comprobaba nada y
+`tex:80` leía lo que hay detrás del array, que es `videos[]`: punteros del
+heap que cambian con cada proceso por ASLR. Según la mitad del puntero que
+cayera, la unidad de textura quedaba sin nada o con otra textura.
+
+Las demás tablas fijas hacían cada una una cosa distinta al llenarse:
+`rts[64]` **escribía** fuera; `pares[64]` volvía en silencio a `pares[0]`, un
+buffer de otro tamaño (desde «El buffer de cada objeto, del tamaño al que se
+ve» cada objeto pide su par, así que esa era la siguiente en caer); samplers,
+uniforms, mallas y sistemas se descartaban sin decir nada; la caché de
+programas (260 en esta escena, tope 256) solo recompilaba. Ahora los topes son
+holgados (texturas 1024, buffers 256, pares 256, mallas y sistemas 512,
+programas 2048, 16 samplers y 128 uniforms por pase), y **rebasar uno aborta**
+con `fuera_de_tope`: un plan que no cabe no se ejecuta a medias, porque una
+imagen incompleta sin error es justo lo que `test_luminancia` no distingue. El
+ejecutor en vivo usa `QHash` y no tenía este problema: **solo estaba mal el
+oráculo**.
+
+De paso, UBSan cazó `ruido_hash` en `src/weparticles.c`, que contaba con que
+el `int` se envolviera al desbordar (indefinido en C). Pasa a `unsigned` y
+da los mismos bits: el mismo hash de imagen antes y después.
+
+Corpus (`test_luminancia` en Mesa, `--guardar` con el `glexec` de `main` en
+un worktree y `--referencia` en la rama): 133/133, 0 regresiones, 0
+apagadas, nadie aborta. Se mueven dos, las dos hacia su preview:
+
+| escena | main | rama | preview |
+|---|---|---|---|
+| `3097749052` (123 texturas) | 30,47 | 35,77 | 38,78 |
+| `3047352572` (96) | 49,98 | 54,20 | 64,17 |
+
+En `3097749052` el personaje entero salía como una silueta negra con
+cuadrados negros sueltos; ahora sale con sombrero, cara, linterna y espada.
+Las otras 13 que cambian lo hacen en 0,2 o menos: relojes y fechas que leen
+la hora real. `3047352572` también tiene un reloj, así que dos renders suyos
+siguen difiriendo en unos 3000 píxeles del reloj; fuera de ellos, el mismo
+hash en cuatro ejecuciones por driver.
+
+**La lección**: el oráculo también es código. Un `glexec` con ASan+UBSan sobre
+el plan sospechoso cuesta un minuto y debería ser el primer paso ante
+cualquier render que no se repite.
+
+### `test_wevideo`: el paso de swscale con ffmpeg 9
+
+*Pattern* es un H.264 de 340×340. Con ffmpeg 9, `sws_scale` hacia RGBA con un
+paso de destino de `w * 4` justo (y negativo, para el volteo) se porta según
+el ancho:
+
+| ancho % 16 | qué hace |
+|---|---|
+| 0 | bien |
+| 2–6, sin escalar | **no escribe** las últimas columnas (en *Pattern*, 4 columnas a RGBA 0,0,0,0) |
+| 8–14, o escalando a un ancho no múltiplo de 8 | escribe de 8 a 32 bytes **fuera** de la fila |
+
+Lo segundo es lo grave: los anchos que da `tamano_textura` al encajar un vídeo
+en la pantalla (2134, 1366…) caen ahí, y en la primera fila que escribe ---la
+última del buffer, por el volteo--- eso es fuera del hueco. En vivo se pisaba
+heap en cada fotograma. Se midió con un canario detrás del buffer: ASan no lo
+ve porque no instrumenta el ensamblador de swscale.
+
+Ahora cada fila del hueco ocupa un múltiplo de 64 bytes, el hueco lleva 64
+bytes más de cola, y `wevideo_paso()` dice cuántos píxeles ocupa una fila.
+Los dos ejecutores suben con `GL_UNPACK_ROW_LENGTH` (y lo devuelven a 0:
+`otragpu.cpp` deja puesto otro valor), sin copia extra. `test_wevideo`: 57/57
+fotogramas idénticos a ffmpeg, por primera vez desde `V1.0.0`.
+
