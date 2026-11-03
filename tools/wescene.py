@@ -161,6 +161,10 @@ class Scene:
     objects: list[SceneObject] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     properties: dict = field(default_factory=dict)
+    # Lo que cada `effect.json` declara de sus buffers con nombre (`fbos`):
+    # `scale`, `width`/`height`, `fit`. Indexado por el nombre que usan los
+    # pases (el alias si es `unique`). Ver `werender.rt_size`.
+    fbos: dict[str, dict] = field(default_factory=dict)
 
     @property
     def render_passes(self) -> list[RenderPass]:
@@ -796,6 +800,16 @@ def load_scene(res: AssetResolver, strict: bool = False,
 
             def rt(name: str | None) -> str | None:
                 return alias.get(name, name) if name else name
+            for fbo in edef.get("fbos", []):
+                nombre = rt(fbo.get("name") or "")
+                decl = {k: fbo[k] for k in ("scale", "width", "height", "fit") if k in fbo}
+                if not nombre or not decl:
+                    continue
+                if nombre in scene.fbos and scene.fbos[nombre] != decl:
+                    note(f"[{obj.name}] efecto {ename}: el buffer {nombre} ya estaba "
+                         f"declarado como {scene.fbos[nombre]}; se queda ese")
+                    continue
+                scene.fbos[nombre] = decl
             for i, ep in enumerate(edef.get("passes", [])):
                 ov = overrides[i] if i < len(overrides) else None
 

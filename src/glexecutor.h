@@ -20,6 +20,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QSize>
 #include <QString>
 #include <QVector>
 
@@ -120,6 +121,12 @@ public:
     int liveUniformCount() const { return m_liveUniforms; }
     int uniformsPorFotograma() const { return m_uniformsPorFotograma; }
     int initMillis() const { return m_initMs; }
+    // El `init` por fases (ms de pared); ver `initialize`.
+    struct InitFases {
+        double mallas = 0, particulas = 0, leerTexturas = 0, subirTexturas = 0,
+               buffers = 0, compilar = 0, resolver = 0, bytesTexturas = 0;
+    };
+    const InitFases &initFases() const { return m_initFases; }
     double diagCompoMean() const { return m_diagCompoMean; }
 
     // Milisegundos de GPU por fotograma, medidos por la GPU misma. El `fps`
@@ -321,6 +328,7 @@ private:
     struct TexSpec {
         QString path;
         int w = 0, h = 0;
+        int canales = 4;        // 1, 2 o 4: ver `canales_de` en werender.py
         GlName id = 0;
 
         // Una capa de video es una textura corriente que ademas cambia. Todo
@@ -431,6 +439,9 @@ private:
     QHash<int, TexSpec> m_textures;
     QHash<int, MeshSpec> m_meshes;
     QHash<int, PsysSpec> m_psys;
+    // `rt <nombre> <w> <h>`: el tamano que declara el effect.json de un buffer
+    // con nombre. Sin linea, `targetIndex` lo deduce del nombre.
+    QHash<QString, QSize> m_rtDeclarado;
     // `psyspadre`: (hijo, padre, rafaga). Se aplica cuando los dos sistemas ya
     // estan cargados; a partir de ahi el padre da el paso de los dos.
     // Una linea `psyspadre`: que sistema cuelga de cual, y como. Los campos
@@ -521,6 +532,7 @@ private:
     int m_liveUniforms = 0;
     int m_uniformsPorFotograma = 0;   // los que quedan en el bucle de dibujado
     int m_initMs = 0;
+    InitFases m_initFases;
     bool m_diagDone = false;
     int m_frame = 0;            // solo para la traza de WE_TRACE_FRAMES
     // `WE_TRACE_FRAMES` y `WE_TRACE_PASES`, leidas UNA vez. Se miraban con

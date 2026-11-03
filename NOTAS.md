@@ -11710,48 +11710,47 @@ lista original.
 
 ### Restos del punto 6
 
-- **`g_TexelSize` es el texel del lienzo**, no el del buffer de la capa.
-  Los desenfoques que lo cruzan con `g_Texture0Resolution` (la cuenta
-  `ratio` de `emit_pass`) siguen viendo lo mismo que antes de los buffers
-  por capa. Hacerlo «correcto» cambia la imagen: medir con
-  `test_luminancia` y contra los previews antes de tocarlo.
-- **Los buffers con nombre de un efecto** (`_rt_Half…`, `_rt_Quarter…`)
-  siguen siendo fracción del lienzo (`find_rt` / `targetIndex`), no de la
-  capa. Una capa pequeña con desenfoque sigue pagando medio lienzo.
-- **Caché de estado de GL**: no repetir el programa, la mezcla, las
-  texturas y los samplers que ya están puestos. Quitaría parte de los
-  ~1,9 ms de CPU de *Arknights* que no son pases.
+Revisados: la caché de estado, descartada al medir; `g_TexelSize` y los
+`_rt_…` por capa, sin tocar; y de paso, los buffers que declara cada efecto,
+arreglado. Ver «Los restos del punto 6».
 
 ### 11. El IPC de Hyprland
 
-El cursor se pregunta (`j/cursorpos`) cada 16 ms, y cada ráfaga de eventos
+~~El cursor se pregunta (`j/cursorpos`) cada 16 ms, y cada ráfaga de eventos
 dispara una revisión con `j/monitors` y `j/clients`. Medir lo que cuesta a
 Hyprland y al proceso, y ver si se puede espaciar sin que el parallax vaya
-a saltos.
+a saltos.~~ Medido: no cuesta nada que se vea, y no se cambia. Ver «El IPC
+de Hyprland, medido», abajo.
 
 ### 12. Que la NVIDIA pueda dormir
 
-Hoy no se suspende nunca, por `audio-fix.conf` y algo más (ver «Medir si
+~~Hoy no se suspende nunca, por `audio-fix.conf` y algo más (ver «Medir si
 duerme la dedicada»). Revisar si el motor en pausa deja algo que la
 mantenga despierta: contextos, consultas de cronómetro abiertas o los
-~500 MiB de VRAM del punto 10.
+~500 MiB de VRAM del punto 10.~~ La parte del motor, hecha: en pausa no le
+manda nada. Ver «La NVIDIA en pausa, medida», abajo. La del sistema sigue
+abierta y no es de este repositorio.
 
 ### 13. Tiempo de `wectl set` y `shuffle`
 
-Entre 1 y 20 s por escena, y en modo `independiente` se paga una vez por
+~~Entre 1 y 20 s por escena, y en modo `independiente` se paga una vez por
 monitor. Perfilar `emit_plan`: LZ4/DXT, escritura de `.rgba` o traducción
-de shaders.
+de shaders.~~ Hecho: 3,5 veces más rápido. Ver «Los puntos 13 a 15: el
+plan, su tamaño y su carga».
 
 ### 14. Tamaño del plan en disco
 
-~200 MB por wallpaper, casi todo `.rgba` sin comprimir, y puede haber tres
+~~~200 MB por wallpaper, casi todo `.rgba` sin comprimir, y puede haber tres
 planes a la vez. Medir la lectura frente a subir la textura comprimida
-(DXT/BC) tal cual.
+(DXT/BC) tal cual.~~ Hecho: −29 % de bytes de textura con las de uno y dos
+canales; DXT tal cual, descartado (solo el 9 % de los bytes). Ver abajo.
 
 ### 15. Tiempo de carga en el motor
 
-`init` entre 23 y 517 ms. Ver qué pesa: compilar shaders, subir texturas o
-generar mipmaps. Valorar una caché de programas (`glProgramBinary`).
+~~`init` entre 23 y 517 ms. Ver qué pesa: compilar shaders, subir texturas o
+generar mipmaps. Valorar una caché de programas (`glProgramBinary`).~~
+Medido: el 75–80 % es subir texturas; `glProgramBinary`, descartado. Baja
+un 12–33 % con lo del 14. Ver abajo.
 
 ### 16. Recarga del plan
 
@@ -11760,11 +11759,435 @@ GPU. Medir el parpadeo y el coste.
 
 ### 17. Resolución del plan (verificar, no rehacer)
 
-Comprobar con el corpus que ninguna escena sale ampliada ni a más
-resolución de la que se ve, en Plasma y en Hyprland.
+~~Comprobar con el corpus que ninguna escena sale ampliada ni a más
+resolución de la que se ve, en Plasma y en Hyprland.~~ Verificado en
+Hyprland con un monitor: las 148, a 1,00. Quedan dos casos sin probar (Plasma
+con un panel girado, dos monitores distintos). Ver «La resolución,
+verificada».
 
 ### Fuera de la lista
 
-- **`3047352572`, el vídeo *Pattern***: no es determinista offline y falla
-  en `test_wevideo` desde V1.0.0. Mueve su luz media entre renders (50,0 →
-  47,6 en la última pasada) y ensucia cualquier comparación del corpus.
+- ~~**`3047352572`, el vídeo *Pattern***~~: hecho, y no era el vídeo. Ver
+  «Las tablas de glexec y el paso de swscale», abajo.
+
+
+## Las tablas de glexec y el paso de swscale
+
+`3047352572` (Cyberpunk 2077 – Phantom Liberty) tenía dos síntomas, y se
+habían metido los dos en el saco de su vídeo *Pattern*: `test_wevideo` fallaba
+en sus fotogramas y el render offline salía con 50,0 o con 47,6 de luz, al
+azar. Eran dos fallos sin relación, y el grave no tenía nada que ver con el
+vídeo.
+
+### El render no determinista: `textures[64]`
+
+Con el mismo `plan.txt` y el mismo `glexec` salían exactamente **dos**
+imágenes, en NVIDIA y en Mesa por igual. No eran ni ruido del driver ni
+memoria de GPU sin inicializar, y tampoco seguían al reloj. Biseccionando los
+72 objetos del plan (de un fotograma; ~6 s por ejecución, 6 ejecuciones por
+variante) hacían falta la cabeza del dragón (malla 16) y el sistema de
+partículas anclado a ella, más cualquier otro objeto. Lo que dio la causa fue
+compilar `glexec` con `-fsanitize=address,undefined`:
+
+    tools/glexec.c:1372: index 80 out of bounds for type 'GLuint [64]'
+
+`MAX_TEX` era 64 y el plan trae **96** texturas. Al cargar, las de id ≥ 64 se
+descartaban sin avisar; al enlazar, `textures[atoi(...)]` no comprobaba nada y
+`tex:80` leía lo que hay detrás del array, que es `videos[]`: punteros del
+heap que cambian con cada proceso por ASLR. Según la mitad del puntero que
+cayera, la unidad de textura quedaba sin nada o con otra textura.
+
+Las demás tablas fijas hacían cada una una cosa distinta al llenarse:
+`rts[64]` **escribía** fuera; `pares[64]` volvía en silencio a `pares[0]`, un
+buffer de otro tamaño (desde «El buffer de cada objeto, del tamaño al que se
+ve» cada objeto pide su par, así que esa era la siguiente en caer); samplers,
+uniforms, mallas y sistemas se descartaban sin decir nada; la caché de
+programas (260 en esta escena, tope 256) solo recompilaba. Ahora los topes son
+holgados (texturas 1024, buffers 256, pares 256, mallas y sistemas 512,
+programas 2048, 16 samplers y 128 uniforms por pase), y **rebasar uno aborta**
+con `fuera_de_tope`: un plan que no cabe no se ejecuta a medias, porque una
+imagen incompleta sin error es justo lo que `test_luminancia` no distingue. El
+ejecutor en vivo usa `QHash` y no tenía este problema: **solo estaba mal el
+oráculo**.
+
+De paso, UBSan cazó `ruido_hash` en `src/weparticles.c`, que contaba con que
+el `int` se envolviera al desbordar (indefinido en C). Pasa a `unsigned` y
+da los mismos bits: el mismo hash de imagen antes y después.
+
+Corpus (`test_luminancia` en Mesa, `--guardar` con el `glexec` de `main` en
+un worktree y `--referencia` en la rama): 133/133, 0 regresiones, 0
+apagadas, nadie aborta. Se mueven dos, las dos hacia su preview:
+
+| escena | main | rama | preview |
+|---|---|---|---|
+| `3097749052` (123 texturas) | 30,47 | 35,77 | 38,78 |
+| `3047352572` (96) | 49,98 | 54,20 | 64,17 |
+
+En `3097749052` el personaje entero salía como una silueta negra con
+cuadrados negros sueltos; ahora sale con sombrero, cara, linterna y espada.
+Las otras 13 que cambian lo hacen en 0,2 o menos: relojes y fechas que leen
+la hora real. `3047352572` también tiene un reloj, así que dos renders suyos
+siguen difiriendo en unos 3000 píxeles del reloj; fuera de ellos, el mismo
+hash en cuatro ejecuciones por driver.
+
+**La lección**: el oráculo también es código. Un `glexec` con ASan+UBSan sobre
+el plan sospechoso cuesta un minuto y debería ser el primer paso ante
+cualquier render que no se repite.
+
+### `test_wevideo`: el paso de swscale con ffmpeg 9
+
+*Pattern* es un H.264 de 340×340. Con ffmpeg 9, `sws_scale` hacia RGBA con un
+paso de destino de `w * 4` justo (y negativo, para el volteo) se porta según
+el ancho:
+
+| ancho % 16 | qué hace |
+|---|---|
+| 0 | bien |
+| 2–6, sin escalar | **no escribe** las últimas columnas (en *Pattern*, 4 columnas a RGBA 0,0,0,0) |
+| 8–14, o escalando a un ancho no múltiplo de 8 | escribe de 8 a 32 bytes **fuera** de la fila |
+
+Lo segundo es lo grave: los anchos que da `tamano_textura` al encajar un vídeo
+en la pantalla (2134, 1366…) caen ahí, y en la primera fila que escribe ---la
+última del buffer, por el volteo--- eso es fuera del hueco. En vivo se pisaba
+heap en cada fotograma. Se midió con un canario detrás del buffer: ASan no lo
+ve porque no instrumenta el ensamblador de swscale.
+
+Ahora cada fila del hueco ocupa un múltiplo de 64 bytes, el hueco lleva 64
+bytes más de cola, y `wevideo_paso()` dice cuántos píxeles ocupa una fila.
+Los dos ejecutores suben con `GL_UNPACK_ROW_LENGTH` (y lo devuelven a 0:
+`otragpu.cpp` deja puesto otro valor), sin copia extra. `test_wevideo`: 57/57
+fotogramas idénticos a ffmpeg, por primera vez desde `V1.0.0`.
+
+
+## El IPC de Hyprland, medido
+
+Punto 11 de la auditoría. Cerrado **sin cambiar el motor**: lo que se probó
+no mejora nada medible, y se deshizo.
+
+### Cuánto cuesta cada petición
+
+Con un cliente sintético (Python, conexión nueva por petición, como hace
+`CursorHyprland`) a 62 peticiones por segundo, contra el `/proc/<pid>/stat`
+de Hyprland, con el fondo vivo de fondo (línea base: Hyprland al 1,85 % de un
+núcleo):
+
+| petición | Hyprland | cliente | latencia mediana / p99 | bytes |
+|---|---|---|---|---|
+| `j/cursorpos` | +0,5 puntos | ~1 % | 0,35 / 1,7 ms | 34 |
+| `j/monitors` | +0,75 | ~1 % | 0,36 / 1,7 ms | 1440 |
+| `j/clients` | +0,7 | ~1 % | 0,40 / 1,9 ms | 902 |
+
+O sea, unos 80–120 µs de CPU de Hyprland por petición.
+
+### Cuántas hay
+
+- **Cursor**: 62 por segundo mientras haya un fondo sin pausa.
+- **Revisión** (`j/monitors` + `j/clients`, síncronas en el hilo de la GUI):
+  el repaso de cada 2 s y una por ráfaga de eventos, **por monitor** (cada
+  pantalla tiene su `Hyprland` y piden lo mismo). Escuchando `.socket2.sock`
+  30 s con una terminal activa: 128 eventos, 32 ráfagas. Hyprland vuelve a
+  emitir `activewindow`/`activewindowv2` cada vez que la ventana activa
+  **cambia de título**, aunque sea la misma ventana, así que ignorar
+  `windowtitle` no evita la revisión: ~1 por segundo y monitor. Son ~4
+  peticiones por segundo por monitor: despreciable al lado del cursor.
+
+### Lo que se probó: preguntar el cursor solo si el plan lo lee
+
+La idea: casi la mitad de las escenas no leen el ratón, y el sondeo les cuesta
+igual. Se clasificó el corpus con el criterio que habría de usar el ejecutor:
+un uniform **vivo** con marca de puntero o de parallax (no vale cualquiera:
+`werender` pone `g_PointerPosition` en todos los pases y casi ningún shader lo
+lee), un `psyspuntero`, o una capa con `paralaje` distinto de cero y la cámara
+con influencia (la línea `parallax` **no** sirve: sale en todos los planes,
+con el retardo y la influencia de la escena, la use o no). Resultado:
+**64 de 133 escenas no leen el ratón**; de las demás, 46 por partículas, 28
+por `paralaje` y 15 por shaders.
+
+Se implementó (`GlExecutor::usaRaton`, `CursorHyprland::usa`; el sondeo
+solo con un fondo sin pausa **y** una escena que lo lea) y el registro
+confirmó que dejaba de preguntar. Medido con `medir_vivo` en `2464842912`
+(no lee el ratón, 32 pases, solo eDP-1), intercalado A/B tres y tres:
+
+| | A (pregunta 62/s) | B (no pregunta) |
+|---|---|---|
+| proceso | 21,8 / 21,8 / 21,8 % | 22,8 / 22,6 / 23,0 % |
+| CPU por fotograma | 2,30–2,33 ms | 2,33–2,35 ms |
+| Hyprland | 7,8 / 7,3 / 7,6 % | 7,9 / 7,8 / 7,9 % |
+| i915 render | 13,3–13,4 % | 13,9 % |
+
+Mismos 55 fps. **No hay ganancia**: diferencias del 1–5 % y en contra. Los
+~0,5 puntos del cliente sintético no aparecen con el motor real. Que B salga
+algo peor apunta a que las 62 interrupciones por segundo mantienen la CPU en
+una frecuencia o un reposo algo más alto, pero eso **no se ha medido**. Por
+la regla de la vara de medir, el cambio no entra. El parche (~200 líneas de
+diff) no se guarda en el repositorio; con esta sección basta para rehacerlo.
+
+**Lección**: el coste aislado de una pieza (un microbenchmark) no dice lo que
+pesa dentro del proceso. Aquí el sintético prometía medio punto de Hyprland
+y en vivo no se vio ni eso.
+
+
+## La NVIDIA en pausa, medida
+
+Punto 12 de la auditoría, la parte del motor: si el fondo en pausa le manda
+algo a la dedicada. Sin `strace` ni `perf` (y con `ptrace_scope` a 1) no se
+puede trazar el proceso, y `nvidia-smi` la despierta, así que se mide de
+lado: las **interrupciones de la NVIDIA** en `/proc/interrupts` (la IRQ
+`nvidia`; la GPU interrumpe cuando se le manda trabajo) y los **cambios de
+contexto por hilo** del proceso (`/proc/<pid>/task/*/status`). El anfitrión
+de medida va con `--pausa 2`, que pausa con cualquier ventana en el monitor,
+y con el plan de *Jeanne d'Arc* (`2788165557`); 20 s por estado:
+
+| estado | IRQ de la NVIDIA | despertares del proceso | CPU |
+|---|---|---|---|
+| sin fondo | 0,0 /s | — | — |
+| **en pausa** | **0,0 /s** | 5,9 /s, todos del hilo principal | 0,05 % |
+| dibujando | 56 /s | 2898 /s (render, Wayland, principal) | 15,9 % |
+
+En pausa el motor **no le manda nada**: las mismas interrupciones que sin
+fondo, y el hilo de render (`QSGRenderThread`) no se despierta ni una vez.
+Cuadra con el código: con el reloj de QML parado `setTime` no pide fotograma,
+el ratón no pide fotograma por diseño, y sin `update()` `render()` no corre.
+Lo que sigue vivo es CPU: el repaso de 2 s y las revisiones por evento de
+`Hyprland`. Dibujando, una interrupción por fotograma: el instrumento ve el
+trabajo cuando lo hay.
+
+Lo que el motor sí retiene en pausa es el **contexto EGL de la NVIDIA y su
+VRAM** (~500 MiB, punto 10). No está medido si eso impide la suspensión, ni
+se puede medir aquí: ver abajo.
+
+### Lo del sistema, para cuando se aborde
+
+`/proc/driver/nvidia/gpus/*/power` dice **`Runtime D3 status: Disabled by
+default`**: el driver no tiene activada la suspensión en caliente (RTD3), y
+hace falta `NVreg_DynamicPowerManagement` en modprobe para encenderla. Sin
+eso la dedicada no duerme nunca, haga lo que haga cualquier proceso. Con
+esta ya son tres causas, ninguna del motor: esta, `audio-fix.conf` (el audio
+HDMI siempre encendido) y lo que la mantenía despierta incluso con
+`power_save=1` (sin identificar; sospechosos `nvidia-powerd` y el `card1` de
+Xwayland). Solo con RTD3 encendido tiene sentido volver a mirar el contexto
+y la VRAM del motor.
+
+
+## Los puntos 13 a 15: el plan, su tamaño y su carga
+
+Tres puntos de la auditoría que resultaron ser casi uno: lo que tarda en
+hacerse el plan (`wectl set`), lo que ocupa y lo que tarda el motor en
+cargarlo.
+
+### 13. Lo que tarda `emit_plan`
+
+Perfilado con `cProfile` sobre el corpus (153 directorios; los 20 que fallan
+son de tipo web y demás no soportados): **LZ4 en Python** se llevaba el
+39,5 %, **traducir shaders** el 36,6 %, las hojas de sprites por tiempo el 10 %
+(casi todo su propio LZ4) y las **mallas animadas** el 7,6 %. La doble copia
+de ficheros (temporal → directorio del plan) y la sustitución de rutas
+(`fix`) no llegan al 3 % juntas, aunque lo parecían.
+
+Cuatro cambios, ninguno toca lo que sale:
+
+- **LZ4 con la `liblz4` del sistema** por `ctypes` (`wetex._cargar_liblz4`),
+  con el decodificador de Python de reserva (`_lz4_python`). Los 1859 bloques
+  del corpus, 3,7 GB, dan los mismos bytes; 111 s → 0,9 s.
+- **`Renderer._traducir`** recuerda las traducciones de la escena: una
+  escena repite efectos (`3047352572` pide 518 traducciones y solo 86 son
+  distintas). Una caché por `Resolver`, porque los `#include` pueden venir
+  del paquete. Cuidado al tocarlo: el primer intento usaba el `Resolver` como
+  parte de la clave, no es *hashable*, y el `TypeError` lo tragaba el
+  `except` de `emit_pass`: todos los pases del corpus desaparecieron sin
+  ruido. Lo vio la comparación del corpus.
+- **`inv(G_j)`** (la pose de reposo) se calculaba en cada clave de la
+  animación: 1,3 millones de inversas de 4×4 en `2637739953`. Ahora una por
+  malla.
+- **`_smooth_weights`** suma con `np.bincount` por columna en vez de
+  `np.add.at`: mismo orden de suma, mismos bits, y `add.at` se llevaba 4,8 s
+  en `3047352572`.
+
+El oráculo: el plan de las 148 escenas generables, fichero a fichero, por
+hash. Idéntico salvo las mallas de texto de los relojes (`text*.bin`, que
+llevan la hora de cuando se hacen; `plan.txt` y todo lo demás, iguales).
+
+| | antes | ahora |
+|---|---|---|
+| corpus | 319 s | **90 s** |
+| mediana por escena | 0,99 s | **0,33 s** |
+| la peor | 38,4 s (`3577990983`) | **8,0 s** (`3047352572`) |
+
+Queda en cabeza el skinning de las mallas animadas (`_skin_matrices`
+compone la jerarquía clave a clave en Python), en las dos escenas que
+pasan de 5 s.
+
+### 15. Qué pesa en el `init`
+
+Para verlo, el `init` lleva ahora un desglose por fases en el registro
+(`SceneView: init por fases (ms)`: mallas, partículas y vídeos, leer
+texturas con sus MB, subirlas, buffers, compilar, resolver). Son ms de pared
+del hilo de render: lo que la GPU haga en diferido no cae ahí. Medido en
+vivo (NVIDIA) en 8 escenas, dos cargas cada una:
+
+| escena | plan | init | leer | **subir** | compilar |
+|---|---|---|---|---|---|
+| `3577990983` | 453 MB | 280 ms | 54 | **213** | 5–14 |
+| `3047352572` | 342 MB | 250 ms | 35 | **185** | 16–25 |
+| `3146507587` | 422 MB | 240 ms | 46 | **188** | 4 |
+| `2788165557` | 218 MB | 147 ms | 25 | **115** | 2–7 |
+| `973101892` | 42 MB | 38 ms | 6 | **30** | 1–6 |
+
+El **75–80 % es subir texturas** (`glTexImage2D` + `glGenerateMipmap`,
+~0,5 ms por MB) y el ~20 % leerlas. Compilar apenas pesa: el driver tiene su
+propia caché de shaders, así que **`glProgramBinary` no merece la pena**.
+Un wallpaper de vídeo carga en 11 ms. O sea, que el 14 y el 15 son lo
+mismo: bytes de textura.
+
+### 14. Qué ocupa el plan, y lo que se hizo
+
+17,1 GB entre todos los planes del corpus, mediana de 75 MB, el mayor de
+587 MB (un vídeo); el 86 % son `.rgba`. La idea de la lista era subir el
+DXT del `.tex` tal cual. **Descartada al medir**: solo el **9 %** de los bytes
+de textura viene de DXT. El 62 % son RGBA8888, casi todo imágenes JPG/PNG
+dentro del `.tex`, y el **28 %** son R8 y RG88, máscaras de uno y dos canales
+que `wetex` expande a `(r, r, r, 255)` y `(r, g, 0, 255)`: 4 bytes por
+píxel donde bastan 1 o 2.
+
+`canales_de` en `werender.py` mira los **píxeles finales** de cada textura
+(alfa siempre 255 y R = G = B, o alfa 255 y B = 0) y la guarda con 1 o 2
+canales; la línea es `tex <id> <ruta> <w> <h> [canales]`, sin el campo un
+plan viejo sigue valiendo. Los dos ejecutores la suben como `GL_R8` /
+`GL_RG8` con un *swizzle* (`R,R,R,1` y `R,G,0,1`) que devuelve exactamente
+lo de antes, con `GL_UNPACK_ALIGNMENT` a 1 (el ejecutor en vivo devuelve el
+estado que hubiera: en Mesa el contexto es el de Qt). Decidirlo por los
+píxeles y no por el formato de origen lo hace exacto pase lo que pase antes
+(recortes, márgenes, el espejo de las `flowmask`), y además pilla imágenes
+RGBA que en realidad son grises.
+
+- **Bytes de textura del corpus: 14,7 → 10,4 GB (−29 %)**, mediana −26 %
+  por escena. Comprobarlo cuesta 3 s en todo el corpus.
+- **`init` en vivo**: `3577990983` 280 → 242 ms, `3047352572` 250 → 202,
+  `3146507587` 240 → 186, `2788165557` 147 → 130, `2464842912` 62 → 42
+  (−12 a −33 %).
+- **VRAM** (`3146507587`, `medir_vivo` intercalado A/B dos y dos): 824 →
+  659 MiB. La CPU por fotograma no cambia.
+- **La imagen**: las 133 escenas renderizadas con `HEAD` y con el cambio, en
+  Mesa, comparadas píxel a píxel: **idénticas** salvo las 26 que muestran la
+  hora (25 relojes y fechas, y `2396319149`, con agujas de `engine.timeOfDay`
+  que ni dos renders del mismo código repiten). Seis escenas con muchas
+  máscaras, también idénticas en NVIDIA: `glGenerateMipmap` promedia un
+  `R8` igual que el RGBA de antes, al menos en estos dos drivers.
+
+### Fuera de estos puntos
+
+- `test_wectl` falla en cuatro comprobaciones del «cambio de plan» (el
+  sobrante del anterior, el plan que no cambia, el escritorio sin plan tras
+  un fallo, dos cambios a la vez). **Ya fallaba en `91dc02b`**, antes de todo
+  esto; sin mirar.
+
+
+## La resolución, verificada
+
+Punto 17 de la auditoría. El oráculo es el propio motor en vivo: al cambiar
+el encaje traza `GlExecutor: encaje=… escena WxH -> se ve cWxcH … ->
+destino dWxdH … de vWxvH`. Se cargó cada wallpaper de la biblioteca (los 148
+que `wectl` puede poner, vídeos incluidos) en el anfitrión de medida, con el
+plan hecho a la resolución que pone `wectl` (`resolucion_de_pantalla`, aquí
+eDP-1 a 1920×1200, escala 1), y se leyó esa línea.
+
+- **Las 148, a 1,00 exacto**: ni una ampliada ni una reducida en el blit
+  final. Todas en «cubrir», destino 1920×1200.
+- **Lo que se dibuja y no se ve** es solo lo que «cubrir» recorta por la
+  diferencia de proporción: mediana ×1,11 (16:9 en un panel 16:10). Los
+  extremos son escenas verticales: `2946362143` dibuja 1920×3813 y se ven
+  1200 filas (×3,18), `2870014907` y `2866586232` ×2,84, `2834289732`
+  (4267×1200) ×2,22. Dibujar solo lo visible cambiaría la proyección de todo
+  para tres o cuatro escenas; no se hace.
+
+### Lo que no se ha podido probar aquí
+
+- **Plasma.** Bajo Hyprland `kscreen-doctor -j` no da salidas, así que su
+  camino solo se ha leído. Y leyéndolo hay un hueco: `resolucion_de_pantalla`
+  toma el `size` del modo actual **sin mirar la rotación**, y el camino de
+  Hyprland sí la mira (`transform`). Un panel vertical en Plasma pediría el
+  plan apaisado, y una escena apaisada saldría ampliada por la altura. Sin
+  arreglar: no se puede comprobar el campo de rotación de `kscreen-doctor`
+  sin un Plasma delante.
+- **Dos monitores en modo `mismo`.** El plan compartido se hace al monitor
+  de **más área**. El factor que no amplía en ninguno es el máximo de los
+  `k` de cada monitor, y eso es justo lo que sale de pasar el **máximo por
+  dimensión** (ancho máximo, alto máximo): el de más área puede quedarse
+  corto en una dimensión y nunca se pasa. Con eDP-1 (1920×1200) y HDMI-A-3
+  (1920×1080) da lo mismo, porque gana en las dos; con un panel vertical
+  junto a uno apaisado, no. Sin cambiar: no estaba conectado el segundo
+  monitor para medirlo.
+- La **escala fraccionaria** (`scale` ≠ 1) tampoco se ha visto: `wectl` toma
+  los píxeles del modo y el motor dibuja a los físicos, así que debería
+  cuadrar, pero aquí la escala es 1.
+
+## Los restos del punto 6
+
+### La caché de estado de GL: no compensa
+
+En el ejecutor en vivo **cada pase tiene su propio programa**
+(`buildProgram`), así que `glUseProgram` no se repite nunca, y los destinos
+tampoco se repiten entre pases seguidos. Contado sobre el plan de
+*Arknights* (`3462491575`, 144 pases): lo evitable son **95 cambios de mezcla
+iguales al anterior** (~190 llamadas baratas) y **una** textura que ya estaba
+en su unidad. Unas decenas de µs de los ~3,5 ms de CPU por fotograma: menos
+del 1 %, lejos de la regla del 10 %. No se hace.
+
+### `g_TexelSize`: no se toca
+
+La premisa del pendiente era que lo «correcto» sería el texel del buffer de
+la capa. **La única medida contra WE dice lo contrario**: el radio del bloom
+de `2821288001` cuadra con el texel de PANTALLA («`g_TexelSize` es el texel de
+PANTALLA, y lo dice la captura»), que es lo que se emite. Para los efectos de
+capa no hay oráculo: los previews son pequeños y `test_luminancia` no ve el
+radio de un desenfoque. Y va atado a lo siguiente: encoger un `_rt_Half…`
+sin cambiar `g_TexelSize` dejaría los taps saltando texels del buffer
+pequeño. Sin captura de WE de un desenfoque de capa, se queda así.
+
+### Los `_rt_…` por capa: poco, y sin oráculo
+
+Contados los píxeles de cada pase del corpus a 1920×1200: los buffers con
+nombre son **461 Mpx por fotograma frente a 8215** de los pases de capa
+(5 %); hacerlos fracción de la capa quitaría 136 Mpx, el **1,6 %**. En unas
+pocas escenas sí se notaría (`3624164256` −30 % de píxeles, `3597772384`
+−20 %, `3237641967` −16 %, `3210875135` −13 %), pero cambia la imagen por lo
+mismo que `g_TexelSize`. No se hace.
+
+### Lo que sí: los buffers que declara cada efecto
+
+Revisando lo anterior salió que **no se leía un campo del formato**. Cada
+`effect.json` declara sus buffers en `fbos`, con `scale` (el divisor),
+`width`/`height` fijos o `fit`, y nosotros el tamaño lo sacábamos **del
+nombre** («Half» → ½, «Quarter» → ¼). En los efectos de WE coinciden, pero
+los del Workshop que traen los paquetes usan otros nombres:
+
+- `bokeh_blur` (4 escenas): `_downscaled1/2` y `_coc` con `scale: 4`;
+- un `bloom` (3 escenas) que encadena `blur_start_2` … `blur_end_16`, con
+  `scale` de 2 a 16.
+
+Por el nombre salían **todos a lienzo completo**. En una cadena de bloom eso
+no es solo coste: el desenfoque se calcula a resolución completa y el halo
+sale mucho más estrecho que el que dibuja el efecto.
+
+Ahora `wescene` guarda lo declarado (`Scene.fbos`, por el nombre que usan los
+pases, alias de `unique` incluido), `werender.rt_size` lo usa y el plan lleva
+una línea `rt <nombre> <w> <h>` por buffer declarado, que los dos
+ejecutores respetan al crearlo (sin línea, por el nombre, como antes). `fit`
+(solo `cursorripple`, una escena) no se entiende aún y se queda por el
+nombre; `width`/`height` (`glitter`) no lo usa ninguna escena.
+
+- **Corpus**, 133 escenas en Mesa contra `HEAD`, píxel a píxel: 105
+  idénticas, 24 que solo cambian en la hora, y **4 que cambian de verdad**:
+  `2867316322` (media 162,6 → 191,5), `3053927686` (62,5 → 62,8),
+  `3577990983` (41,55 → 41,69) y `3146507587` (19,43 → 19,46). Las tres
+  últimas se mueven hacia su preview. `2970694180`, que también lleva
+  `bokeh_blur`, sale idéntica (el efecto no llega a dibujar).
+- **`2867316322`** cambia de aspecto: antes un halo estrecho, ahora el
+  resplandor ancho y suave de un bloom de cinco escalas. Su razón con el
+  preview pasa de 1,05 a 1,24, pero aquí no decide: el preview es un GIF de
+  192×192 con otro encuadre (un primer plano), con ese mismo aspecto lavado.
+  Lo que sostiene el cambio es leer el campo literal en vez de adivinarlo.
+- **En vivo**, `2867316322`, intercalado A/B dos y dos: GPU **4,65 → 3,98 ms**
+  por fotograma (−14 %) y la NVIDIA de **21,5 a 17,4 W** (1350 → 1050 MHz). La
+  CPU no cambia.
+

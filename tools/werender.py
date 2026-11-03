@@ -1357,6 +1357,28 @@ void main() {
 """
 
 
+def canales_de(rgba: "np.ndarray") -> int:
+    """Cuantos canales de verdad tiene una textura RGBA: 1, 2 o 4.
+
+    Las mascaras R8 y RG88 de WE salen de `wetex` como (r, r, r, 255) y
+    (r, g, 0, 255), y subirlas asi gastaba 4 bytes por pixel donde bastan 1 o
+    2: el 29 % de los bytes de textura del corpus, en disco, al leer, al subir
+    y en VRAM. Se decide mirando los PIXELES FINALES, no el formato de origen,
+    asi que es exacto por construccion pase lo que pase antes (recortes,
+    margenes, el espejo de las `flowmask`): el ejecutor sube `GL_R8` o
+    `GL_RG8` con un *swizzle* que devuelve justo estos valores. Ver NOTAS,
+    «Texturas de uno y dos canales».
+    """
+    a = rgba.reshape(-1, 4)
+    if not (a[:, 3] == 255).all():
+        return 4
+    if (a[:, 0] == a[:, 1]).all() and (a[:, 1] == a[:, 2]).all():
+        return 1
+    if (a[:, 2] == 0).all():
+        return 2
+    return 4
+
+
 def niveles_mipmap(w: int, h: int) -> int:
     """Cuantos niveles tiene la piramide de un buffer de w x h.
 
@@ -1425,12 +1447,31 @@ def resolucion_de_dibujo(canvas: tuple[int, int],
     return (max(1, int(round(canvas[0] * k))), max(1, int(round(canvas[1] * k))))
 
 
-def rt_size(name: str, canvas: tuple[int, int]) -> tuple[int, int]:
-    """WE codifica el divisor de resolucion en el nombre del render target.
+def rt_size(name: str, canvas: tuple[int, int],
+            fbos: dict[str, dict] | None = None) -> tuple[int, int]:
+    """El tamano de un buffer con nombre de un efecto.
 
-    Tiene que coincidir con lo que hace glexec al crearlos, o los shaders
-    reciben una resolucion que no corresponde a la textura que muestrean.
+    Lo manda lo que DECLARA su `effect.json` (`fbos`): `width`/`height` fijos
+    o `scale`, el divisor del lienzo. Solo si no declara nada se deduce del
+    nombre, que es la convencion de los efectos de WE (`_rt_Half...` lleva
+    `scale: 2`) pero no la de los del Workshop: el `bokeh_blur` de 4 escenas
+    llama `_downscaled1` y `_coc` a buffers de `scale: 4`, y un `bloom` de 3
+    escenas encadena `blur_start_2` ... `blur_end_16`. Por el nombre salian
+    todos a lienzo completo. `fit` (un solo efecto, `cursorripple`) no se
+    entiende aun y se deja por el nombre. Ver NOTAS, «Los buffers que declara
+    cada efecto».
+
+    El plan lleva el tamano en una linea `rt`, asi que los ejecutores no
+    tienen que deducir nada; sin ella hacen lo mismo que el final de esta
+    funcion.
     """
+    d = (fbos or {}).get(name) or {}
+    if isinstance(d.get("width"), int) and isinstance(d.get("height"), int) \
+            and d["width"] > 0 and d["height"] > 0:
+        return d["width"], d["height"]
+    escala = d.get("scale")
+    if isinstance(escala, (int, float)) and escala >= 1:
+        return max(1, int(canvas[0] // escala)), max(1, int(canvas[1] // escala))
     div = 1
     if "Half" in name:
         div = 2
@@ -1517,15 +1558,21 @@ def _smooth_weights(mesh, n_bones: int, iters: int) -> np.ndarray:
     grado = np.bincount(src, minlength=nv).astype(np.float64)
     grado[grado == 0] = 1.0
 
+    # `np.bincount` por columna y no `np.add.at`: suman en el mismo orden y
+    # dan los mismos bits, pero `add.at` se llevaba 4,8 s de los 13 de
+    # `emit_plan` en `3047352572` (40 iteraciones por malla).
     for _ in range(iters):
-        acum = np.zeros_like(W)
-        np.add.at(acum, src, W[dst])
+        vecinos = W[dst]
+        acum = np.empty_like(W)
+        for j in range(W.shape[1]):
+            acum[:, j] = np.bincount(src, weights=vecinos[:, j], minlength=nv)
         W = 0.5 * W + 0.5 * (acum / grado[:, None])
         W /= np.maximum(W.sum(axis=1, keepdims=True), 1e-12)
     return W
 
 
-def _skin_matrices(bones, anim, k: int) -> np.ndarray:
+def _skin_matrices(bones, anim, k: int,
+                   inv_reposo: list[np.ndarray] | None = None) -> np.ndarray:
     """Matriz de skinning de cada hueso en la clave `k`: (huesos, 4, 4).
 
     Skinning jerarquico estandar con vector-fila:
@@ -1561,14 +1608,19 @@ def _skin_matrices(bones, anim, k: int) -> np.ndarray:
             g.append(mats[j] @ g[bone.parent] if 0 <= bone.parent < j else mats[j])
         return g
 
-    reposo = [np.asarray(b.matrix, dtype=np.float64) for b in bones]
+    # `inv(G_j)` no depende de la clave: quien pide todas (`_pistas_de_huesos`)
+    # la calcula una vez y la pasa. Eran 1,3 millones de inversas de 4x4 en
+    # `2637739953`, el grueso de sus 12 s de `emit_plan`.
+    if inv_reposo is None:
+        reposo = [np.asarray(b.matrix, dtype=np.float64) for b in bones]
+        inv_reposo = [np.linalg.inv(g) for g in componer(reposo)]
     pose = []
     for j in range(len(bones)):
         tr = anim.tracks[min(j, anim.tracks.shape[0] - 1)][k]
         pose.append(_trs(tr[0:3], tr[3:6], tr[6:9]))
 
-    G, P = componer(reposo), componer(pose)
-    return np.stack([np.linalg.inv(G[j]) @ P[j] for j in range(len(bones))])
+    P = componer(pose)
+    return np.stack([inv_reposo[j] @ P[j] for j in range(len(bones))])
 
 
 def _mundo_de_reposo(bones) -> list[np.ndarray]:
@@ -1609,8 +1661,9 @@ def _pistas_de_huesos(bones, anim) -> tuple[np.ndarray, int]:
     keys = int(anim.tracks.shape[1])
     nb = len(bones)
     mats = np.empty((keys, nb, 12), dtype="<f4")
+    inv_reposo = [np.linalg.inv(g) for g in _mundo_de_reposo(bones)]
     for k in range(keys):
-        mats[k] = _skin_matrices(bones, anim, k)[:, :, 0:3].reshape(nb, 12)
+        mats[k] = _skin_matrices(bones, anim, k, inv_reposo)[:, :, 0:3].reshape(nb, 12)
     if anim.mode == "mirror":
         mats = np.concatenate([mats, mats[-2:0:-1], mats[:1]])
     return mats, int(mats.shape[0])
@@ -1783,6 +1836,7 @@ class Renderer:
         # rapidez por defecto de `turbulentvelocityrandom`.
         self.ortografica = True
         self.pixeles: tuple[int, int] = (1920, 1080)
+        self.fbos: dict[str, dict] = {}     # lo pone `_build`; ver `rt_size`
         self.pantalla = resolucion
         # Luces de la escena y su ambiente; los rellena `_build` al leerla.
         self.luces: list[Luz] = []
@@ -1969,9 +2023,14 @@ class Renderer:
         i = self._n_tex
         self._n_tex += 1
         path = self.tmp / f"tex{i:03d}.rgba"
-        path.write_bytes(rgba.tobytes())
+        canales = canales_de(rgba)
+        if canales == 4:
+            path.write_bytes(rgba.tobytes())
+        else:
+            path.write_bytes(np.ascontiguousarray(rgba[:, :, :canales]).tobytes())
         self._tex_dims[i] = (rgba.shape[1], rgba.shape[0])
-        self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}")
+        self.lines.append(f"tex {i} {path} {rgba.shape[1]} {rgba.shape[0]}"
+                          + (f" {canales}" if canales != 4 else ""))
         return i, rgba.shape[1], rgba.shape[0]
 
 
@@ -2831,6 +2890,37 @@ class Renderer:
                         (idx16.tobytes(), pesos.tobytes(), mats.tobytes()),
                         (float(ext[0]), float(ext[1])))
 
+    def _traducir(self, fuente: str, etapa: str, sresolver, combos, varyings,
+                  directivas) -> str:
+        """`weshader.translate`, recordando lo ya traducido en esta escena.
+
+        Una escena repite efectos: `3047352572` pide 518 traducciones y solo
+        86 son distintas, y traducir era un tercio de lo que tarda `wectl set`.
+        La clave lleva todo lo que recibe `translate`, y hay una cache por
+        `Resolver`, porque los `#include` pueden venir del paquete de la escena.
+        El `Resolver` no es *hashable* (tiene `__eq__`) y un `id()` suelto se
+        puede reutilizar, asi que se guarda el objeto y se compara su
+        identidad. Ojo: una excepcion aqui la traga el `except` de `emit_pass`
+        y el pase desaparece sin ruido; asi se perdieron todos en el primer
+        intento, y lo vio la comparacion del corpus. Comprobado: los planes
+        salen identicos byte a byte.
+        """
+        congela = lambda d: None if d is None else tuple(sorted(
+            (k, repr(v)) for k, v in (d.items() if isinstance(d, dict)
+                                      else ((x, 1) for x in d))))
+        clave = (fuente, etapa, congela(combos), congela(varyings),
+                 congela(directivas))
+        porResolver = self.__dict__.setdefault("_traducidos", {})
+        dueno, cache = porResolver.get(id(sresolver), (None, None))
+        if dueno is not sresolver:
+            cache = {}
+            porResolver[id(sresolver)] = (sresolver, cache)
+        if clave not in cache:
+            cache[clave] = weshader.translate(fuente, etapa, sresolver,
+                                              combos=combos, varyings=varyings,
+                                              directivas=directivas)
+        return cache[clave]
+
     def emit_pass(self, p, sresolver, canvas: tuple[int, int], obj=None) -> None:
         # Un sistema de particulas no dibuja el quad de la capa sino lo que
         # simula `weparticles`. Se resuelve lo primero porque decide hasta el
@@ -3014,12 +3104,10 @@ class Renderer:
             fuente_v, fuente_f, sresolver, combos_v, combos_f)
         directivas = weshader.directivas_de_pase(fuente_v, fuente_f, sresolver)
         try:
-            vert = weshader.translate(fuente_v, "vert", sresolver,
-                                      combos=combos_v, varyings=varyings,
-                                      directivas=directivas)
-            frag = weshader.translate(fuente_f, "frag", sresolver,
-                                      combos=combos_f, varyings=varyings,
-                                      directivas=directivas)
+            vert = self._traducir(fuente_v, "vert", sresolver, combos_v,
+                                  varyings, directivas)
+            frag = self._traducir(fuente_f, "frag", sresolver, combos_f,
+                                  varyings, directivas)
         except Exception:
             self.stats["sin_shader"] += 1
             return
@@ -3110,7 +3198,7 @@ class Renderer:
                     # los slots 1 y 2 derivan `v_TexCoord.zw` de ella, y a cero
                     # muestrean fuera del buffer: el efecto lee transparente y
                     # se anula.
-                    rw, rh = rt_size(name, self.pixeles)
+                    rw, rh = rt_size(name, self.pixeles, self.fbos)
                     self.body.append(
                         f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
             elif str(meta.get(uni, {}).get("default", "")) in (
@@ -3139,7 +3227,7 @@ class Renderer:
                 # contiene lo mismo que el de WE.
                 b = str(meta[uni]["default"])
                 src = f"rt:{b}"
-                rw, rh = rt_size(b, self.pixeles)
+                rw, rh = rt_size(b, self.pixeles, self.fbos)
                 self.body.append(f"u4f g_Texture{slot}Resolution {rw} {rh} {rw} {rh}")
                 if b == "_rt_MipMappedFrameBuffer":
                     # El nivel mas alto de la piramide. El shader lo usa como
@@ -3163,7 +3251,7 @@ class Renderer:
                     k = self.pixeles[0] / max(1, self.canvas[0])
                     w, h = max(1, round(lw * k)), max(1, round(lh * k))
                 else:
-                    w, h = rt_size(b, self.pixeles)
+                    w, h = rt_size(b, self.pixeles, self.fbos)
                 self.body.append(
                     f"u4f g_Texture{slot}Resolution {w} {h} {w} {h}")
             if src is None:
@@ -3471,7 +3559,7 @@ class Renderer:
         # -- el del escritorio -- lo propagaba, asi que 3146507587 se veia bien
         # en el render offline y se desvanecia a negro en vivo. La misma escena,
         # renderizada offline forzando Mesa, se desvanecia igual.
-        tw, th = rt_size(p.target, self.pixeles) if p.target else self.pixeles
+        tw, th = rt_size(p.target, self.pixeles, self.fbos) if p.target else self.pixeles
         self.body.append(f"u2f g_TexelSize {1.0 / max(1, tw):.9g} "
                          f"{1.0 / max(1, th):.9g}")
         hoja = self._hoja_por_hora(obj, hoja_tex) if hoja_tex else None
@@ -3700,7 +3788,7 @@ class Renderer:
         def pase(vp: Path, fp: Path, destino: str, fuente: str,
                  extra: tuple[str, ...] = ()) -> None:
             fw, fh = ((w, h) if fuente in BUFFERS_DEL_MOTOR
-                      else rt_size(fuente, self.pixeles))
+                      else rt_size(fuente, self.pixeles, self.fbos))
             self.body.append("pass")
             self.body.append(f"prog {vp} {fp}")
             self.body.append(f"target {destino}")
@@ -3769,6 +3857,12 @@ class Renderer:
         self.ambiente = amb
         self.cielo = (_floats(general.get("skylightcolor")) + amb)[:3]
         self.lines.append(f"canvas {self.pixeles[0]} {self.pixeles[1]}")
+        # Los buffers con nombre cuyo tamano declara su efecto: el ejecutor los
+        # crea a este tamano en vez de deducirlo del nombre (`rt_size`).
+        self.fbos = scene.fbos
+        for nombre in sorted(self.fbos):
+            w, h = rt_size(nombre, self.pixeles, self.fbos)
+            self.lines.append(f"rt {nombre} {w} {h}")
         # Con que color, OPACO, empieza cada fotograma: el `clearcolor` de la
         # escena, salvo que `clearenabled` lo apague. Antes se empezaba en
         # (0, 0, 0, 0), y no era solo el color de lo que ninguna capa cubre:

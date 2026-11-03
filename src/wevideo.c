@@ -33,6 +33,19 @@
 #define ANILLO_MIN 2
 #define ANILLO_MAX 4
 
+/* Las filas del RGBA de salida no van pegadas: cada una ocupa un multiplo de
+ * 64 bytes (16 pixeles), y el hueco lleva otro tanto de cola. Es lo que pide
+ * swscale, y no lo dice: con ffmpeg 9 y un paso de `w * 4` justo, si el ancho
+ * no es multiplo de 16 pixeles o NO escribe la cola de cada fila (sin escalar
+ * y `w % 16` de 2 a 6: el video *Pattern* de 340 de ancho salia con sus
+ * cuatro ultimas columnas a RGBA 0) o escribe hasta 32 bytes MAS ALLA de la
+ * fila, y en la primera que escribe ---la ultima del buffer, por el volteo---
+ * eso es fuera del hueco: con los anchos que da `tamano_textura` (2134, 1366)
+ * cada fotograma en vivo pisaba heap. Medido con un canario detras del buffer;
+ * ASan no lo ve porque no instrumenta el ensamblador. Ver NOTAS, «El paso de
+ * swscale». Los ejecutores suben con `GL_UNPACK_ROW_LENGTH = wevideo_paso`. */
+#define PASO_ALINEO 64
+
 typedef struct {
     uint8_t *px;
     double pts;      /* segundos dentro del fichero */
@@ -46,6 +59,8 @@ struct WeVideo {
     AVPacket *pkt;
     int flujo;                  /* indice del stream de video */
     int w, h;                   /* tamano de SALIDA, ya escalado */
+    /* Bytes de una fila del hueco, multiplo de PASO_ALINEO. Ver ese define. */
+    int paso;
     double dur;
     double base;                /* time_base del stream, en segundos */
     /* Instante del primer fotograma DENTRO del fichero. No siempre es cero:
@@ -90,6 +105,7 @@ const char *wevideo_error(const WeVideo *v)
 
 int wevideo_ancho(const WeVideo *v) { return v ? v->w : 0; }
 int wevideo_alto(const WeVideo *v) { return v ? v->h : 0; }
+int wevideo_paso(const WeVideo *v) { return v ? v->paso / 4 : 0; }
 double wevideo_duracion(const WeVideo *v) { return v ? v->dur : 0.0; }
 
 /* Distancia entre dos instantes de un video en BUCLE: el final y el principio
@@ -129,8 +145,8 @@ static void convertir(WeVideo *v, Hueco *dst)
      * NEGATIVO desde la ultima fila, que a swscale le cuesta cero: copiar el
      * buffer entero para darle la vuelta serian otros 33 MB por fotograma a
      * 4K. */
-    uint8_t *plano[4] = { dst->px + (size_t)(v->h - 1) * (size_t)v->w * 4, NULL, NULL, NULL };
-    int paso[4] = { -v->w * 4, 0, 0, 0 };
+    uint8_t *plano[4] = { dst->px + (size_t)(v->h - 1) * (size_t)v->paso, NULL, NULL, NULL };
+    int paso[4] = { -v->paso, 0, 0, 0 };
     sws_scale(v->sws, (const uint8_t *const *)v->frame->data, v->frame->linesize,
               0, v->dec->height, plano, paso);
 
@@ -346,7 +362,8 @@ WeVideo *wevideo_open(const char *ruta, int ancho, int alto, int modo)
         goto mal;
     }
 
-    size_t bytes = (size_t)v->w * (size_t)v->h * 4u;
+    v->paso = (v->w * 4 + PASO_ALINEO - 1) / PASO_ALINEO * PASO_ALINEO;
+    size_t bytes = (size_t)v->paso * (size_t)v->h + PASO_ALINEO;
     v->n_huecos = 1;
     if (modo == WEVIDEO_HILO) {
         v->n_huecos = (int)(ANILLO_BYTES / (bytes ? bytes : 1));

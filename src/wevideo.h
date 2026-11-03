@@ -61,6 +61,8 @@ void wevideo_close(WeVideo *v);
  * en bucle sobre la duracion del video. El puntero es valido hasta la
  * siguiente llamada a esta funcion sobre el mismo `v`.
  *
+ * Las filas NO van pegadas: cada una ocupa `wevideo_paso` pixeles.
+ *
  * Devuelve 1 si el fotograma es DISTINTO del entregado la vez anterior, 0 si
  * es el mismo (y entonces no hace falta volver a subirlo a la GPU: a 30 fps
  * sobre una pantalla a 60 eso es la mitad de las subidas) y -1 si no hay
@@ -69,6 +71,9 @@ int wevideo_frame(WeVideo *v, double t, const uint8_t **rgba);
 
 int wevideo_ancho(const WeVideo *v);
 int wevideo_alto(const WeVideo *v);
+/* Pixeles que ocupa una fila de `*rgba`, contando el relleno: mayor o igual
+ * que el ancho. Se sube con `glPixelStorei(GL_UNPACK_ROW_LENGTH, paso)`. */
+int wevideo_paso(const WeVideo *v);
 double wevideo_duracion(const WeVideo *v);
 
 /* Ultimo error. Con `v` NULL, el ultimo fallo de apertura. */

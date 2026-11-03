@@ -79,7 +79,44 @@ class TexError(Exception):
 # Formato de bloque (no frame): sin cabecera magica ni checksums. El tamano
 # de salida viene del contenedor, asi que no hace falta parsearlo.
 
+def _cargar_liblz4():
+    """`LZ4_decompress_safe` de la liblz4 del sistema, o None.
+
+    El decodificador en Python de abajo es correcto pero lento: en
+    `3047352572` se llevaba 9,8 de los 28 s de `emit_plan`, el tiempo que
+    tarda `wectl set`. La biblioteca de C la trae cualquier distribucion (la
+    usan systemd y el kernel); si no esta, se cae al de Python sin avisar.
+    """
+    import ctypes
+    import ctypes.util
+    try:
+        nombre = ctypes.util.find_library("lz4")
+        lib = ctypes.CDLL(nombre) if nombre else None
+        f = lib.LZ4_decompress_safe if lib else None
+    except (OSError, AttributeError):
+        return None
+    if f is not None:
+        f.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        f.restype = ctypes.c_int
+    return f
+
+
+_LZ4_C = _cargar_liblz4()
+
+
 def lz4_decompress(src: bytes, dst_size: int) -> bytes:
+    if _LZ4_C is not None and dst_size > 0:
+        import ctypes
+        dst = bytearray(dst_size)
+        n = _LZ4_C(src, ctypes.addressof((ctypes.c_char * dst_size).from_buffer(dst)),
+                   len(src), dst_size)
+        if n != dst_size:
+            raise TexError(f"LZ4: se esperaban {dst_size} B, se obtuvieron {n}")
+        return bytes(dst)
+    return _lz4_python(src, dst_size)
+
+
+def _lz4_python(src: bytes, dst_size: int) -> bytes:
     dst = bytearray(dst_size)
     s, d, n = 0, 0, len(src)
 

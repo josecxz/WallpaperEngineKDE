@@ -67,10 +67,18 @@
 #include "wetemblor.h"
 #include "wevideo.h"
 
-#define MAX_TEX 64
-#define MAX_RT 64
-#define MAX_SAMPLERS 8
-#define MAX_UNIFORMS 64
+/* Topes de las tablas fijas. Rebasar uno NO se tolera en silencio: aborta con
+ * `fuera_de_tope`. Antes cada tabla hacia una cosa distinta al llenarse ---
+ * descartar, volver a la primera entrada, escribir o leer fuera--- y la peor
+ * era la de las texturas: `3047352572` trae 96, las de id >= 64 no se
+ * cargaban y `tex:80` leia de `videos[]`, punteros que cambian con cada
+ * proceso. El render salia de dos maneras al azar (luz 50,0 o 47,6) y se le
+ * echo la culpa a su video durante meses. Ver NOTAS, «Las tablas de glexec».
+ * El ejecutor en vivo usa tablas que crecen y no tiene este problema. */
+#define MAX_TEX 1024
+#define MAX_RT 256
+#define MAX_SAMPLERS 16
+#define MAX_UNIFORMS 128
 
 static int canvas_w = 1920, canvas_h = 1080;
 /* Con que empieza cada fotograma: `clear r g b` del plan, opaco; sin esa
@@ -83,8 +91,29 @@ typedef struct {
     int w, h;
 } Target;
 
+/* Un plan que no cabe no se ejecuta a medias: una imagen incompleta que sale
+ * sin error es justo lo que `test_luminancia` no sabe distinguir. */
+static void fuera_de_tope(const char *que, int valor, int tope)
+{
+    fprintf(stderr, "glexec: %s %d fuera del tope [0, %d); "
+                    "sube el limite en tools/glexec.c\n", que, valor, tope);
+    exit(3);
+}
+
+/* `v` como indice de una tabla de `tope` entradas, o aborta. */
+static int en_tope(int v, int tope, const char *que)
+{
+    if (v < 0 || v >= tope)
+        fuera_de_tope(que, v, tope);
+    return v;
+}
+
 static Target rts[MAX_RT];
 static int n_rts;
+/* Tamanos que declara el plan (`rt <nombre> <w> <h>`): lo que pide el
+ * `effect.json` de cada buffer. Sin linea, el tamano sale del nombre. */
+static struct { char name[128]; int w, h; } rt_decl[MAX_RT];
+static int n_rt_decl;
 static GLuint textures[MAX_TEX];
 /* Videos abiertos, indexados por el MISMO id que las texturas: para el resto
  * del ejecutor una capa de video es una textura corriente que ademas cambia. */
@@ -101,7 +130,7 @@ static float video_time = 0.0f;
  * el del tamano que ocupa en pantalla, que le da el plan (ver
  * `repartir_buffers_de_objeto` en werender.py). El primero es el del lienzo.
  * `compo` apunta al del objeto en curso. */
-#define MAX_PARES 64
+#define MAX_PARES 256
 static Target pares[MAX_PARES][2];
 static int n_pares;
 static Target *compo = pares[0];
@@ -117,7 +146,7 @@ static Target *par_de(int w, int h)
         if (pares[i][0].w == w && pares[i][0].h == h)
             return pares[i];
     if (n_pares == MAX_PARES)
-        return pares[0];
+        fuera_de_tope("par de composicion", n_pares, MAX_PARES);
     pares[n_pares][0] = make_target("_compo_a", w, h);
     pares[n_pares][1] = make_target("_compo_b", w, h);
     return pares[n_pares++];
@@ -179,7 +208,7 @@ static GLuint quad_vao, quad_vbo;
 
 /* Mallas puppet. El fichero trae los vertices intercalados (vec3 posicion +
  * vec2 UV, el mismo layout que el quad) y detras los indices u16. */
-#define MAX_MESHES 64
+#define MAX_MESHES 512
 static struct {
     GLuint vao, vbo, ibo;
     int index_count;
@@ -345,7 +374,7 @@ static void relojes_all(void)
 static void load_mesh(int id, const char *path, int nvert, int nidx,
                       int nbones, int nkeys, float duration)
 {
-    if (id < 0 || id >= MAX_MESHES) return;
+    en_tope(id, MAX_MESHES, "malla");
     FILE *f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "malla no abre: %s\n", path); return; }
     size_t vbytes = (size_t)nvert * 5 * sizeof(float);
@@ -416,7 +445,7 @@ static void load_mesh(int id, const char *path, int nvert, int nidx,
 /* Una escena del corpus declara 96 sistemas de particulas y otra 46. Con el
  * limite en 32 los que sobraban se cargaban a medias --- sin aviso, porque
  * `load_psys` simplemente volvia --- y sus pases dibujaban el vacio. */
-#define MAX_PSYS 128
+#define MAX_PSYS 512
 static struct {
     WeParticleSystem *sys;
     GLuint vao, vbo;
@@ -465,8 +494,7 @@ static void reparte_puntero(void)
 
 static void load_psys(int id, const char *path)
 {
-    if (id < 0 || id >= MAX_PSYS)
-        return;
+    en_tope(id, MAX_PSYS, "sistema de particulas");
     int desconocidas = 0;
     psys[id].sys = we_psys_load(path, &desconocidas);
     if (!psys[id].sys) {
@@ -536,7 +564,7 @@ static int draw_psys(int id, float t)
 /* Cache de programas: renderizar una secuencia repite el mismo plan una vez
  * por fotograma, y recompilar 24 programas por fotograma domina el tiempo
  * total. La clave es el par de rutas, que ya identifica la variante. */
-#define MAX_PROGS 256
+#define MAX_PROGS 2048
 static struct { char key[1024]; GLuint prog; } prog_cache[MAX_PROGS];
 static int n_progs;
 
@@ -602,6 +630,13 @@ static Target *find_rt(const char *name)
         div = 4;
     else if (strstr(name, "Eighth"))
         div = 8;
+    if (n_rts == MAX_RT)
+        fuera_de_tope("buffer con nombre", n_rts, MAX_RT);
+    for (int i = 0; i < n_rt_decl; i++)
+        if (strcmp(rt_decl[i].name, name) == 0) {
+            rts[n_rts] = make_target(name, rt_decl[i].w, rt_decl[i].h);
+            return &rts[n_rts++];
+        }
     rts[n_rts] = make_target(name, canvas_w / div, canvas_h / div);
     return &rts[n_rts++];
 }
@@ -858,19 +893,36 @@ static void init_quad(void)
     glEnableVertexAttribArray(1);
 }
 
-static GLuint load_texture(const char *path, int w, int h)
+/* `canales` es 1, 2 o 4 (`canales_de` en werender.py): una mascara de un
+ * canal va como GL_R8 y el *swizzle* la devuelve como (r, r, r, 1), la de dos
+ * como GL_RG8 y (r, g, 0, 1); exactamente lo que daba el RGBA de antes. Lo
+ * mismo hace `GlExecutor::initialize`. */
+static GLuint load_texture(const char *path, int w, int h, int canales)
 {
+    if (canales != 1 && canales != 2)
+        canales = 4;
     long len;
     char *data = slurp(path, &len);
-    if (!data || len < (long)w * h * 4) {
-        fprintf(stderr, "textura corta: %s (%ld < %d)\n", path, len, w * h * 4);
+    if (!data || len < (long)w * h * canales) {
+        fprintf(stderr, "textura corta: %s (%ld < %d)\n", path, len, w * h * canales);
         free(data);
         return 0;
     }
     GLuint t;
     glGenTextures(1, &t);
     glBindTexture(GL_TEXTURE_2D, t);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    if (canales == 4) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    } else {
+        /* Filas de w o 2w bytes: sin esto GL las supone de 4 en 4. */
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, canales == 1 ? GL_R8 : GL_RG8, w, h, 0,
+                     canales == 1 ? GL_RED : GL_RG, GL_UNSIGNED_BYTE, data);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        const GLint gris[4] = {GL_RED, GL_RED, GL_RED, GL_ONE};
+        const GLint dos[4] = {GL_RED, GL_GREEN, GL_ZERO, GL_ONE};
+        glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, canales == 1 ? gris : dos);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -925,9 +977,12 @@ static void video_all(void)
         if (wevideo_frame(videos[i], video_time, &px) <= 0 || !px)
             continue;
         glBindTexture(GL_TEXTURE_2D, textures[i]);
+        /* Las filas van con relleno: ver `wevideo_paso`. */
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, wevideo_paso(videos[i]));
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
                         wevideo_ancho(videos[i]), wevideo_alto(videos[i]),
                         GL_RGBA, GL_UNSIGNED_BYTE, px);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     }
 }
 
@@ -1146,12 +1201,10 @@ int main(int argc, char **argv)
             obj_mvp[3] -= 2.0f * temblor_dx;
             obj_mvp[7] -= 2.0f * temblor_dy;
         } else if (strcmp(kw, "tex") == 0) {
-            int id, w, h;
+            int id, w, h, canales = 4;
             char path[512];
-            sscanf(line, "%*s %d %511s %d %d", &id, path, &w, &h);
-            if (id >= 0 && id < MAX_TEX) {
-                textures[id] = load_texture(path, w, h);
-            }
+            if (sscanf(line, "%*s %d %511s %d %d %d", &id, path, &w, &h, &canales) >= 4)
+                textures[en_tope(id, MAX_TEX, "textura")] = load_texture(path, w, h, canales);
         } else if (strcmp(kw, "frame") == 0) {
             /* Abre un fotograma: cierra el objeto que quedara pendiente del
              * anterior y limpia la escena, exactamente lo que hace render()
@@ -1174,9 +1227,18 @@ int main(int argc, char **argv)
         } else if (strcmp(kw, "video") == 0 && !in_pass) {
             int id, w, h;
             char path[512];
-            if (sscanf(line, "%*s %d %511s %d %d", &id, path, &w, &h) == 4 &&
-                id >= 0 && id < MAX_TEX)
-                textures[id] = load_video(id, path, w, h);
+            if (sscanf(line, "%*s %d %511s %d %d", &id, path, &w, &h) == 4)
+                textures[en_tope(id, MAX_TEX, "video")] = load_video(id, path, w, h);
+        } else if (strcmp(kw, "rt") == 0 && !in_pass) {
+            char nombre[128];
+            int w, h;
+            if (sscanf(line, "%*s %127s %d %d", nombre, &w, &h) == 3 && w > 0 && h > 0) {
+                en_tope(n_rt_decl, MAX_RT, "rt declarado");
+                snprintf(rt_decl[n_rt_decl].name, sizeof rt_decl[n_rt_decl].name, "%s", nombre);
+                rt_decl[n_rt_decl].w = w;
+                rt_decl[n_rt_decl].h = h;
+                n_rt_decl++;
+            }
         } else if (strcmp(kw, "videotime") == 0) {
             sscanf(line, "%*s %f", &video_time);
         } else if (strncmp(kw, "reloj", 5) == 0 && !in_pass) {
@@ -1185,7 +1247,7 @@ int main(int argc, char **argv)
              * resto lo entiende `src/wereloj.c`, que es el mismo módulo que
              * usa el ejecutor de plasmashell. */
             int id = -1;
-            if (sscanf(line, "%*s %d", &id) == 1 && id >= 0 && id < MAX_MESHES) {
+            if (sscanf(line, "%*s %d", &id) == 1 && en_tope(id, MAX_MESHES, "reloj") >= 0) {
                 if (!meshes[id].reloj)
                     meshes[id].reloj = we_reloj_nuevo();
                 const char *resto = tras_palabra(tras_palabra(line));
@@ -1241,7 +1303,7 @@ int main(int argc, char **argv)
             float a[7];
             if (sscanf(line, "%*s %d %f %f %f %f %f %f %f", &id, &a[0], &a[1],
                        &a[2], &a[3], &a[4], &a[5], &a[6]) == 8
-                && id >= 0 && id < MAX_PSYS) {
+                && en_tope(id, MAX_PSYS, "psyspuntero") >= 0) {
                 memcpy(psys[id].afin, a, sizeof a);
                 psys[id].tiene_afin = 1;
             }
@@ -1265,7 +1327,8 @@ int main(int argc, char **argv)
             float prob = 1.0f, esc[3] = {1.0f, 1.0f, 1.0f};
             if (sscanf(line, "%*s %d %d %d %d %d %f %f %f %f", &h, &pa, &raf,
                        &modo, &inst, &prob, &esc[0], &esc[1], &esc[2]) >= 3 &&
-                h >= 0 && h < MAX_PSYS && pa >= 0 && pa < MAX_PSYS)
+                en_tope(h, MAX_PSYS, "psyspadre") >= 0 &&
+                en_tope(pa, MAX_PSYS, "psyspadre") >= 0)
                 we_psys_seguir(psys[h].sys, psys[pa].sys, modo, raf, inst,
                                prob, esc);
         } else if (strcmp(kw, "output") == 0) {
@@ -1302,7 +1365,8 @@ int main(int argc, char **argv)
             sscanf(line, "%*s %127s", target);
         } else if (strcmp(kw, "blend") == 0) {
             sscanf(line, "%*s %31s", blend);
-        } else if (strcmp(kw, "sampler") == 0 && n_samplers < MAX_SAMPLERS) {
+        } else if (strcmp(kw, "sampler") == 0) {
+            en_tope(n_samplers, MAX_SAMPLERS, "sampler del pase");
             sscanf(line, "%*s %63s %127s", samplers[n_samplers].uni,
                    samplers[n_samplers].src);
             n_samplers++;
@@ -1325,7 +1389,8 @@ int main(int argc, char **argv)
                 hoja = we_hoja_nueva();
             hay_hoja = hoja && we_hoja_imagenes_linea(hoja, tras_palabra(line))
                      ? HOJA_TIEMPO : SIN_HOJA;
-        } else if (strncmp(kw, "u", 1) == 0 && n_unis < MAX_UNIFORMS) {
+        } else if (strncmp(kw, "u", 1) == 0) {
+            en_tope(n_unis, MAX_UNIFORMS, "uniform del pase");
             int cnt = 0;
             if (strcmp(kw, "u1f") == 0) cnt = 1;
             else if (strcmp(kw, "u2f") == 0) cnt = 2;
@@ -1366,7 +1431,7 @@ int main(int argc, char **argv)
                 const char *s = samplers[i].src;
                 bound[i] = 0;
                 if (strncmp(s, "tex:", 4) == 0)
-                    bound[i] = textures[atoi(s + 4)];
+                    bound[i] = textures[en_tope(atoi(s + 4), MAX_TEX, "tex:")];
                 else if (strncmp(s, "rt:", 3) == 0)
                     bound[i] = find_rt(s + 3)->tex;
                 else if (strcmp(s, "prev") == 0)

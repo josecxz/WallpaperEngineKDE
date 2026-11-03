@@ -488,6 +488,14 @@ void SceneRenderer::render(QRhiCommandBuffer *cb)
               m_exec.meshCount(), m_exec.meshPassCount(), m_exec.meshAnimCount(),
               m_exec.psysCount(), m_exec.psysUnknownParts(),
               m_exec.psysCursorCount());
+        {
+            const GlExecutor::InitFases &f = m_exec.initFases();
+            qInfo("SceneView: init por fases (ms): mallas %.1f, particulas y videos %.1f, "
+                  "leer texturas %.1f (%.0f MB), subir texturas %.1f, buffers %.1f, "
+                  "compilar %.1f, resolver %.1f",
+                  f.mallas, f.particulas, f.leerTexturas, f.bytesTexturas / 1e6,
+                  f.subirTexturas, f.buffers, f.compilar, f.resolver);
+        }
         if (!m_exec.log().isEmpty())
             qWarning("SceneView: %s", qPrintable(m_exec.log()));
     }
