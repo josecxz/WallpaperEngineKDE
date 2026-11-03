@@ -4527,6 +4527,13 @@ empeora.
 
 ## Pendiente: tres cabos de las partículas, medidos y sin cerrar
 
+**Cerrados los tres, en secciones posteriores** (revisado el 2026-11-02): los
+destellos, con los sistemas hijos («Los hijos de un sistema: cuatro tipos» y
+«La instancia de un hijo de evento»); la lluvia de un punto, con
+«`distancemax` sin declarar no es cero»; y la estela, con «La cola de una
+cinta sale de `length`». Lo que dejaron abierto esas secciones está en «Lo
+que queda de las partículas, revisado».
+
 Anotado a propósito para retomarlo en frío. Los tres salen de comparar
 `2821288001` contra la captura de Windows, y los tres tienen ya la medida hecha:
 lo que falta es la lectura del formato que los explique, no volver a medir.
@@ -12279,4 +12286,27 @@ dos sitios reales idénticos antes y después.
 la capturó como valor por defecto, ni si la función que se prueba llama a
 otra que no se sustituye. Una prueba que puede tocar el escritorio tiene que
 comprobar que no lo ha tocado.
+
+## Lo que queda de las partículas, revisado
+
+Los apartados «Lo que queda» de las secciones de partículas, contados en el
+corpus (133 escenas; presets resueltos como el motor, paquete antes que
+assets, hijos incluidos). Casi todo se cierra con el número.
+
+| cabo | escenas | veredicto |
+|---|---|---|
+| tope de `flags & 2` (una por fotograma) | 15 | solo cambia un emisor: 22 de 23 piden ≤ 60/s. `red_fire.json` (`3238423642`) pide 70; WE topa a una por fotograma **suyo**, así que a 144 fps no topa nada. No se hace |
+| tope de instancias de un hijo con solo `instantaneous` | 13 | casi todos son `eventfollow` con menos padres vivos que el tope de WE. Solo `Shooting_Star_01 → shootingstarglow` lo pasa: padre de 35, tope 30, hasta **5 destellos de más** con las 35 vivas. No se hace |
+| `eventfollow` libera el puesto antes | 20 | solo importa rozando el tope, que no se roza (arriba) |
+| `delay` / emisión periódica de los hijos | 0 | ninguno la declara |
+| `mapsequence*` sumado o pisado | 5 | sus puntos y emisores están todos en el origen: las dos lecturas dan lo mismo |
+| el sorteo gira con el punto de control | 1 | `controlpoint ≠ 0` en un emisor |
+| `rope` en perspectiva | 2 | sin contar aún si caen en `ORIENTATION` 0 |
+| `uvsmoothing` por defecto, `trailLength` en régimen | 16 (`rope`) | solo mueven la UV a lo largo de la cuerda; lo que hace `uvsmoothing` no se ha leído en el binario |
+| `ropetrail` sin curva | 15 | sus puntos van a 1/60 s y la flecha no llega a un píxel |
+| el punto del cursor antes del primer movimiento | — | solo el estado inicial, hasta que se mueve el ratón |
+
+Lo único con efecto posible que sigue sin leer es **`uvsmoothing`** (lo que
+hace con `trailPosition` en `0x1402309b5..0x140230a84`), y solo en cuerdas
+con textura que cambie a lo largo. El resto queda cerrado con su número.
 
