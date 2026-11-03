@@ -12078,10 +12078,8 @@ RGBA que en realidad son grises.
 
 ### Fuera de estos puntos
 
-- `test_wectl` falla en cuatro comprobaciones del «cambio de plan» (el
-  sobrante del anterior, el plan que no cambia, el escritorio sin plan tras
-  un fallo, dos cambios a la vez). **Ya fallaba en `91dc02b`**, antes de todo
-  esto; sin mirar.
+- ~~`test_wectl` falla en cuatro comprobaciones del «cambio de plan»~~.
+  Arreglado, y era grave: ver «El test que cambiaba el fondo».
 
 
 ## La resolución, verificada
@@ -12251,4 +12249,34 @@ cientos de ms). Y el `init` de recarga sale más lento con las dos vivas
 - El fondo de Hyprland que ya estaba corriendo sigue con el QML viejo hasta
   que se reinicie (`wectl stop` + `start`): la rotación solo lo arranca si
   no está.
+
+## El test que cambiaba el fondo
+
+`test_wectl` fallaba en cuatro comprobaciones del «cambio de plan» desde
+`513ca75` (pantallas independientes). No era el cambio de plan: **el test
+escribía en el escritorio de verdad**, por dos sitios.
+
+- **`preparar(ruta, destino: Path = ESCENA)`.** Un valor por defecto se fija
+  al importar el módulo, así que cuando la prueba redirigía `wectl.ESCENA` a
+  un temporal, `preparar` seguía escribiendo en `plugin/contents/scene`: sus
+  planes de mentira (`title NUEVO`, `UNO`, `DOS`, una textura de 1 byte)
+  sustituían el plan compartido real, y la prueba miraba el temporal, que no
+  tocaba nadie. Eso eran los cuatro fallos, y con ellos **la prueba del
+  cambio atómico no comprobaba nada desde ese commit**.
+- **`aplicar` llama a `borrar_planes_propios()`**, que `prueba_construir` no
+  sustituía: **borraba los planes de cada monitor**. En modo `independiente`
+  cada monitor caía al plan compartido, o sea al de mentira de la otra
+  prueba. Visto el 2026-11-02: `pantallas/` vacío y `scene/plan.txt` con
+  `title UNO` desde las 17:59, hasta que la rotación volvió a repartir.
+
+El arreglo: `preparar` lee `ESCENA` al llamarla (`destino=None`), y
+`prueba_construir` redirige `PANTALLAS` y `ESCENA` a un temporal. Y dos
+guardas: la prueba falla si cambian el inodo o la fecha de `scene/plan.txt`,
+o la lista de `pantallas/`. Comprobado con la rotación parada: `OK`, y los
+dos sitios reales idénticos antes y después.
+
+**La lección**: redirigir una constante del módulo no basta si alguna firma
+la capturó como valor por defecto, ni si la función que se prueba llama a
+otra que no se sustituye. Una prueba que puede tocar el escritorio tiene que
+comprobar que no lo ha tocado.
 

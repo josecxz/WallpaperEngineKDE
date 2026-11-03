@@ -468,18 +468,19 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11980` **13. Lo que tarda `emit_plan`** — LZ4 en C, traducciones recordadas, `inv(G)` una vez, `bincount`: corpus 319 → 90 s, planes idénticos. El `TypeError` tragado por `emit_pass` que borró todos los pases.
 - `12022` **15. Qué pesa en el `init`** — desglose por fases en el registro; subir texturas es el 75–80 %, compilar casi nada.
 - `12044` **14. Qué ocupa el plan, y lo que se hizo** — DXT es el 9 % de los bytes; R8/RG88 expandidas a RGBA el 28 %. `canales_de` y `GL_R8`/`GL_RG8` con swizzle: −29 % de bytes, −12–33 % de `init`, −165 MiB de VRAM, imagen idéntica.
-- `12079` **Fuera de estos puntos** — `test_wectl` falla en cuatro comprobaciones del cambio de plan desde antes de `91dc02b`.
-- `12087` **La resolución, verificada** — las 148 en vivo a 1,00 en el blit final; lo que sobra es el recorte de «cubrir» (mediana ×1,11, verticales hasta ×3,18).
-- `12105` **Lo que no se ha podido probar aquí** — Plasma no mira la rotación del panel; con dos monitores habría que tomar el máximo por dimensión y no el de más área; escala fraccionaria sin ver.
-- `12126` **Los restos del punto 6** — los tres pendientes del punto 6, revisados.
-- `12128` **La caché de estado de GL: no compensa** — un programa por pase y destinos que no se repiten: lo evitable es <1 % de la CPU.
-- `12138` **`g_TexelSize`: no se toca** — la única medida contra WE cuadra con el texel de pantalla; para los efectos de capa no hay oráculo.
-- `12149` **Los `_rt_…` por capa: poco, y sin oráculo** — 1,6 % de los píxeles del corpus; cambiaría la imagen.
-- `12158` **Lo que sí: los buffers que declara cada efecto** — `fbos.scale` no se leía; los efectos del Workshop (`bokeh_blur`, un `bloom` en cadena) salían a lienzo completo. Línea `rt` en el plan; 4 escenas cambian, `2867316322` −14 % de GPU y −4 W.
-- `12196` **La recarga del plan** — punto 16, medido en vivo con la hora en cada mensaje.
-- `12202` **Lo que costaba** — el `Loader` destruía la escena al instante: 27–501 ms de pantallazo, casi todo el `init` de la nueva; la otra GPU solo 7–15 ms.
-- `12225` **El cambio: la nueva se carga debajo** — dos huecos en `hyprland/main.qml`; relevo al `dibujado` de la nueva; la vieja se queda congelada, sin negro.
-- `12245` **Lo que queda** — Plasma recarga saliendo a otro plugin, sin medir; el fondo que ya corría sigue con el QML viejo hasta reiniciarlo.
+- `12079` **Fuera de estos puntos** — los cuatro fallos de `test_wectl`, ya arreglados: ver «El test que cambiaba el fondo».
+- `12085` **La resolución, verificada** — las 148 en vivo a 1,00 en el blit final; lo que sobra es el recorte de «cubrir» (mediana ×1,11, verticales hasta ×3,18).
+- `12103` **Lo que no se ha podido probar aquí** — Plasma no mira la rotación del panel; con dos monitores habría que tomar el máximo por dimensión y no el de más área; escala fraccionaria sin ver.
+- `12124` **Los restos del punto 6** — los tres pendientes del punto 6, revisados.
+- `12126` **La caché de estado de GL: no compensa** — un programa por pase y destinos que no se repiten: lo evitable es <1 % de la CPU.
+- `12136` **`g_TexelSize`: no se toca** — la única medida contra WE cuadra con el texel de pantalla; para los efectos de capa no hay oráculo.
+- `12147` **Los `_rt_…` por capa: poco, y sin oráculo** — 1,6 % de los píxeles del corpus; cambiaría la imagen.
+- `12156` **Lo que sí: los buffers que declara cada efecto** — `fbos.scale` no se leía; los efectos del Workshop (`bokeh_blur`, un `bloom` en cadena) salían a lienzo completo. Línea `rt` en el plan; 4 escenas cambian, `2867316322` −14 % de GPU y −4 W.
+- `12194` **La recarga del plan** — punto 16, medido en vivo con la hora en cada mensaje.
+- `12200` **Lo que costaba** — el `Loader` destruía la escena al instante: 27–501 ms de pantallazo, casi todo el `init` de la nueva; la otra GPU solo 7–15 ms.
+- `12223` **El cambio: la nueva se carga debajo** — dos huecos en `hyprland/main.qml`; relevo al `dibujado` de la nueva; la vieja se queda congelada, sin negro.
+- `12243` **Lo que queda** — Plasma recarga saliendo a otro plugin, sin medir; el fondo que ya corría sigue con el QML viejo hasta reiniciarlo.
+- `12253` **El test que cambiaba el fondo** — `test_wectl` escribía en el plan real (`destino: Path = ESCENA` se fija al importar) y `aplicar` le borraba los planes por monitor; desde `513ca75`. `destino=None`, `PANTALLAS` redirigido y guardas sobre los planes reales.
 - `4528` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — el diámetro del destello, la lluvia que sale de un punto y la estela corta.
 - `4534` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
 - `4580` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.

@@ -434,7 +434,7 @@ def resolucion_de_pantalla() -> tuple[int, int] | None:
     return mejor
 
 
-def preparar(ruta: Path, destino: Path = ESCENA,
+def preparar(ruta: Path, destino: Path | None = None,
              resolucion: tuple[int, int] | None = None) -> dict:
     """Genera el plan de `ruta` y lo pone en su sitio de una pieza.
 
@@ -458,7 +458,15 @@ def preparar(ruta: Path, destino: Path = ESCENA,
 
     `destino` es el plan compartido (`ESCENA`) o el de un monitor
     (`PANTALLAS/<monitor>`); el de un monitor se genera a SU resolucion.
+
+    `ESCENA` se lee al llamar y no como valor por defecto: un `= ESCENA` en la
+    firma se fija al importar, y `test_wectl`, que redirige `wectl.ESCENA` a
+    un temporal, escribia sus planes de mentira en el plan REAL del escritorio
+    (desde `513ca75`). En Hyprland el fondo los recargaba. Ver NOTAS, «El test
+    que cambiaba el fondo».
     """
+    if destino is None:
+        destino = ESCENA
     if resolucion is None:
         resolucion = resolucion_de_pantalla()
     with en_exclusiva():

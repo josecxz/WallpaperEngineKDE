@@ -101,6 +101,16 @@ def prueba_cambio_de_plan(fallos: list[str]) -> None:
     print("\n── cambio de plan ──")
     tmp = Path(tempfile.mkdtemp(prefix="wectl-"))
     escena_real, emit_real = wectl.ESCENA, wectl.emit_plan
+    # El plan REAL no se puede tocar: con un `= ESCENA` en la firma de
+    # `preparar`, esta prueba escribia en el del escritorio y miraba el
+    # temporal. Se compara inodo y fecha antes y despues.
+    def huella(p: Path):
+        try:
+            st = (p / "plan.txt").stat()
+            return (st.st_ino, st.st_mtime_ns)
+        except OSError:
+            return None
+    real_antes = huella(escena_real)
     try:
         wectl.ESCENA = tmp / "scene"
         wectl.ESCENA.mkdir(parents=True)
@@ -201,6 +211,8 @@ def prueba_cambio_de_plan(fallos: list[str]) -> None:
     finally:
         wectl.ESCENA, wectl.emit_plan = escena_real, emit_real
         shutil.rmtree(tmp, ignore_errors=True)
+        if huella(escena_real) != real_antes:
+            fallos.append(f"la prueba toco el plan REAL de {escena_real}")
 
 
 def prueba_construir(fallos: list[str]) -> None:
@@ -213,6 +225,15 @@ def prueba_construir(fallos: list[str]) -> None:
     print("\n── construir antes de cambiar el plan ──")
     real_sub, real_prep, real_rec = wectl.subprocess, wectl.preparar, \
         wectl.recargar
+    # `aplicar` borra tambien los planes propios de cada monitor
+    # (`borrar_planes_propios`), que esta prueba no sustituye: sin redirigir
+    # `PANTALLAS` (y `ESCENA`, del que cuelga el cerrojo) borraba los del
+    # escritorio y cada monitor caia al plan compartido.
+    pantallas_real, escena_real = wectl.PANTALLAS, wectl.ESCENA
+    antes_real = sorted(p.name for p in pantallas_real.iterdir()) \
+        if pantallas_real.is_dir() else None
+    tmp = Path(tempfile.mkdtemp(prefix="wectl-construir-"))
+    wectl.PANTALLAS, wectl.ESCENA = tmp / "pantallas", tmp / "scene"
     hechos: list[str] = []
 
     class Make:
@@ -256,6 +277,13 @@ def prueba_construir(fallos: list[str]) -> None:
     finally:
         wectl.subprocess, wectl.preparar, wectl.recargar = \
             real_sub, real_prep, real_rec
+        wectl.PANTALLAS, wectl.ESCENA = pantallas_real, escena_real
+        shutil.rmtree(tmp, ignore_errors=True)
+        despues_real = sorted(p.name for p in pantallas_real.iterdir()) \
+            if pantallas_real.is_dir() else None
+        if despues_real != antes_real:
+            fallos.append(f"la prueba toco los planes REALES de {pantallas_real}: "
+                          f"{antes_real} -> {despues_real}")
 
 
 def prueba_unidades(fallos: list[str]) -> None:
