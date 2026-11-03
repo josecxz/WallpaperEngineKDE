@@ -11754,8 +11754,10 @@ un 12–33 % con lo del 14. Ver abajo.
 
 ### 16. Recarga del plan
 
-Cada cambio recrea el `SceneView` entero, y con él el contexto de la otra
-GPU. Medir el parpadeo y el coste.
+~~Cada cambio recrea el `SceneView` entero, y con él el contexto de la otra
+GPU. Medir el parpadeo y el coste.~~ Medido y arreglado en Hyprland: había un
+pantallazo de 27 a 501 ms; ya no. Plasma, sin tocar. Ver «La recarga del
+plan».
 
 ### 17. Resolución del plan (verificar, no rehacer)
 
@@ -12190,4 +12192,63 @@ nombre; `width`/`height` (`glitter`) no lo usa ninguna escena.
 - **En vivo**, `2867316322`, intercalado A/B dos y dos: GPU **4,65 → 3,98 ms**
   por fotograma (−14 %) y la NVIDIA de **21,5 a 17,4 W** (1350 → 1050 MHz). La
   CPU no cambia.
+
+## La recarga del plan
+
+Punto 16 de la auditoría. Medido en vivo con el anfitrión de medida y
+`QT_MESSAGE_PATTERN` con la hora en cada mensaje, cambiándole el plan con
+`wectl.preparar` como hace un `set`.
+
+### Lo que costaba
+
+En Hyprland, al cambiar el plan el `Loader` **destruía la escena al instante**
+y creaba otra; desde ahí hasta el primer fotograma de la nueva la ventana
+solo enseñaba su color de fondo. Eso era el parpadeo:
+
+| cambio a | sin escena | abrir la NVIDIA | `init` | primer fotograma |
+|---|---|---|---|---|
+| `1582641329` (vídeo) | 27 ms | 15 ms | 12 ms | ~0 |
+| `973101892` | 37 ms | ~11 ms | 29 ms | ~0 |
+| `2464842912` | 162 ms | — | 94 ms | 53 ms |
+| `2788165557` | 259 ms | 14 ms | 239 ms | 5 ms |
+| `3146507587` | 343 ms | — | 323 ms | 9 ms |
+| `3047352572` | **501 ms** | 11 ms | 331 ms | 152 ms |
+
+- **Recrear el contexto de la otra GPU es barato**: 7–15 ms. No era eso.
+- Casi todo es el **`init` de la escena nueva**, o sea subir texturas.
+- En las escenas grandes el **primer fotograma** tarda aparte (152 ms en
+  `3047352572`). Probablemente el driver acaba de compilar los shaders al
+  primer dibujo; no comprobado.
+- En una recarga, subir texturas tarda **casi el doble** que en un proceso
+  recién arrancado (265 ms frente a ~150 para 253 MB). Sin explicar.
+
+### El cambio: la nueva se carga debajo
+
+`hyprland/main.qml` tiene ahora **dos huecos** (`huecoA`, `huecoB`) con la
+misma escena. Al cambiar el plan, la nueva se crea en el hueco que no se ve,
+debajo; cuando su `SceneView` dice `dibujado` se hace el relevo: pasa arriba y
+la vieja se suelta. El plan de cada hueco se fija al crearlo (`planFijo`),
+para que la vieja no vea cambiar su `planSource` mientras sigue en pantalla.
+El reloj y el HUD siguen a la que se ve (`ventana.escena`).
+
+Mientras carga la nueva, la vieja se queda **en su último fotograma** (el
+`init` bloquea el hilo de render de la ventana), pero ya no hay pantallazo. El
+registro lo dice en orden: `Escena: plan nuevo …`, el `init` de la nueva, su
+primer blit y `Escena: relevo …`. Tiempo hasta el relevo: 24 ms (vídeo),
+55, 136, 271, 437 y 584 ms (`3047352572`). No se hicieron capturas: la capa
+del fondo está debajo de las ventanas.
+
+Lo que cuesta: mientras conviven, **la VRAM es la de las dos escenas** (unos
+cientos de ms). Y el `init` de recarga sale más lento con las dos vivas
+(`3146507587`: 412 ms frente a 323); solo alarga lo que dura congelada.
+
+### Lo que queda
+
+- **Plasma no cambia.** Allí `wectl` sale a otro plugin y vuelve
+  (`recargar`), y es plasmashell quien destruye y recrea el fondo: su
+  parpadeo es otro y no se puede medir desde una sesión de Hyprland (y no se
+  itera sobre plasmashell en vivo).
+- El fondo de Hyprland que ya estaba corriendo sigue con el QML viejo hasta
+  que se reinicie (`wectl stop` + `start`): la rotación solo lo arranca si
+  no está.
 

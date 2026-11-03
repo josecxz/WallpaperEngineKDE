@@ -452,30 +452,34 @@ make indice                       # reescribe los números desde NOTAS.md
 - `11734` **13. Tiempo de `wectl set` y `shuffle`** — hecho: 3,5 veces más rápido.
 - `11741` **14. Tamaño del plan en disco** — hecho: −29 % con las texturas de uno y dos canales; DXT tal cual, descartado.
 - `11748` **15. Tiempo de carga en el motor** — medido: subir texturas es el 75–80 %; `glProgramBinary`, descartado.
-- `11755` **16. Recarga del plan** — recrear el `SceneView` y el contexto de la otra GPU en cada cambio.
-- `11760` **17. Resolución del plan (verificar, no rehacer)** — verificado en Hyprland: las 148 a 1,00; Plasma girado y dos monitores, sin probar.
-- `11768` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`): hecho, y no era el vídeo.
-- `11774` **Las tablas de glexec y el paso de swscale** — `3047352572` salía de dos maneras al azar y `test_wevideo` fallaba en *Pattern*: dos fallos sin relación.
-- `11782` **El render no determinista: `textures[64]`** — `MAX_TEX` 64 y 96 texturas: `tex:80` leía punteros de `videos[]` (ASLR). Topes holgados y rebasarlos aborta; `3097749052` deja de salir en silueta negra. Lo cazó ASan+UBSan, no la bisección.
-- `11837` **`test_wevideo`: el paso de swscale con ffmpeg 9** — con paso `w*4` swscale deja columnas sin escribir o escribe fuera del hueco (en vivo, cada fotograma). Filas a múltiplo de 64 bytes y `GL_UNPACK_ROW_LENGTH`.
-- `11862` **El IPC de Hyprland, medido** — ~100 µs de Hyprland por petición; `activewindow` se repite con cada cambio de título. Preguntar el cursor solo si el plan lo lee (64 de 133 no lo leen) no mejora nada en vivo, intercalado A/B: se deshizo. El microbenchmark prometía medio punto que no apareció.
-- `11867` **Cuánto cuesta cada petición** — cliente sintético a 62/s: +0,5–0,75 puntos de Hyprland, 0,35 ms de latencia.
-- `11882` **Cuántas hay** — 62/s de cursor; la revisión, ~1/s por monitor por los `activewindow` repetidos.
-- `11894` **Lo que se probó: preguntar el cursor solo si el plan lo lee** — criterio (uniforms vivos, `psyspuntero`, `paralaje`; la línea `parallax` no vale), 64/133 sin ratón, y la medida A/B que lo descarta.
-- `11930` **La NVIDIA en pausa, medida** — 0 interrupciones de la NVIDIA en pausa, igual que sin fondo; el hilo de render no se despierta. Queda retenido el contexto y su VRAM, sin medir si impide dormir.
-- `11959` **Lo del sistema, para cuando se aborde** — `Runtime D3 status: Disabled by default`: falta `NVreg_DynamicPowerManagement`; con `audio-fix.conf` y lo no identificado, tres causas, ninguna del motor.
-- `11972` **Los puntos 13 a 15: el plan, su tamaño y su carga** — los tres eran bytes de textura y Python lento.
-- `11978` **13. Lo que tarda `emit_plan`** — LZ4 en C, traducciones recordadas, `inv(G)` una vez, `bincount`: corpus 319 → 90 s, planes idénticos. El `TypeError` tragado por `emit_pass` que borró todos los pases.
-- `12020` **15. Qué pesa en el `init`** — desglose por fases en el registro; subir texturas es el 75–80 %, compilar casi nada.
-- `12042` **14. Qué ocupa el plan, y lo que se hizo** — DXT es el 9 % de los bytes; R8/RG88 expandidas a RGBA el 28 %. `canales_de` y `GL_R8`/`GL_RG8` con swizzle: −29 % de bytes, −12–33 % de `init`, −165 MiB de VRAM, imagen idéntica.
-- `12077` **Fuera de estos puntos** — `test_wectl` falla en cuatro comprobaciones del cambio de plan desde antes de `91dc02b`.
-- `12085` **La resolución, verificada** — las 148 en vivo a 1,00 en el blit final; lo que sobra es el recorte de «cubrir» (mediana ×1,11, verticales hasta ×3,18).
-- `12103` **Lo que no se ha podido probar aquí** — Plasma no mira la rotación del panel; con dos monitores habría que tomar el máximo por dimensión y no el de más área; escala fraccionaria sin ver.
-- `12124` **Los restos del punto 6** — los tres pendientes del punto 6, revisados.
-- `12126` **La caché de estado de GL: no compensa** — un programa por pase y destinos que no se repiten: lo evitable es <1 % de la CPU.
-- `12136` **`g_TexelSize`: no se toca** — la única medida contra WE cuadra con el texel de pantalla; para los efectos de capa no hay oráculo.
-- `12147` **Los `_rt_…` por capa: poco, y sin oráculo** — 1,6 % de los píxeles del corpus; cambiaría la imagen.
-- `12156` **Lo que sí: los buffers que declara cada efecto** — `fbos.scale` no se leía; los efectos del Workshop (`bokeh_blur`, un `bloom` en cadena) salían a lienzo completo. Línea `rt` en el plan; 4 escenas cambian, `2867316322` −14 % de GPU y −4 W.
+- `11755` **16. Recarga del plan** — medido y arreglado en Hyprland: la escena nueva se carga debajo; Plasma, sin tocar.
+- `11762` **17. Resolución del plan (verificar, no rehacer)** — verificado en Hyprland: las 148 a 1,00; Plasma girado y dos monitores, sin probar.
+- `11770` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`): hecho, y no era el vídeo.
+- `11776` **Las tablas de glexec y el paso de swscale** — `3047352572` salía de dos maneras al azar y `test_wevideo` fallaba en *Pattern*: dos fallos sin relación.
+- `11784` **El render no determinista: `textures[64]`** — `MAX_TEX` 64 y 96 texturas: `tex:80` leía punteros de `videos[]` (ASLR). Topes holgados y rebasarlos aborta; `3097749052` deja de salir en silueta negra. Lo cazó ASan+UBSan, no la bisección.
+- `11839` **`test_wevideo`: el paso de swscale con ffmpeg 9** — con paso `w*4` swscale deja columnas sin escribir o escribe fuera del hueco (en vivo, cada fotograma). Filas a múltiplo de 64 bytes y `GL_UNPACK_ROW_LENGTH`.
+- `11864` **El IPC de Hyprland, medido** — ~100 µs de Hyprland por petición; `activewindow` se repite con cada cambio de título. Preguntar el cursor solo si el plan lo lee (64 de 133 no lo leen) no mejora nada en vivo, intercalado A/B: se deshizo. El microbenchmark prometía medio punto que no apareció.
+- `11869` **Cuánto cuesta cada petición** — cliente sintético a 62/s: +0,5–0,75 puntos de Hyprland, 0,35 ms de latencia.
+- `11884` **Cuántas hay** — 62/s de cursor; la revisión, ~1/s por monitor por los `activewindow` repetidos.
+- `11896` **Lo que se probó: preguntar el cursor solo si el plan lo lee** — criterio (uniforms vivos, `psyspuntero`, `paralaje`; la línea `parallax` no vale), 64/133 sin ratón, y la medida A/B que lo descarta.
+- `11932` **La NVIDIA en pausa, medida** — 0 interrupciones de la NVIDIA en pausa, igual que sin fondo; el hilo de render no se despierta. Queda retenido el contexto y su VRAM, sin medir si impide dormir.
+- `11961` **Lo del sistema, para cuando se aborde** — `Runtime D3 status: Disabled by default`: falta `NVreg_DynamicPowerManagement`; con `audio-fix.conf` y lo no identificado, tres causas, ninguna del motor.
+- `11974` **Los puntos 13 a 15: el plan, su tamaño y su carga** — los tres eran bytes de textura y Python lento.
+- `11980` **13. Lo que tarda `emit_plan`** — LZ4 en C, traducciones recordadas, `inv(G)` una vez, `bincount`: corpus 319 → 90 s, planes idénticos. El `TypeError` tragado por `emit_pass` que borró todos los pases.
+- `12022` **15. Qué pesa en el `init`** — desglose por fases en el registro; subir texturas es el 75–80 %, compilar casi nada.
+- `12044` **14. Qué ocupa el plan, y lo que se hizo** — DXT es el 9 % de los bytes; R8/RG88 expandidas a RGBA el 28 %. `canales_de` y `GL_R8`/`GL_RG8` con swizzle: −29 % de bytes, −12–33 % de `init`, −165 MiB de VRAM, imagen idéntica.
+- `12079` **Fuera de estos puntos** — `test_wectl` falla en cuatro comprobaciones del cambio de plan desde antes de `91dc02b`.
+- `12087` **La resolución, verificada** — las 148 en vivo a 1,00 en el blit final; lo que sobra es el recorte de «cubrir» (mediana ×1,11, verticales hasta ×3,18).
+- `12105` **Lo que no se ha podido probar aquí** — Plasma no mira la rotación del panel; con dos monitores habría que tomar el máximo por dimensión y no el de más área; escala fraccionaria sin ver.
+- `12126` **Los restos del punto 6** — los tres pendientes del punto 6, revisados.
+- `12128` **La caché de estado de GL: no compensa** — un programa por pase y destinos que no se repiten: lo evitable es <1 % de la CPU.
+- `12138` **`g_TexelSize`: no se toca** — la única medida contra WE cuadra con el texel de pantalla; para los efectos de capa no hay oráculo.
+- `12149` **Los `_rt_…` por capa: poco, y sin oráculo** — 1,6 % de los píxeles del corpus; cambiaría la imagen.
+- `12158` **Lo que sí: los buffers que declara cada efecto** — `fbos.scale` no se leía; los efectos del Workshop (`bokeh_blur`, un `bloom` en cadena) salían a lienzo completo. Línea `rt` en el plan; 4 escenas cambian, `2867316322` −14 % de GPU y −4 W.
+- `12196` **La recarga del plan** — punto 16, medido en vivo con la hora en cada mensaje.
+- `12202` **Lo que costaba** — el `Loader` destruía la escena al instante: 27–501 ms de pantallazo, casi todo el `init` de la nueva; la otra GPU solo 7–15 ms.
+- `12225` **El cambio: la nueva se carga debajo** — dos huecos en `hyprland/main.qml`; relevo al `dibujado` de la nueva; la vieja se queda congelada, sin negro.
+- `12245` **Lo que queda** — Plasma recarga saliendo a otro plugin, sin medir; el fondo que ya corría sigue con el QML viejo hasta reiniciarlo.
 - `4528` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — el diámetro del destello, la lluvia que sale de un punto y la estela corta.
 - `4534` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
 - `4580` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.

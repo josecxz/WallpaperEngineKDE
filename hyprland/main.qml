@@ -26,9 +26,11 @@
 //
 // Cambiar de wallpaper es escribir un plan nuevo en la misma ruta (`make plan`
 // o `wectl set`/`shuffle`): el
-// `VigiaArchivo` lo ve y se vuelve a crear la escena. Es lo mismo que hace
+// `VigiaArchivo` lo ve y se crea una escena nueva. Es lo mismo que hace
 // `wectl` en Plasma al salir a otro plugin y volver: el SceneView no sabe
-// cambiar de plan en caliente, uno nuevo si.
+// cambiar de plan en caliente, uno nuevo si. La nueva se carga DEBAJO de la
+// que se ve y la vieja no se suelta hasta que la nueva ha dibujado: ver
+// NOTAS, «La recarga del plan».
 
 import QtQuick
 import QtQuick.Window
@@ -115,7 +117,11 @@ QtObject {
 
             // Las propiedades de layer-shell se leen al crear la superficie,
             // asi que se muestra cuando ya estan puestas.
-            Component.onCompleted: show()
+            Component.onCompleted: {
+                show()
+                huecoA.planFijo = ventana.plan
+                huecoA.active = ventana.plan !== ""
+            }
 
             Hyprland {
                 id: hypr
@@ -128,7 +134,7 @@ QtObject {
                 running: true
                 // `paused` y nunca antes del primer fotograma: ver el porque en
                 // plugin/contents/ui/main.qml, que tiene el mismo reloj.
-                paused: hypr.tapado && (escena.item ? escena.item.dibujado : false)
+                paused: hypr.tapado && (ventana.escena.item ? ventana.escena.item.dibujado : false)
             }
 
             // El plan propio de este monitor, si `wectl` le ha dado uno.
@@ -139,18 +145,74 @@ QtObject {
             readonly property bool planPropio: app.planes !== "" && propio.existe
             readonly property string plan: planPropio ? propio.ruta : app.plan
 
-            // Se recrea la escena cuando cambia el plan que ESTE monitor usa:
-            // un cambio del compartido no toca a los que tienen el suyo.
-            Loader {
-                id: escena
-                anchors.fill: parent
-                property string clave: ventana.plan + "#"
-                                       + (ventana.planPropio ? propio.version : app.vigia.version)
-                onClaveChanged: { active = false; active = true }
-                active: ventana.plan !== ""
+            // Se crea una escena nueva cuando cambia el plan que ESTE monitor
+            // usa: un cambio del compartido no toca a los que tienen el suyo.
+            //
+            // Dos huecos y no uno. Con un solo Loader la escena vieja se
+            // destruia al instante y la ventana enseñaba su color de fondo
+            // hasta el primer fotograma de la nueva: de 27 a 501 ms de
+            // pantallazo, casi todo el `init` de la nueva (subir texturas).
+            // Ahora la nueva se carga en el otro hueco, DEBAJO, y cuando dice
+            // `dibujado` pasa arriba y la vieja se suelta. Mientras, la vieja
+            // se queda en su ultimo fotograma: el `init` bloquea el hilo de
+            // render de la ventana, pero no se ve negro.
+            property string clave: ventana.plan + "#"
+                                   + (ventana.planPropio ? propio.version : app.vigia.version)
+            property int turno: 0                     // el hueco que se ve
+            readonly property var escena: turno === 0 ? huecoA : huecoB
+            readonly property var otro: turno === 0 ? huecoB : huecoA
+            onClaveChanged: {
+                console.info("Escena: plan nuevo en " + ventana.modelData.name
+                             + ", se carga debajo de la que se ve")
+                otro.active = false
+                otro.planFijo = ventana.plan
+                otro.active = ventana.plan !== ""
+                if (!otro.active)
+                    escena.active = false
+            }
+            function relevo(h) {
+                if (h !== otro || !h.item || !h.item.dibujado)
+                    return
+                turno = 1 - turno
+                otro.active = false
+                console.info("Escena: relevo en " + ventana.modelData.name + ", se ve el hueco "
+                             + (turno === 0 ? "A" : "B") + " y se suelta el otro")
+            }
 
-                sourceComponent: SceneView {
-                    planSource: "file://" + ventana.plan
+            Loader {
+                id: huecoA
+                anchors.fill: parent
+                property string planFijo: ""
+                active: false
+                z: ventana.turno === 0 ? 1 : 0
+                sourceComponent: escenaComponente
+            }
+            Loader {
+                id: huecoB
+                anchors.fill: parent
+                property string planFijo: ""
+                active: false
+                z: ventana.turno === 1 ? 1 : 0
+                sourceComponent: escenaComponente
+            }
+            Connections {
+                target: huecoA.item
+                ignoreUnknownSignals: true
+                function onStatusChanged() { ventana.relevo(huecoA) }
+            }
+            Connections {
+                target: huecoB.item
+                ignoreUnknownSignals: true
+                function onStatusChanged() { ventana.relevo(huecoB) }
+            }
+
+            Component {
+                id: escenaComponente
+                SceneView {
+                    // El plan de ESTE hueco, fijado al crearlo: la escena vieja
+                    // sigue en pantalla mientras carga la nueva y no tiene que
+                    // ver cambiar el suyo.
+                    planSource: "file://" + parent.planFijo
                     time: reloj.elapsedTime
                     encaje: app.encaje
                     zoom: app.zoom
@@ -183,7 +245,7 @@ QtObject {
                     font.pixelSize: 14
                     color: "#ffffff"
                     textFormat: Text.PlainText
-                    readonly property var e: escena.item
+                    readonly property var e: ventana.escena.item
                     text: [
                         "── WallpaperEngine · Hyprland ──",
                         "escena    : " + (e ? e.sceneTitle || "…" : "-"),
