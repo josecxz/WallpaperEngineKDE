@@ -60,8 +60,8 @@ make indice                       # reescribe los números desde NOTAS.md
 - `12782` **El rendimiento en Plasma, medido desde fuera** — `_medir_plasma`: sin reiniciar plasmashell, sin fps y sin control de la pausa.
 - `12790` **Lo que no da la medida en Plasma** — fps, la pausa, el motor aislado y el `fdinfo` de KWin.
 - `12800` **Plasma, medido** — *Jeanne d'Arc* 64 % de la integrada, *Ashe* 94 % y sin reposo; quizá con una pantalla en pausa.
-- `12836` **Con dos pantallas, solo pausa la que tiene el foco** — `activeTask` en un modelo filtrado por pantalla: la otra nunca pausa. Sin arreglar.
-- `12858` **Lo que queda por medir en Plasma** — las pantallas a la vista y tapadas, una pasada con `WE_MEDIDAS` y el camino de Hyprland sin ejecutar.
+- `12836` **Con dos pantallas, solo pausa la que tiene el foco** — arreglado: la activa se busca en todas las pantallas y la cobertura decide cada una; 0,2 % de CPU con las dos tapadas.
+- `12871` **Lo que queda por medir en Plasma** — las pantallas a la vista y tapadas, una pasada con `WE_MEDIDAS` y el camino de Hyprland sin ejecutar.
 - `10829` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
 - `10843` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10865` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.

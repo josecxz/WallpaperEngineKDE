@@ -12846,14 +12846,27 @@ una en todo el sistema, así que en la otra pantalla no hay ninguna, `mirando` e
 falso y no pausa aunque esté tapada al 100 %. **No viene de `Escenas.qml`.** En
 Hyprland no pasa, va por su propio camino (`src/hyprland.cpp`).
 
-Sin arreglar. La condición de la activa existe para distinguir «todo minimizado»
-y debería preguntar si hay activa **en cualquier pantalla**, con un modelo sin
-filtrar, y dejar a la cobertura decir si esta está tapada. Falta comprobar que
-minimizar sigue despertando el fondo en las dos.
+**Arreglado.** La condición de la activa existe para distinguir «todo minimizado»,
+así que ahora pregunta por la activa **en cualquier pantalla**, con un segundo
+`TasksModel` sin filtro de pantalla pero con el de escritorio y actividad, y la
+cobertura dice si esta pantalla está tapada.
+
+Probado antes y después en KWin `--virtual --output-count 2` bajo
+`dbus-run-session`: el bus propio deja a KWin mandar en su `org.kde.KWin` sin
+tocar la sesión, y sus scripts mueven, maximizan y minimizan las ventanas.
+`KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` hace falta para que el modelo vea ventanas.
+
+En vivo, con un maximizado en cada pantalla: 0,2 % de CPU, integrada 98,3 % en
+reposo. Con «Mostrar el escritorio» despiertan las dos: 35,5 % de CPU, 95,5 % de
+integrada. Minimizar ventana a ventana solo se ha probado en el arnés.
+
+Si se minimiza la activa y KWin no da el foco a otra, la otra pantalla dibuja
+aunque esté tapada, hasta activar una ventana. Ya pasaba. Al cambiar de pantalla
+hay un `dibujando` y un `en pausa` en el mismo segundo: un instante sin activa.
 
 Lo de *Ashe* en esa pasada no vale como pausa: a las 11:24:19 KWin dijo
-`mostrando escritorio` y dibujaron las dos, 94 % de integrada. Nadie sabe si fue
-una tecla o el cambio de escena, que acababa de pasar a esa hora.
+`mostrando escritorio` y dibujaron las dos, 94 % de integrada. Duró hasta las
+11:33 y no se quedó atascado, pero el registro no dice qué lo pidió.
 
 ### Lo que queda por medir en Plasma
 
