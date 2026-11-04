@@ -10588,12 +10588,13 @@ fotogramas.
 
 ### Lo que queda
 
-- **Una capa hija sin `origin` va al centro del lienzo** e ignora a su
+- ~~**Una capa hija sin `origin` va al centro del lienzo** e ignora a su
   padre (`werender.py`, «sin origin declarado: al centro»). Son **34 hijos
   en 10 escenas**. En `3462491575` es el «FPS 60» (`帧率显示`): su padre lo
   manda fuera de la pantalla (los deslizadores `x5` = 1,181 e `y5` = 1,138
   del autor), pero él se queda en el centro. Hay que leer en el motor qué
-  `origin` por defecto tiene un hijo antes de tocarlo.
+  `origin` por defecto tiene un hijo antes de tocarlo.~~ **Hecho**: ver «Un
+  hijo sin `origin` está en su padre».
 - **Los scripts que leen a otra capa** (`thisLayer.getParent().scale`, en
   `3238423642` y `3210875135`): con la `scale` del padre positiva dan el
   mismo `value`, pero hace falta `getParent` para decirlo.
@@ -12559,3 +12560,62 @@ llevan sucesos.
   derecha, que en WE sin música está oculto. No se toca porque su visibilidad
   pasa por `applyUserProperties`, y no está leído cómo llama WE a ese suceso
   al cargar.
+
+## Un hijo sin `origin` está en su padre
+
+`werender.py` mandaba al centro del lienzo toda capa sin `origin`, tuviera
+padre o no. Son 101 objetos de 2249: 34 hijos en 10 escenas y 67 raíces (46
+imágenes y 21 sonidos). Omitir el campo no significa «al centro»: significa 0,
+y en un hijo 0 es el punto del padre.
+
+### Lo leído en `wallpaper64.exe`
+
+- **El constructor** del objeto deja `origin` a 0, `scale` a 1 y `angles` a 0
+  (`0x1401ddc7c..0x1401ddca0`). `origin` vive en `objeto+0x128` y `scale` en
+  `+0x134`.
+- **`0x1401e0530`** registra `origin`, `scale`, `angles`, `parallaxDepth` y
+  `sortorder` como propiedades, con su desplazamiento y sus accesores. El
+  lector de `vec3` es `0x1401a4230`: con una cadena nula escribe 0.
+- **Después de cargar**, las escrituras en `+0x128` son el cambio de padre en
+  tiempo de ejecución (`0x1401dec76`, `0x1401df0e9`, que conserva la posición
+  en el mundo) y la cámara (`0x1401f3237`). Ninguna pone un valor por defecto.
+- Los `"0 0 0"` que se insertan cerca del literal `origin` (`0x1401c1430` y
+  vecinos) son de partículas, no de capas.
+
+**Sin leer**: el bucle que recorre esas propiedades sobre el JSON. Las llamadas
+indirectas a `+0x38` que se miraron no eran él. Que un campo ausente no se toque
+se deduce del constructor y de que no hay otra escritura, no se ha visto.
+
+### Lo que cambia
+
+`transform_absoluto` ya contaba un `origin` ausente como 0 en la cadena; lo que
+lo estropeaba eran cuatro sitios que lo pisaban después con el centro.
+`_al_centro_sin_origin` lo deja solo para las raíces y para un hijo cuyo padre
+no existe.
+
+**Las raíces no se tocan.** Lo leído dice que también valen 0, pero de las 46
+imágenes 45 son `fullscreen` + `passthrough`, que no miran su `origin`, y la
+otra (`SharedNoise`, `3362719513`) está oculta. Cambiarlo no movería nada.
+
+### Lo medido
+
+- **Planes**, `--emit-plan` de `main` y de la rama sobre las 153 entradas: cero
+  fallos nuevos y `.psys` idénticos. Cambian 6 escenas, de 2 a 5 líneas cada
+  una: `3047352572`, `3462491575`, `3577990983`, `3597772384`, `3624164256` y
+  `3810943704`.
+- **Las otras 4 de los 34 hijos** no cambian y se entiende por qué: en
+  `3053927686` el padre ya está en el centro, y en `3210875135`, `3238423642` y
+  `3299228616` la capa o un antepasado están ocultos.
+- **`test_luminancia`**, 133 escenas: 0 apagadas, 0 regresiones, y las mismas
+  marcas de sospechosa antes y después (`3459506773`, `3274519787`). 12 escenas
+  mueven la media, 9 de
+  ellas sin cambiar el plan y como mucho 0,07: es ruido de la pasada. La única
+  con cambio real es `3577990983`, 41,74 → 42,16.
+- **Render de `3577990983`** (`--time 34`): el 1,61 % de los píxeles cambia más
+  de 8. La barra oscura que le cruzaba el cuello a la figura era `Background |
+  Logic`, y baja al dock de su padre.
+- **`3462491575`**: el «FPS 60» pasa a y = 1,565 en clip, fuera de la pantalla.
+- **`3624164256`** (`Vinyl Shadow`): se mueve en el plan y a `--time 3` no cambia
+  ni un píxel por encima de 8.
+- `test_werender`, `prueba_hijo_sin_origin`: falla sin el arreglo, con
+  `(500, 400)` frente a `(100, 50)`.

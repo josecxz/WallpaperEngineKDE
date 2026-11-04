@@ -53,6 +53,23 @@ from wescene import AssetResolver, SceneError, load_scene
 IDENTITY = [1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]
 
 
+def _al_centro_sin_origin(obj, por_id: dict | None) -> bool:
+    """Si una capa sin `origin` declarado va al centro del lienzo.
+
+    Solo una raiz. Un hijo sin `origin` esta en el punto de su padre: en WE el
+    constructor del objeto deja `origin` a 0 (`0x1401ddc7c`) y es relativo al
+    padre, asi que omitirlo es lo que escribe el editor para una capa puesta
+    justo encima de el. `transform_absoluto` ya lo cuenta como 0.
+
+    Las raices siguen como estaban: de las 46 imagenes del corpus, 45 son
+    `fullscreen` y no miran su `origin`, y la otra esta oculta.
+    """
+    if _floats(obj.raw.get("origin")):
+        return False
+    padre = obj.raw.get("parent")
+    return not (por_id and padre and por_id.get(str(padre)) is not None)
+
+
 def transform_absoluto(obj, por_id: dict | None) -> tuple[list[float], list[float], list[float]]:
     """`origin`, `scale` y `angles` compuestos con los del grupo que los contiene.
 
@@ -508,8 +525,8 @@ def _colocacion(obj, canvas: tuple[int, int], mesh: bool = False,
     paso = bool(obj.raw.get("_passthrough")) and not _es_composelayer(obj)
     if paso:
         origin, scale, angles = [w / 2, h / 2, 0.0], [1.0, 1.0, 1.0], [0.0, 0.0, 0.0]
-    elif not _floats(obj.raw.get("origin")):
-        origin = [w / 2, h / 2, 0.0]      # sin origin declarado: al centro
+    elif _al_centro_sin_origin(obj, por_id):
+        origin = [w / 2, h / 2, 0.0]
     size = ([float(w), float(h)] if paso else
             (_floats(obj.raw.get("size")) + [float(w), float(h)])[:2])
 
@@ -594,7 +611,7 @@ def particle_mvp(obj, canvas: tuple[int, int],
     """
     w, h = canvas
     origin, scale, angles = transform_absoluto(obj, por_id)
-    if not _floats(obj.raw.get("origin")):
+    if _al_centro_sin_origin(obj, por_id):
         origin = [w / 2, h / 2, 0.0]
     c, s = math.cos(angles[2]), math.sin(angles[2])
     sx, sy = scale[0], scale[1]
@@ -624,7 +641,7 @@ def particle_world(obj, canvas: tuple[int, int],
     """
     w, h = canvas
     origin, scale, angles = transform_absoluto(obj, por_id)
-    if not _floats(obj.raw.get("origin")):
+    if _al_centro_sin_origin(obj, por_id):
         origin = [w / 2, h / 2, 0.0]
     c, s = math.cos(angles[2]), math.sin(angles[2])
     return [scale[0] * c, -scale[1] * s, 0.0,      origin[0],
@@ -729,7 +746,7 @@ def puntero_a_sistema(obj, canvas: tuple[int, int],
     """
     w, h = canvas
     origin, scale, angles = transform_absoluto(obj, por_id)
-    if not _floats(obj.raw.get("origin")):
+    if _al_centro_sin_origin(obj, por_id):
         origin = [w / 2, h / 2, 0.0]
     sx, sy, sz = scale[0], scale[1], scale[2]
     if abs(sx) < 1e-6 or abs(sy) < 1e-6:

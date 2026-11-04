@@ -38,72 +38,72 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10251` **El camino: otro contexto en el mismo hilo** — libglvnd reparte GL por hilo; qué GPU se elige, qué estado EGL se guarda (la API también) y por qué `~SceneRenderer` libera en el contexto propio.
 - `10340` **El mando: `wectl gpu`, en caliente** — `DedicatedGpu` por la API de Plasma; el plan se suelta y se recarga en la otra GPU sin reiniciar, y los dos fallos que eso destapó (sampler y consultas que sobrevivían al contexto, contadores que se sumaban).
 - `10370` **¿Duerme la dedicada? Steam, btop y el audio HDMI** — la carga de btop con el fondo tapado era Steam y el propio btop (NVML la despierta); la dedicada no se suspende nunca por `audio-fix.conf` (`power_save=0` del audio HDMI). Y el driver no suelta sus descriptores hasta que muere el proceso.
-- `10608` **El fondo en Hyprland: el mismo módulo como superficie layer-shell** — `hyprland/main.qml` pide una capa `background` por monitor con `layer-shell-qt`; la pausa y el cursor salen del IPC de Hyprland (`src/hyprland.cpp`), el plan se recarga al cambiar el fichero y `recargar()` de `wectl` no busca plasmashell si el fondo de Hyprland está vivo.
-- `10618` **El anfitrión** — una `Window` por monitor con `org.kde.layershell` (`LayerBackground`, cuatro anclas, `exclusionZone: -1`); se muestra ya configurada. Medido: nivel 0 bajo waybar, plan en NVIDIA y composición en Intel.
-- `10635` **La pausa y el cursor: el IPC de Hyprland** — `.socket2.sock` dispara la revisión de `j/monitors` + `j/clients` con la rejilla de `VentanasEncima`; `j/cursorpos` cada 16 ms, asíncrono, solo sin pausa. El espacio especial abierto tapa el monitor.
-- `10666` **Cambiar de plan sin plasmashell** — `Loader` + `VigiaArchivo` (inodo y fecha, porque `wectl` renombra el directorio); `shuffle` probaba cinco escenas por tick hasta que `recargar()` aprendió a ver el pid del fondo de Hyprland.
-- `10686` **`wectl` en Hyprland** — las mismas órdenes; el fondo es la unidad transitoria `wallpaperengine-hyprland` porque un hijo del servicio oneshot de la rotación moriría con él; `gpu` reinicia la unidad y se guarda en `~/.config/wallpaperengine/hyprland.json`.
-- `10719` **Dos monitores: las dos capas iban al primero** — layer-shell-qt elige monitor con `LayerShell.Window.screen`, no con `Window.screen`, y `Qt.application.screens` da `QQuickScreenInfo`: `Hyprland.pantalla` busca el `QScreen` por nombre. Probado con HDMI y con una salida `headless` en caliente.
-- `10749` **Un wallpaper distinto en cada pantalla** — `wectl pantallas mismo|independiente` (solo Hyprland): un plan por monitor en `plugin/contents/pantallas/`, `VigiaArchivo.existe` para caer al compartido, `shuffle` reparte de la misma bolsa y `set` pone el mismo en todas.
-- `10756` **Cómo** — `preparar` con destino, `--planes` en el anfitrión, el `Loader` que solo recarga el plan de su monitor y el `existe` hacia abajo cuando `set` borra los propios.
-- `10783` **La resolución, que en Hyprland no se leía** — sin `kscreen-doctor` los planes salían al lienzo del autor (hasta 7680×4320); ahora `hyprctl -j monitors`, y cada plan propio a su monitor.
-- `10821` **La vara de medir del rendimiento** — `WE_MEDIDAS` en el motor (fotogramas ejecutados, CPU, GPU y copia por intervalo, en sumas crudas) y `tools/medir_vivo.py` (escena fija, sin pausa, `fdinfo` del i915; la NVIDIA no publica `fdinfo`). Ruido medido, regla del 10 % y la línea de base.
-- `10828` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
-- `10842` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
-- `10864` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
-- `10886` **La línea de base** — 163 fps en eDP-1, 110 % de un núcleo, y la copia entre GPUs pesa más que dibujar el plan.
-- `10902` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
-- `10908` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
+- `10609` **El fondo en Hyprland: el mismo módulo como superficie layer-shell** — `hyprland/main.qml` pide una capa `background` por monitor con `layer-shell-qt`; la pausa y el cursor salen del IPC de Hyprland (`src/hyprland.cpp`), el plan se recarga al cambiar el fichero y `recargar()` de `wectl` no busca plasmashell si el fondo de Hyprland está vivo.
+- `10619` **El anfitrión** — una `Window` por monitor con `org.kde.layershell` (`LayerBackground`, cuatro anclas, `exclusionZone: -1`); se muestra ya configurada. Medido: nivel 0 bajo waybar, plan en NVIDIA y composición en Intel.
+- `10636` **La pausa y el cursor: el IPC de Hyprland** — `.socket2.sock` dispara la revisión de `j/monitors` + `j/clients` con la rejilla de `VentanasEncima`; `j/cursorpos` cada 16 ms, asíncrono, solo sin pausa. El espacio especial abierto tapa el monitor.
+- `10667` **Cambiar de plan sin plasmashell** — `Loader` + `VigiaArchivo` (inodo y fecha, porque `wectl` renombra el directorio); `shuffle` probaba cinco escenas por tick hasta que `recargar()` aprendió a ver el pid del fondo de Hyprland.
+- `10687` **`wectl` en Hyprland** — las mismas órdenes; el fondo es la unidad transitoria `wallpaperengine-hyprland` porque un hijo del servicio oneshot de la rotación moriría con él; `gpu` reinicia la unidad y se guarda en `~/.config/wallpaperengine/hyprland.json`.
+- `10720` **Dos monitores: las dos capas iban al primero** — layer-shell-qt elige monitor con `LayerShell.Window.screen`, no con `Window.screen`, y `Qt.application.screens` da `QQuickScreenInfo`: `Hyprland.pantalla` busca el `QScreen` por nombre. Probado con HDMI y con una salida `headless` en caliente.
+- `10750` **Un wallpaper distinto en cada pantalla** — `wectl pantallas mismo|independiente` (solo Hyprland): un plan por monitor en `plugin/contents/pantallas/`, `VigiaArchivo.existe` para caer al compartido, `shuffle` reparte de la misma bolsa y `set` pone el mismo en todas.
+- `10757` **Cómo** — `preparar` con destino, `--planes` en el anfitrión, el `Loader` que solo recarga el plan de su monitor y el `existe` hacia abajo cuando `set` borra los propios.
+- `10784` **La resolución, que en Hyprland no se leía** — sin `kscreen-doctor` los planes salían al lienzo del autor (hasta 7680×4320); ahora `hyprctl -j monitors`, y cada plan propio a su monitor.
+- `10822` **La vara de medir del rendimiento** — `WE_MEDIDAS` en el motor (fotogramas ejecutados, CPU, GPU y copia por intervalo, en sumas crudas) y `tools/medir_vivo.py` (escena fija, sin pausa, `fdinfo` del i915; la NVIDIA no publica `fdinfo`). Ruido medido, regla del 10 % y la línea de base.
+- `10829` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
+- `10843` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
+- `10865` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
+- `10887` **La línea de base** — 163 fps en eDP-1, 110 % de un núcleo, y la copia entre GPUs pesa más que dibujar el plan.
+- `10903` **El tope de fotogramas** — `SceneView.fpsMax` (60 por defecto en Plasma y Hyprland): sin tope la NVIDIA gastaba 52 W y el proceso 110 % de un núcleo; con 60, 23–37 W y 66 %; con 30, 20 W.
+- `10909` **El tope** — `setTime` solo pide fotograma tras `0,9/fpsMax`, para que el paso sea siempre el mismo número de latidos; Qt no compone sin nosotros (`fdinfo` lo confirma).
 - `2886` **Lo medido** — la tabla por tope; 55 y no 60 porque el reloj late a 165 Hz; la NVIDIA bimodal a 60; el coste por fotograma sube al bajar fps, así que «% ocupada» no mide consumo y los vatios sí.
-- `10961` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
-- `10968` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
-- `10989` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
+- `10962` **La copia entre GPUs, sin esperar** — `glReadPixels` síncrono era 3,1 ms de 5 por fotograma: anillo de dos PBO con valla y mapeo persistente, se presenta el anterior. CPU del proceso de 65 % a 28 %; un fotograma de retraso.
+- `10969` **El cambio** — asíncrono solo con el reloj avanzando (en pausa, síncrono, si no se vería el anterior para siempre); sube desde el puntero del PBO, sin `memcpy`.
+- `10990` **Que lo que se ve es lo que se dibujó** — 950/950 fotogramas iguales byte a byte; la prueba con `static` fallaba porque cada pantalla tiene su hilo de render.
 - `2886` **Lo medido** — `leer` de 3,11 a 0,03 ms; la «subida» de la integrada, corregida después: no existe; la NVIDIA igual.
-- `11020` **Los 2,5 puntos de la integrada** — no existían: nueve medidas intercaladas de síncrona/PBO/PBO+copia dan lo mismo en la integrada; era una línea de base suelta. La integrada baila de 570 a 870 MHz y ±10 %. Desde aquí, antes y después intercalados.
-- `11025` **Las hipótesis** — frecuencia, memoria de origen u otro trabajo; `medir_vivo` guarda ahora MHz y RC6 de la integrada.
+- `11021` **Los 2,5 puntos de la integrada** — no existían: nueve medidas intercaladas de síncrona/PBO/PBO+copia dan lo mismo en la integrada; era una línea de base suelta. La integrada baila de 570 a 870 MHz y ±10 %. Desde aquí, antes y después intercalados.
+- `11026` **Las hipótesis** — frecuencia, memoria de origen u otro trabajo; `medir_vivo` guarda ahora MHz y RC6 de la integrada.
 - `2886` **Lo medido** — la tabla de los tres modos; copiar el PBO a un búfer propio cuesta 13 puntos de CPU.
-- `11065` **De paso, para el punto 3** — HDMI-A-3 cuelga de la NVIDIA: su fotograma va y vuelve por la integrada sin necesidad.
-- `11072` **Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro** — la segunda pantalla suma casi entera en el proceso (+13 % CPU, +370 MiB); el HDMI en la NVIDIA le cuesta a Hyprland el 40 % de la integrada. Cerrado medido, sin cambiar el motor.
-- `11077` **Lo que faltaba en la vara de medir** — Hyprland (CPU, i915, pmon), VRAM, `--sin-fondo` y `--solo` en el anfitrión; y zsh, que no parte `$x`.
+- `11066` **De paso, para el punto 3** — HDMI-A-3 cuelga de la NVIDIA: su fotograma va y vuelve por la integrada sin necesidad.
+- `11073` **Dos monitores: lo que cuesta cada pantalla, y lo que no es nuestro** — la segunda pantalla suma casi entera en el proceso (+13 % CPU, +370 MiB); el HDMI en la NVIDIA le cuesta a Hyprland el 40 % de la integrada. Cerrado medido, sin cambiar el motor.
+- `11078` **Lo que faltaba en la vara de medir** — Hyprland (CPU, i915, pmon), VRAM, `--sin-fondo` y `--solo` en el anfitrión; y zsh, que no parte `$x`.
 - `2886` **Lo medido** — la tabla por pantalla y sin fondo.
-- `11117` **Qué se puede hacer, y qué se hizo** — dibujar una vez para las dos solo vale en modo `mismo`; no se hizo.
-- `11133` **Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma** — ninguna `glReadPixels` corre en marcha; sí 46 `qgetenv` y 14 `glGetUniformLocation` por fotograma, ahora leídos al cargar. Dentro del ruido.
-- `11138` **Lo que hay** — las cinco lecturas y a qué variable obedecen; las consultas por fotograma no esperan a la GPU.
-- `11150` **Lo que sí se pagaba, aunque poco** — el cerrojo del entorno disputado por dos hilos, y la búsqueda de `src` por nombre.
+- `11118` **Qué se puede hacer, y qué se hizo** — dibujar una vez para las dos solo vale en modo `mismo`; no se hizo.
+- `11134` **Las lecturas de diagnóstico, y lo que sí se pagaba en cada fotograma** — ninguna `glReadPixels` corre en marcha; sí 46 `qgetenv` y 14 `glGetUniformLocation` por fotograma, ahora leídos al cargar. Dentro del ruido.
+- `11139` **Lo que hay** — las cinco lecturas y a qué variable obedecen; las consultas por fotograma no esperan a la GPU.
+- `11151` **Lo que sí se pagaba, aunque poco** — el cerrojo del entorno disputado por dos hilos, y la búsqueda de `src` por nombre.
 - `2886` **Lo medido** — A/B intercalado cambiando el `.so`: 1–3 % menos, dentro del ruido.
-- `11176` **Los uniforms constantes, una vez al cargar** — un programa por pase conserva sus uniforms: `resolve` sube las constantes y los samplers una vez y el bucle solo `g_Time` y los marcados (227 → 14 llamadas por fotograma). ~4 % de CPU, dentro del ruido.
-- `11183` **Por qué se puede** — sin programas compartidos; los valores solo se escriben al leer el plan; las hojas ya iban aparte.
-- `11199` **Comprobado que el render no cambia** — `glGetUniform*` al fotograma 100 en 12 escenas: cero distintos. Los 16 «distintos» de Sci-Fi City eran uniforms duplicados en el plan (`g_UserAlpha` dos veces por pase) y los de las hojas.
+- `11177` **Los uniforms constantes, una vez al cargar** — un programa por pase conserva sus uniforms: `resolve` sube las constantes y los samplers una vez y el bucle solo `g_Time` y los marcados (227 → 14 llamadas por fotograma). ~4 % de CPU, dentro del ruido.
+- `11184` **Por qué se puede** — sin programas compartidos; los valores solo se escriben al leer el plan; las hojas ya iban aparte.
+- `11200` **Comprobado que el render no cambia** — `glGetUniform*` al fotograma 100 en 12 escenas: cero distintos. Los 16 «distintos» de Sci-Fi City eran uniforms duplicados en el plan (`g_UserAlpha` dos veces por pase) y los de las hojas.
 - `2886` **Lo medido** — A/B intercalado: ~4 % menos, dentro del ruido.
-- `11238` **Los pasos de la simulación** — el resto del tramo era un paso entero más: 2 pasos por fotograma a 55 fps (1,32 a 60). Ahora `round(dt/PASO)` pasos iguales: Voyage de 20–24 a 14–17 ms de CPU por fotograma; 0 regresiones de luz en 133 escenas.
-- `11242` **Dónde mirar** — `particulas_ms` y `particulas_subir_ms` en `WE_MEDIDAS`; las escenas con más partículas.
-- `11253` **Lo que hacía Voyage** — banco + `gprof`: la turbulencia es el 80 % (12 ruidos × 8 hashes por partícula y paso), y había dos pasos por fotograma.
-- `11266` **El resto que costaba un paso entero** — la tabla de pasos por cadencia; pasos iguales en vez de acumular; las cintas graban por tiempo y no cambian.
+- `11239` **Los pasos de la simulación** — el resto del tramo era un paso entero más: 2 pasos por fotograma a 55 fps (1,32 a 60). Ahora `round(dt/PASO)` pasos iguales: Voyage de 20–24 a 14–17 ms de CPU por fotograma; 0 regresiones de luz en 133 escenas.
+- `11243` **Dónde mirar** — `particulas_ms` y `particulas_subir_ms` en `WE_MEDIDAS`; las escenas con más partículas.
+- `11254` **Lo que hacía Voyage** — banco + `gprof`: la turbulencia es el 80 % (12 ruidos × 8 hashes por partícula y paso), y había dos pasos por fotograma.
+- `11267` **El resto que costaba un paso entero** — la tabla de pasos por cadencia; pasos iguales en vez de acumular; las cintas graban por tiempo y no cambian.
 - `2886` **Lo medido** — banco, `test_weparticles`, `test_luminancia` con referencia, y en vivo intercalado.
 - `3073` **Lo que queda** — EVA es subir vértices (resuelto después, instanciando); Voyage ya la limita la NVIDIA (28 ms de GPU con dos pantallas, ~60 W).
-- `11329` **Las partículas, instanciadas** — un registro de 15 floats por partícula en vez de 6 vértices de 17; el shader se reescribe con una macro `a_TexCoordVec4` sobre `gl_VertexID`. EVA de 83 % a 48 % de CPU, Voyage de 47 a 53 fps; PNG offline idénticos. Los planes viejos hay que regenerarlos.
-- `11335` **Por qué tanto** — 408 bytes por partícula donde bastan 60; los tres caminos.
-- `10756` **Cómo** — `weparticles`, los dos ejecutores, `instanciar_particula` en `werender.py` y los lectores; los 814 sprites del corpus usan `genericparticle`.
-- `11376` **Comprobado** — PNG idénticos byte a byte en 5 escenas, `test_weparticles` y `test_luminancia` sin regresiones.
+- `11330` **Las partículas, instanciadas** — un registro de 15 floats por partícula en vez de 6 vértices de 17; el shader se reescribe con una macro `a_TexCoordVec4` sobre `gl_VertexID`. EVA de 83 % a 48 % de CPU, Voyage de 47 a 53 fps; PNG offline idénticos. Los planes viejos hay que regenerarlos.
+- `11336` **Por qué tanto** — 408 bytes por partícula donde bastan 60; los tres caminos.
+- `10757` **Cómo** — `weparticles`, los dos ejecutores, `instanciar_particula` en `werender.py` y los lectores; los 814 sprites del corpus usan `genericparticle`.
+- `11377` **Comprobado** — PNG idénticos byte a byte en 5 escenas, `test_weparticles` y `test_luminancia` sin regresiones.
 - `2886` **Lo medido** — la tabla de EVA y Voyage; baja también la GPU.
-- `11399` **Dos medidas que se contaminaban** — la rotación arrancaba el fondo normal en medio de una medida; `medir_vivo` para ahora el temporizador.
-- `11411` **El vídeo, al tamaño al que se ve** — convertir YUV→RGBA costaba más que decodificar, y el plan pedía el vídeo nativo: ahora el tamaño con que cubre la pantalla. *Home* 4K de 180 % a 140 % de CPU y la NVIDIA de 34 a 19 W.
-- `11417` **Dónde se va** — `ffmpeg -benchmark`: decodificar frente a convertir, en tres vídeos.
-- `10968` **El cambio** — `wevideo.tamano_textura`, nunca más que el nativo; solo los wallpapers de vídeo, no las capas `IS_VIDEO`.
-- `11376` **Comprobado** — 15 vídeos offline: 9 idénticos, 6 de 4K a 37–45 dB. `test_wevideo` falla en *Pattern* (`3047352572`) desde antes de este cambio.
+- `11400` **Dos medidas que se contaminaban** — la rotación arrancaba el fondo normal en medio de una medida; `medir_vivo` para ahora el temporizador.
+- `11412` **El vídeo, al tamaño al que se ve** — convertir YUV→RGBA costaba más que decodificar, y el plan pedía el vídeo nativo: ahora el tamaño con que cubre la pantalla. *Home* 4K de 180 % a 140 % de CPU y la NVIDIA de 34 a 19 W.
+- `11418` **Dónde se va** — `ffmpeg -benchmark`: decodificar frente a convertir, en tres vídeos.
+- `10969` **El cambio** — `wevideo.tamano_textura`, nunca más que el nativo; solo los wallpapers de vídeo, no las capas `IS_VIDEO`.
+- `11377` **Comprobado** — 15 vídeos offline: 9 idénticos, 6 de 4K a 37–45 dB. `test_wevideo` falla en *Pattern* (`3047352572`) desde antes de este cambio.
 - `2886` **Lo medido** — intercalado tres y tres.
 - `3073` **Lo que queda** — conversión en la GPU, VAAPI, y el vídeo decodificado dos veces con dos pantallas.
-- `11492` **Los relojes, el texto y la hora en cada fotograma** — ya estaba bien: los relojes se rehacen por tramo. *Lonely Cat* con 58 relojes, 1,58 ms por fotograma; *Arknights* (144 pases, 71 sistemas) es la escena para el punto 6.
-- `11513` **La pausa en Hyprland** — llega a cero: el proceso al 0,1 %, la integrada a 0 y la NVIDIA a 2,9 W y 210 MHz, igual que sin fondo. Los «2 W de más» del tope eran un artefacto de una medida corta. Queda ocupada la VRAM (~500 MiB).
-- `11544` **El objeto que no dibuja no se compone** — `beginObject` limpiaba los dos buffers del ping-pong y bastaba uno; un objeto vacío se componía igual. *Arknights* 14 % menos de CPU, PNG idénticos. Lo grande queda: cada capa se dibuja a tamaño de lienzo (63 W).
-- `11551` **Dónde va la CPU de `render()`** — `render_ms`, `previo_ms` y `objetos_ms` en `WE_MEDIDAS`.
-- `11558` **Lo que se hacía de más** — el `glClear` del buffer que limpia el primer pase, y la composición de un objeto transparente.
-- `11376` **Comprobado** — PNG idénticos en 6 escenas; `3047352572` no es determinista ni sin el cambio (su vídeo *Pattern*).
+- `11493` **Los relojes, el texto y la hora en cada fotograma** — ya estaba bien: los relojes se rehacen por tramo. *Lonely Cat* con 58 relojes, 1,58 ms por fotograma; *Arknights* (144 pases, 71 sistemas) es la escena para el punto 6.
+- `11514` **La pausa en Hyprland** — llega a cero: el proceso al 0,1 %, la integrada a 0 y la NVIDIA a 2,9 W y 210 MHz, igual que sin fondo. Los «2 W de más» del tope eran un artefacto de una medida corta. Queda ocupada la VRAM (~500 MiB).
+- `11545` **El objeto que no dibuja no se compone** — `beginObject` limpiaba los dos buffers del ping-pong y bastaba uno; un objeto vacío se componía igual. *Arknights* 14 % menos de CPU, PNG idénticos. Lo grande queda: cada capa se dibuja a tamaño de lienzo (63 W).
+- `11552` **Dónde va la CPU de `render()`** — `render_ms`, `previo_ms` y `objetos_ms` en `WE_MEDIDAS`.
+- `11559` **Lo que se hacía de más** — el `glClear` del buffer que limpia el primer pase, y la composición de un objeto transparente.
+- `11377` **Comprobado** — PNG idénticos en 6 escenas; `3047352572` no es determinista ni sin el cambio (su vídeo *Pattern*).
 - `2886` **Lo medido** — intercalado tres y tres en *Arknights*.
-- `11596` **Lo que queda, y es lo grande** — buffers de objeto del tamaño de su capa; y una caché de estado de GL.
-- `11615` **Partículas directas y buffers del tamaño de la capa** — lo grande del punto 6. *Arknights*: NVIDIA de 63,5 a 38 W, GPU de 6,7 a 2,9 ms por fotograma; `test_luminancia` sin regresiones.
-- `11624` **Un sistema de partículas de un solo pase va directo a la escena** — `directo` en `object`; sumar o superponer sprites da lo mismo que componer su buffer. Si el programa lee la escena con un sampler activo lo decide el ejecutor, no el plan. 92 de 133 idénticas.
-- `11656` **El buffer de cada objeto, del tamaño al que se ve** — `<w> <h>` en `object`: ×2 lo que ocupa en pantalla, tope el lienzo, 4 lienzos de pares extra. Por qué ×2: a 1:1 sale blanda (nitidez 13,25 → 10,32; ×2 12,73).
+- `11597` **Lo que queda, y es lo grande** — buffers de objeto del tamaño de su capa; y una caché de estado de GL.
+- `11616` **Partículas directas y buffers del tamaño de la capa** — lo grande del punto 6. *Arknights*: NVIDIA de 63,5 a 38 W, GPU de 6,7 a 2,9 ms por fotograma; `test_luminancia` sin regresiones.
+- `11625` **Un sistema de partículas de un solo pase va directo a la escena** — `directo` en `object`; sumar o superponer sprites da lo mismo que componer su buffer. Si el programa lee la escena con un sampler activo lo decide el ejecutor, no el plan. 92 de 133 idénticas.
+- `11657` **El buffer de cada objeto, del tamaño al que se ve** — `<w> <h>` en `object`: ×2 lo que ocupa en pantalla, tope el lienzo, 4 lienzos de pares extra. Por qué ×2: a 1:1 sale blanda (nitidez 13,25 → 10,32; ×2 12,73).
 
 ## CLI, rotación y rutas
 
@@ -445,48 +445,48 @@ make indice                       # reescribe los números desde NOTAS.md
 
 ## Pendiente
 
-- `11731` **Pendiente: lo que queda de la auditoría de rendimiento** — restos del punto 6 (`g_TexelSize`, buffers `_rt_Half…` del lienzo, caché de estado de GL), puntos 11 a 17, y el vídeo *Pattern* (`3047352572`), ya resuelto.
-- `11736` **Restos del punto 6** — revisados: caché de estado descartada, `g_TexelSize` y `_rt_…` por capa sin tocar, buffers declarados arreglados.
-- `11742` **11. El IPC de Hyprland** — hecho: medido, no se cambia.
-- `11750` **12. Que la NVIDIA pueda dormir** — la parte del motor, hecha; la del sistema, abierta.
-- `11759` **13. Tiempo de `wectl set` y `shuffle`** — hecho: 3,5 veces más rápido.
-- `11766` **14. Tamaño del plan en disco** — hecho: −29 % con las texturas de uno y dos canales; DXT tal cual, descartado.
-- `11773` **15. Tiempo de carga en el motor** — medido: subir texturas es el 75–80 %; `glProgramBinary`, descartado.
-- `11780` **16. Recarga del plan** — medido y arreglado en Hyprland: la escena nueva se carga debajo; Plasma, sin tocar.
-- `11787` **17. Resolución del plan (verificar, no rehacer)** — verificado en Hyprland: las 148 a 1,00; Plasma girado y dos monitores, sin probar.
-- `11795` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`): hecho, y no era el vídeo.
-- `11801` **Las tablas de glexec y el paso de swscale** — `3047352572` salía de dos maneras al azar y `test_wevideo` fallaba en *Pattern*: dos fallos sin relación.
-- `11809` **El render no determinista: `textures[64]`** — `MAX_TEX` 64 y 96 texturas: `tex:80` leía punteros de `videos[]` (ASLR). Topes holgados y rebasarlos aborta; `3097749052` deja de salir en silueta negra. Lo cazó ASan+UBSan, no la bisección.
-- `11864` **`test_wevideo`: el paso de swscale con ffmpeg 9** — con paso `w*4` swscale deja columnas sin escribir o escribe fuera del hueco (en vivo, cada fotograma). Filas a múltiplo de 64 bytes y `GL_UNPACK_ROW_LENGTH`.
-- `11889` **El IPC de Hyprland, medido** — ~100 µs de Hyprland por petición; `activewindow` se repite con cada cambio de título. Preguntar el cursor solo si el plan lo lee (64 de 133 no lo leen) no mejora nada en vivo, intercalado A/B: se deshizo. El microbenchmark prometía medio punto que no apareció.
-- `11894` **Cuánto cuesta cada petición** — cliente sintético a 62/s: +0,5–0,75 puntos de Hyprland, 0,35 ms de latencia.
-- `11909` **Cuántas hay** — 62/s de cursor; la revisión, ~1/s por monitor por los `activewindow` repetidos.
-- `11921` **Lo que se probó: preguntar el cursor solo si el plan lo lee** — criterio (uniforms vivos, `psyspuntero`, `paralaje`; la línea `parallax` no vale), 64/133 sin ratón, y la medida A/B que lo descarta.
-- `11957` **La NVIDIA en pausa, medida** — 0 interrupciones de la NVIDIA en pausa, igual que sin fondo; el hilo de render no se despierta. Queda retenido el contexto y su VRAM, sin medir si impide dormir.
-- `11986` **Lo del sistema, para cuando se aborde** — `Runtime D3 status: Disabled by default`: falta `NVreg_DynamicPowerManagement`; con `audio-fix.conf` y lo no identificado, tres causas, ninguna del motor.
-- `11999` **Los puntos 13 a 15: el plan, su tamaño y su carga** — los tres eran bytes de textura y Python lento.
-- `12005` **13. Lo que tarda `emit_plan`** — LZ4 en C, traducciones recordadas, `inv(G)` una vez, `bincount`: corpus 319 → 90 s, planes idénticos. El `TypeError` tragado por `emit_pass` que borró todos los pases.
-- `12047` **15. Qué pesa en el `init`** — desglose por fases en el registro; subir texturas es el 75–80 %, compilar casi nada.
-- `12069` **14. Qué ocupa el plan, y lo que se hizo** — DXT es el 9 % de los bytes; R8/RG88 expandidas a RGBA el 28 %. `canales_de` y `GL_R8`/`GL_RG8` con swizzle: −29 % de bytes, −12–33 % de `init`, −165 MiB de VRAM, imagen idéntica.
-- `12104` **Fuera de estos puntos** — los cuatro fallos de `test_wectl`, ya arreglados: ver «El test que cambiaba el fondo».
-- `12110` **La resolución, verificada** — las 148 en vivo a 1,00 en el blit final; lo que sobra es el recorte de «cubrir» (mediana ×1,11, verticales hasta ×3,18).
-- `12128` **Lo que no se ha podido probar aquí** — Plasma no mira la rotación del panel; con dos monitores habría que tomar el máximo por dimensión y no el de más área; escala fraccionaria sin ver.
-- `12149` **Los restos del punto 6** — los tres pendientes del punto 6, revisados.
-- `12151` **La caché de estado de GL: no compensa** — un programa por pase y destinos que no se repiten: lo evitable es <1 % de la CPU.
-- `12161` **`g_TexelSize`: no se toca** — la única medida contra WE cuadra con el texel de pantalla; para los efectos de capa no hay oráculo.
-- `12172` **Los `_rt_…` por capa: poco, y sin oráculo** — 1,6 % de los píxeles del corpus; cambiaría la imagen.
-- `12181` **Lo que sí: los buffers que declara cada efecto** — `fbos.scale` no se leía; los efectos del Workshop (`bokeh_blur`, un `bloom` en cadena) salían a lienzo completo. Línea `rt` en el plan; 4 escenas cambian, `2867316322` −14 % de GPU y −4 W.
-- `12219` **La recarga del plan** — punto 16, medido en vivo con la hora en cada mensaje.
-- `12225` **Lo que costaba** — el `Loader` destruía la escena al instante: 27–501 ms de pantallazo, casi todo el `init` de la nueva; la otra GPU solo 7–15 ms.
-- `12248` **El cambio: la nueva se carga debajo** — dos huecos en `hyprland/main.qml`; relevo al `dibujado` de la nueva; la vieja se queda congelada, sin negro.
-- `12268` **Lo que queda** — Plasma recarga saliendo a otro plugin, sin medir; el fondo que ya corría sigue con el QML viejo hasta reiniciarlo.
-- `12278` **El test que cambiaba el fondo** — `test_wectl` escribía en el plan real (`destino: Path = ESCENA` se fija al importar) y `aplicar` le borraba los planes por monitor; desde `513ca75`. `destino=None`, `PANTALLAS` redirigido y guardas sobre los planes reales.
-- `12308` **Lo que queda de las partículas, revisado** — los «Lo que queda» de partículas contados en el corpus: el tope de `flags & 2` cambia un emisor, el de instancias 5 destellos en 4 escenas, `mapsequence` no distingue; `uvsmoothing`, leído después y sin efecto.
-- `12333` **`uvsmoothing`: leído, y en este binario no hace nada** — la rama depende de `[sistema+0x1bc]`·`[sistema+0x1c0]`, que solo pone a cero el constructor: `trailLength` = vivas y `trailPosition` = `k`, como aquí. Sin cambio de render.
-- `12342` **Lo que hace el constructor de `rope`** — `A = [+0x1c0]·count`, `B = [+0x1bc]·lifetime` del override (`objeto+0x778`); en régimen `L = A·B − 1` y desfase `saturate((B − edad)·A) − 1`. `+0x258` edad, `+0x260` vida.
-- `12363` **Por qué `A` y `B` valen 0** — ninguna escritura directa, desde otra base, indexada ni por copia; solo se leen en `0x1402309b5`.
-- `12386` **Lo que no se ha podido descartar** — un puntero a miembro; si existiera, se vería en las estelas del ratón (`particle/drop`).
-- `12396` **Y de paso** — `count` del override multiplica al ritmo `A` en WE; aquí solo a `maxcount`. `trailLength` en régimen, cerrado.
+- `11732` **Pendiente: lo que queda de la auditoría de rendimiento** — restos del punto 6 (`g_TexelSize`, buffers `_rt_Half…` del lienzo, caché de estado de GL), puntos 11 a 17, y el vídeo *Pattern* (`3047352572`), ya resuelto.
+- `11737` **Restos del punto 6** — revisados: caché de estado descartada, `g_TexelSize` y `_rt_…` por capa sin tocar, buffers declarados arreglados.
+- `11743` **11. El IPC de Hyprland** — hecho: medido, no se cambia.
+- `11751` **12. Que la NVIDIA pueda dormir** — la parte del motor, hecha; la del sistema, abierta.
+- `11760` **13. Tiempo de `wectl set` y `shuffle`** — hecho: 3,5 veces más rápido.
+- `11767` **14. Tamaño del plan en disco** — hecho: −29 % con las texturas de uno y dos canales; DXT tal cual, descartado.
+- `11774` **15. Tiempo de carga en el motor** — medido: subir texturas es el 75–80 %; `glProgramBinary`, descartado.
+- `11781` **16. Recarga del plan** — medido y arreglado en Hyprland: la escena nueva se carga debajo; Plasma, sin tocar.
+- `11788` **17. Resolución del plan (verificar, no rehacer)** — verificado en Hyprland: las 148 a 1,00; Plasma girado y dos monitores, sin probar.
+- `11796` **Fuera de la lista** — el vídeo *Pattern* (`3047352572`): hecho, y no era el vídeo.
+- `11802` **Las tablas de glexec y el paso de swscale** — `3047352572` salía de dos maneras al azar y `test_wevideo` fallaba en *Pattern*: dos fallos sin relación.
+- `11810` **El render no determinista: `textures[64]`** — `MAX_TEX` 64 y 96 texturas: `tex:80` leía punteros de `videos[]` (ASLR). Topes holgados y rebasarlos aborta; `3097749052` deja de salir en silueta negra. Lo cazó ASan+UBSan, no la bisección.
+- `11865` **`test_wevideo`: el paso de swscale con ffmpeg 9** — con paso `w*4` swscale deja columnas sin escribir o escribe fuera del hueco (en vivo, cada fotograma). Filas a múltiplo de 64 bytes y `GL_UNPACK_ROW_LENGTH`.
+- `11890` **El IPC de Hyprland, medido** — ~100 µs de Hyprland por petición; `activewindow` se repite con cada cambio de título. Preguntar el cursor solo si el plan lo lee (64 de 133 no lo leen) no mejora nada en vivo, intercalado A/B: se deshizo. El microbenchmark prometía medio punto que no apareció.
+- `11895` **Cuánto cuesta cada petición** — cliente sintético a 62/s: +0,5–0,75 puntos de Hyprland, 0,35 ms de latencia.
+- `11910` **Cuántas hay** — 62/s de cursor; la revisión, ~1/s por monitor por los `activewindow` repetidos.
+- `11922` **Lo que se probó: preguntar el cursor solo si el plan lo lee** — criterio (uniforms vivos, `psyspuntero`, `paralaje`; la línea `parallax` no vale), 64/133 sin ratón, y la medida A/B que lo descarta.
+- `11958` **La NVIDIA en pausa, medida** — 0 interrupciones de la NVIDIA en pausa, igual que sin fondo; el hilo de render no se despierta. Queda retenido el contexto y su VRAM, sin medir si impide dormir.
+- `11987` **Lo del sistema, para cuando se aborde** — `Runtime D3 status: Disabled by default`: falta `NVreg_DynamicPowerManagement`; con `audio-fix.conf` y lo no identificado, tres causas, ninguna del motor.
+- `12000` **Los puntos 13 a 15: el plan, su tamaño y su carga** — los tres eran bytes de textura y Python lento.
+- `12006` **13. Lo que tarda `emit_plan`** — LZ4 en C, traducciones recordadas, `inv(G)` una vez, `bincount`: corpus 319 → 90 s, planes idénticos. El `TypeError` tragado por `emit_pass` que borró todos los pases.
+- `12048` **15. Qué pesa en el `init`** — desglose por fases en el registro; subir texturas es el 75–80 %, compilar casi nada.
+- `12070` **14. Qué ocupa el plan, y lo que se hizo** — DXT es el 9 % de los bytes; R8/RG88 expandidas a RGBA el 28 %. `canales_de` y `GL_R8`/`GL_RG8` con swizzle: −29 % de bytes, −12–33 % de `init`, −165 MiB de VRAM, imagen idéntica.
+- `12105` **Fuera de estos puntos** — los cuatro fallos de `test_wectl`, ya arreglados: ver «El test que cambiaba el fondo».
+- `12111` **La resolución, verificada** — las 148 en vivo a 1,00 en el blit final; lo que sobra es el recorte de «cubrir» (mediana ×1,11, verticales hasta ×3,18).
+- `12129` **Lo que no se ha podido probar aquí** — Plasma no mira la rotación del panel; con dos monitores habría que tomar el máximo por dimensión y no el de más área; escala fraccionaria sin ver.
+- `12150` **Los restos del punto 6** — los tres pendientes del punto 6, revisados.
+- `12152` **La caché de estado de GL: no compensa** — un programa por pase y destinos que no se repiten: lo evitable es <1 % de la CPU.
+- `12162` **`g_TexelSize`: no se toca** — la única medida contra WE cuadra con el texel de pantalla; para los efectos de capa no hay oráculo.
+- `12173` **Los `_rt_…` por capa: poco, y sin oráculo** — 1,6 % de los píxeles del corpus; cambiaría la imagen.
+- `12182` **Lo que sí: los buffers que declara cada efecto** — `fbos.scale` no se leía; los efectos del Workshop (`bokeh_blur`, un `bloom` en cadena) salían a lienzo completo. Línea `rt` en el plan; 4 escenas cambian, `2867316322` −14 % de GPU y −4 W.
+- `12220` **La recarga del plan** — punto 16, medido en vivo con la hora en cada mensaje.
+- `12226` **Lo que costaba** — el `Loader` destruía la escena al instante: 27–501 ms de pantallazo, casi todo el `init` de la nueva; la otra GPU solo 7–15 ms.
+- `12249` **El cambio: la nueva se carga debajo** — dos huecos en `hyprland/main.qml`; relevo al `dibujado` de la nueva; la vieja se queda congelada, sin negro.
+- `12269` **Lo que queda** — Plasma recarga saliendo a otro plugin, sin medir; el fondo que ya corría sigue con el QML viejo hasta reiniciarlo.
+- `12279` **El test que cambiaba el fondo** — `test_wectl` escribía en el plan real (`destino: Path = ESCENA` se fija al importar) y `aplicar` le borraba los planes por monitor; desde `513ca75`. `destino=None`, `PANTALLAS` redirigido y guardas sobre los planes reales.
+- `12309` **Lo que queda de las partículas, revisado** — los «Lo que queda» de partículas contados en el corpus: el tope de `flags & 2` cambia un emisor, el de instancias 5 destellos en 4 escenas, `mapsequence` no distingue; `uvsmoothing`, leído después y sin efecto.
+- `12334` **`uvsmoothing`: leído, y en este binario no hace nada** — la rama depende de `[sistema+0x1bc]`·`[sistema+0x1c0]`, que solo pone a cero el constructor: `trailLength` = vivas y `trailPosition` = `k`, como aquí. Sin cambio de render.
+- `12343` **Lo que hace el constructor de `rope`** — `A = [+0x1c0]·count`, `B = [+0x1bc]·lifetime` del override (`objeto+0x778`); en régimen `L = A·B − 1` y desfase `saturate((B − edad)·A) − 1`. `+0x258` edad, `+0x260` vida.
+- `12364` **Por qué `A` y `B` valen 0** — ninguna escritura directa, desde otra base, indexada ni por copia; solo se leen en `0x1402309b5`.
+- `12387` **Lo que no se ha podido descartar** — un puntero a miembro; si existiera, se vería en las estelas del ratón (`particle/drop`).
+- `12397` **Y de paso** — `count` del override multiplica al ritmo `A` en WE; aquí solo a `maxcount`. `trailLength` en régimen, cerrado.
 - `4538` **Pendiente: tres cabos de las partículas, medidos y sin cerrar** — cerrados los tres en secciones posteriores; lo que dejaron abierto, en «Lo que queda de las partículas, revisado».
 - `4551` **1. Los destellos: NO es el tamaño, y el factor 0,5 está probado y descartado** — el `preview.jpg` como oráculo a 0,982; los sprites grandes ya coinciden.
 - `4597` **1a. Descartado: no es la resolución, y cuidado con medir anchos** — el área va como la escala²; la mediana de anchos a baja resolución es ruido.
@@ -574,17 +574,19 @@ make indice                       # reescribe los números desde NOTAS.md
 - `10531` **Lo que se descartó** — repartir el deslizador en constantes de shader (`0.3 1`), evaluar con sucesos (8 colores negros) y `applyUserProperties` con `screenResolution`.
 - `10549` **Lo medido** — 20 de 186 campos en 2 escenas; 174/174 formas idénticas; solo cambian los objetos esperados; `定位` idéntica píxel a píxel; 0 regresiones de luz.
 - `10589` **Lo que queda** — los 34 hijos sin `origin` que van al centro, `getParent`, `applyUserProperties` al cargar, el rebote por fotograma de `2262142032` y el deslizador en un shader.
-- `12405` **El audio en silencio: la plantilla de WE de respuesta al audio, evaluada sin música** — sin música WE ejecuta el script con los buffers a cero; `Interprete(silencio=True)` en `valor_fijo_de` y un número en un `Vec3` repartido (lo dice la documentación de `update`). 19 `scale` de la plantilla al 80–90 %; cambian `3462491575` y `3810943704`.
-- `12412` **Lo que había en el corpus** — 26 campos con `registerAudioBuffers`, 19 de ellos la plantilla `script_factor_audio_response.js` en `scale`; da `value.x · minvalue` en silencio.
-- `12432` **Lo que se ha comprobado antes de tocarlo** — el número a `Vec3(n, n, n)`, en docs.wallpaperengine.io (no leído en el binario); los tamaños 16/32/64, en `scenescript64.dll`.
+- `12406` **El audio en silencio: la plantilla de WE de respuesta al audio, evaluada sin música** — sin música WE ejecuta el script con los buffers a cero; `Interprete(silencio=True)` en `valor_fijo_de` y un número en un `Vec3` repartido (lo dice la documentación de `update`). 19 `scale` de la plantilla al 80–90 %; cambian `3462491575` y `3810943704`.
+- `12413` **Lo que había en el corpus** — 26 campos con `registerAudioBuffers`, 19 de ellos la plantilla `script_factor_audio_response.js` en `scale`; da `value.x · minvalue` en silencio.
+- `12433` **Lo que se ha comprobado antes de tocarlo** — el número a `Vec3(n, n, n)`, en docs.wallpaperengine.io (no leído en el binario); los tamaños 16/32/64, en `scenescript64.dll`.
 - `7853` **Lo que cambia** — `silencio` y `_buffers_en_silencio`, `AUDIO_RESOLUTION_*`, `frametime` solo si se da, `_componentes` reparte el número.
 - `2886` **Lo medido** — entran exactamente las 19; solo cambian dos planes; un buffer de 1744×1680 pasa a pantalla completa por el reparto del presupuesto; luz 129,65 → 129,48 y 47,39 → 47,86.
 - `3073` **Lo que queda** — los visualizadores de barras con `createLayer` (en silencio, en WE no se ven) y el `scale` de audio de `2262142032`; el valor de `init`, hecho después.
-- `12502` **`parseFloat`, los hijos de un `origin` que oscila y lo que devuelve `init`** — `parseFloat` e `isNaN` en el intérprete; cada capa lleva las líneas `vaiven` de sus antepasados, sin tocar C. 5365 y 31 de `3577990983` se mueven con sus hijos.
-- `12507` **Las capas con hijos** — un `origin` traslada todo su subárbol igual y `we_vaiven_coloca` ya suma: `_vaiven_del_origin` por cada antepasado. El `angles` no se hereda.
+- `12503` **`parseFloat`, los hijos de un `origin` que oscila y lo que devuelve `init`** — `parseFloat` e `isNaN` en el intérprete; cada capa lleva las líneas `vaiven` de sus antepasados, sin tocar C. 5365 y 31 de `3577990983` se mueven con sus hijos.
+- `12508` **Las capas con hijos** — un `origin` traslada todo su subárbol igual y `we_vaiven_coloca` ya suma: `_vaiven_del_origin` por cada antepasado. El `angles` no se hereda.
 - `2886` **Lo medido** — `prueba_vaiven_de_hijos` a 9,7e-14 de `object_mvp`; solo cambia el plan de `3577990983`, con 10 líneas; hay que medir después de su telón de entrada.
-- `12542` **Lo que devuelve `init`** — `valor_fijo` lo aplica; sin `update`, el campo se queda en eso. No mueve nada del corpus.
+- `12543` **Lo que devuelve `init`** — `valor_fijo` lo aplica; sin `update`, el campo se queda en eso. No mueve nada del corpus.
 - `3073` **Lo que queda** — los hijos partícula de la capa 31, y `visible` con `init` a `false`: `media_cover` de `3555933181` pinta su relleno, pendiente de leer `applyUserProperties` al cargar.
+- `12564` **Un hijo sin `origin` está en su padre** — omitir el campo es 0, no el centro: `_al_centro_sin_origin` solo para raíces; 6 escenas cambian y la barra del cuello de `3577990983` baja al dock.
+- `12571` **Lo leído en `wallpaper64.exe`** — constructor a 0, el lector de `vec3` y quién escribe `+0x128`; el bucle de propiedades, sin localizar.
 
 ## Inventario del formato: qué leemos y qué no
 

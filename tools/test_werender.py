@@ -434,6 +434,35 @@ def prueba_herencia_de_grupo(fallos: list[str]) -> None:
         fallos.append(f"un objeto sin padre no deberia moverse: {org}")
 
 
+def prueba_hijo_sin_origin(fallos: list[str]) -> None:
+    """Un hijo sin `origin` esta en el punto de su padre, no en el centro.
+
+    En WE el campo vale 0 si falta y es relativo al padre. Se iba al centro del
+    lienzo: 34 hijos en 10 escenas, el «FPS 60» de 3462491575 entre ellos.
+    """
+    lienzo = (1000, 800)
+    padre = wescene.SceneObject(id=1, name="padre", kind="image",
+                                raw={"id": 1, "image": "models/p.json",
+                                     "origin": "100 50 0", "scale": "2 2 2",
+                                     "size": "10 10"})
+    hijo = wescene.SceneObject(id=2, name="hijo", kind="image",
+                               raw={"id": 2, "image": "models/h.json",
+                                    "parent": 1, "size": "10 10"})
+    por_id = {"1": padre, "2": hijo}
+    # Mismo punto: la colocacion del hijo y la del padre dan el mismo centro.
+    _, _, ax, ay, *_ = werender._colocacion(hijo, lienzo, False, por_id)
+    _, _, px, py, *_ = werender._colocacion(padre, lienzo, False, por_id)
+    if (round(ax, 6), round(ay, 6)) != (round(px, 6), round(py, 6)):
+        fallos.append(f"el hijo sin origin no esta en su padre: "
+                      f"{(ax, ay)} frente a {(px, py)}")
+    # Una raiz sin `origin`, y un hijo de un padre que no existe, como antes.
+    for raw in ({"id": 3, "size": "10 10"},
+                {"id": 3, "size": "10 10", "parent": 99}):
+        suelta = wescene.SceneObject(id=3, name="suelta", kind="image", raw=raw)
+        if not werender._al_centro_sin_origin(suelta, por_id):
+            fallos.append(f"sin padre real deberia ir al centro: {raw}")
+
+
 def prueba_parallax_de_camara(fallos: list[str]) -> None:
     """El parallax de camara en reposo, tal como lo hace WE.
 
@@ -886,6 +915,7 @@ def main() -> int:
                    prueba_sampler_por_defecto, prueba_niveles_mipmap,
                    prueba_valor_de_usuario, prueba_curva_de_animacion,
                    prueba_mezcla_de_objeto, prueba_herencia_de_grupo,
+                   prueba_hijo_sin_origin,
                    prueba_parallax_de_camara, prueba_posicion_de_parallax,
                    prueba_temblor_de_camara,
                    prueba_particulas_en_perspectiva,
