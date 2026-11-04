@@ -112,8 +112,14 @@ def poner_plugin(nombre: str) -> None:
 # modulo QML. Va como unidad transitoria de systemd de usuario y no como hijo
 # de `wectl`, por dos razones: `shuffle` corre en un servicio oneshot, y
 # systemd mata todo su cgroup al terminar ---el fondo moriria con el primer
-# cambio---; y asi se reinicia solo si se cae, con el limite de arranques de
-# systemd para no entrar en bucle.
+# cambio---; y asi se reinicia solo si se cae.
+#
+# Reiniciarse solo tiene un peligro: al salir de Hyprland el proceso aborta, y
+# el limite de arranques de systemd no lo para (5 en 10 s, y con RestartSec=2 no
+# llegan). Si la sesion siguiente es Plasma, su `wayland-1` se llama igual y el
+# fondo arranca dentro, con el motor de plasmashell al lado. Por eso cada
+# arranque pregunta antes a la instancia de Hyprland que lo creo; la ruta del
+# socket no vale, porque se queda en disco cuando el compositor muere.
 
 UNIDAD_HYPRLAND = "wallpaperengine-hyprland"
 ANFITRION = RAIZ / "hyprland" / "main.qml"
@@ -220,6 +226,7 @@ def hyprland_arrancar() -> None:
              f"--unit={UNIDAD_HYPRLAND}",
              "--description=Fondo de WallpaperEngine en Hyprland",
              "-p", "Restart=on-failure", "-p", "RestartSec=2",
+             "-p", f"ExecCondition={shutil.which('hyprctl') or 'hyprctl'} version",
              "-p", f"StandardOutput=truncate:{REGISTRO_HYPRLAND}",
              "-p", "StandardError=inherit",
              *[f"--setenv={k}={v}" for k, v in entorno.items()],
@@ -392,6 +399,11 @@ def en_exclusiva():
         yield
 
 
+# `KScreen::Output::Rotation`, que `kscreen-doctor -j` da como entero: las que
+# dejan el panel alto. Es una mascara de bits, no grados.
+ROTACIONES_ALTAS = {2, 8, 32, 128}   # Left, Right, Flipped90, Flipped270
+
+
 def resolucion_de_pantalla() -> tuple[int, int] | None:
     """Los pixeles del monitor mas grande, o None si no se puede saber.
 
@@ -429,6 +441,9 @@ def resolucion_de_pantalla() -> tuple[int, int] | None:
         tam = (modo or {}).get("size") or {}
         w, h = tam.get("width"), tam.get("height")
         if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+            # El modo es el del panel, sin girar: igual que en Hyprland.
+            if o.get("rotation") in ROTACIONES_ALTAS:
+                w, h = h, w
             if mejor is None or w * h > mejor[0] * mejor[1]:
                 mejor = (w, h)
     return mejor
