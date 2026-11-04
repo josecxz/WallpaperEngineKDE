@@ -107,6 +107,7 @@ aguja, tocas los dos a la vez o divergen.
 | `src/otragpu.cpp` | el plan en otra GPU: su contexto EGL, leer el fotograma y subirlo a Qt |
 | `src/escritorio.cpp` | le pregunta a KWin cuánta pantalla tapan las ventanas |
 | `src/hyprland.cpp` | lo mismo en Hyprland por su IPC: pausa, cursor, y el vigía del `plan.txt` |
+| `plugin/contents/ui/Escenas.qml` | el fondo en Plasma: vigila el plan y carga la escena nueva debajo; sin nada de Plasma, para probarlo en un arnés |
 | `hyprland/main.qml` | el fondo en Hyprland: una superficie layer-shell por monitor (`make hyprland`) |
 | `src/weparticles.c` | simulador, **compartido** por los dos ejecutores |
 | `src/wevideo.c` | decodificador libav, **compartido** por los dos ejecutores |
@@ -156,7 +157,7 @@ make plan WALLPAPER=<ruta>     # deja plan.txt en plugin/contents/scene/
 | `test_wescript.py` | lo que dice JS en casos sintéticos del intérprete, y qué capas con `engine` dan reloj |
 | `test_wevideo.py` | `ffprobe` para las dimensiones y `ffmpeg` para los píxeles, sobre los 18 vídeos del corpus |
 | `test_luminancia.py obj/glexec` | **el que decide**: renderiza y mide la luz. `--guardar luz.json` / `--referencia luz.json` caza regresiones |
-| `medir_vivo.py --wallpaper <id>` | **rendimiento en vivo** (solo Hyprland): fotogramas, CPU, GPU y copia por pantalla con `WE_MEDIDAS`, más `fdinfo`. `--guardar` / `--comparar`; ruido y regla del 10 % en NOTAS («La vara de medir») |
+| `medir_vivo.py --wallpaper <id>` | **rendimiento en vivo**: en Hyprland, fotogramas, CPU, GPU y copia por pantalla con `WE_MEDIDAS`, más `fdinfo`; en Plasma, desde fuera y sin reiniciar: CPU, memoria, `fdinfo` y cronómetro, con la pausa que haya. `--guardar` / `--comparar`; ruido y regla del 10 % en NOTAS («La vara de medir») |
 
 `test_wescene` y `test_weshader` tardan; van con `timeout 1800`.
 

@@ -160,7 +160,9 @@ MODOS_PANTALLAS = ("mismo", "independiente")
 
 
 def modo_pantallas() -> str:
-    """`mismo` (un plan para todas las pantallas) o `independiente`."""
+    """`mismo` (un plan para todas las pantallas) o `independiente`.
+
+    Vale para las dos sesiones, aunque viva en `hyprland.json`."""
     m = _config_hyprland().get("pantallas")
     return m if m in MODOS_PANTALLAS else "mismo"
 
@@ -184,6 +186,35 @@ def monitores_hyprland() -> list[tuple[str, int, int]]:
                 w, h = h, w
             salida.append((str(m.get("name")), w, h))
     return salida
+
+
+def monitores_plasma() -> list[tuple[str, int, int]]:
+    """Nombre y pixeles de cada salida encendida, segun `kscreen-doctor`."""
+    try:
+        r = subprocess.run(["kscreen-doctor", "-j"], capture_output=True,
+                           text=True, timeout=10)
+        salidas = json.loads(r.stdout).get("outputs", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    salida = []
+    for o in salidas:
+        if not o.get("enabled"):
+            continue
+        modo = next((m for m in o.get("modes", [])
+                     if m.get("id") == o.get("currentModeId")), None)
+        tam = (modo or {}).get("size") or {}
+        w, h = tam.get("width"), tam.get("height")
+        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+            # El modo es el del panel, sin girar: igual que en Hyprland.
+            if o.get("rotation") in ROTACIONES_ALTAS:
+                w, h = h, w
+            salida.append((str(o.get("name")), w, h))
+    return salida
+
+
+def monitores() -> list[tuple[str, int, int]]:
+    """Los monitores de la sesion en curso, sea cual sea."""
+    return monitores_hyprland() if en_hyprland() else monitores_plasma()
 
 
 def fondo_hyprland() -> bool:
@@ -258,13 +289,14 @@ def _registro_hyprland(patron: str, n: int) -> list[str]:
 
 
 def recargar() -> None:
-    """Fuerza a Plasma a releer el plan.
+    """Deja el motor en marcha sobre el plan que acaba de cambiar.
 
-    Cambiar el fichero no basta: plasmashell no lo vigila, y volver a poner el
-    mismo plugin tampoco dispara nada. Hay que salir a otro plugin y volver.
+    Con el motor ya puesto no hay nada que hacer: el fondo vigila el fichero
+    del plan y carga la escena nueva debajo de la que se ve, en Plasma
+    (`Escenas.qml`) igual que en Hyprland. Antes aqui se salia a otro plugin y
+    se volvia, y eso era el parpadeo de cada cambio. Solo hay que pedir algo si
+    algun escritorio no lo tiene puesto; si en Hyprland no estaba, se arranca.
 
-    En Hyprland no hay a quien pedirselo ni hace falta: el fondo vigila el
-    fichero del plan y se recarga solo; si no estaba en marcha, se arranca.
     Sin este desvio `shuffle` tomaba el "plasmashell no responde" por una
     escena rota y probaba otras cuatro, cinco planes escritos ---y cinco
     recargas--- por cada cambio.
@@ -272,8 +304,9 @@ def recargar() -> None:
     if en_hyprland():
         hyprland_arrancar()
         return
-    poner_plugin(PLUGIN_IMAGEN)
-    poner_plugin(PLUGIN)
+    actuales = plugins_actuales()
+    if not actuales or any(p != PLUGIN for p in actuales):
+        poner_plugin(PLUGIN)
 
 
 # ── biblioteca ──────────────────────────────────────────────────────────────
@@ -422,31 +455,8 @@ def resolucion_de_pantalla() -> tuple[int, int] | None:
 
     En Hyprland no hay `kscreen-doctor`: se pregunta a `hyprctl`.
     """
-    if en_hyprland():
-        mons = monitores_hyprland()
-        return max(((w, h) for _, w, h in mons), key=lambda t: t[0] * t[1],
-                   default=None)
-    try:
-        r = subprocess.run(["kscreen-doctor", "-j"], capture_output=True,
-                           text=True, timeout=10)
-        salidas = json.loads(r.stdout).get("outputs", [])
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    mejor = None
-    for o in salidas:
-        if not o.get("enabled"):
-            continue
-        modo = next((m for m in o.get("modes", [])
-                     if m.get("id") == o.get("currentModeId")), None)
-        tam = (modo or {}).get("size") or {}
-        w, h = tam.get("width"), tam.get("height")
-        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
-            # El modo es el del panel, sin girar: igual que en Hyprland.
-            if o.get("rotation") in ROTACIONES_ALTAS:
-                w, h = h, w
-            if mejor is None or w * h > mejor[0] * mejor[1]:
-                mejor = (w, h)
-    return mejor
+    return max(((w, h) for _, w, h in monitores()), key=lambda t: t[0] * t[1],
+               default=None)
 
 
 def preparar(ruta: Path, destino: Path | None = None,
@@ -593,8 +603,7 @@ def plan_instalado() -> str | None:
 
 SUFIJOS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 # Por debajo de un minuto el temporizador no seria honesto (systemd agrupa los
-# disparos) y ademas cada cambio parpadea: `recargar` sale al fondo de Plasma y
-# vuelve. Un minuto ya es absurdo, pero es decision del usuario, no nuestra.
+# disparos). Un minuto ya es absurdo, pero es decision del usuario, no nuestra.
 # Un minuto. El tope lo pone lo que tarda un cambio completo, medido sobre la
 # biblioteca: la mediana esta en unos pocos segundos, pero preparar el plan de
 # `2637739953` ---65 pases, 196 assets, 369 MB escritos--- cuesta 18,2 s, y el
@@ -903,7 +912,7 @@ def cmd_shuffle(args) -> int:
     # como "ninguna de las escenas probadas se pudo preparar", que manda a
     # mirar la biblioteca cuando el problema es el motor.
     construir()
-    if en_hyprland() and modo_pantallas() == "independiente":
+    if modo_pantallas() == "independiente":
         return _shuffle_por_pantalla(estado, entradas, raiz, titulos, segundos)
     for _ in range(min(5, len(entradas))):
         elegido = _sacar_de_la_bolsa(estado, entradas)
@@ -942,9 +951,10 @@ def _shuffle_por_pantalla(estado: dict, entradas: list[tuple[str, str]],
     repite ninguno hasta que hayan salido todos. Cada plan se genera a la
     resolucion de SU monitor.
     """
-    mons = monitores_hyprland()
+    mons = monitores()
     if not mons:
-        raise CtlError("hyprctl no da ningun monitor; ¿esta Hyprland corriendo?")
+        raise CtlError("la sesion no da ningun monitor; "
+                       "¿responden hyprctl o kscreen-doctor?")
     puestos = {}
     fallos = []
     for nombre, w, h in mons:
@@ -983,15 +993,12 @@ def _shuffle_por_pantalla(estado: dict, entradas: list[tuple[str, str]],
 
 def cmd_pantallas(args) -> int:
     """Mismo wallpaper en todas las pantallas, o uno al azar en cada una."""
-    if not en_hyprland():
-        raise CtlError("por ahora solo en Hyprland: en Plasma todas las "
-                       "pantallas leen el mismo plan")
     actual = modo_pantallas()
     if args.modo is None:
         print(f"pantallas : {actual}")
         if actual == "independiente":
             propios = planes_propios()
-            for nombre, _, _ in monitores_hyprland():
+            for nombre, _, _ in monitores():
                 print(f"  {nombre}: {propios.get(nombre) or plan_instalado() or '(ninguno)'}"
                       + ("" if nombre in propios else "  (compartido)"))
         return 0
@@ -1117,7 +1124,7 @@ def cmd_stop(args) -> int:
 
 
 def cmd_status(args) -> int:
-    compartido = en_hyprland() and modo_pantallas() == "independiente"
+    compartido = modo_pantallas() == "independiente"
     print(f"{'plan compartido' if compartido else 'plan preparado '}: "
           f"{plan_instalado() or '(ninguno)'}"
           + ("  (lo usa la pantalla sin plan propio)" if compartido else ""))
@@ -1161,6 +1168,9 @@ def cmd_status(args) -> int:
     nuestros = sum(1 for p in activos if p == PLUGIN)
     print(f"escritorios    : {nuestros} de {len(activos)} con el motor")
     print(f"estado         : {'EN MARCHA' if nuestros else 'parado'}")
+    print(f"pantallas      : {modo_pantallas()}")
+    for nombre, titulo in planes_propios().items():
+        print(f"  {nombre}: {titulo}")
     reg = subprocess.run(
         ["journalctl", "--user", "-b", "-g", "SceneView", "--no-pager", "-n", "2"],
         capture_output=True, text=True)

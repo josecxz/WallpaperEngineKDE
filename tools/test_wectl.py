@@ -355,6 +355,27 @@ def prueba_shuffletime(fallos: list[str]) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def prueba_recargar_plasma(fallos: list[str]) -> None:
+    """Con el motor puesto no se sale a otro plugin: eso era el parpadeo."""
+    print("\n── recargar en Plasma ──")
+    casos = [("puesto en todos", [wectl.PLUGIN, wectl.PLUGIN], []),
+             ("falta en uno", [wectl.PLUGIN, wectl.PLUGIN_IMAGEN], [wectl.PLUGIN]),
+             ("sin escritorios", [], [wectl.PLUGIN])]
+    reales = (wectl.en_hyprland, wectl.plugins_actuales, wectl.poner_plugin)
+    try:
+        wectl.en_hyprland = lambda: False
+        for nombre, actuales, esperado in casos:
+            puestos: list[str] = []
+            wectl.plugins_actuales = lambda: actuales
+            wectl.poner_plugin = puestos.append
+            wectl.recargar()
+            if puestos != esperado:
+                fallos.append(f"recargar, {nombre}: {puestos} en vez de {esperado}")
+            print(f"  {nombre}: {puestos}")
+    finally:
+        wectl.en_hyprland, wectl.plugins_actuales, wectl.poner_plugin = reales
+
+
 def prueba_resolucion_plasma(fallos: list[str]) -> None:
     """Un panel girado en Plasma pide un plan alto, no el apaisado del modo."""
     print("\n── resolucion en Plasma ──")
@@ -387,6 +408,37 @@ def prueba_resolucion_plasma(fallos: list[str]) -> None:
             if obtenido != esperado:
                 fallos.append(f"{nombre}: {obtenido} en vez de {esperado}")
             print(f"  {nombre}: {obtenido}")
+    finally:
+        wectl.subprocess.run, wectl.en_hyprland = run_real, en_hyprland_real
+
+
+def prueba_monitores_plasma(fallos: list[str]) -> None:
+    """El modo independiente en Plasma: nombre y tamano de cada salida."""
+    print("\n── monitores en Plasma ──")
+
+    def salida(nombre: str, rotacion: int, activa: bool = True) -> dict:
+        return {"name": nombre, "enabled": activa, "rotation": rotacion,
+                "currentModeId": "1",
+                "modes": [{"id": "1", "size": {"width": 1920, "height": 1080}}]}
+
+    texto = json.dumps({"outputs": [salida("HDMI-A-3", 1), salida("eDP-1", 2),
+                                    salida("DP-1", 1, activa=False)]})
+    run_real, en_hyprland_real = subprocess.run, wectl.en_hyprland
+    try:
+        wectl.en_hyprland = lambda: False
+        wectl.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(
+            a[0], 0, stdout=texto, stderr="")
+        obtenido = wectl.monitores()
+        esperado = [("HDMI-A-3", 1920, 1080), ("eDP-1", 1080, 1920)]
+        if obtenido != esperado:
+            fallos.append(f"monitores: {obtenido} en vez de {esperado}")
+        print(f"  {obtenido}")
+
+        def roto(*a, **k):
+            raise OSError("sin kscreen-doctor")
+        wectl.subprocess.run = roto
+        if wectl.monitores() != [] or wectl.resolucion_de_pantalla() is not None:
+            fallos.append("sin kscreen-doctor deberia dar lista vacia y None")
     finally:
         wectl.subprocess.run, wectl.en_hyprland = run_real, en_hyprland_real
 
@@ -432,7 +484,9 @@ def main() -> int:
     prueba_construir(fallos)
     prueba_unidades(fallos)
     prueba_shuffletime(fallos)
+    prueba_recargar_plasma(fallos)
     prueba_resolucion_plasma(fallos)
+    prueba_monitores_plasma(fallos)
     prueba_fondo_hyprland(fallos)
 
     if fallos:

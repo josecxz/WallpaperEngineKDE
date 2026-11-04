@@ -108,6 +108,25 @@ Item {
         onLayoutChanged: raiz.revisar()
     }
 
+    // La ventana activa se busca en TODAS las pantallas. `tareas` solo ve las
+    // de este monitor, asi que con dos pantallas solo el fondo que tenia el
+    // foco veia una activa, y el otro seguia dibujando debajo de un maximizado.
+    // Que esa ventana tape ESTA pantalla ya lo dice la cobertura. Se mantiene
+    // el filtro de escritorio y actividad: una activa de otro escritorio no
+    // significa que estes mirando este.
+    TaskManager.TasksModel {
+        id: todas
+        groupMode: TaskManager.TasksModel.GroupDisabled
+
+        virtualDesktop: escritorios.currentDesktop
+        filterByVirtualDesktop: true
+
+        activity: actividad.currentActivity
+        filterByActivity: true
+
+        onActiveTaskChanged: raiz.revisar()
+    }
+
     function _valor(fila, papel) {
         return tareas.data(tareas.index(fila, 0),
                            TaskManager.AbstractTasksModel[papel])
@@ -210,10 +229,10 @@ Item {
     // si se actualiza: al minimizar todo o pulsar "Mostrar el escritorio" no
     // queda ninguna, y eso es justo lo que significa estar viendo el fondo.
     function _hayActivaVisible() {
-        const idx = tareas.activeTask
+        const idx = todas.activeTask
         if (!idx || !idx.valid)
             return false
-        const dato = (papel) => tareas.data(idx, TaskManager.AbstractTasksModel[papel])
+        const dato = (papel) => todas.data(idx, TaskManager.AbstractTasksModel[papel])
         if (!dato("IsWindow") || dato("SkipTaskbar") || dato("IsMinimized")
                 || dato("IsHidden"))
             return false

@@ -62,7 +62,8 @@ WallpaperItem {
         // NEGRO, no congelado: sin reloj no cambia `time`, sin cambio de
         // `time` no hay `update()`, y el plan no llega a cargarse. Pasa de
         // verdad --- basta arrancar la sesion con una ventana ya maximizada.
-        paused: ventanas.tapado && escena.dibujado
+        // Por lo mismo sigue corriendo mientras carga una escena nueva debajo.
+        paused: ventanas.tapado && escenas.dibujado && !escenas.cargando
     }
 
     readonly property real fps: clock.smoothFrameTime > 0 ? 1.0 / clock.smoothFrameTime : 0
@@ -79,19 +80,17 @@ WallpaperItem {
         color: root.configuration.Color || "#0b0b0d"
     }
 
-    SceneView {
-        id: escena
+    // El plan vive en un fichero que `wectl` cambia por debajo: `Escenas` lo
+    // vigila y carga la escena nueva sin que el fondo se vaya.
+    Escenas {
+        id: escenas
         anchors.fill: parent
-        planSource: Qt.resolvedUrl("../scene/plan.txt")
-        // La animacion se deriva del tiempo, no de un contador de frames, para
-        // que la velocidad no dependa del refresco de la pantalla.
-        time: clock.elapsedTime
-
-        // La escena se dibuja al tamano del lienzo de su autor ---16:9 en 99 de
-        // las 125 escenas--- y esto decide como llega a la pantalla. El color de
-        // las barras se pasa al motor en vez de dejarlo al Rectangle de arriba
-        // porque el item se compone sin mezcla alfa: lo que el motor no pinte
-        // sale negro, no transparente.
+        plan: Qt.resolvedUrl("../scene/plan.txt").toString().replace("file://", "")
+        planPropio: Screen.name
+                    ? Qt.resolvedUrl("../pantallas/" + Screen.name + "/plan.txt")
+                          .toString().replace("file://", "")
+                    : ""
+        tiempo: clock.elapsedTime
         encaje: root.configuration.FitMode
         zoom: root.configuration.Zoom
         desplazamientoX: root.configuration.OffsetX
@@ -100,41 +99,35 @@ WallpaperItem {
         // Sin la clave (una configuracion de antes de existir), 60.
         fpsMax: root.configuration.FpsMax ?? 60
         colorBarras: root.configuration.Color || "#0b0b0d"
+        raton: ratonFondo
+    }
 
-        // Donde esta el raton, para las capas que lo persiguen: las
-        // luciernagas de 46 escenas del corpus, el parallax por profundidad y
-        // la ondulacion del cursor.
-        //
-        // `HoverHandler` y no un `MouseArea`: el handler solo MIRA. No acepta
-        // botones, no es `blocking`, y por tanto los clics, el menu contextual
-        // y la seleccion con recuadro del escritorio siguen llegando a quien
-        // les toca. Un `MouseArea` con `hoverEnabled` se los habria quedado, y
-        // eso es exactamente lo que un fondo no puede hacer.
-        //
-        // Es el RESPALDO: en cuanto KWin manda el cursor global (CursorKWin en
-        // src/escritorio.cpp) el motor ignora lo que diga este handler. Hace
-        // falta asi porque en Wayland el hover solo llega a la ventana que el
-        // compositor decide, y a la del escritorio casi no le llega: con
-        // ventanas maximizadas apiladas, incluso con "Mostrar el escritorio",
-        // recibia de 1 a 5 posiciones por segundo pegadas al panel y nunca
-        // `hovered`. Sin KWin, mientras el raton esta sobre una ventana el
-        // fondo no recibe nada y el motor se queda con la ultima posicion.
-        //
-        // Cuelga de la RAIZ de la ventana del escritorio, no de la escena: la
-        // capa de iconos de Plasma es hermana de encima del fondo y acepta el
-        // hover, y en Qt 6 el hover aceptado no baja a los hermanos, solo sube
-        // a los ancestros (probado con qmltestrunner).
-        HoverHandler {
-            id: raton
-            parent: escena.Window.contentItem ?? escena
-        }
-        puntero: {
-            const p = escena.mapFromItem(raton.parent, raton.point.position.x,
-                                         raton.point.position.y)
-            return Qt.point(p.x / Math.max(1, escena.width),
-                            p.y / Math.max(1, escena.height))
-        }
-        punteroPresente: raton.hovered
+    // Donde esta el raton, para las capas que lo persiguen: las
+    // luciernagas de 46 escenas del corpus, el parallax por profundidad y
+    // la ondulacion del cursor.
+    //
+    // `HoverHandler` y no un `MouseArea`: el handler solo MIRA. No acepta
+    // botones, no es `blocking`, y por tanto los clics, el menu contextual
+    // y la seleccion con recuadro del escritorio siguen llegando a quien
+    // les toca. Un `MouseArea` con `hoverEnabled` se los habria quedado, y
+    // eso es exactamente lo que un fondo no puede hacer.
+    //
+    // Es el RESPALDO: en cuanto KWin manda el cursor global (CursorKWin en
+    // src/escritorio.cpp) el motor ignora lo que diga este handler. Hace
+    // falta asi porque en Wayland el hover solo llega a la ventana que el
+    // compositor decide, y a la del escritorio casi no le llega: con
+    // ventanas maximizadas apiladas, incluso con "Mostrar el escritorio",
+    // recibia de 1 a 5 posiciones por segundo pegadas al panel y nunca
+    // `hovered`. Sin KWin, mientras el raton esta sobre una ventana el
+    // fondo no recibe nada y el motor se queda con la ultima posicion.
+    //
+    // Cuelga de la RAIZ de la ventana del escritorio, no de la escena: la
+    // capa de iconos de Plasma es hermana de encima del fondo y acepta el
+    // hover, y en Qt 6 el hover aceptado no baja a los hermanos, solo sube
+    // a los ancestros (probado con qmltestrunner).
+    HoverHandler {
+        id: ratonFondo
+        parent: root.Window.contentItem ?? root
     }
 
     Rectangle {
@@ -156,16 +149,17 @@ WallpaperItem {
             font.pixelSize: 14
             color: "#ffffff"
             textFormat: Text.PlainText
+            readonly property var e: escenas.actual
             text: [
                 "── WallpaperEngine · en vivo ──",
-                "escena       : " + (escena.sceneTitle || "…"),
-                "renderizador : " + escena.status,
+                "escena       : " + (e ? e.sceneTitle || "…" : "-"),
+                "renderizador : " + (e ? e.status : "-"),
                 "",
                 "superficie   : " + root.width + "x" + root.height,
-                "encaje       : " + (root.nombresEncaje[escena.encaje] || "?")
-                                  + " · zoom " + Math.round(escena.zoom * 100) + "%"
-                                  + " · recorte " + root.num(escena.desplazamientoX, 2)
-                                  + "," + root.num(escena.desplazamientoY, 2),
+                "encaje       : " + (root.nombresEncaje[escenas.encaje] || "?")
+                                  + " · zoom " + Math.round(escenas.zoom * 100) + "%"
+                                  + " · recorte " + root.num(escenas.desplazamientoX, 2)
+                                  + "," + root.num(escenas.desplazamientoY, 2),
                 // Dos numeros y no uno, porque miden cosas distintas y el
                 // primero solo no dice si el motor llega: el reloj late con el
                 // compositor y las llamadas a GL son asincronas, asi que la
@@ -173,21 +167,21 @@ WallpaperItem {
                 // 166 fps de reloj con la integrada al 98% y 45 ms de GPU por
                 // fotograma. El de abajo lo cronometra la GPU misma.
                 "fps (reloj)  : " + root.num(root.fps, 1),
-                "gpu          : " + (escena.msGpu >= 0
-                                     ? root.num(escena.msGpu, 1) + " ms/fotograma  ("
-                                       + (escena.msGpu > 0
-                                          ? Math.round(1000 / escena.msGpu) : "?")
+                "gpu          : " + (e && e.msGpu >= 0
+                                     ? root.num(e.msGpu, 1) + " ms/fotograma  ("
+                                       + (e.msGpu > 0
+                                          ? Math.round(1000 / e.msGpu) : "?")
                                        + "/s como mucho)"
                                      : "sin medida"),
                 "g_Time       : " + root.num(clock.elapsedTime, 1) + " s",
-                "puntero      : " + (escena.punteroPresente
-                                     ? root.num(escena.puntero.x, 3) + ", "
-                                       + root.num(escena.puntero.y, 3)
+                "puntero      : " + (e && e.punteroPresente
+                                     ? root.num(e.puntero.x, 3) + ", "
+                                       + root.num(e.puntero.y, 3)
                                      : "fuera del fondo"),
                 "estado       : " + (ventanas.tapado ? "en pausa (tapado)" : "dibujando")
                                   + " · tapada " + Math.round(ventanas.cobertura * 100) + "%",
                 "reloj        : " + (clock.paused ? "en pausa" : "corriendo")
-                                  + " · dibujado " + escena.dibujado,
+                                  + " · dibujado " + escenas.dibujado,
                 "escritorio   : " + (ventanas.mostrandoEscritorio
                                      ? "KWin lo esta mostrando" : "tapado por ventanas"),
                 "ventanas     : " + ventanas.ventanas + " · tapan "

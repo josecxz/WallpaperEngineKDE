@@ -11782,8 +11782,8 @@ un 12–33 % con lo del 14. Ver abajo.
 
 ~~Cada cambio recrea el `SceneView` entero, y con él el contexto de la otra
 GPU. Medir el parpadeo y el coste.~~ Medido y arreglado en Hyprland: había un
-pantallazo de 27 a 501 ms; ya no. Plasma, sin tocar. Ver «La recarga del
-plan».
+pantallazo de 27 a 501 ms; ya no. En Plasma, igual: ver «La recarga del plan»
+y «La recarga en Plasma».
 
 ### 17. Resolución del plan (verificar, no rehacer)
 
@@ -12268,10 +12268,10 @@ cientos de ms). Y el `init` de recarga sale más lento con las dos vivas
 
 ### Lo que queda
 
-- **Plasma no cambia.** Allí `wectl` sale a otro plugin y vuelve
+- ~~**Plasma no cambia.** Allí `wectl` sale a otro plugin y vuelve
   (`recargar`), y es plasmashell quien destruye y recrea el fondo: su
   parpadeo es otro y no se puede medir desde una sesión de Hyprland (y no se
-  itera sobre plasmashell en vivo).
+  itera sobre plasmashell en vivo).~~ Hecho: ver «La recarga en Plasma».
 - El fondo de Hyprland que ya estaba corriendo sigue con el QML viejo hasta
   que se reinicie (`wectl stop` + `start`): la rotación solo lo arranca si
   no está.
@@ -12667,3 +12667,236 @@ y 128.
 es solo `rotation: 1`, en las dos pantallas sin girar: que un panel girado dé 2
 u 8 sale del enum, no de haberlo girado, y que el modo siga sin girar se supone
 por el camino de Hyprland. Girarlo de verdad cierra esto.
+
+## La recarga en Plasma
+
+Lo mismo que «La recarga del plan», pero en Plasma, donde cada cambio era peor:
+`recargar` ponía `org.kde.image` en los escritorios y luego volvía al motor.
+Con la rotación cada 2 min, eso se veía 720 veces al día.
+
+### Los dos huecos en Plasma
+
+- **`plugin/contents/ui/Escenas.qml`**: un `VigiaArchivo` y dos huecos, como
+  `hyprland/main.qml`. La nueva se carga debajo y el relevo llega con su
+  `dibujado`. No importa nada de Plasma para poder probarlo en una `Window`.
+- **`recargar` ya no sale del plugin.** Solo pone el motor si algún escritorio
+  no lo tiene.
+- **El `HoverHandler` sube a la raíz del fondo**, compartido por los dos huecos.
+
+Tres diferencias con Hyprland, las tres a propósito:
+
+- **El reloj no se para mientras carga una escena** (`escenas.cargando`). Con
+  el escritorio tapado se habría parado: sin `time` nuevo no hay fotograma, y
+  sin fotograma no llega el relevo.
+- **Cada escena empieza en `g_Time` 0** (`origen` del hueco), como cuando Plasma
+  recreaba el fondo. El reloj ya no vuelve a cero en toda la sesión, y un float
+  con horas encima pierde precisión en el shader.
+- **Si desaparece el plan, no se toca lo que se ve.**
+
+Efecto secundario: **un cambio en el QML del plugin ya no llega solo al
+escritorio.** Antes la rotación lo recreaba cada 2 min y cogía el fichero del
+repo; ahora hace falta `make reload`. Y `wectl` y el QML van juntos: un `wectl`
+de esta versión sobre un QML anterior deja la rotación sin efecto hasta recargar.
+
+### La recarga en Plasma, medida
+
+En vivo, antes, de `configurado` al primer `destino`: 140 y 230 ms sin escena,
+en dos cambios del journal. Eso no cuenta el paso por `org.kde.image`, que no
+deja rastro en el registro. Después, en plasmashell con `wectl gpu integrada`,
+un cambio a una escena de 37 pases: 397 ms de `ha cambiado` al último relevo, con
+`glError=0x0`.
+
+En el arnés (KWin `--virtual`, que no saca nada a la pantalla; Mesa y dos
+ventanas; seis escenas de 1 a 260 pases). Mediana de plan nuevo a dibujado, **por
+software**: el arnés no abre `/dev/dri` y Mesa dibuja con llvmpipe, así que estos
+tiempos comparan un hueco con dos, pero no son los del escritorio:
+
+| pases | un hueco (fondo vacío) | dos huecos (último fotograma) |
+|---|---|---|
+| 1 | 1,63 s | 2,48 s |
+| 9 | 0,27 s | 0,26 s |
+| 31 | 1,04 s | 1,39 s |
+| 32 | 1,01 s | 0,57 s |
+| 64 | 1,67 s | 1,93 s |
+| 260 | 3,75 s | 5,61 s |
+
+Son 4 y 6 muestras por escena y la escena anterior pesa: la de 1 pase va siempre
+detrás de la de 260, que sigue dibujándose mientras tanto. La espera se alarga en
+las pesadas, pero ya no se ve vacía. Casi todo es el primer fotograma, no el
+`init` (1,1 s en la de 260, igual en los dos).
+
+**La memoria no se fuga.** Cien recargas seguidas del mismo plan, con `touch`:
+planas en los dos (~610 MB un hueco, ~940 MB dos). Los ~300 MB de más son las dos
+escenas juntas en el pico. Mezclando escenas el RSS sí sube, en los dos arneses
+(2,0 → 2,5 GB uno; 2,4 → 3,6 GB dos, en más vueltas). Plasmashell en vivo no lo
+mostró en 27 min (396 → 386 MB), pero sí en tres horas: ver «El suelo de memoria
+tras tres horas».
+
+Además: 72 de 72 relevos con Mesa y dos ventanas, 36 de 36 en la otra GPU, 12 de
+12 con el reloj en pausa, y ningún core.
+
+### Dos tropiezos del arnés
+
+- **`--integrada` sin igualar el driver** daba `glError=0x502` y `C7531`: Qt iba
+  en NVIDIA (regla 5). Con `50_mesa.json`, ni un error.
+- **El arnés de un hueco contaba su primer dibujado como relevo**, iba un cambio
+  por delante y reemplazaba el plan mientras se leía: `textura corta` y `init`
+  de 30 ms en la de 260. Esa pasada no vale, y se repitió.
+
+### Lo que queda de la recarga en Plasma
+
+- Nadie ha mirado el cambio a ojo: el registro dice que no hay hueco, y el
+  relevo solo llega con la nueva dibujada, pero no se hicieron capturas (mienten).
+- Dos cambios muy seguidos pueden leer un plan que se está reemplazando. Ya
+  pasaba antes y la rotación no llega a eso.
+
+### El suelo de memoria tras tres horas
+
+Plasmashell en vivo, 180 muestras con la rotación cada 2 min, 206 relevos y el
+mismo pid: el suelo de RSS va de ~510 MB a 771 MB, con picos de 1,3-1,5 GB en las
+escenas pesadas. No sube recto: baja de 594 a 471 MB a las 12:18 y desde ahí sube
+unos 3 MB por relevo, a escalones, a menudo tras un pico.
+
+Para distinguir fuga de fragmentación se repitieron en el arnés las 45 escenas de
+esa subida, en su orden y tres vueltas, con dos ventanas y Mesa. Una biblioteca
+cargada con `LD_PRELOAD` lee `mallinfo2` y llama a `malloc_trim` al final de cada
+vuelta. 270 de 270 relevos:
+
+| vuelta | RSS | en uso | libre en malloc | RSS tras `malloc_trim` |
+|---|---|---|---|---|
+| 1 | 2992 MB | 332 MB | 2659 MB | 1211 MB |
+| 2 | 3191 MB | 375 MB | 3023 MB | 1338 MB |
+| 3 | 3159 MB | 379 MB | 3178 MB | 1174 MB |
+
+**No es una fuga de `malloc`, es memoria libre que no vuelve al sistema.** Lo
+pedido a `malloc` se queda quieto entre la segunda vuelta y la tercera (+4 MB), y
+el RSS también. Más del 85 % del RSS es hueco libre, y `malloc_trim` se lleva
+casi dos tercios.
+
+Lo que esto no demuestra: el arnés va por llvmpipe, y lo que el driver de la
+integrada guarde por su cuenta no pasa por aquí. A plasmashell no se le puede
+preguntar sin meterse en el proceso, así que en vivo la explicación es por
+analogía. Tres horas tampoco dicen dónde acaba el suelo: en el arnés se aplana a
+la segunda vuelta, en vivo no se llegó a repetir escena.
+
+## El modo independiente en Plasma
+
+`wectl pantallas independiente` daba error en Plasma, y `shuffle` lo ignoraba en
+silencio aunque `hyprland.json` lo dijera. Ahora funciona igual que en Hyprland:
+`monitores()` pregunta a `hyprctl` o a `kscreen-doctor`, y `Escenas.qml` usa
+`pantallas/<Screen.name>/plan.txt` si existe y, si no, el compartido. El modo sigue
+en `hyprland.json` y vale para las dos sesiones.
+
+- **Una sola clave** (`elegido#version`), como en Hyprland: quitar el plan propio
+  cambia a la vez el plan elegido y su versión, y dos señales cargarían dos veces.
+- **El hueco fija su ruta al crearse.** Si la escena leyera `elegido`, la vieja
+  vería cambiar su `planSource` mientras carga la nueva.
+- **`pantallas/` tiene que existir antes de arrancar**, porque el vigía mira ese
+  directorio para ver aparecer el plan: lo crea `make install-package`.
+- **La rotación ejecuta el `wectl` del repo.** Con el modo ya en `independiente`,
+  editarlo antes de recargar habría dejado el fondo sin cambiar: se desarrolló en
+  una copia y se pasó todo junto antes del `make reload`.
+
+Probado en el arnés, con dos ventanas: cambia el compartido (cargan las dos), cada
+una recibe el suyo (solo ella), cambia el compartido con propios (nadie), se borra
+uno (vuelve al compartido) y `wectl set` (las dos). 8 de 8 relevos y ni un error.
+En vivo cada pantalla lee su plan y `Screen.name` coincide con `kscreen-doctor`.
+
+Falta medir el coste con el fondo a la vista: la única medida salió en pausa. Cada
+pantalla ya cargaba su propia escena con el plan compartido, así que no debería
+sumar trabajo, pero dos escenas pesadas distintas no se han comparado.
+
+## El rendimiento en Plasma, medido desde fuera
+
+`medir_vivo.py` ya funciona en Plasma, por otro camino que en Hyprland. Allí lanza
+un fondo propio con `WE_MEDIDAS` y sin pausa; aquí eso obligaría a reiniciar
+plasmashell, así que `_medir_plasma` mira el proceso tal como está. Para medir la
+misma escena, `--wallpaper` la pone en el escritorio de verdad y se queda hasta
+la siguiente rotación; el temporizador se para mientras se mide.
+
+### Lo que no da la medida en Plasma
+
+- **Ni fps ni CPU por fotograma**, salvo que plasmashell arrancara con
+  `WE_MEDIDAS`. Si lo hizo, sus líneas se leen del journal.
+- **La pausa no se controla ni se ve desde fuera.** Con `PauseMode` 1 una ventana
+  maximizada para esa pantalla, y la medida lo refleja sin decirlo.
+- **Es el proceso entero**: panel e iconos incluidos, no solo el motor.
+- **El `fdinfo` de KWin no se puede leer** (corre con capacidades elevadas). De
+  KWin queda la CPU.
+
+### Plasma, medido
+
+`wectl gpu integrada`, `PauseMode` 1, HDMI-A-3 1920×1080 y eDP-1 1920×1200, 15 s
+tras 5 s de calentamiento, con la sesión tal como estaba:
+
+| escena | CPU plasmashell | KWin | `i915:render` | MHz | reposo | cronómetro |
+|---|---|---|---|---|---|---|
+| *Jeanne d'Arc* (`2788165557`), 3 medidas | 32,4–32,9 % | 17,5–18,1 % | 63,1–64,5 % | 1430–1595 | 10–13 % | 10,7–13,0 ms |
+| *Ashe* (`2349856302`), 1 medida | 33,7 % | 17,9 % | 94,1 % | 1650 | 0 % | — |
+
+- **Repetible**: CPU e `i915` varían menos de un 2 % entre las tres.
+- **La integrada es el límite en Plasma**, no la CPU: *Ashe* la deja al 94 % y sin
+  un instante de reposo. La CPU casi no cambia entre las dos escenas.
+- **La NVIDIA descansa**: 3,5–4 W a 210 MHz y 79 MiB, de toda la tarjeta. Al
+  medirla con `nvidia-smi` se la toca, así que es una cota por arriba.
+- **Sale una sola línea de cronómetro por escena** y hay dos pantallas: una
+  estaba en pausa. Comprobado abajo, con todo minimizado salen dos líneas.
+- **No se compara con Hyprland**: allí la medida va en la dedicada y sin pausa.
+
+Con **todo minimizado**, las dos pantallas dibujando:
+
+| escena | CPU plasmashell | KWin | `i915:render` | MHz | reposo | cronómetro |
+|---|---|---|---|---|---|---|
+| *Jeanne d'Arc*, 3 medidas | 46,8–47,9 % | 18,5–18,7 % | 90,1–90,2 % | 1650 | 0 % | 22,3–22,8 ms |
+| *Ashe*, 1 medida | 46,4 % | 11,9 % | 93,9 % | 1650 | 0 % | 52,1–52,4 ms |
+
+**La integrada se satura con las dos pantallas**: 1650 MHz constantes y ni un
+instante de reposo, también en la escena de referencia.
+
+**Los fps sí se pueden contar sin `WE_MEDIDAS`**: la línea del cronómetro sale al
+fotograma 200, así que basta su hora menos la del relevo. *Jeanne d'Arc*, 41 fps
+por pantalla; *Ashe*, 18,5; con una sola pantalla dibujando, unos 54, que es el
+tope de 60 con su holgura. **El cronómetro no sirve para estimarlos**: dividir
+daba 20 y 9, la mitad. Con la GPU saturada mide también la espera, y *Jeanne
+d'Arc* marca 11 ms con una pantalla y 22 ms con dos.
+
+### Con dos pantallas, solo pausa la que tiene el foco
+
+Medido con una ventana maximizada en cada pantalla: *Jeanne d'Arc* sigue en 64 %
+de la integrada y 33 % de CPU, lo mismo que con una pantalla en pausa. No llega a
+cero. El registro lo dice: `dibujando con 100% tapado, activa=-`, y cada vez que
+cambia el foco de pantalla, otra línea.
+
+La causa está en `VentanasEncima.qml`, desde `0c4cdea`: `_hayActivaVisible` lee
+`tareas.activeTask` en un modelo con `filterByScreen`. Ventana activa solo hay
+una en todo el sistema, así que en la otra pantalla no hay ninguna, `mirando` es
+falso y no pausa aunque esté tapada al 100 %. **No viene de `Escenas.qml`.** En
+Hyprland no pasa, va por su propio camino (`src/hyprland.cpp`).
+
+**Arreglado.** La condición de la activa existe para distinguir «todo minimizado»,
+así que ahora pregunta por la activa **en cualquier pantalla**, con un segundo
+`TasksModel` sin filtro de pantalla pero con el de escritorio y actividad, y la
+cobertura dice si esta pantalla está tapada.
+
+Probado antes y después en KWin `--virtual --output-count 2` bajo
+`dbus-run-session`: el bus propio deja a KWin mandar en su `org.kde.KWin` sin
+tocar la sesión, y sus scripts mueven, maximizan y minimizan las ventanas.
+`KWIN_WAYLAND_NO_PERMISSION_CHECKS=1` hace falta para que el modelo vea ventanas.
+
+En vivo, con un maximizado en cada pantalla: 0,2 % de CPU, integrada 98,3 % en
+reposo. Con «Mostrar el escritorio» despiertan las dos: 35,5 % de CPU, 95,5 % de
+integrada. Minimizar ventana a ventana solo se ha probado en el arnés.
+
+Si se minimiza la activa y KWin no da el foco a otra, la otra pantalla dibuja
+aunque esté tapada, hasta activar una ventana. Ya pasaba. Al cambiar de pantalla
+hay un `dibujando` y un `en pausa` en el mismo segundo: un instante sin activa.
+
+Lo de *Ashe* en esa pasada no vale como pausa: a las 11:24:19 KWin dijo
+`mostrando escritorio` y dibujaron las dos, 94 % de integrada. Duró hasta las
+11:33 y no se quedó atascado, pero el registro no dice qué lo pidió.
+
+### Lo que queda por medir en Plasma
+
+- Una pasada con `WE_MEDIDAS`, aprovechando un `make reload` que haga falta.
+- El camino de Hyprland de `medir_vivo.py` se tocó (`_salida`, `_medidas`,
+  `_contexto`) y **no se ha ejecutado**: esta sesión es Plasma.
