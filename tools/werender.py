@@ -2450,63 +2450,83 @@ class Renderer:
 
     def _lineas_de_vaiven(self, obj, padres: set[str]) -> list[str]:
         """Las lineas `vaiven` de una capa cuyo `angles` o cuyo `origin`
-        oscila con `engine.runtime`: una por componente que se mueva.
+        oscila con `engine.runtime`, o que cuelga de una cuyo `origin` oscila:
+        una por componente que se mueva.
 
         La forma la da `wescript.vaiven_de`, y el ejecutor rehace con ella la
         colocacion del `object` cada fotograma: el giro de la parte lineal en
         `angles`, como `giro`, y la traslacion en `origin`, que se suma como
         el parallax o el temblor. Se quedan sin ellas, con el `value`, las
-        mismas que sin `giro` y por lo mismo: una particula, una
-        `passthrough` y una capa de la que cuelga otra, cuyo hijo se mueve y
-        gira con ella sin pasar por esta colocacion.
+        mismas que sin `giro` y por lo mismo: una particula y una
+        `passthrough`.
+
+        Lo que el `origin` de una capa mueve es la traslacion de todo lo que
+        cuelga de ella, igual para cada hijo y sea cual sea su escala o su
+        giro. Por eso cada capa lleva, ademas de las suyas, las lineas de sus
+        antepasados, que el ejecutor suma. El `angles` no: girar un padre
+        mueve a cada hijo distinto, y una capa de la que cuelga otra se queda
+        sin el suyo, como sin `giro`.
         """
-        if (obj.kind == "particle" or obj.raw.get("_passthrough")
-                or str(obj.raw.get("id")) in padres):
+        if obj.kind == "particle" or obj.raw.get("_passthrough"):
             return []
         lineas = []
-        for campo in ("angles", "origin"):
+        if str(obj.raw.get("id")) not in padres:
             try:
-                formas = wescript.vaiven_de(obj.raw, campo)
+                formas = wescript.vaiven_de(obj.raw, "angles")
             except Exception as e:             # ancho a proposito: ver `_emit_text`
                 self.notes.append(f"vaiven sin deducir ({obj.name}): {e}")
-                continue
-            if not formas:
-                continue
-            guardado = (_floats(obj.raw.get(campo)) + [0.0, 0.0, 0.0])[:3]
-            if campo == "angles":
-                # Solo la z, en grados, como el `value` que vio el script.
-                for _, forma in formas:
-                    lineas.append(linea_vaiven(campo, forma,
-                                               math.degrees(guardado[2]),
-                                               self.canvas))
-                continue
-            # El `origin` de una capa con padre va en el marco del padre: su
-            # escala y su giro lo llevan al lienzo, como en `transform_absoluto`.
-            # De pixeles a clip, 2/ancho y 2/alto.
-            esc, ang = [1.0, 1.0], 0.0
-            padre = self.por_id.get(str(obj.raw.get("parent"))) \
-                if obj.raw.get("parent") is not None else None
-            if padre is not None:
-                _, e3, a3 = transform_absoluto(padre, self.por_id)
-                esc, ang = e3[:2], a3[2]
-            else:
-                # Una raiz lleva ademas el parallax de camara en reposo,
-                # `amount * depth * (origin - C)` (`parallax_de_camara`), que
-                # WE calcula cada fotograma con el `origin` de ese momento: lo
-                # que se mueve el `origin` arrastra ese termino con el, y la
-                # capa se mueve (1 + k) veces el vaiven.
-                k = obj.raw.get("_paralaje_k") or (0.0, 0.0)
-                esc = [1.0 + k[0], 1.0 + k[1]]
-            c, sn = math.cos(ang), math.sin(ang)
-            w, h = self.canvas
-            # (+ 0.0 quita el -0 de un seno nulo, que no mueve nada.)
-            ejes = ((2.0 * esc[0] * c / w + 0.0, 2.0 * esc[0] * sn / h + 0.0),
-                    (-2.0 * esc[1] * sn / w + 0.0, 2.0 * esc[1] * c / h + 0.0))
-            for i, forma in formas:
-                lineas.append(linea_vaiven(campo, forma, guardado[i], ejes[i]))
+                formas = None
+            guardado = (_floats(obj.raw.get("angles")) + [0.0, 0.0, 0.0])[:3]
+            # Solo la z, en grados, como el `value` que vio el script.
+            for _, forma in formas or []:
+                lineas.append(linea_vaiven("angles", forma,
+                                           math.degrees(guardado[2]),
+                                           self.canvas))
+        nodo, vistos = obj, set()
+        while nodo is not None and id(nodo) not in vistos:
+            vistos.add(id(nodo))
+            lineas.extend(self._vaiven_del_origin(nodo))
+            padre = nodo.raw.get("parent")
+            nodo = self.por_id.get(str(padre)) if padre is not None else None
         if lineas:
             self.stats["vaiven"] = self.stats.get("vaiven", 0) + len(lineas)
         return lineas
+
+    def _vaiven_del_origin(self, obj) -> list[str]:
+        """Las lineas `vaiven` del `origin` de `obj`, con lo que ese `origin`
+        mueve en clip, que vale para `obj` y para todo lo que cuelgue de el."""
+        try:
+            formas = wescript.vaiven_de(obj.raw, "origin")
+        except Exception as e:                 # ancho a proposito: ver `_emit_text`
+            self.notes.append(f"vaiven sin deducir ({obj.name}): {e}")
+            return []
+        if not formas:
+            return []
+        guardado = (_floats(obj.raw.get("origin")) + [0.0, 0.0, 0.0])[:3]
+        # El `origin` de una capa con padre va en el marco del padre: su
+        # escala y su giro lo llevan al lienzo, como en `transform_absoluto`.
+        # De pixeles a clip, 2/ancho y 2/alto.
+        esc, ang = [1.0, 1.0], 0.0
+        padre = self.por_id.get(str(obj.raw.get("parent"))) \
+            if obj.raw.get("parent") is not None else None
+        if padre is not None:
+            _, e3, a3 = transform_absoluto(padre, self.por_id)
+            esc, ang = e3[:2], a3[2]
+        else:
+            # Una raiz lleva ademas el parallax de camara en reposo,
+            # `amount * depth * (origin - C)` (`parallax_de_camara`), que
+            # WE calcula cada fotograma con el `origin` de ese momento: lo
+            # que se mueve el `origin` arrastra ese termino con el, y la
+            # capa se mueve (1 + k) veces el vaiven.
+            k = obj.raw.get("_paralaje_k") or (0.0, 0.0)
+            esc = [1.0 + k[0], 1.0 + k[1]]
+        c, sn = math.cos(ang), math.sin(ang)
+        w, h = self.canvas
+        # (+ 0.0 quita el -0 de un seno nulo, que no mueve nada.)
+        ejes = ((2.0 * esc[0] * c / w + 0.0, 2.0 * esc[0] * sn / h + 0.0),
+                (-2.0 * esc[1] * sn / w + 0.0, 2.0 * esc[1] * c / h + 0.0))
+        return [linea_vaiven("origin", forma, guardado[i], ejes[i])
+                for i, forma in formas]
 
     def _emit_mesh(self, obj) -> None:
         """Sube la malla puppet del objeto, si la tiene y sabemos leerla.

@@ -436,6 +436,98 @@ def prueba_vaiven(exe: Path, tmp: Path) -> list[str]:
     return fallos
 
 
+class _Nodo(_Capa):
+    """Una capa con lo que `Renderer._lineas_de_vaiven` mira además."""
+    kind, name = "image", "sintética"
+
+
+class _Colocador:
+    """Lo que `_lineas_de_vaiven` necesita de un `Renderer`."""
+    _lineas_de_vaiven = werender.Renderer._lineas_de_vaiven
+    _vaiven_del_origin = werender.Renderer._vaiven_del_origin
+
+    def __init__(self, por_id: dict, canvas: tuple[int, int]):
+        self.por_id, self.canvas = por_id, canvas
+        self.notes: list[str] = []
+        self.stats: dict[str, int] = {}
+
+
+def _oscila(kx: float, ax: float, ky: float, ay: float) -> str:
+    return ("export function update(value) {"
+            f" value.x = {kx!r} + Math.sin(engine.runtime * 0.7) * {ax!r};"
+            f" value.y = {ky!r} + Math.cos(engine.runtime * 0.3) * {ay!r};"
+            " return value; }")
+
+
+def prueba_vaiven_de_hijos() -> list[str]:
+    """Una capa que cuelga de otras cuyo `origin` oscila queda, con las líneas
+    `vaiven` del plan, donde la dejaría `object_mvp` si esos `origin` valieran
+    de verdad lo que da el script: la raíz, con el parallax en reposo, y una
+    intermedia dentro de un padre escalado y girado. El `angles` que oscila
+    en una capa con hijos no se hereda."""
+    lz = (1920, 1080)
+    general = {"cameraparallax": True, "cameraparallaxamount": 0.5}
+    raiz = {"id": 1, "origin": {"script": _oscila(700.5, 12.25, 410.0, 7.5),
+                                "value": "700.5 400.25 0"},
+            "angles": {"script": "export function update(value) { value.z = "
+                                 "20 + Math.sin(engine.runtime) * 3; return value; }",
+                       "value": f"0 0 {math.radians(20.0)!r}"},
+            "scale": "1.5 0.75 1", "parallaxDepth": "0.5 0.25"}
+    medio = {"id": 2, "parent": 1, "scale": "2 0.5 1",
+             "angles": f"0 0 {math.radians(-35.0)!r}",
+             "origin": {"script": _oscila(30.25, 5.5, -12.0, 3.25),
+                        "value": "30.25 -9.5 0"}}
+    hoja = {"id": 3, "parent": 2, "origin": "11.5 -7.25 0", "size": "512.5 128.25",
+            "scale": "1.25 0.75 1", "angles": f"0 0 {math.radians(12.5)!r}"}
+
+    def por_id(r, m, h=hoja):
+        return {"1": _Nodo(r), "2": _Nodo(m), "3": _Nodo(h)}
+
+    def fija(raw, x, y):
+        q = quieta(raw)
+        q["origin"] = f"{x!r} {y!r} 0"
+        return q
+
+    r0 = con_paralaje(quieta(raiz), general, lz)
+    base = werender.object_mvp(_Nodo(hoja), lz, por_id=por_id(r0, quieta(medio)))
+    k = r0["_paralaje_k"]
+    # El emisor ve los scripts; el parallax, como lo pone `werender` al cargar.
+    rs = dict(raiz, _paralaje_k=k)
+    col = _Colocador(por_id(rs, medio), lz)
+    lineas = col._lineas_de_vaiven(col.por_id["3"], {"1", "2"})
+    print(f"── vaivén de una capa con padres: {len(lineas)} líneas ──")
+    fallos = []
+    if len(lineas) != 4 or any(not l.startswith("vaiven origin ") for l in lineas):
+        fallos.append(f"una hoja con dos padres que oscilan: {lineas}")
+    propias = col._lineas_de_vaiven(col.por_id["1"], {"1", "2"})
+    if len(propias) != 2 or any(not l.startswith("vaiven origin ") for l in propias):
+        fallos.append(f"una raíz con hijos y angles que oscila: {propias}")
+
+    peor = quieta_peor = 0.0
+    for t in tiempos():
+        m = list(base)
+        for l in lineas:
+            c = l.split()
+            forma = tuple(float(x) for x in c[2:6])
+            d = wescript.valor_del_vaiven(forma, t) - float(c[6])
+            m[3] += float(c[8]) * d
+            m[7] += float(c[9]) * d
+        rx = 700.5 + math.sin(t * 0.7) * 12.25
+        ry = 410.0 + math.cos(t * 0.3) * 7.5
+        mx = 30.25 + math.sin(t * 0.7) * 5.5
+        my = -12.0 + math.cos(t * 0.3) * 3.25
+        esp = werender.object_mvp(_Nodo(hoja), lz, por_id=por_id(
+            con_paralaje(fija(raiz, rx, ry), general, lz), fija(medio, mx, my)))
+        peor = max(peor, max(abs(a - b) for a, b in zip(m, esp)))
+        quieta_peor = max(quieta_peor, max(abs(a - b) for a, b in zip(base, esp)))
+    ok = peor <= TOL_MATRIZ and quieta_peor > 100 * TOL_MATRIZ
+    print(f"  {'ok' if ok else 'MAL':3} hoja a {peor:.3g} de object_mvp "
+          f"(sin las líneas, a {quieta_peor:.3g})")
+    if not ok:
+        fallos.append(f"vaivén de los padres: {peor:.3g}, sin él {quieta_peor:.3g}")
+    return fallos
+
+
 def main() -> int:
     fallos: list[str] = []
     d = Path(wepaths.we_workshop()) / ESCENA
@@ -563,6 +655,7 @@ def main() -> int:
                 fallos.append(f"we_hora_del_dia con TZ={tz}: {dados} y {esperados}")
 
         fallos += prueba_vaiven(exe, tmp)
+        fallos += prueba_vaiven_de_hijos()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
