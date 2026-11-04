@@ -12128,13 +12128,13 @@ eDP-1 a 1920×1200, escala 1), y se leyó esa línea.
 
 ### Lo que no se ha podido probar aquí
 
-- **Plasma.** Bajo Hyprland `kscreen-doctor -j` no da salidas, así que su
+- ~~**Plasma.** Bajo Hyprland `kscreen-doctor -j` no da salidas, así que su
   camino solo se ha leído. Y leyéndolo hay un hueco: `resolucion_de_pantalla`
   toma el `size` del modo actual **sin mirar la rotación**, y el camino de
   Hyprland sí la mira (`transform`). Un panel vertical en Plasma pediría el
   plan apaisado, y una escena apaisada saldría ampliada por la altura. Sin
   arreglar: no se puede comprobar el campo de rotación de `kscreen-doctor`
-  sin un Plasma delante.
+  sin un Plasma delante.~~ Arreglado: ver «El panel girado en Plasma».
 - **Dos monitores en modo `mismo`.** El plan compartido se hace al monitor
   de **más área**. El factor que no amplía en ninguno es el máximo de los
   `k` de cada monitor, y eso es justo lo que sale de pasar el **máximo por
@@ -12619,3 +12619,51 @@ otra (`SharedNoise`, `3362719513`) está oculta. Cambiarlo no movería nada.
   ni un píxel por encima de 8.
 - `test_werender`, `prueba_hijo_sin_origin`: falla sin el arreglo, con
   `(500, 400)` frente a `(100, 50)`.
+
+## El fondo de Hyprland que se colaba en Plasma
+
+Al entrar en Plasma desde Hyprland, `wallpaperengine-hyprland` seguía vivo: 94 %
+de un núcleo y 830 MB, con el motor de plasmashell al lado. Nada lo avisaba:
+`wectl` corre con el entorno de KDE, ve el camino de Plasma y `status` dice que
+todo va bien, mientras el sobrante recargaba cada plan porque vigila el mismo
+fichero.
+
+La cadena, en el journal de esa mañana: al salir de Hyprland el `qml` aborta,
+`Restart=on-failure` lo relanza, aborta otra vez (4 cores en 7 s) y a la quinta
+ya existe el `wayland-1` de KWin, que **se llama igual**, y arranca dentro. El
+límite de arranques no lo para: son 5 en 10 s, y con `RestartSec=2` no llegan.
+No se abrió ningún core; lo que encaja es la pérdida de la conexión con el
+compositor.
+
+### Por qué `ExecCondition` y no otra cosa
+
+La unidad se crea con `ExecCondition=hyprctl version`, y `hyprctl` lee la firma
+que la unidad lleva puesta: cada arranque, también los reinicios, le pregunta a
+**la instancia que lo creó**. Muerta, `hyprctl` devuelve 4, systemd lo toma por
+`Skipped` y la unidad se queda parada y sin marcar como fallida.
+
+- **`Restart=on-failure` se queda.** Sigue haciendo falta si el fondo se cae con
+  el compositor vivo.
+- **Mirar el socket no vale.** `.socket2.sock` seguía en
+  `/run/user/1000/hypr/<firma>/` con Hyprland ya muerto.
+- **`PartOf=graphical-session.target` tampoco.** Nada en `~/.config/hypr` lo
+  arranca ni usa uwsm, así que no consta que ese target siga a Hyprland.
+
+Comprobado con una unidad de prueba cuyo proceso aborta y cuya condición deja de
+cumplirse: `Scheduled restart`, `Skipped due to 'exec-condition'`, `inactive`,
+`Result=success`. La salida real de Hyprland con el arreglo **no se ha visto**;
+eso queda para el próximo cambio de sesión.
+
+## El panel girado en Plasma
+
+`resolucion_de_pantalla` ya gira el modo con `rotation`, como el camino de
+Hyprland con `transform`. Con Plasma delante, `kscreen-doctor -j` da un entero
+que es `KScreen::Output::Rotation`, **una máscara de bits y no grados**
+(`output.h`): `None` 1, `Left` 2, `Inverted` 4, `Right` 8, `Flipped` 16,
+`Flipped90` 32, `Flipped180` 64, `Flipped270` 128. Dejan el panel alto 2, 8, 32
+y 128.
+
+`test_wectl` prueba los ocho valores contra una salida inventada. Lo real visto
+es solo `rotation: 1`, en las dos pantallas sin girar: que un panel girado dé 2
+u 8 sale del enum, no de haberlo girado, y que el modo siga sin girar se supone
+por el camino de Hyprland. Girarlo de verdad cierra esto.

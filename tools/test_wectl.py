@@ -21,7 +21,9 @@ Uso:  python3 tools/test_wectl.py
 from __future__ import annotations
 
 import random
+import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -353,6 +355,75 @@ def prueba_shuffletime(fallos: list[str]) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def prueba_resolucion_plasma(fallos: list[str]) -> None:
+    """Un panel girado en Plasma pide un plan alto, no el apaisado del modo."""
+    print("\n── resolucion en Plasma ──")
+
+    def salida(rotacion: int, w: int = 1920, h: int = 1080,
+               activa: bool = True) -> dict:
+        return {"enabled": activa, "rotation": rotacion, "currentModeId": "1",
+                "modes": [{"id": "1", "size": {"width": w, "height": h}}]}
+
+    casos = [("sin girar", [salida(1)], (1920, 1080)),
+             ("Left", [salida(2)], (1080, 1920)),
+             ("Inverted", [salida(4)], (1920, 1080)),
+             ("Right", [salida(8)], (1080, 1920)),
+             ("Flipped", [salida(16)], (1920, 1080)),
+             ("Flipped90", [salida(32)], (1080, 1920)),
+             ("Flipped180", [salida(64)], (1920, 1080)),
+             ("Flipped270", [salida(128)], (1080, 1920)),
+             ("sin el campo", [{k: v for k, v in salida(1).items()
+                                if k != "rotation"}], (1920, 1080)),
+             ("la apagada no cuenta",
+              [salida(1), salida(2, 3840, 2160, activa=False)], (1920, 1080))]
+    run_real, en_hyprland_real = subprocess.run, wectl.en_hyprland
+    try:
+        wectl.en_hyprland = lambda: False
+        for nombre, salidas, esperado in casos:
+            texto = json.dumps({"outputs": salidas})
+            wectl.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(
+                a[0], 0, stdout=texto, stderr="")
+            obtenido = wectl.resolucion_de_pantalla()
+            if obtenido != esperado:
+                fallos.append(f"{nombre}: {obtenido} en vez de {esperado}")
+            print(f"  {nombre}: {obtenido}")
+    finally:
+        wectl.subprocess.run, wectl.en_hyprland = run_real, en_hyprland_real
+
+
+def prueba_fondo_hyprland(fallos: list[str]) -> None:
+    """El fondo se reinicia si se cae, pero solo dentro de su Hyprland."""
+    print("\n── unidad del fondo de Hyprland ──")
+    tmp = Path(tempfile.mkdtemp(prefix="wectl-fondo-"))
+    (tmp / "plan.txt").write_text("")
+    ordenes: list[list[str]] = []
+
+    def run_falso(orden, *a, **k):
+        ordenes.append(orden)
+        return subprocess.CompletedProcess(orden, 0, stdout="", stderr="")
+
+    reales = (subprocess.run, wectl.ESCENA, wectl.fondo_hyprland, wectl.QML,
+              wectl.modo_pantallas)
+    try:
+        wectl.subprocess.run = run_falso
+        wectl.ESCENA = tmp
+        wectl.QML = tmp / "plan.txt"
+        wectl.fondo_hyprland = lambda: False
+        wectl.modo_pantallas = lambda: "mismo"
+        wectl.hyprland_arrancar()
+        orden = next((o for o in ordenes if o[0] == "systemd-run"), [])
+        condicion = [o for o in orden if o.startswith("ExecCondition=")]
+        if "Restart=on-failure" not in orden:
+            fallos.append("el fondo ya no se reinicia si se cae")
+        if not (condicion and "hyprctl" in condicion[0]):
+            fallos.append("el fondo arrancaria en una sesion que no es la suya")
+        print(f"  {condicion}")
+    finally:
+        (wectl.subprocess.run, wectl.ESCENA, wectl.fondo_hyprland, wectl.QML,
+         wectl.modo_pantallas) = reales
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     fallos: list[str] = []
     prueba_intervalo(fallos)
@@ -361,6 +432,8 @@ def main() -> int:
     prueba_construir(fallos)
     prueba_unidades(fallos)
     prueba_shuffletime(fallos)
+    prueba_resolucion_plasma(fallos)
+    prueba_fondo_hyprland(fallos)
 
     if fallos:
         print("\n── fallos ──")
