@@ -145,6 +145,9 @@ install-qml: build
 install-package:
 	@mkdir -p $(dir $(DEST))
 	@ln -sfn $(SRC) $(DEST)
+	@# Tiene que existir antes de arrancar: el vigia del plan propio de cada
+	@# pantalla mira este directorio para verlo aparecer.
+	@mkdir -p $(SRC)/contents/pantallas
 	@echo "paquete     -> $(DEST) -> $(SRC)"
 
 # Qt no escanea ~/.local/lib/qt6/qml, asi que sin esta variable plasmashell

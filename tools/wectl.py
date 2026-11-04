@@ -160,7 +160,9 @@ MODOS_PANTALLAS = ("mismo", "independiente")
 
 
 def modo_pantallas() -> str:
-    """`mismo` (un plan para todas las pantallas) o `independiente`."""
+    """`mismo` (un plan para todas las pantallas) o `independiente`.
+
+    Vale para las dos sesiones, aunque viva en `hyprland.json`."""
     m = _config_hyprland().get("pantallas")
     return m if m in MODOS_PANTALLAS else "mismo"
 
@@ -184,6 +186,35 @@ def monitores_hyprland() -> list[tuple[str, int, int]]:
                 w, h = h, w
             salida.append((str(m.get("name")), w, h))
     return salida
+
+
+def monitores_plasma() -> list[tuple[str, int, int]]:
+    """Nombre y pixeles de cada salida encendida, segun `kscreen-doctor`."""
+    try:
+        r = subprocess.run(["kscreen-doctor", "-j"], capture_output=True,
+                           text=True, timeout=10)
+        salidas = json.loads(r.stdout).get("outputs", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    salida = []
+    for o in salidas:
+        if not o.get("enabled"):
+            continue
+        modo = next((m for m in o.get("modes", [])
+                     if m.get("id") == o.get("currentModeId")), None)
+        tam = (modo or {}).get("size") or {}
+        w, h = tam.get("width"), tam.get("height")
+        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
+            # El modo es el del panel, sin girar: igual que en Hyprland.
+            if o.get("rotation") in ROTACIONES_ALTAS:
+                w, h = h, w
+            salida.append((str(o.get("name")), w, h))
+    return salida
+
+
+def monitores() -> list[tuple[str, int, int]]:
+    """Los monitores de la sesion en curso, sea cual sea."""
+    return monitores_hyprland() if en_hyprland() else monitores_plasma()
 
 
 def fondo_hyprland() -> bool:
@@ -424,31 +455,8 @@ def resolucion_de_pantalla() -> tuple[int, int] | None:
 
     En Hyprland no hay `kscreen-doctor`: se pregunta a `hyprctl`.
     """
-    if en_hyprland():
-        mons = monitores_hyprland()
-        return max(((w, h) for _, w, h in mons), key=lambda t: t[0] * t[1],
-                   default=None)
-    try:
-        r = subprocess.run(["kscreen-doctor", "-j"], capture_output=True,
-                           text=True, timeout=10)
-        salidas = json.loads(r.stdout).get("outputs", [])
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    mejor = None
-    for o in salidas:
-        if not o.get("enabled"):
-            continue
-        modo = next((m for m in o.get("modes", [])
-                     if m.get("id") == o.get("currentModeId")), None)
-        tam = (modo or {}).get("size") or {}
-        w, h = tam.get("width"), tam.get("height")
-        if isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0:
-            # El modo es el del panel, sin girar: igual que en Hyprland.
-            if o.get("rotation") in ROTACIONES_ALTAS:
-                w, h = h, w
-            if mejor is None or w * h > mejor[0] * mejor[1]:
-                mejor = (w, h)
-    return mejor
+    return max(((w, h) for _, w, h in monitores()), key=lambda t: t[0] * t[1],
+               default=None)
 
 
 def preparar(ruta: Path, destino: Path | None = None,
@@ -904,7 +912,7 @@ def cmd_shuffle(args) -> int:
     # como "ninguna de las escenas probadas se pudo preparar", que manda a
     # mirar la biblioteca cuando el problema es el motor.
     construir()
-    if en_hyprland() and modo_pantallas() == "independiente":
+    if modo_pantallas() == "independiente":
         return _shuffle_por_pantalla(estado, entradas, raiz, titulos, segundos)
     for _ in range(min(5, len(entradas))):
         elegido = _sacar_de_la_bolsa(estado, entradas)
@@ -943,9 +951,10 @@ def _shuffle_por_pantalla(estado: dict, entradas: list[tuple[str, str]],
     repite ninguno hasta que hayan salido todos. Cada plan se genera a la
     resolucion de SU monitor.
     """
-    mons = monitores_hyprland()
+    mons = monitores()
     if not mons:
-        raise CtlError("hyprctl no da ningun monitor; ¿esta Hyprland corriendo?")
+        raise CtlError("la sesion no da ningun monitor; "
+                       "¿responden hyprctl o kscreen-doctor?")
     puestos = {}
     fallos = []
     for nombre, w, h in mons:
@@ -984,15 +993,12 @@ def _shuffle_por_pantalla(estado: dict, entradas: list[tuple[str, str]],
 
 def cmd_pantallas(args) -> int:
     """Mismo wallpaper en todas las pantallas, o uno al azar en cada una."""
-    if not en_hyprland():
-        raise CtlError("por ahora solo en Hyprland: en Plasma todas las "
-                       "pantallas leen el mismo plan")
     actual = modo_pantallas()
     if args.modo is None:
         print(f"pantallas : {actual}")
         if actual == "independiente":
             propios = planes_propios()
-            for nombre, _, _ in monitores_hyprland():
+            for nombre, _, _ in monitores():
                 print(f"  {nombre}: {propios.get(nombre) or plan_instalado() or '(ninguno)'}"
                       + ("" if nombre in propios else "  (compartido)"))
         return 0
@@ -1118,7 +1124,7 @@ def cmd_stop(args) -> int:
 
 
 def cmd_status(args) -> int:
-    compartido = en_hyprland() and modo_pantallas() == "independiente"
+    compartido = modo_pantallas() == "independiente"
     print(f"{'plan compartido' if compartido else 'plan preparado '}: "
           f"{plan_instalado() or '(ninguno)'}"
           + ("  (lo usa la pantalla sin plan propio)" if compartido else ""))
@@ -1162,6 +1168,9 @@ def cmd_status(args) -> int:
     nuestros = sum(1 for p in activos if p == PLUGIN)
     print(f"escritorios    : {nuestros} de {len(activos)} con el motor")
     print(f"estado         : {'EN MARCHA' if nuestros else 'parado'}")
+    print(f"pantallas      : {modo_pantallas()}")
+    for nombre, titulo in planes_propios().items():
+        print(f"  {nombre}: {titulo}")
     reg = subprocess.run(
         ["journalctl", "--user", "-b", "-g", "SceneView", "--no-pager", "-n", "2"],
         capture_output=True, text=True)

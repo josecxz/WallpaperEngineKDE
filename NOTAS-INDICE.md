@@ -54,14 +54,15 @@ make indice                       # reescribe los números desde NOTAS.md
 - `12738` **Dos tropiezos del arnés** — el driver sin igualar y el arnés de un hueco que se adelantaba.
 - `12746` **Lo que queda de la recarga en Plasma** — mirarlo a ojo y dos cambios muy seguidos.
 - `12753` **El suelo de memoria tras tres horas** — sube de 510 a 771 MB en vivo; repetido en el arnés no es fuga de malloc, es memoria libre que no vuelve al sistema (`malloc_trim` se lleva dos tercios).
+- `12782` **El modo independiente en Plasma** — `monitores()` y `Escenas.qml` con plan propio; falta medir el coste con el fondo a la vista.
 - `10757` **Cómo** — `preparar` con destino, `--planes` en el anfitrión, el `Loader` que solo recarga el plan de su monitor y el `existe` hacia abajo cuando `set` borra los propios.
 - `10784` **La resolución, que en Hyprland no se leía** — sin `kscreen-doctor` los planes salían al lienzo del autor (hasta 7680×4320); ahora `hyprctl -j monitors`, y cada plan propio a su monitor.
 - `10822` **La vara de medir del rendimiento** — `WE_MEDIDAS` en el motor (fotogramas ejecutados, CPU, GPU y copia por intervalo, en sumas crudas) y `tools/medir_vivo.py` (escena fija, sin pausa, `fdinfo` del i915; la NVIDIA no publica `fdinfo`). Ruido medido, regla del 10 % y la línea de base.
-- `12782` **El rendimiento en Plasma, medido desde fuera** — `_medir_plasma`: sin reiniciar plasmashell, sin fps y sin control de la pausa.
-- `12790` **Lo que no da la medida en Plasma** — fps, la pausa, el motor aislado y el `fdinfo` de KWin.
-- `12800` **Plasma, medido** — *Jeanne d'Arc* 64 % de la integrada, *Ashe* 94 % y sin reposo; quizá con una pantalla en pausa.
-- `12836` **Con dos pantallas, solo pausa la que tiene el foco** — arreglado: la activa se busca en todas las pantallas y la cobertura decide cada una; 0,2 % de CPU con las dos tapadas.
-- `12871` **Lo que queda por medir en Plasma** — las pantallas a la vista y tapadas, una pasada con `WE_MEDIDAS` y el camino de Hyprland sin ejecutar.
+- `12809` **El rendimiento en Plasma, medido desde fuera** — `_medir_plasma`: sin reiniciar plasmashell, sin fps y sin control de la pausa.
+- `12817` **Lo que no da la medida en Plasma** — fps, la pausa, el motor aislado y el `fdinfo` de KWin.
+- `12827` **Plasma, medido** — *Jeanne d'Arc* 64 % de la integrada, *Ashe* 94 % y sin reposo; quizá con una pantalla en pausa.
+- `12863` **Con dos pantallas, solo pausa la que tiene el foco** — arreglado: la activa se busca en todas las pantallas y la cobertura decide cada una; 0,2 % de CPU con las dos tapadas.
+- `12898` **Lo que queda por medir en Plasma** — las pantallas a la vista y tapadas, una pasada con `WE_MEDIDAS` y el camino de Hyprland sin ejecutar.
 - `10829` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
 - `10843` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10865` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.

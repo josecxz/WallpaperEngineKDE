@@ -12779,6 +12779,33 @@ preguntar sin meterse en el proceso, así que en vivo la explicación es por
 analogía. Tres horas tampoco dicen dónde acaba el suelo: en el arnés se aplana a
 la segunda vuelta, en vivo no se llegó a repetir escena.
 
+## El modo independiente en Plasma
+
+`wectl pantallas independiente` daba error en Plasma, y `shuffle` lo ignoraba en
+silencio aunque `hyprland.json` lo dijera. Ahora funciona igual que en Hyprland:
+`monitores()` pregunta a `hyprctl` o a `kscreen-doctor`, y `Escenas.qml` usa
+`pantallas/<Screen.name>/plan.txt` si existe y, si no, el compartido. El modo sigue
+en `hyprland.json` y vale para las dos sesiones.
+
+- **Una sola clave** (`elegido#version`), como en Hyprland: quitar el plan propio
+  cambia a la vez el plan elegido y su versión, y dos señales cargarían dos veces.
+- **El hueco fija su ruta al crearse.** Si la escena leyera `elegido`, la vieja
+  vería cambiar su `planSource` mientras carga la nueva.
+- **`pantallas/` tiene que existir antes de arrancar**, porque el vigía mira ese
+  directorio para ver aparecer el plan: lo crea `make install-package`.
+- **La rotación ejecuta el `wectl` del repo.** Con el modo ya en `independiente`,
+  editarlo antes de recargar habría dejado el fondo sin cambiar: se desarrolló en
+  una copia y se pasó todo junto antes del `make reload`.
+
+Probado en el arnés, con dos ventanas: cambia el compartido (cargan las dos), cada
+una recibe el suyo (solo ella), cambia el compartido con propios (nadie), se borra
+uno (vuelve al compartido) y `wectl set` (las dos). 8 de 8 relevos y ni un error.
+En vivo cada pantalla lee su plan y `Screen.name` coincide con `kscreen-doctor`.
+
+Falta medir el coste con el fondo a la vista: la única medida salió en pausa. Cada
+pantalla ya cargaba su propia escena con el plan compartido, así que no debería
+sumar trabajo, pero dos escenas pesadas distintas no se han comparado.
+
 ## El rendimiento en Plasma, medido desde fuera
 
 `medir_vivo.py` ya funciona en Plasma, por otro camino que en Hyprland. Allí lanza
@@ -12870,7 +12897,6 @@ Lo de *Ashe* en esa pasada no vale como pausa: a las 11:24:19 KWin dijo
 
 ### Lo que queda por medir en Plasma
 
-- Con el arreglo de la pausa: si llega a cero con las dos pantallas tapadas.
 - Una pasada con `WE_MEDIDAS`, aprovechando un `make reload` que haga falta.
 - El camino de Hyprland de `medir_vivo.py` se tocó (`_salida`, `_medidas`,
   `_contexto`) y **no se ha ejecutado**: esta sesión es Plasma.

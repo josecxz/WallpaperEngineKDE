@@ -18,6 +18,9 @@ Item {
     id: escenas
 
     required property string plan   // ruta local del plan.txt
+    // El plan propio de esta pantalla, si `wectl pantallas independiente` le
+    // ha dado uno. Mientras no exista se usa `plan`.
+    property string planPropio: ""
     required property real tiempo   // el reloj, que no para al cambiar de escena
     property int encaje: 0
     property real zoom: 1
@@ -43,19 +46,31 @@ Item {
         ruta: escenas.plan
     }
 
-    // `int` para que solo salte al cambiar de verdad: `VigiaArchivo` tambien
-    // avisa al ponerle la ruta, con la version aun a cero.
-    readonly property int version: vigia.version
-    onVersionChanged: {
+    VigiaArchivo {
+        id: propio
+        ruta: escenas.planPropio
+    }
+
+    readonly property bool conPropio: planPropio !== "" && propio.existe
+    readonly property string elegido: conPropio ? planPropio : plan
+
+    // Se carga una escena cuando cambia el plan que ESTA pantalla usa: un cambio
+    // del compartido no toca a la que tiene el suyo. Una sola clave y no una
+    // senal por vigia: quitar el plan propio cambia las dos cosas a la vez.
+    readonly property string clave: elegido + "#"
+                                    + (conPropio ? propio.version : vigia.version)
+    property bool listo: false   // `VigiaArchivo` avisa tambien al ponerle la ruta
+    onClaveChanged: {
         // Si han quitado el plan, lo que hay sigue siendo lo mejor que hay.
-        if (!vigia.existe)
+        if (!listo || (!conPropio && !vigia.existe))
             return
-        console.info("Escena: plan nuevo, se carga debajo de la que se ve")
+        console.info("Escena: plan nuevo, se carga debajo de la que se ve: " + elegido)
         cargar(otro)
     }
 
     function cargar(hueco) {
         hueco.active = false
+        hueco.ruta = escenas.elegido
         hueco.origen = escenas.tiempo
         hueco.active = true
     }
@@ -69,11 +84,15 @@ Item {
                      + " y se suelta el otro")
     }
 
-    Component.onCompleted: cargar(huecoA)
+    Component.onCompleted: {
+        listo = true
+        cargar(huecoA)
+    }
 
     Loader {
         id: huecoA
         anchors.fill: parent
+        property string ruta: ""
         // Donde estaba el reloj al crearla: cada escena empieza en `g_Time`
         // 0, como cuando Plasma recreaba el fondo, y no con las horas que
         // lleve la sesion, que en un float le quitarian precision al shader.
@@ -85,6 +104,7 @@ Item {
     Loader {
         id: huecoB
         anchors.fill: parent
+        property string ruta: ""
         property real origen: 0
         active: false
         z: escenas.turno === 1 ? 1 : 0
@@ -105,9 +125,10 @@ Item {
         id: escena
         SceneView {
             id: vista
-            // El plan se lee al crear la escena y la ruta no cambia nunca: lo
-            // que cambia es lo que hay en ella.
-            planSource: "file://" + escenas.plan
+            // El plan de ESTE hueco, fijado al crearlo: la escena vieja sigue
+            // en pantalla mientras carga la nueva y no tiene que ver cambiar
+            // el suyo.
+            planSource: "file://" + parent.ruta
             // La animacion se deriva del tiempo, no de un contador de frames,
             // para que la velocidad no dependa del refresco de la pantalla.
             time: escenas.tiempo - parent.origen

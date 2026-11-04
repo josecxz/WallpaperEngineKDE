@@ -434,6 +434,9 @@ def _medir_plasma(args) -> dict:
             ruta, titulo = wectl.resolver(args.wallpaper)
             print(f"poniendo {titulo} ({ruta.name}) en el escritorio", flush=True)
             wectl.preparar(ruta)
+            # Con planes propios el compartido no se ve: se mediria otra escena.
+            # La siguiente rotacion vuelve a repartir.
+            wectl.borrar_planes_propios()
             inicio = time.time()
         time.sleep(args.calentar)
         pm: dict[int, list[float]] = {}
@@ -463,6 +466,8 @@ def _medir_plasma(args) -> dict:
                         for k in b if b[k] - a.get(k, 0) > 0}
     media = lambda xs: round(sum(xs) / len(xs), 1) if xs else None
     contexto = _contexto(wectl.ESCENA)
+    if propios := wectl.planes_propios():
+        contexto["plan"] = ", ".join(f"{m}: {t}" for m, t in propios.items())
     contexto["compositor"] = "KWin"
     contexto["cronometro_ms"] = _cronometro(_diario(pid, inicio))
     return {

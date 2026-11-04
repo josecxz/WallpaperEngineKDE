@@ -86,6 +86,10 @@ WallpaperItem {
         id: escenas
         anchors.fill: parent
         plan: Qt.resolvedUrl("../scene/plan.txt").toString().replace("file://", "")
+        planPropio: Screen.name
+                    ? Qt.resolvedUrl("../pantallas/" + Screen.name + "/plan.txt")
+                          .toString().replace("file://", "")
+                    : ""
         tiempo: clock.elapsedTime
         encaje: root.configuration.FitMode
         zoom: root.configuration.Zoom

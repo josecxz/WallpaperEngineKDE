@@ -230,7 +230,8 @@ repiten entre pantallas ni vuelve a salir ninguno hasta que hayan salido
 todos. `wectl set` sigue poniendo el elegido en todas las pantallas, sin
 cambiar el modo; el siguiente `shuffle` vuelve a repartir. Cada plan se
 genera a la resolución de su monitor. Un monitor que se conecta después usa
-el plan compartido hasta el siguiente `shuffle`.
+el plan compartido hasta el siguiente `shuffle`. `wectl pantallas` funciona
+igual en Plasma, y el modo se guarda para las dos sesiones.
 
 Para que arranque con la sesión, en `hyprland.conf`:
 
