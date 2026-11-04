@@ -263,7 +263,8 @@ VAIVENES = [
 ]
 
 # Las capas del corpus que pueden dar vaivén: escena, capa y campo.
-VAIVENES_CORPUS = {("3050043876", 338, "angles"), ("3521337568", 222, "origin")}
+VAIVENES_CORPUS = {("3050043876", 338, "angles"), ("3521337568", 222, "origin"),
+                   ("3577990983", 5365, "origin"), ("3577990983", 31, "origin")}
 
 
 def vaivenes_del_corpus(fallos: list[str]) -> None:
@@ -303,8 +304,24 @@ def vaivenes_del_corpus(fallos: list[str]) -> None:
                 if not ok:
                     fallos.append(f"vaiven {d.name} {o.get('id')}: error {peor:.3g}")
     print(f"  scripts de angles y origin: {vistos}, con vaivén: {sorted(aceptados)}")
-    if set(aceptados) != VAIVENES_CORPUS or len(aceptados) != 2:
+    if set(aceptados) != VAIVENES_CORPUS or len(aceptados) != len(VAIVENES_CORPUS):
         fallos.append(f"vaivenes del corpus: aceptados {aceptados}")
+
+
+def fijo_solo_init() -> list[str]:
+    """Un script sin `update`: el campo se queda en lo que devuelve `init`."""
+    def d(cuerpo):
+        return wescript.valor_fijo_de({"origin": {
+            "script": f"export function init(value) {{ {cuerpo} }}",
+            "value": "10 20 0"}}, "origin", None)
+    fallos = []
+    for cuerpo, espera in (("return new Vec3(1, 2, 3);", [1.0, 2.0, 3.0]),
+                           ("return value;", None), ("let a = 1;", None)):
+        r = d(cuerpo)
+        print(f"  {'ok' if r == espera else 'MAL':3} solo init: {cuerpo} -> {r}")
+        if r != espera:
+            fallos.append(f"solo init {cuerpo}: {r}")
+    return fallos
 
 
 def fijo(cuerpo: str, campo: str = "origin", modulo: str = "",
@@ -349,6 +366,20 @@ FIJOS = [
      ".finish();"
      "export function init(value) { ini = (typeof value === 'number') ? value : value.x; }",
      [8.0, 8.0, 8.0]),
+    ("parseFloat de una cadena", "origin",
+     "return new Vec3(parseFloat('12.5px'), parseFloat(' -3e1'), value.z);", "",
+     [12.5, -30.0, 0.0]),
+    ("isNaN", "origin",
+     "return new Vec3(isNaN(parseFloat('nada')) ? 1 : 2, isNaN('7') ? 1 : 2, value.z);",
+     "", [1.0, 2.0, 0.0]),
+    ("init devuelve y update lo recibe", "origin", "return value;",
+     "export function init(value) { return new Vec3(1, 2, 3); }", [1.0, 2.0, 3.0]),
+    ("init devuelve y update lo cambia", "origin", "value.y = 7; return value;",
+     "export function init(value) { return new Vec3(1, 2, 3); }", [1.0, 7.0, 3.0]),
+    ("init devuelve el value", "origin", "return value;",
+     "export function init(value) { return value; }", None),
+    ("init devuelve otra cosa", "origin", "return value;",
+     "export function init(value) { return 'a'; }", None),
     ("audio que acumula", "origin", "t += engine.frametime; value.y = t; return value;",
      "const a = engine.registerAudioBuffers(16); let t = 0;", None),
     ("resolución de audio que WE no admite", "origin", "return new Vec3(1, 2, 3);",
@@ -582,6 +613,7 @@ def main() -> int:
     vaivenes_del_corpus(fallos)
 
     print("── valor fijo ──")
+    fallos.extend(fijo_solo_init())
     for que, campo, cuerpo, modulo, espera in FIJOS:
         valor = "1.0" if campo == "alpha" else "10.00000 20.00000 0.00000"
         r = fijo(cuerpo, campo, modulo, valor,

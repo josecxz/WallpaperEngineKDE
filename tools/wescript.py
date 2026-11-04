@@ -833,6 +833,19 @@ def js_numero(v) -> float:
     raise ScriptError("a número")
 
 
+_PREFIJO_REAL = re.compile(
+    r"[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
+
+
+def _parse_float(v) -> float:
+    """`parseFloat`: el número más largo con el que EMPIEZA la cadena, a
+    diferencia de `Number`, que pide que lo sea entera (`12px` da 12)."""
+    m = _PREFIJO_REAL.match(js_str(v).lstrip())
+    if not m:
+        return float("nan")
+    return float(m.group().replace("Infinity", "inf"))
+
+
 class Interprete:
     def __init__(self, fuente: str, propiedades: dict | None = None,
                  silencio: bool = False):
@@ -1071,6 +1084,10 @@ class Interprete:
                 return "__Number__"
             if e[1] == "parseInt":
                 return "__parseInt__"
+            if e[1] == "parseFloat":
+                return "__parseFloat__"
+            if e[1] == "isNaN":
+                return "__isNaN__"
             if e[1] == "Array":
                 return "__Array__"
             if e[1] in ("Vec2", "Vec3"):
@@ -1293,6 +1310,11 @@ class Interprete:
             raise ScriptError(f"createScriptProperties().{nombre}")
         if f == "__String__":
             return js_str(self.eval(args_ast[0], a)) if args_ast else ""
+        if f == "__parseFloat__":
+            return _parse_float(self.eval(args_ast[0], a) if args_ast else None)
+        if f == "__isNaN__":
+            n = js_numero(self.eval(args_ast[0], a) if args_ast else None)
+            return n != n
         if f == "__Number__" or f == "__parseInt__":
             v = self.eval(args_ast[0], a) if args_ast else None
             n = js_numero(v)
@@ -2323,7 +2345,9 @@ def valor_fijo(ip: Interprete, valor: list[float],
     """Lo que `update(value)` devuelve, si es siempre lo mismo y no es
     `valor`; None si no.
 
-    Antes se llama una vez a `init(value)`, si existe, como hace WE al cargar.
+    Antes se llama una vez a `init(value)`, si existe, como hace WE al cargar,
+    y lo que devuelva sustituye a `valor`. Sin `update`, el campo se queda en
+    eso.
     «Siempre lo mismo» se comprueba como en `forma_del_vaiven`: con varios
     `engine.runtime`, con dos días y horas distintos y con otro `value` de
     entrada ---en WE es lo del fotograma anterior---. Cada componente tiene
@@ -2349,7 +2373,8 @@ def valor_fijo(ip: Interprete, valor: list[float],
     dias = (dt.datetime(2026, 1, 5, 12), dt.datetime(2031, 7, 19, 3, 25, 41))
     try:
         f = ip.global_.vars.get("update")
-        if not isinstance(f, Funcion) or any(
+        init = ip.global_.vars.get("init")
+        if not (isinstance(f, Funcion) or isinstance(init, Funcion)) or any(
                 _es_suceso(k) and isinstance(v, Funcion)
                 for k, v in ip.global_.vars.items()):
             return None
@@ -2357,9 +2382,19 @@ def valor_fijo(ip: Interprete, valor: list[float],
         ip.frametime = 1.0 / 60.0
         ip.hora_del_dia = None
         ip.runtime, ip.fecha = tiempos[0], dias[0]
-        init = ip.global_.vars.get("init")
+        # Lo que `init` devuelve se aplica al campo, y es lo que ve `update`
+        # («@returns The modified value to be applied to the property»,
+        # `lib.sceneScript.d.ts`). Si no devuelve nada, el campo no cambia.
+        guardado = valor
         if isinstance(init, Funcion):
-            ip.llama(init, [_entrada(valor)])
+            ini = ip.llama(init, [_entrada(valor)])
+            if ini is not None:
+                valor = _componentes(ini, n)
+                if valor is None:
+                    return None
+                otro = [v + 37.0 for v in valor]
+        if not isinstance(f, Funcion):
+            return valor if valor != guardado else None
 
         def llama(t, cuando, entrada):
             ip.runtime, ip.fecha = t, cuando
@@ -2368,7 +2403,7 @@ def valor_fijo(ip: Interprete, valor: list[float],
         r = llama(tiempos[0], dias[0], valor)
         if r is None:
             return None
-        if r == valor:
+        if r == guardado:
             return None
         for t in tiempos:
             for cuando in dias:

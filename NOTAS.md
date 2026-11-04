@@ -3887,7 +3887,9 @@ Por orden de lo que más se nota:
    `angles` de `3050043876` y en el `origin` de `3521337568` —ver [el vaivén
    de `angles` y de
    `origin`](#un-campo-que-oscila-con-engineruntime-el-vaivén-de-angles-y-de-origin)—;
-   las dos capas de `3577990983` con el mismo vaivén y con hijos, no.
+   las dos capas de `3577990983` con el mismo vaivén y con hijos, también
+   —ver [`parseFloat` y los
+   hijos](#parsefloat-los-hijos-de-un-origin-que-oscila-y-lo-que-devuelve-init)—.
    **Empezado** también lo que no cambia: un script que da siempre lo mismo
    se evalúa al cargar y sustituye al `value`, como los 19 `origin` que
    colocan con deslizadores el widget de `3462491575` —ver [Los scripts que
@@ -9875,9 +9877,10 @@ durante la tarea del giro en píxeles), y las medidas pasan por todas.
 
 ### Lo que queda
 
-- **Las capas con hijos**: 5365 y 31 de `3577990983`, que además necesitan
+- ~~**Las capas con hijos**: 5365 y 31 de `3577990983`, que además necesitan
   `parseFloat` e `isNaN` en el intérprete. Habría que mover a cada hijo con
-  el vaivén del padre pasado por su cadena.
+  el vaivén del padre pasado por su cadena.~~ **Hecho**: ver «`parseFloat`, los
+  hijos de un `origin` que oscila y lo que devuelve `init`».
 - **Lo demás de `engine.runtime`**: el glitch de `2413651762`, que usa
   `thisScene.getLayer(...).getEffect(...)`, y el `Math.random` con retardos
   de `3362719513` (`visible`). No son una forma cerrada del tiempo.
@@ -12482,6 +12485,68 @@ con `initialValue = value.x` en `init`. En silencio `smoothValue` se queda a
   `thisLayer.scale` desde el script, que no es un `valor_fijo`.
 - **Un `scale` de audio que no es la plantilla** (`2262142032`): el
   intérprete no lo cubre por otro motivo.
-- **`init` devuelve el valor que se aplica** (lo dice `lib.sceneScript.d.ts`):
-  `valor_fijo` lo llama pero no usa lo que devuelve. Ningún caso del corpus
-  lo necesita para la plantilla.
+- ~~**`init` devuelve el valor que se aplica** (lo dice `lib.sceneScript.d.ts`):
+  `valor_fijo` lo llama pero no usa lo que devuelve.~~ **Hecho**, y no mueve
+  nada del corpus: ver «`parseFloat`, los hijos de un `origin` que oscila y lo
+  que devuelve `init`».
+
+## `parseFloat`, los hijos de un `origin` que oscila y lo que devuelve `init`
+
+Lo que quedaba de «las capas con hijos» del vaivén, y el valor de `init`
+que «El audio en silencio» dejó anotado.
+
+### Las capas con hijos
+
+5365 y 31 de `3577990983` oscilan con `engine.runtime`, pero pasan el `origin`
+por `parseFloat` e `isNaN`, y llevan hijos. Al intérprete le faltaban las dos
+funciones. `parseFloat` lee el número con el que **empieza** la cadena
+(`12px` da 12), a diferencia de `Number`; `isNaN` pasa por `js_numero`.
+
+Lo que se descartó en su día («El ejecutor no tiene la cadena de padres») no
+hace falta. Mover el `origin` de una capa traslada todo su subárbol **lo
+mismo**, sea cual sea la escala o el giro de cada hijo, porque ese `origin`
+está en el marco del padre de la capa. Y `we_vaiven_coloca` ya suma: varias
+líneas sobre un `object` se acumulan. Así que `_lineas_de_vaiven` emite en
+cada capa las líneas de sus antepasados (`_vaiven_del_origin`), con los ejes
+del antepasado, y **no cambia ni una línea de C**. El 1 + k del parallax
+también vale para los hijos: WE mueve el grupo entero con el de la raíz.
+
+Una capa con hijos conserva el `origin` que oscila, pero sigue sin el `angles`
+que oscila: girar un padre mueve a cada hijo de forma distinta, y eso sí pide
+la cadena en el ejecutor. En el corpus no hay ningún caso.
+
+### Lo medido
+
+- `test_giro.py`, `prueba_vaiven_de_hijos`: cadena sintética de raíz con
+  parallax, capa intermedia con script dentro de un padre escalado y girado, y
+  hoja. La colocación con las líneas queda a 9,7e-14 de `object_mvp` con esos
+  `origin` puestos en la escena estática, en 1201 tiempos; sin las líneas, a
+  0,04.
+- **Planes**, `--emit-plan` de `main` y de la rama sobre las 153 entradas del
+  Workshop: solo cambia `3577990983`, con 10 líneas `vaiven` añadidas (dos en
+  31 y dos en cada hijo de 5365: 5361, 5154, 23 y 272).
+- **Render** (`--time 30` y `34`, `--frames 3`): luz 40,27 → 40,25 y 40,39 →
+  40,42, con el 7–8 % de los píxeles moviéndose más de 8; la barandilla y el
+  texto que lleva encima van juntos. A t = 0 la escena sale negra en los dos
+  árboles por su telón de entrada: hay que medir después de él.
+
+### Lo que devuelve `init`
+
+`lib.sceneScript.d.ts`: «@returns The modified value to be applied to the
+property». `valor_fijo` lo aplica ahora: `update` lo recibe, y sin `update` el
+campo se queda en eso. **No mueve nada del corpus** (`FIJOS_CORPUS` no cambia):
+los `init` que devuelven algo en un campo evaluable dan el propio `value` o
+llevan sucesos.
+
+### Lo que queda
+
+- **Los hijos partícula** (1370 y 624 de la capa 31): se quedan quietos
+  mientras la capa oscila. Una partícula no se coloca con la línea `object`.
+- **`visible` con `init` que devuelve `false`**: `visible` no se evalúa. De los
+  tres casos del corpus, dos son el script NSL, que el intérprete no lee
+  (`class`): `3462491575` 3560, que al ocultarla a mano no cambia nada visible,
+  y `3521337568` 1037, sin imagen. El tercero sí pinta: `media_cover` de
+  `3555933181` dibuja su imagen de relleno, un cuadro de 60×60 arriba a la
+  derecha, que en WE sin música está oculto. No se toca porque su visibilidad
+  pasa por `applyUserProperties`, y no está leído cómo llama WE a ese suceso
+  al cargar.
