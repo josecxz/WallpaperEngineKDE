@@ -12802,9 +12802,12 @@ una recibe el suyo (solo ella), cambia el compartido con propios (nadie), se bor
 uno (vuelve al compartido) y `wectl set` (las dos). 8 de 8 relevos y ni un error.
 En vivo cada pantalla lee su plan y `Screen.name` coincide con `kscreen-doctor`.
 
-Falta medir el coste con el fondo a la vista: la única medida salió en pausa. Cada
-pantalla ya cargaba su propia escena con el plan compartido, así que no debería
-sumar trabajo, pero dos escenas pesadas distintas no se han comparado.
+El coste, con el fondo a la vista y una sola medida: *Ashe* en una pantalla y
+*Dragon Ball - sunset* en la otra (48 y 14 pases), 53,5 % de CPU, 90 % de la
+integrada, sin reposo, y 14,4 y 37,5 ms de GPU por fotograma. *Ashe* en las dos
+daba 46 % y 94 %: el mismo orden, sin sobrecoste a la vista. Cada pantalla ya
+cargaba su propia escena con el plan compartido. Dos escenas pesadas distintas no
+se han comparado.
 
 ## El rendimiento en Plasma, medido desde fuera
 
