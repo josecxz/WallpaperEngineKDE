@@ -26,9 +26,9 @@
 //
 // Cambiar de wallpaper es escribir un plan nuevo en la misma ruta (`make plan`
 // o `wectl set`/`shuffle`): el
-// `VigiaArchivo` lo ve y se crea una escena nueva. Es lo mismo que hace
-// `wectl` en Plasma al salir a otro plugin y volver: el SceneView no sabe
-// cambiar de plan en caliente, uno nuevo si. La nueva se carga DEBAJO de la
+// `VigiaArchivo` lo ve y se crea una escena nueva, igual que `Escenas.qml` en
+// Plasma: el SceneView no sabe cambiar de plan en caliente, uno nuevo si. La
+// nueva se carga DEBAJO de la
 // que se ve y la vieja no se suelta hasta que la nueva ha dibujado: ver
 // NOTAS, «La recarga del plan».
 

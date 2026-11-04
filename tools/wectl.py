@@ -258,13 +258,14 @@ def _registro_hyprland(patron: str, n: int) -> list[str]:
 
 
 def recargar() -> None:
-    """Fuerza a Plasma a releer el plan.
+    """Deja el motor en marcha sobre el plan que acaba de cambiar.
 
-    Cambiar el fichero no basta: plasmashell no lo vigila, y volver a poner el
-    mismo plugin tampoco dispara nada. Hay que salir a otro plugin y volver.
+    Con el motor ya puesto no hay nada que hacer: el fondo vigila el fichero
+    del plan y carga la escena nueva debajo de la que se ve, en Plasma
+    (`Escenas.qml`) igual que en Hyprland. Antes aqui se salia a otro plugin y
+    se volvia, y eso era el parpadeo de cada cambio. Solo hay que pedir algo si
+    algun escritorio no lo tiene puesto; si en Hyprland no estaba, se arranca.
 
-    En Hyprland no hay a quien pedirselo ni hace falta: el fondo vigila el
-    fichero del plan y se recarga solo; si no estaba en marcha, se arranca.
     Sin este desvio `shuffle` tomaba el "plasmashell no responde" por una
     escena rota y probaba otras cuatro, cinco planes escritos ---y cinco
     recargas--- por cada cambio.
@@ -272,8 +273,9 @@ def recargar() -> None:
     if en_hyprland():
         hyprland_arrancar()
         return
-    poner_plugin(PLUGIN_IMAGEN)
-    poner_plugin(PLUGIN)
+    actuales = plugins_actuales()
+    if not actuales or any(p != PLUGIN for p in actuales):
+        poner_plugin(PLUGIN)
 
 
 # ── biblioteca ──────────────────────────────────────────────────────────────
@@ -593,8 +595,7 @@ def plan_instalado() -> str | None:
 
 SUFIJOS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 # Por debajo de un minuto el temporizador no seria honesto (systemd agrupa los
-# disparos) y ademas cada cambio parpadea: `recargar` sale al fondo de Plasma y
-# vuelve. Un minuto ya es absurdo, pero es decision del usuario, no nuestra.
+# disparos). Un minuto ya es absurdo, pero es decision del usuario, no nuestra.
 # Un minuto. El tope lo pone lo que tarda un cambio completo, medido sobre la
 # biblioteca: la mediana esta en unos pocos segundos, pero preparar el plan de
 # `2637739953` ---65 pases, 196 assets, 369 MB escritos--- cuesta 18,2 s, y el

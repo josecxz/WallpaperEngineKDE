@@ -48,9 +48,20 @@ make indice                       # reescribe los números desde NOTAS.md
 - `12623` **El fondo de Hyprland que se colaba en Plasma** — al salir de Hyprland la unidad se reiniciaba hasta entrar en el `wayland-1` de KWin, con dos motores a la vez; `ExecCondition=hyprctl version` pregunta a su instancia en cada arranque.
 - `12638` **Por qué `ExecCondition` y no otra cosa** — el socket se queda en disco con Hyprland muerto, y no consta que `graphical-session.target` lo siga.
 - `12657` **El panel girado en Plasma** — `rotation` de `kscreen-doctor` es la máscara `KScreen::Output::Rotation`: 2, 8, 32 y 128 dejan el panel alto. Sin haber girado uno de verdad.
+- `12671` **La recarga en Plasma** — `Escenas.qml`: dos huecos y un vigía; `recargar` deja de pasar por `org.kde.image`. Sin fondo vacío, con la espera algo más larga en las pesadas.
+- `12677` **Los dos huecos en Plasma** — las tres diferencias con Hyprland y que un cambio del QML ya pide `make reload`.
+- `12701` **La recarga en Plasma, medida** — en vivo y en KWin `--virtual` con Mesa; la memoria no se fuga con el mismo plan; los tiempos del arnés son de llvmpipe.
+- `12738` **Dos tropiezos del arnés** — el driver sin igualar y el arnés de un hueco que se adelantaba.
+- `12746` **Lo que queda de la recarga en Plasma** — mirarlo a ojo y dos cambios muy seguidos.
+- `12753` **El suelo de memoria tras tres horas** — sube de 510 a 771 MB en vivo; repetido en el arnés no es fuga de malloc, es memoria libre que no vuelve al sistema (`malloc_trim` se lleva dos tercios).
 - `10757` **Cómo** — `preparar` con destino, `--planes` en el anfitrión, el `Loader` que solo recarga el plan de su monitor y el `existe` hacia abajo cuando `set` borra los propios.
 - `10784` **La resolución, que en Hyprland no se leía** — sin `kscreen-doctor` los planes salían al lienzo del autor (hasta 7680×4320); ahora `hyprctl -j monitors`, y cada plan propio a su monitor.
 - `10822` **La vara de medir del rendimiento** — `WE_MEDIDAS` en el motor (fotogramas ejecutados, CPU, GPU y copia por intervalo, en sumas crudas) y `tools/medir_vivo.py` (escena fija, sin pausa, `fdinfo` del i915; la NVIDIA no publica `fdinfo`). Ruido medido, regla del 10 % y la línea de base.
+- `12782` **El rendimiento en Plasma, medido desde fuera** — `_medir_plasma`: sin reiniciar plasmashell, sin fps y sin control de la pausa.
+- `12790` **Lo que no da la medida en Plasma** — fps, la pausa, el motor aislado y el `fdinfo` de KWin.
+- `12800` **Plasma, medido** — *Jeanne d'Arc* 64 % de la integrada, *Ashe* 94 % y sin reposo; quizá con una pantalla en pausa.
+- `12836` **Con dos pantallas, solo pausa la que tiene el foco** — `activeTask` en un modelo filtrado por pantalla: la otra nunca pausa. Sin arreglar.
+- `12858` **Lo que queda por medir en Plasma** — las pantallas a la vista y tapadas, una pasada con `WE_MEDIDAS` y el camino de Hyprland sin ejecutar.
 - `10829` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
 - `10843` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10865` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.

@@ -31,8 +31,16 @@ integrada que no existia (NOTAS, "Los 2,5 puntos de la integrada").
 Para que la medida no dependa de que haya ventanas encima, el fondo se lanza
 aparte (`wallpaperengine-medida`), **sin pausa** y con un solo plan para todas
 las pantallas; el fondo normal se para mientras tanto y se vuelve a poner al
-acabar. Solo Hyprland: en Plasma el fondo vive dentro de plasmashell, que no
-se reinicia para medir (CLAUDE.md, regla 3).
+acabar.
+
+**En Plasma se mide desde fuera** (`_medir_plasma`): el fondo vive dentro de
+plasmashell, que no se reinicia para medir (CLAUDE.md, regla 3), y sin reiniciar
+no se le puede dar `WE_MEDIDAS` ni quitarle la pausa. Se mide el proceso entero,
+con su panel y sus iconos, y **lo que haya en pantalla**: si hay una ventana
+maximizada, esa pantalla esta en pausa y la medida lo refleja. Con `--wallpaper`
+la escena se pone de verdad en el escritorio y se queda hasta la siguiente
+rotacion. La GPU sale de la linea del cronometro del journal, y si plasmashell
+arranco con `WE_MEDIDAS`, tambien las lineas de medida.
 
 Uso:
     python3 tools/medir_vivo.py [--wallpaper ID | --plan DIR]
@@ -80,7 +88,12 @@ def _rss_mb(pid: int) -> float:
 def _motores_drm(pid: int) -> dict[str, int]:
     """ns acumulados por motor, sumando cada cliente DRM UNA vez."""
     clientes: dict[tuple[str, str], dict[str, int]] = {}
-    for f in Path(f"/proc/{pid}/fdinfo").iterdir():
+    try:
+        descriptores = list(Path(f"/proc/{pid}/fdinfo").iterdir())
+    except PermissionError:
+        # KWin corre con capacidades elevadas y no deja mirarlo: queda su CPU.
+        return {}
+    for f in descriptores:
         try:
             texto = f.read_text()
         except OSError:
@@ -230,6 +243,10 @@ def _lineas_motor(desde: int) -> list[dict]:
             texto = f.read().decode(errors="replace")
     except OSError:
         return []
+    return _medidas(texto)
+
+
+def _medidas(texto: str) -> list[dict]:
     salida = []
     for linea in texto.splitlines():
         m = LINEA.search(linea)
@@ -272,6 +289,16 @@ def _por_pantalla(lineas: list[dict]) -> dict[str, dict]:
     return salida
 
 
+def _monitores_plasma() -> list[str]:
+    try:
+        r = subprocess.run(["kscreen-doctor", "-j"], capture_output=True, text=True, timeout=10)
+        salidas = json.loads(r.stdout).get("outputs", [])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    return [f"{o.get('name')} {o['size']['width']}x{o['size']['height']}"
+            for o in salidas if o.get("enabled") and o.get("size")]
+
+
 def _contexto(plan: Path) -> dict:
     git = subprocess.run(["git", "-C", str(wectl.RAIZ), "describe", "--always", "--dirty"],
                          capture_output=True, text=True).stdout.strip()
@@ -284,8 +311,10 @@ def _contexto(plan: Path) -> dict:
         "fecha": datetime.now().isoformat(timespec="seconds"),
         "git": git,
         "plan": wectl._titulo_del_plan(plan / "plan.txt"),
-        "monitores": [f"{n} {w}x{h}" for n, w, h in wectl.monitores_hyprland()],
-        "gpu_config": wectl._config_hyprland().get("gpu", "dedicada"),
+        "monitores": ([f"{n} {w}x{h}" for n, w, h in wectl.monitores_hyprland()]
+                      if wectl.en_hyprland() else _monitores_plasma()),
+        "gpu_config": (wectl._config_hyprland().get("gpu", "dedicada")
+                       if wectl.en_hyprland() else _gpu_plasma()),
         "nvidia": nv,
     }
 
@@ -306,11 +335,14 @@ def _imprimir(r: dict) -> None:
               + (f"\n             render {v['render_ms']} ms = previo {v['previo_ms']}"
                  f" + objetos {v['objetos_ms']} + pases y particulas"
                  if "render_ms" in v else ""))
+    if c.get("cronometro_ms"):
+        print(f"  cronometro {', '.join(str(x) for x in c['cronometro_ms'])} ms de GPU por "
+              f"fotograma (uno por pantalla que llega a 200 fotogramas)")
     pr = r["proceso"]
     print(f"  proceso    cpu {pr['cpu_pct']:.1f} % de un nucleo   rss {pr['rss_mb']:.0f} MB")
     co = r.get("compositor") or {}
     if co.get("cpu_pct") is not None:
-        print(f"  Hyprland   cpu {co['cpu_pct']:.1f} %   "
+        print(f"  {c.get('compositor', 'Hyprland'):10s} cpu {co['cpu_pct']:.1f} %   "
               + "   ".join(f"{k} {v:.1f} %" for k, v in co["motores_pct"].items())
               + (f"   nvidia sm {co['nvidia_sm_pct']} %" if co.get("nvidia_sm_pct") is not None else ""))
     for k, v in pr["motores_pct"].items():
@@ -350,18 +382,122 @@ def _comparar(antes: dict, ahora: dict) -> None:
     fila("nvidia MiB (tarjeta)", antes["proceso"].get("nvidia_mib"),
          ahora["proceso"].get("nvidia_mib"))
     ac, bc = antes.get("compositor") or {}, ahora.get("compositor") or {}
-    fila("Hyprland cpu_pct", ac.get("cpu_pct"), bc.get("cpu_pct"))
+    nombre = ahora["contexto"].get("compositor", "Hyprland")
+    fila(f"{nombre} cpu_pct", ac.get("cpu_pct"), bc.get("cpu_pct"))
     for k, v in (bc.get("motores_pct") or {}).items():
-        fila(f"Hyprland {k}", (ac.get("motores_pct") or {}).get(k), v)
+        fila(f"{nombre} {k}", (ac.get("motores_pct") or {}).get(k), v)
     fila("nvidia W (tarjeta)", antes["proceso"].get("nvidia_w"), ahora["proceso"].get("nvidia_w"))
     for k, v in ahora["proceso"]["motores_pct"].items():
         fila(f"proceso {k}", antes["proceso"]["motores_pct"].get(k), v)
 
 
-def _compositor() -> int | None:
-    r = subprocess.run(["pgrep", "-x", "Hyprland"], capture_output=True, text=True)
+def _compositor(nombre: str = "Hyprland") -> int | None:
+    r = subprocess.run(["pgrep", "-x", nombre], capture_output=True, text=True)
     pids = [int(x) for x in r.stdout.split()]
     return pids[0] if pids else None
+
+
+def _gpu_plasma() -> str:
+    valores = set(wectl._config_gpu())
+    return "dedicada" if valores == {"true"} else "integrada" if valores == {"false"} \
+        else "mezclada"
+
+
+def _diario(pid: int, desde: float) -> str:
+    return subprocess.run(["journalctl", "--user", "-b", "--no-pager", "-o", "cat",
+                           f"_PID={pid}", "--since", f"@{desde:.0f}"],
+                          capture_output=True, text=True).stdout
+
+
+def _cronometro(texto: str) -> list[float]:
+    return [float(x) for x in re.findall(r"cronometro de GPU -> ([0-9.]+) ms", texto)]
+
+
+def _medir_plasma(args) -> dict:
+    """Lo que cuesta plasmashell tal como esta, sin reiniciarlo."""
+    pid = _compositor("plasmashell")
+    if pid is None:
+        raise SystemExit("plasmashell no esta corriendo")
+    if any(p != wectl.PLUGIN for p in wectl.plugins_actuales()):
+        raise SystemExit("hay escritorios sin el motor; usa `wectl start`")
+    comp = _compositor("kwin_wayland")
+
+    # Una rotacion en medio cargaria otra escena y la medida mezclaria dos.
+    temporizador = f"{wectl.UNIDAD}.timer"
+    habia_rotacion = subprocess.run(["systemctl", "--user", "is-active", "--quiet",
+                                     temporizador]).returncode == 0
+    if habia_rotacion:
+        subprocess.run(["systemctl", "--user", "stop", temporizador], capture_output=True)
+    try:
+        inicio = time.time()
+        if args.wallpaper:
+            ruta, titulo = wectl.resolver(args.wallpaper)
+            print(f"poniendo {titulo} ({ruta.name}) en el escritorio", flush=True)
+            wectl.preparar(ruta)
+            inicio = time.time()
+        time.sleep(args.calentar)
+        pm: dict[int, list[float]] = {}
+        pot: list[tuple[float, float, float]] = []
+        intel: list[float] = []
+        hilos = [threading.Thread(target=_intel, args=(args.segundos, intel))]
+        if not args.sin_pmon:
+            hilos += [threading.Thread(target=_pmon, args=([pid, comp] if comp else [pid],
+                                                           args.segundos, pm)),
+                      threading.Thread(target=_potencia, args=(args.segundos, pot))]
+        for h in hilos:
+            h.start()
+        t0, w0, c0, m0, r0 = time.monotonic(), time.time(), _cpu_s(pid), _motores_drm(pid), _rc6_ms()
+        k0, km0 = (_cpu_s(comp), _motores_drm(comp)) if comp else (0.0, {})
+        time.sleep(args.segundos)
+        t1, c1, m1, r1 = time.monotonic(), _cpu_s(pid), _motores_drm(pid), _rc6_ms()
+        k1, km1 = (_cpu_s(comp), _motores_drm(comp)) if comp else (0.0, {})
+        rss = _rss_mb(pid)
+        for h in hilos:
+            h.join()
+    finally:
+        if habia_rotacion:
+            subprocess.run(["systemctl", "--user", "start", temporizador], capture_output=True)
+
+    dur = t1 - t0
+    pct = lambda a, b: {k: round((b[k] - a.get(k, 0)) / (dur * 1e9) * 100, 1)
+                        for k in b if b[k] - a.get(k, 0) > 0}
+    media = lambda xs: round(sum(xs) / len(xs), 1) if xs else None
+    contexto = _contexto(wectl.ESCENA)
+    contexto["compositor"] = "KWin"
+    contexto["cronometro_ms"] = _cronometro(_diario(pid, inicio))
+    return {
+        "contexto": contexto,
+        "segundos": args.segundos,
+        "calentar": args.calentar,
+        "extra": [],
+        "pantallas": _por_pantalla(_medidas(_diario(pid, w0))),
+        "proceso": {
+            "cpu_pct": round((c1 - c0) / dur * 100, 1),
+            "rss_mb": round(rss, 1),
+            "motores_pct": pct(m0, m1),
+            "nvidia_sm_pct": media(pm.get(pid, [])),
+            "intel_mhz": round(sum(intel) / len(intel)) if intel else None,
+            "intel_rc6_pct": round((r1 - r0) / (dur * 1000) * 100, 1)
+                             if r0 is not None and r1 is not None else None,
+            "nvidia_w": round(sum(p[0] for p in pot) / len(pot), 2) if pot else None,
+            "nvidia_mhz": round(sum(p[1] for p in pot) / len(pot)) if pot else None,
+            "nvidia_mib": round(sum(p[2] for p in pot) / len(pot)) if pot else None,
+        },
+        "compositor": {
+            "cpu_pct": round((k1 - k0) / dur * 100, 1) if comp else None,
+            "motores_pct": pct(km0, km1) if comp else {},
+            "nvidia_sm_pct": media(pm.get(comp, [])) if comp else None,
+        },
+    }
+
+
+def _salida(resultado: dict, args) -> None:
+    _imprimir(resultado)
+    if args.guardar:
+        args.guardar.write_text(json.dumps(resultado, indent=2, ensure_ascii=False) + "\n")
+        print(f"\nguardado en {args.guardar}")
+    if args.comparar:
+        _comparar(json.loads(args.comparar.read_text()), resultado)
 
 
 def main() -> int:
@@ -383,7 +519,11 @@ def main() -> int:
     args = ap.parse_args()
 
     if not wectl.en_hyprland():
-        raise SystemExit("solo en Hyprland: en Plasma no se reinicia plasmashell para medir")
+        if args.sin_fondo or args.extra or args.plan != wectl.ESCENA:
+            raise SystemExit("en Plasma se mide lo que hay: sin --sin-fondo, --plan ni "
+                             "opciones del anfitrion")
+        _salida(_medir_plasma(args), args)
+        return 0
     if args.wallpaper and not args.sin_fondo:
         ruta, titulo = wectl.resolver(args.wallpaper)
         cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
@@ -476,12 +616,7 @@ def main() -> int:
         resultado["contexto"]["plan"] = "(sin fondo)"
     elif not resultado["pantallas"]:
         raise SystemExit(f"el motor no dio ninguna linea de medida; mira {REGISTRO}")
-    _imprimir(resultado)
-    if args.guardar:
-        args.guardar.write_text(json.dumps(resultado, indent=2, ensure_ascii=False) + "\n")
-        print(f"\nguardado en {args.guardar}")
-    if args.comparar:
-        _comparar(json.loads(args.comparar.read_text()), resultado)
+    _salida(resultado, args)
     return 0
 
 

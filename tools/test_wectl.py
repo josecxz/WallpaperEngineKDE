@@ -355,6 +355,27 @@ def prueba_shuffletime(fallos: list[str]) -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def prueba_recargar_plasma(fallos: list[str]) -> None:
+    """Con el motor puesto no se sale a otro plugin: eso era el parpadeo."""
+    print("\n── recargar en Plasma ──")
+    casos = [("puesto en todos", [wectl.PLUGIN, wectl.PLUGIN], []),
+             ("falta en uno", [wectl.PLUGIN, wectl.PLUGIN_IMAGEN], [wectl.PLUGIN]),
+             ("sin escritorios", [], [wectl.PLUGIN])]
+    reales = (wectl.en_hyprland, wectl.plugins_actuales, wectl.poner_plugin)
+    try:
+        wectl.en_hyprland = lambda: False
+        for nombre, actuales, esperado in casos:
+            puestos: list[str] = []
+            wectl.plugins_actuales = lambda: actuales
+            wectl.poner_plugin = puestos.append
+            wectl.recargar()
+            if puestos != esperado:
+                fallos.append(f"recargar, {nombre}: {puestos} en vez de {esperado}")
+            print(f"  {nombre}: {puestos}")
+    finally:
+        wectl.en_hyprland, wectl.plugins_actuales, wectl.poner_plugin = reales
+
+
 def prueba_resolucion_plasma(fallos: list[str]) -> None:
     """Un panel girado en Plasma pide un plan alto, no el apaisado del modo."""
     print("\n── resolucion en Plasma ──")
@@ -432,6 +453,7 @@ def main() -> int:
     prueba_construir(fallos)
     prueba_unidades(fallos)
     prueba_shuffletime(fallos)
+    prueba_recargar_plasma(fallos)
     prueba_resolucion_plasma(fallos)
     prueba_fondo_hyprland(fallos)
 
