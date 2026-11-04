@@ -638,7 +638,32 @@ class Motor:
     `canvasSize` es el lienzo de la escena, el `width` x `height` de
     `orthogonalprojection`, como `Vec2`. Solo existe si quien evalúa lo da
     (`valor_fijo_de`); en una escena con `auto` no hay número que dar.
+
+    `registerAudioBuffers`, `AUDIO_RESOLUTION_*` y `frametime` solo existen
+    con el intérprete en silencio (`Interprete(..., silencio=True)`, lo que
+    hace `valor_fijo_de`). Este motor no tiene audio, y lo que WE dibuja sin
+    música es lo que da el script con los buffers a cero. `frametime` hace
+    falta porque el suavizado del audio lo multiplica, y su valor no importa
+    en reposo: un script que lo acumule da otra cosa en cada llamada y
+    `valor_fijo` lo descarta.
     """
+
+
+# `engine.AUDIO_RESOLUTION_*`, los únicos tamaños que admite
+# `registerAudioBuffers` («Resolution must be either 16, 32 or 64.», en
+# `scenescript64.dll`; los valores, en `lib.sceneScript.d.ts`).
+RESOLUCIONES_DE_AUDIO = {"AUDIO_RESOLUTION_16": 16, "AUDIO_RESOLUTION_32": 32,
+                         "AUDIO_RESOLUTION_64": 64}
+
+
+def _buffers_en_silencio(args) -> "Objeto":
+    """Los `AudioBuffers` de `registerAudioBuffers(n)` cuando no suena nada:
+    `left`, `right` y `average` de `n` ceros. Un tamaño que WE no admite es
+    un ScriptError, como allí."""
+    n = js_numero(args[0]) if args else float("nan")
+    if n not in (16.0, 32.0, 64.0):
+        raise ScriptError("registerAudioBuffers: resolución no admitida")
+    return Objeto({k: [0.0] * int(n) for k in ("left", "right", "average")})
 
 
 class Recurso:
@@ -809,7 +834,8 @@ def js_numero(v) -> float:
 
 
 class Interprete:
-    def __init__(self, fuente: str, propiedades: dict | None = None):
+    def __init__(self, fuente: str, propiedades: dict | None = None,
+                 silencio: bool = False):
         toks = tokenizar(fuente)
         # Los literales de cadena del script, que es de donde salen los nombres
         # de los días y de los meses; ver `_tablas_candidatas`.
@@ -827,6 +853,14 @@ class Interprete:
         self.runtime: float | None = None
         # `engine.canvasSize`, (ancho, alto), solo si quien evalúa lo da.
         self.lienzo: tuple[float, float] | None = None
+        # El audio en silencio, solo si quien evalúa lo pide (`valor_fijo_de`):
+        # `engine.registerAudioBuffers` da buffers a cero, que es lo que ve un
+        # script de WE cuando no suena nada. Va en el constructor porque el
+        # registro se hace en el cuerpo del módulo, que corre en `_prepara`.
+        # Ver `Motor`.
+        self.silencio = silencio
+        # `engine.frametime`, solo si quien evalúa lo da.
+        self.frametime: float | None = None
         self.animacion = Animacion()
         self._prepara()
 
@@ -1204,8 +1238,13 @@ class Interprete:
         if obj == "__Date__":
             return ("__met_Date__", obj, clave)
         if isinstance(obj, Motor):
-            if clave == "registerAsset":
+            if clave == "registerAsset" or (
+                    clave == "registerAudioBuffers" and self.silencio):
                 return ("__met_motor__", obj, clave)
+            if self.silencio and clave in RESOLUCIONES_DE_AUDIO:
+                return float(RESOLUCIONES_DE_AUDIO[clave])
+            if clave == "frametime" and self.frametime is not None:
+                return self.frametime
             if clave == "timeOfDay":
                 if self.hora_del_dia is not None:
                     return self.hora_del_dia
@@ -1297,6 +1336,8 @@ class Interprete:
         if clase == "__met_Date__":
             raise ScriptError(f"Date.{nombre} estático")
         if clase == "__met_motor__":
+            if nombre == "registerAudioBuffers":
+                return _buffers_en_silencio(args)
             return Recurso()
         if clase == "__met_capa__":
             return self.animacion
@@ -2249,6 +2290,13 @@ def _componentes(r, n: int) -> list[float] | None:
     import math
     if n == 1:
         r = [r]
+    elif isinstance(r, (int, float)) and not isinstance(r, bool):
+        # Un número en un campo de varias componentes las pone todas: «if
+        # you return `2` on the `Scale` property, Wallpaper Engine will first
+        # convert the value to `Vec3(2, 2, 2)`» (referencia de `update` en
+        # docs.wallpaperengine.io). Lo hace la plantilla de WE de respuesta
+        # al audio, que devuelve `initialValue * factor`.
+        r = [r] * n
     elif isinstance(r, dict):
         r = [r.get(k) for k in ("x", "y", "z")]
     else:
@@ -2289,6 +2337,11 @@ def valor_fijo(ip: Interprete, valor: list[float],
     las propiedades al cargar, el ratón---. Aquí no, y el reposo no es lo que
     se ve allí: los 8 colores de `3210875135` saldrían negros porque su color
     lo pone `mediaThumbnailChanged`.
+
+    El audio se ve en silencio si `ip` se creó así (`valor_fijo_de`): la
+    plantilla de WE de respuesta al audio da entonces `minvalue` veces el
+    valor inicial, que es lo que WE dibuja sin música. Un número devuelto en
+    un campo de tres componentes las pone todas (`_componentes`).
     """
     n = len(valor)
     otro = [v + 37.0 for v in valor]
@@ -2301,6 +2354,7 @@ def valor_fijo(ip: Interprete, valor: list[float],
                 for k, v in ip.global_.vars.items()):
             return None
         ip.lienzo = lienzo
+        ip.frametime = 1.0 / 60.0
         ip.hora_del_dia = None
         ip.runtime, ip.fecha = tiempos[0], dias[0]
         init = ip.global_.vars.get("init")
@@ -2358,7 +2412,7 @@ def valor_fijo_de(obj: dict, campo: str,
             return None
         if campo == "angles":
             valor = [math.degrees(x) for x in valor]
-        ip = Interprete(d["script"], props)
+        ip = Interprete(d["script"], props, silencio=True)
     except Exception:
         return None
     r = valor_fijo(ip, valor, lienzo)
