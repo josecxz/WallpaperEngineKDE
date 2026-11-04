@@ -7,8 +7,8 @@ plasmashell. No es un envoltorio: donde una capa **es** un vídeo lo decodifica
 y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
 
 - Qué hace y cómo se instala → `README.md`
-- **Por qué** cada cosa es como es → `NOTAS.md` (6524 líneas, 259 secciones en
-  orden cronológico). **No lo leas entero.** `NOTAS-INDICE.md` dice qué sección
+- **Por qué** cada cosa es como es → `NOTAS.md` (más de 12500 líneas y 500 secciones
+  en orden cronológico). **No lo leas entero.** `NOTAS-INDICE.md` dice qué sección
   resuelve qué problema y en qué línea empieza; se lee el trozo con
   `sed -n '<línea>,+40p' NOTAS.md`. Tras editar NOTAS.md, `make indice`.
 
@@ -17,9 +17,10 @@ y lo reproduce, pero eso es una capa más dentro del grafo, no lo que hace.
 1. **Nada específico de un wallpaper.** Ni un caso especial por id de escena,
    por nombre de capa, ni un campo descartado porque «en esta escena estorba».
    Si no se entiende un caso, se deja escrito y no se toca. (`NOTAS.md:10`)
-2. **El corpus son 129 escenas**, las de la instalación real de Steam que
-   localiza `tools/wepaths.py`. Todo arreglo se mide sobre las 129, no sobre la
-   que falla. Las cuentas «de 125» en NOTAS son de la biblioteca anterior.
+2. **El corpus son 133 escenas**, las de la instalación real de Steam que
+   localiza `tools/wepaths.py`. Todo arreglo se mide sobre las 133, no sobre la
+   que falla. Las cuentas «de 125» y «de 129» en NOTAS son de la biblioteca de
+   entonces.
 3. **No iterar sobre plasmashell en vivo.** Recargar en bucle deja el
    escritorio caído (`start-limit-hit` de systemd, que parece un fallo del
    motor). Se itera con el renderizador offline y solo al final `make reload`.
@@ -74,7 +75,7 @@ MP4 y su plan lo escribe `plan_de_video()` directo —`canvas`, `video`, un
 `object` y un pase con un quad—. `emit_plan` despacha solo, así que `wectl` no
 tiene que saber de qué tipo es lo que pone.
 
-`werender.py` (3418 líneas) es donde vive **lo que hay que decidir**: binding de
+`werender.py` (unas 4450 líneas) es donde vive **lo que hay que decidir**: binding de
 propiedades, uniforms del motor, resolución de bindings. Los ejecutores solo
 ejecutan un plan ya resuelto. La implementación de referencia está en Python a
 propósito; `src/` es el port a C++ de lo mismo.
@@ -175,7 +176,7 @@ El **puntero sí llega** —los uniforms del ratón y los 123 sistemas de
 partículas atados a él, en 46 escenas, que casi siempre se apartan a su paso
 como en WE— y la **cámara también se mueve**:
 `cameraparallax`, con la fórmula leída en el motor de WE, desplaza cada capa
-según la profundidad de su raíz en 29 escenas, también en reposo, y el mismo
+según la profundidad de su raíz en 31 escenas, también en reposo, y el mismo
 punto de la cámara es el `g_ParallaxPosition` de las 6 escenas con
 `depthparallax`. `camerashake` también está leído en el
 motor y tiembla en sus 6 escenas. El ratón lo da **KWin** (`CursorKWin` en

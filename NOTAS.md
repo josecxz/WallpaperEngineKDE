@@ -84,9 +84,10 @@ Irelia* con 102 pases y 4 sistemas de partículas.
 
 Aquí ponía «a 166 fps». Ese número era el del reloj de QML y no medía el motor
 —ver [El HUD decía 166 fps con la GPU al 98 %](#el-hud-decía-166-fps-con-la-gpu-al-98-)—.
-La biblioteca de referencia son **129 escenas** desde el 2026-08-24, cuando las
-rutas pasaron a la instalación real de Wallpaper Engine; las cuentas «de 125»
-que aparecen más abajo son medidas correctas de la biblioteca anterior.
+La biblioteca de referencia fueron **129 escenas** desde el 2026-08-24, cuando
+las rutas pasaron a la instalación real de Wallpaper Engine, y son **133** desde
+octubre, con cuatro más en el Workshop. Las cuentas «de 125» y «de 129» que
+aparecen más abajo son medidas correctas de la biblioteca de entonces.
 
 ```
 SceneView: backend OpenGL, plan con 102 pases, lienzo 2560x1440, init 119 ms,
@@ -2186,7 +2187,7 @@ falta son campos de piezas que sí leemos:
 
 | campo | usos | qué se pierde |
 |---|---|---|
-| `exponent` en los seis inicializadores aleatorios | **96** | la forma de la distribución: el autor pide un sesgo y repartimos uniforme |
+| ~~`exponent` en los seis inicializadores aleatorios~~ | **96** | **aplicado**: `weparticles.py` lo lleva al `.psys` y `src/weparticles.c` sesga el sorteo |
 | `audioprocessing*` en 6 piezas | ~50 | reactividad al sonido |
 | ~~`turbulentvelocityrandom` según la regla de WE (`forward`/`right`, `offset` como ángulo, fase, rapidez por defecto)~~ | 152 piezas en 66 escenas | **aplicado**: el inicializador entero se sustituyó por la regla leída, y la rapidez por defecto es 100–250 porque las 129 escenas son ortográficas. El aspecto solo lo respalda la lectura. Ver [La turbulencia con la regla de WE](#la-turbulencia-con-la-regla-de-we-turbulentvelocityrandom-deja-de-muestrear-nuestro-ruido) |
 | ~~`flags` del SISTEMA, bit 0x4 («Perspective rendering»)~~ | 153 sistemas en 58 escenas | **aplicado**: la cámara en perspectiva que WE les pone en una escena ortográfica, leída en `wallpaper64.exe`, va en la MVP del pase. Ver [Partículas con perspectiva](#partículas-con-perspectiva-el-bit-0x4-del-flags-del-sistema-es-otra-cámara-no-otra-simulación) |
@@ -3876,8 +3877,10 @@ Por orden de lo que más se nota:
    de la hora, las 30 capas AM/PM de `3299228616` —ver [Una hoja de sprites
    cuyo fotograma elige la
    hora](#una-hoja-de-sprites-cuyo-fotograma-elige-la-hora-el-indicador-ampm)—.
-   **Pendiente**: reproducir por `frame_time` las 56 capas con hoja animada, y
-   el resto de campos con script. **Empezado** también `angles`: las tres
+   ~~Reproducir por `frame_time` las 56 capas con hoja animada~~ **hecho**, salvo
+   las que mueve un script —ver [Las hojas de varias
+   imágenes](#las-hojas-de-varias-imágenes-eligen-la-textura-por-image_id-lo-leído-en-wallpaper64exe)—.
+   **Pendiente**: el resto de campos con script. **Empezado** también `angles`: las tres
    agujas de `2396319149`, cuyo script solo lee `engine.timeOfDay` —ver [Las
    agujas de un reloj
    analógico](#las-agujas-de-un-reloj-analógico-angles-con-enginetimeofday)—;
@@ -3919,9 +3922,11 @@ Por orden de lo que más se nota:
    123 sistemas de partículas que lo persiguen en 46 escenas, más
    `g_PointerPosition`, `g_PointerPositionLast` y `g_ParallaxPosition`; ver
    [El ratón entra en la
-   escena](#el-ratón-entra-en-la-escena-un-puntero-cuatro-consumidores). Queda
+   escena](#el-ratón-entra-en-la-escena-un-puntero-cuatro-consumidores). ~~Queda
    la **cámara**: `cameraparallax` mueve cada capa según su profundidad en 29
-   escenas y falta el número que lleva su `amount` a píxeles.
+   escenas y falta el número que lleva su `amount` a píxeles.~~ **Hecho**: ver
+   [El parallax de
+   cámara](#el-parallax-de-cámara-la-fórmula-estaba-en-el-motor-y-mueve-las-capas-también-en-reposo).
 
 Y un fallo de uso, sin arreglar: **cambiar el fondo con el escritorio tapado no
 recarga el motor**. `recargar()` intercambia el plugin pero el `SceneView` no se
@@ -5477,8 +5482,9 @@ cámara](#g_parallaxposition-es-el-punto-p-de-la-cámara-no-el-puntero-con-retar
   cursor nacen en el ratón; ver [Todo emisor nace en su punto de
   control](#todo-emisor-nace-en-su-punto-de-control-primer-trozo-la-traslación). El giro del sorteo con el punto y el tope de una
   partícula por fotograma siguen pendientes.
-- **El puntero por debajo de las ventanas**, que en Wayland pide otra fuente
-  distinta de los eventos del propio fondo.
+- ~~**El puntero por debajo de las ventanas**, que en Wayland pide otra fuente
+  distinta de los eventos del propio fondo.~~ **Hecho**: lo da KWin
+  (`CursorKWin` en `src/escritorio.cpp`).
 
 ## El fondo de *Lonely Cat* se desliza, y las dos mitades de un arreglo
 
@@ -11588,6 +11594,9 @@ CPU un 14 % menos. La GPU solo un 5 %: en NVIDIA un `glClear` es casi
 gratis, porque marca el buffer limpio sin escribirlo.
 
 ### Lo que queda, y es lo grande
+
+**Hecho después** para las partículas y las capas: ver «Partículas directas y
+buffers del tamaño de la capa».
 
 **Cada capa se dibuja en buffers del tamaño del lienzo**, aunque ocupe un
 rincón, y se encoge al componer (`object` lleva la colocación; los pases

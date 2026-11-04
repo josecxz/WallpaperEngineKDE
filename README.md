@@ -333,7 +333,7 @@ Limitaciones conocidas:
   shader, como *overlay*, se componen como una capa normal.
 - El **bloom** —el resplandor que el motor añade sobre la escena terminada—
   se hace con la cadena de WE: umbral a un cuarto, dos desenfoques de 13 taps
-  a un octavo y suma. Lo encienden 33 escenas de 129. Nueve piden además el
+  a un octavo y suma. Lo piden 36 escenas de 133. Diez piden además el
   camino **HDR**, con su pirámide de iteraciones y un buffer en coma flotante,
   y se quedan con la cadena normal.
 - Una **capa de composición** con el rectángulo más pequeño que el lienzo se
@@ -357,7 +357,7 @@ Limitaciones conocidas:
   también por debajo de las ventanas y del panel; sin KWin, solo mientras el
   ratón está sobre el fondo.
   La **cámara** también: `cameraparallax` desplaza cada capa según la
-  profundidad de su grupo, en 29 escenas de 129, como lo hace Wallpaper Engine
+  profundidad de su grupo, en 31 escenas de 133, como lo hace Wallpaper Engine
   —incluido el desplazamiento que ya tiene con el ratón en el centro—. Y el
   temblor de cámara (`camerashake`, 6 escenas), con la curva que usa el motor
   de Wallpaper Engine.
