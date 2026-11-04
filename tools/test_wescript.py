@@ -335,7 +335,24 @@ FIJOS = [
     ("lee el value", "origin", "value.y = value.y + 1; return value;", "", None),
     ("acumula", "origin", "n = n + 1; value.y = n; return value;", "let n = 0;", None),
     ("no devuelve", "origin", "value.y = 3;", "", None),
-    ("devuelve un número", "origin", "return 3;", "", None),
+    ("devuelve un número", "origin", "return 3;", "", [3.0, 3.0, 3.0]),
+    ("plantilla de audio en silencio", "scale",
+     "const d = scriptProperties.maxvalue - scriptProperties.minvalue;"
+     "const a = audio.average[scriptProperties.frequency] - s;"
+     "s += a * Math.min(1.0, engine.frametime * scriptProperties.smoothing);"
+     "s = Math.min(1.0, s); return ini * (s * d + scriptProperties.minvalue);",
+     "const audio = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_16);"
+     "let s = 0; let ini;"
+     "export var scriptProperties = createScriptProperties()"
+     ".addSlider({name: 'frequency', value: 0}).addSlider({name: 'smoothing', value: 15})"
+     ".addSlider({name: 'minvalue', value: 0.8}).addSlider({name: 'maxvalue', value: 1.2})"
+     ".finish();"
+     "export function init(value) { ini = (typeof value === 'number') ? value : value.x; }",
+     [8.0, 8.0, 8.0]),
+    ("audio que acumula", "origin", "t += engine.frametime; value.y = t; return value;",
+     "const a = engine.registerAudioBuffers(16); let t = 0;", None),
+    ("resolución de audio que WE no admite", "origin", "return new Vec3(1, 2, 3);",
+     "const a = engine.registerAudioBuffers(20);", None),
     ("sin lienzo en el motor", "origin", "value.x = engine.screenResolution.x; return value;",
      "", None),
     ("con un suceso del ratón", "origin", "return new Vec3(1, 2, 3);",
@@ -348,8 +365,11 @@ FIJOS = [
 ]
 
 # Los campos del corpus que dan un valor fijo, por escena: los 19 `origin`
-# que coloca un deslizador en `3462491575` y la capa `定位` de `3521337568`.
-FIJOS_CORPUS = {"3462491575": 19, "3521337568": 1}
+# que coloca un deslizador en `3462491575` y la capa `定位` de `3521337568`;
+# y las 19 `scale` con la plantilla de WE de respuesta al audio, en silencio:
+# 17 en `3462491575` y una `dragonink1` en `3238423642` y en `3810943704`.
+FIJOS_CORPUS = {"3462491575": 36, "3521337568": 1, "3238423642": 1,
+                "3810943704": 1}
 
 
 def fijos_del_corpus(fallos: list[str]) -> None:

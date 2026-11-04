@@ -3892,6 +3892,9 @@ Por orden de lo que más se nota:
    se evalúa al cargar y sustituye al `value`, como los 19 `origin` que
    colocan con deslizadores el widget de `3462491575` —ver [Los scripts que
    colocan](#los-scripts-que-colocan-un-valor-que-no-cambia-se-evalúa-una-vez)—.
+   Y el audio en silencio: la plantilla de WE de respuesta al audio da
+   `minvalue` veces el valor, como en WE sin música —ver [El audio en
+   silencio](#el-audio-en-silencio-la-plantilla-de-we-de-respuesta-al-audio-evaluada-sin-música)—.
 4. ~~Reproducir vídeo~~ **hecho**: `src/wevideo.c` lo decodifica con libav y lo
    comparten los dos ejecutores; las 3 escenas con textura de vídeo se mueven y
    los 15 wallpapers de tipo vídeo entran en la biblioteca —ver [Vídeo de
@@ -7805,7 +7808,9 @@ imagen quieta: el oráculo del cambio es la lectura del binario, no el aspecto.
 
 ### Lo que queda fuera
 
-- **`trailLength` en régimen**: aquí es siempre el número de vivas; WE lo topa
+- ~~**`trailLength` en régimen**~~ (cerrado: el tope solo existe con
+  `uvsmoothing`, cuyos campos valen 0; ver «`uvsmoothing`: leído, y en este
+  binario no hace nada»): aquí es siempre el número de vivas; WE lo topa
   en algo con forma de `ritmo × vida − 1` y lo multiplica por
   `[sistema+0x30]`, y ninguno de los campos se ha confirmado. Solo mueve la
   UV a lo largo de la cuerda.
@@ -8340,7 +8345,8 @@ El oráculo es el `.geom` de WE más la lectura del binario: el preview de
   `ORIENTATION` 0 —el `.geom` toma entonces el ojo de la cámara y la rama sin
   geometry shader siempre `g_OrientationForward`—, la anchura dentro del tramo
   se aparta algo. No se ha contado cuántos `rope` del corpus caen ahí.
-- **`uvsmoothing` es verdadero por defecto**: la función de defectos lo inserta
+- ~~**`uvsmoothing` es verdadero por defecto**~~ (cerrado sin cambio: ver
+  «`uvsmoothing`: leído, y en este binario no hace nada»): la función de defectos lo inserta
   si falta, así que en WE todos los `rope` del corpus sin `uvscrolling` lo
   llevan encendido (bit `0x40000`). Lo que hace —el desfase de
   `trailPosition` en `0x1402309b5`..`0x140230a84`— sigue sin leerse; aquí no
@@ -12302,11 +12308,180 @@ assets, hijos incluidos). Casi todo se cierra con el número.
 | `mapsequence*` sumado o pisado | 5 | sus puntos y emisores están todos en el origen: las dos lecturas dan lo mismo |
 | el sorteo gira con el punto de control | 1 | `controlpoint ≠ 0` en un emisor |
 | `rope` en perspectiva | 2 | sin contar aún si caen en `ORIENTATION` 0 |
-| `uvsmoothing` por defecto, `trailLength` en régimen | 16 (`rope`) | solo mueven la UV a lo largo de la cuerda; lo que hace `uvsmoothing` no se ha leído en el binario |
+| ~~`uvsmoothing` por defecto, `trailLength` en régimen~~ | 16 (`rope`) | **cerrado**: la rama depende de `[sistema+0x1bc]` y `[sistema+0x1c0]`, que nada escribe; vale 0 y WE dibuja lo mismo que aquí. Ver «`uvsmoothing`: leído, y en este binario no hace nada» |
 | `ropetrail` sin curva | 15 | sus puntos van a 1/60 s y la flecha no llega a un píxel |
 | el punto del cursor antes del primer movimiento | — | solo el estado inicial, hasta que se mueve el ratón |
 
-Lo único con efecto posible que sigue sin leer es **`uvsmoothing`** (lo que
+~~Lo único con efecto posible que sigue sin leer es **`uvsmoothing`** (lo que
 hace con `trailPosition` en `0x1402309b5..0x140230a84`), y solo en cuerdas
-con textura que cambie a lo largo. El resto queda cerrado con su número.
+con textura que cambie a lo largo.~~ Leído: no cambia nada (ver abajo). El
+resto queda cerrado con su número.
 
+
+## `uvsmoothing`: leído, y en este binario no hace nada
+
+Lo que quedaba sin leer de las partículas (ver «Lo que queda de las
+partículas, revisado»). Leído en el `wallpaper64.exe` instalado con
+`objdump -d -M intel`. Resultado: la rama existe, pero depende de dos campos
+del sistema que **nada escribe después del constructor**, así que valen 0 y la
+rama no se ejecuta nunca. Lo que dibuja WE es lo que ya dibujamos aquí:
+`trailLength` = vivas y `trailPosition` = `k`. **No cambia el render.**
+
+### Lo que hace el constructor de `rope`
+
+| qué | dónde | lo que hace |
+|---|---|---|
+| `A` y `B` | `0x1402309b5..0x1402309d2` | `A = [sistema+0x1c0] · count`, `B = [sistema+0x1bc] · lifetime`, con `count` y `lifetime` del `instanceoverride` |
+| el override | `0x1402298a0` (`lea rax,[rcx+0x778]`) y la tabla `0x14024d9eb..0x14024df30` | `[sistema+8]` es el objeto y el override va en `objeto+0x778`: `+0xc8` alpha, `+0xcc` size, `+0xd0` count, `+0xd4` speed, `+0xd8` lifetime, `+0xdc` rate, `+0xe0` brightness |
+| tope de `A` | `0x1402309ed..0x140230a07` | si `A·B` > vivas, `A = min([def+0x148], A)` |
+| `uvscrolling` | bit `0x20000`, `0x140230a1b` | `L = A·B − 1`; desfase = `[sistema+0x350]` |
+| `uvsmoothing` | bit `0x40000`, `0x140230a4c` | solo si `A·B > 0` y vivas ≥ `A·B − 1`: `L = A·B − 1`; desfase = `saturate((B − edad[orden[0]]) · A) − 1` (`0x1401d8df0` es `saturate`) |
+| si no | `0x140230a3b`, `0x140230a84` | `L` = vivas, desfase 0 |
+| lo que se escribe | `0x140230b4c`, `0x140230d48`, `0x140230d8c` | `trailLength = L · [sistema+0x30]` en todos los segmentos; `trailPosition = k + desfase` |
+| dos vivas | `0x140230f8e..0x14023106a` | `trailLength` = vivas, `trailPosition` = 0, sin factor ni desfase |
+
+`[sistema+0x258]` es la **edad** de cada partícula: se le suma `dt` en
+`0x140236d91`. `[sistema+0x260]` es su **vida**: muere cuando la vida es
+menor que la edad (`cmpltps`, `0x140236d95`). `[sistema+0x30]` vale 1,0 desde
+el constructor (`0x1402293e0`). La rama es un antisaltos: con `A` = ritmo y
+`B` = vida, `(B − edad)·A` es la fracción del intervalo de emisión que le
+queda a la más vieja, y la UV resbala en vez de saltar un segmento a cada
+muerte.
+
+### Por qué `A` y `B` valen 0
+
+- **El sistema** es el bloque de 0x4b0 bytes que construye `0x1402293a0`.
+  Va incrustado en `objeto+0x2c0` (`0x140190221`) o reservado aparte para
+  los hijos (`0x14022ef48`, `0x140237454`, `0x14023af6e`). El constructor
+  pone a cero `+0x1b8` (qword) y `+0x1c0` (`0x140229539`, `0x140229540`).
+- **Ninguna instrucción del binario** escribe en `[reg+0x1bc]` ni en
+  `[reg+0x1c0]` sobre un sistema. Las que hay son de otras estructuras: el
+  estado de render en `0x140171ed6`, matrices en `0x1400da5cc` y otros
+  objetos fuera del rango `0x1402…`. Tampoco hay escrituras de 64 ni de 128
+  bits que cubran esos bytes, salvo la del constructor.
+- **No las hay desde otra base**: ni en `objeto+0x47c`/`+0x480` ni con un
+  `lea reg,[sistema+K]` seguido de una escritura en `[reg+0x1bc−K]` (barrido
+  de todo `0x140222000..0x140245fff`). Tampoco las hay indexadas.
+- **Tampoco las hay por copia**: ningún `rep movs`, y ninguna llamada a
+  `memcpy` (`0x1404210f0`) del código de partículas tiene el sistema como
+  destino.
+- **Solo se leen** en `0x1402309b5` y `0x1402309c1`.
+
+Con `A = B = 0`: `A·B` no supera a las vivas, así que `A` sigue en 0; `A·B`
+≤ 0 salta a `0x140230a84` con `L` = vivas y desfase 0, haya `uvsmoothing` o
+no.
+
+### Lo que no se ha podido descartar
+
+Una escritura por un puntero que no sale de ningún `lea` ni de ningún
+desplazamiento fijo, como un puntero a miembro guardado en una tabla. Si
+existiera, `A` y `B` serían el ritmo y la vida (lo dice la aritmética) y el
+efecto se vería sobre todo en las estelas del ratón (`trail_1`,
+`getsuga`), cuya textura `particle/drop` va de 0 a 128 a lo largo. En vapor
+y descargas (`beam_1`, `beam_2`), con una textura casi plana a lo largo y de
+10 a 30 segmentos, apenas se notaría.
+
+### Y de paso
+
+- **`count` del `instanceoverride` multiplica a `A`**, que sería un ritmo.
+  `weparticles._aplicar_override` aplica `count` solo a `maxcount`. Como `A`
+  vale 0, aquí no importa, pero es una pista para cuando se lea cómo emite WE.
+- **`trailLength` en régimen**, que quedaba fuera en «`rope` une partículas
+  sucesivas», sale de esta misma rama: sin ella, `trailLength` es siempre el
+  número de vivas, que es lo que se hace aquí.
+
+## El audio en silencio: la plantilla de WE de respuesta al audio, evaluada sin música
+
+Este motor no tiene audio (ver «Qué no soporta» en `CLAUDE.md`). Pero sin
+música WE no deja quieto un script de audio: lo ejecuta con los buffers a
+cero, y lo que se ve es lo que ese script da en silencio. Aquí se dibujaba el
+`value`, que es otra cosa.
+
+### Lo que había en el corpus
+
+Hay 302 campos con script fuera del texto. De ellos, 26 llaman a
+`engine.registerAudioBuffers`, y el intérprete los rechazaba al cargar. 19
+son la plantilla que trae WE, `ui/dist/monaco/snippets/script_factor_audio_response.js`,
+puesta en `scale`: 17 en `3462491575` (relojes, fechas y el «FPS 60»,
+casi todos ocultos por propiedades del usuario) y una `dragonink1` en
+`3238423642` (oculta) y otra en `3810943704`. La plantilla hace:
+
+```js
+const audioBuffer = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_16);
+let smoothValue = 0;
+...
+smoothValue += (audioBuffer.average[f] - smoothValue) * Math.min(1.0, engine.frametime * smoothing);
+return initialValue * (smoothValue * (maxvalue - minvalue) + minvalue);
+```
+
+con `initialValue = value.x` en `init`. En silencio `smoothValue` se queda a
+0 y el script da `value.x · minvalue`: las capas al 80–90 % de su tamaño.
+
+### Lo que se ha comprobado antes de tocarlo
+
+- **Un número en un campo `Vec3`**: la plantilla devuelve un número, y el
+  editor de WE solo la ofrece para campos numéricos (`hotkey("number")` en
+  `ui/dist/scripts/scripts.js`). La referencia de `update` en
+  docs.wallpaperengine.io lo resuelve: «if you return `2` on the `Scale`
+  property, Wallpaper Engine will first convert the value to `Vec3(2, 2, 2)`».
+  El tutorial de audio dice lo mismo («Wallpaper Engine will automatically
+  apply the number to all three of them»). En el binario no se ha leído:
+  `baseclasses.js` no lo hace, y la DLL de scripting (`bin/scenescript64.dll`,
+  V8) solo exporta `CreateSceneScriptEngine`. La misma página dice que un
+  `update` que no devuelve nada deja la propiedad como estaba, que es lo que
+  ya se hacía.
+- **El tamaño del buffer**: la DLL rechaza otro que no sea 16, 32 o 64
+  («Resolution must be either 16, 32 or 64.»); los valores de
+  `AUDIO_RESOLUTION_*` vienen de `lib.sceneScript.d.ts`.
+
+### Lo que cambia
+
+`tools/wescript.py`:
+
+- `Interprete(..., silencio=True)`. Con él, `engine.registerAudioBuffers(n)`
+  da `left`, `right` y `average` de `n` ceros (`_buffers_en_silencio`), y
+  existen `engine.AUDIO_RESOLUTION_16/32/64`. Va en el constructor porque el
+  registro se hace en el cuerpo del módulo. Sin silencio, todo sigue siendo
+  un ScriptError, así que un texto que lea el audio no se vuelve un reloj.
+- `engine.frametime`, solo si quien evalúa lo da. `valor_fijo` pone 1/60: en
+  silencio el suavizado lo multiplica por cero, y un script que lo acumule da
+  otra cosa en cada llamada y se descarta, como antes.
+- `_componentes`: un número en un campo de tres componentes las pone todas.
+- `valor_fijo_de` crea el intérprete en silencio. Lo demás de `valor_fijo`
+  no cambia: un script con sucesos (`media*`, `cursor*`...) sigue sin
+  evaluarse.
+
+### Lo medido
+
+- `test_wescript.py`: cuatro casos sintéticos nuevos (la plantilla en
+  silencio da `[8, 8, 8]` con `value.x` = 10; un número en `origin` da
+  `[3, 3, 3]`, donde antes el test esperaba que se descartara; un script de
+  audio que acumula `frametime` se descarta; una resolución que WE no admite
+  se descarta). `FIJOS_CORPUS` pasa a 36 en `3462491575` y 1 en `3238423642`
+  y en `3810943704`: entran exactamente las 19 plantillas y nada más.
+- **Planes**: `--emit-plan` de `HEAD` y de la rama sobre las 153 entradas del
+  Workshop (las 129 escenas, los vídeos y las 6 que no son escenas y fallan
+  igual en los dos). Solo cambian `3462491575` (20 líneas) y `3810943704`
+  (7): las `object`, `g_LayerModelMatrix` y `g_EffectModelViewProjectionMatrix`
+  de las capas escaladas, a 0,8 o 0,9. En `3462491575`, además, un objeto
+  sin relación pasa de un buffer de 1744×1680 a uno de pantalla completa:
+  al encoger los textos cambia el reparto del presupuesto de
+  `repartir_buffers_de_objeto`. Es la resolución intermedia, no lo que se
+  dibuja. Los `text*.bin` de los relojes no se comparan, porque llevan la hora.
+- **Render** (`--time 2 --pantalla 1920x1080`): `3462491575` pasa de 129,65 a
+  129,48 de luz, con el 0,94 % de los píxeles cambiando más de 8; MONDAY, la
+  fecha y el «FPS 60», al 80 %. `3810943704` pasa de 47,39 a 47,86, con el
+  4,96 %: el aro oscuro de `dragonink1`, detrás de la figura, más pequeño.
+
+### Lo que queda
+
+- **Los visualizadores de barras** (7 `visible` con `createLayer`, en 6
+  escenas): crean 63 capas y les ponen `scale.y = audio · alto`. En silencio,
+  en WE las barras tienen alto 0 y no se ven, incluida la capa original. Aquí
+  la original se dibuja con su `scale` guardada. Haría falta la asignación a
+  `thisLayer.scale` desde el script, que no es un `valor_fijo`.
+- **Un `scale` de audio que no es la plantilla** (`2262142032`): el
+  intérprete no lo cubre por otro motivo.
+- **`init` devuelve el valor que se aplica** (lo dice `lib.sceneScript.d.ts`):
+  `valor_fijo` lo llama pero no usa lo que devuelve. Ningún caso del corpus
+  lo necesita para la plantilla.
