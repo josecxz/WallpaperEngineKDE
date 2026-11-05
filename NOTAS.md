@@ -12779,6 +12779,20 @@ preguntar sin meterse en el proceso, así que en vivo la explicación es por
 analogía. Tres horas tampoco dicen dónde acaba el suelo: en el arnés se aplana a
 la segunda vuelta, en vivo no se llegó a repetir escena.
 
+### Devolver la memoria libre tras cada relevo
+
+`pedirRecorte` (`src/sceneview.cpp`) llama a `malloc_trim(0)` 3 s después de soltar
+una escena, en un hilo del `QThreadPool`. No va en el destructor: `m_exec` se
+destruye después de su cuerpo, `malloc_trim` retiene cada arena y las dos pantallas
+sueltan su escena casi a la vez. Solo existe con glibc.
+
+Con la misma secuencia del arnés, segunda vuelta: RSS mediano de 2991 a 1684 MB y
+máximo de 3861 a 2941 MB, con 180 de 180 relevos. Cada recorte, 15,5 ms de mediana
+y 65 ms de máximo, con llvmpipe.
+
+En vivo, siete minutos y 8 relevos: 402-411 MB tras el primer recorte, y recortes
+de 1,1 a 3,6 ms. Falta el registro de horas para saber si el suelo se queda ahí.
+
 ## El modo independiente en Plasma
 
 `wectl pantallas independiente` daba error en Plasma, y `shuffle` lo ignoraba en

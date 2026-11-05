@@ -8,9 +8,13 @@
 #include "escritorio.h"
 #include "hyprland.h"
 
+#include <QCoreApplication>
 #include <QQuickWindow>
 #include <QScreen>
+#include <QThreadPool>
+#include <QTimer>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 
@@ -20,6 +24,10 @@
 #include <QColor>
 
 #include <rhi/qrhi.h>
+
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 
 
 // ── SceneView ───────────────────────────────────────────────────────────────
@@ -245,8 +253,46 @@ void SceneRenderer::soltarPlan()
     m_reportedPhase = -1;
 }
 
+namespace {
+#ifdef __GLIBC__
+std::atomic_bool recortePedido{false};
+#endif
+
+// Devuelve al sistema lo que `malloc` se queda libre al soltar una escena.
+//
+// Tras horas de rotacion el suelo de memoria subia unos 3 MB por relevo sin ser
+// una fuga: mas del 85 % del RSS era hueco libre. Ver NOTAS, «El suelo de memoria
+// tras tres horas».
+//
+// No se llama aqui mismo por tres razones. `m_exec` se destruye DESPUES del
+// cuerpo del destructor, asi que aun no habria nada libre. `malloc_trim` retiene
+// cada arena mientras la recorre, y en el hilo de render eso seria un tiron. Y
+// con dos pantallas se sueltan dos escenas seguidas: la espera las junta.
+void pedirRecorte()
+{
+#ifdef __GLIBC__
+    auto *app = QCoreApplication::instance();
+    if (!app || recortePedido.exchange(true))
+        return;
+    QMetaObject::invokeMethod(app, [app] {
+        QTimer::singleShot(3000, app, [] {
+            recortePedido = false;
+            QThreadPool::globalInstance()->start([] {
+                using namespace std::chrono;
+                const auto t0 = steady_clock::now();
+                malloc_trim(0);
+                qInfo("SceneView: memoria libre devuelta en %.1f ms",
+                      duration<double, std::milli>(steady_clock::now() - t0).count());
+            });
+        });
+    }, Qt::QueuedConnection);
+#endif
+}
+}  // namespace
+
 SceneRenderer::~SceneRenderer()
 {
+    pedirRecorte();
     if (!m_otra.abierta())
         return;
     // El plan vive en el contexto propio: se entra, se suelta todo y se
