@@ -470,9 +470,68 @@ def prueba_fondo_hyprland(fallos: list[str]) -> None:
         if not (condicion and "hyprctl" in condicion[0]):
             fallos.append("el fondo arrancaria en una sesion que no es la suya")
         print(f"  {condicion}")
+
+        # Caido y esperando su `RestartSec`, la unidad sigue cargada: otro
+        # `systemd-run` con su nombre lo rechaza systemd. Ahi no se crea nada;
+        # con la unidad fallida o descargada, si.
+        for estado, crea in (("activating", False), ("active", False),
+                             ("reloading", False), ("failed", True),
+                             ("inactive", True)):
+            ordenes.clear()
+
+            def run_estado(orden, *a, _estado=estado, **k):
+                ordenes.append(orden)
+                salida = _estado if orden[:3] == ["systemctl", "--user", "show"] else ""
+                return subprocess.CompletedProcess(orden, 0, stdout=salida, stderr="")
+
+            wectl.subprocess.run = run_estado
+            wectl.hyprland_arrancar()
+            creada = any(o[0] == "systemd-run" for o in ordenes)
+            print(f"  unidad en {estado:<10} -> {'se crea' if creada else 'se deja'}")
+            if creada != crea:
+                fallos.append(f"con la unidad en {estado}, systemd-run "
+                              f"{'no ' if crea else ''}deberia "
+                              f"{'lanzarse' if crea else 'quedarse quieto'}")
     finally:
         (wectl.subprocess.run, wectl.ESCENA, wectl.fondo_hyprland, wectl.QML,
          wectl.modo_pantallas) = reales
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def prueba_config_hyprland(fallos: list[str]) -> None:
+    """`hyprland.json` se edita a mano: lo mal escrito no tumba el fondo ni se
+    pierde al guardar encima."""
+    print("\n── hyprland.json escrito a mano ──")
+    tmp = Path(tempfile.mkdtemp(prefix="wectl-config-"))
+    real = wectl.CONFIG_HYPRLAND
+    try:
+        wectl.CONFIG_HYPRLAND = tmp / "hyprland.json"
+        for texto, esperado in (('{"opciones": ["--fps", 30]}', ["--fps", "30"]),
+                                ('{"opciones": "--hud"}', []),
+                                ('{"opciones": null}', []),
+                                ('{"opciones": {"a": 1}}', []),
+                                ('[1, 2]', []),
+                                ('{"opciones": ["--hud"],}', [])):
+            wectl.CONFIG_HYPRLAND.write_text(texto)
+            try:
+                dado = wectl._opciones_hyprland(wectl._config_hyprland())
+            except Exception as e:
+                dado = f"{type(e).__name__}: {e}"
+            print(f"  {texto:28} -> {dado}")
+            if dado != esperado:
+                fallos.append(f"opciones de {texto}: {dado!r}, no {esperado!r}")
+        # Guardar encima de lo que no se entiende borraria lo que tiene.
+        roto = '{"opciones": ["--hud"],}'
+        wectl.CONFIG_HYPRLAND.write_text(roto)
+        try:
+            wectl._config_hyprland(para_escribir=True)
+            fallos.append("se iba a guardar encima de un hyprland.json roto")
+        except wectl.CtlError:
+            pass
+        if wectl.CONFIG_HYPRLAND.read_text() != roto:
+            fallos.append("hyprland.json roto reescrito")
+    finally:
+        wectl.CONFIG_HYPRLAND = real
         shutil.rmtree(tmp, ignore_errors=True)
 
 
@@ -488,6 +547,7 @@ def main() -> int:
     prueba_resolucion_plasma(fallos)
     prueba_monitores_plasma(fallos)
     prueba_fondo_hyprland(fallos)
+    prueba_config_hyprland(fallos)
 
     if fallos:
         print("\n── fallos ──")

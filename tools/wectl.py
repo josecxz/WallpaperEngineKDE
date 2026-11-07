@@ -141,12 +141,50 @@ def en_hyprland() -> bool:
         or "hyprland" in os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
 
 
-def _config_hyprland() -> dict:
+def _config_hyprland(para_escribir: bool = False) -> dict:
+    """Lo que hay en `hyprland.json`, o `{}` si no se entiende.
+
+    Se edita a mano. Si esta roto, el fondo arranca con los valores por
+    defecto y se avisa; pero no se escribe encima, que se perderia lo que
+    tiene. Ver NOTAS, «`hyprland.json` escrito a mano».
+    """
     try:
-        datos = json.loads(CONFIG_HYPRLAND.read_text())
-        return datos if isinstance(datos, dict) else {}
-    except (OSError, ValueError):
+        texto = CONFIG_HYPRLAND.read_text()
+    except OSError:
         return {}
+    try:
+        datos = json.loads(texto)
+        if not isinstance(datos, dict):
+            raise ValueError("no es un objeto {...}")
+    except ValueError as e:
+        if para_escribir:
+            raise CtlError(f"{CONFIG_HYPRLAND} no se entiende ({e}); arreglalo "
+                           f"o borralo antes, que si no se perderia lo que tiene")
+        _avisa(f"wectl: {CONFIG_HYPRLAND} no se entiende ({e}); "
+               f"se usan los valores por defecto")
+        return {}
+    return datos
+
+
+def _opciones_hyprland(cfg: dict) -> list[str]:
+    """`opciones` como argumentos de hyprland/main.qml. Lo que no sea una
+    lista se ignora con un aviso: un texto se iteraba letra a letra."""
+    opciones = cfg.get("opciones", [])
+    if isinstance(opciones, list):
+        return [str(o) for o in opciones]
+    _avisa(f"wectl: `opciones` en {CONFIG_HYPRLAND} tiene que ser una lista, "
+           f'como ["--pausa", "2", "--hud"]; se ignora')
+    return []
+
+
+_AVISADOS: set[str] = set()
+
+
+def _avisa(texto: str) -> None:
+    """Un aviso por stderr, una sola vez aunque se lea varias veces."""
+    if texto not in _AVISADOS:
+        _AVISADOS.add(texto)
+        print(texto, file=sys.stderr)
 
 
 def _guardar_config_hyprland(datos: dict) -> None:
@@ -224,15 +262,30 @@ def fondo_hyprland() -> bool:
     return r.returncode == 0
 
 
+def _estado_hyprland() -> str:
+    """El `ActiveState` de la unidad del fondo; `inactive` si no existe."""
+    r = subprocess.run(["systemctl", "--user", "show", "-p", "ActiveState",
+                        "--value", UNIDAD_HYPRLAND], capture_output=True, text=True)
+    return r.stdout.strip() or "inactive"
+
+
 def hyprland_arrancar() -> None:
-    if fondo_hyprland():
+    # Tras un fallo, durante el `RestartSec` la unidad esta en `activating`:
+    # systemd la levanta sola, y otro `systemd-run` con su nombre se rechaza.
+    # Un `stop` a medias se espera.
+    for _ in range(50):
+        estado = _estado_hyprland()
+        if estado != "deactivating":
+            break
+        time.sleep(0.1)
+    if estado in ("active", "activating", "reloading"):
         return
     if not (ESCENA / "plan.txt").is_file():
         raise CtlError("no hay ningun plan preparado; usa `wectl set <wallpaper>`")
     if not QML.is_file():
         raise CtlError(f"no se encontro {QML}; instala qt6-declarative")
     cfg = _config_hyprland()
-    opciones = [str(o) for o in cfg.get("opciones", [])]
+    opciones = _opciones_hyprland(cfg)
     gpu = "integrada" if cfg.get("gpu") == "integrada" else "dedicada"
     planes = []
     if modo_pantallas() == "independiente":
@@ -1003,7 +1056,7 @@ def cmd_pantallas(args) -> int:
                       + ("" if nombre in propios else "  (compartido)"))
         return 0
     modo = {"same": "mismo", "independent": "independiente"}.get(args.modo, args.modo)
-    cfg = _config_hyprland()
+    cfg = _config_hyprland(para_escribir=True)
     cfg["pantallas"] = modo
     _guardar_config_hyprland(cfg)
     if modo == "mismo":
@@ -1012,7 +1065,9 @@ def cmd_pantallas(args) -> int:
     # Construir ANTES: el fondo nuevo carga el modulo QML que haya instalado, y
     # el modo independiente necesita el de esta version (`VigiaArchivo.existe`).
     construir()
-    if fondo_hyprland():
+    # Solo para pasar a `independiente`: sin planes propios, un fondo con
+    # `--planes` ya es `mismo`, y rearrancarlo era un pantallazo.
+    if fondo_hyprland() and modo == "independiente" and actual != "independiente":
         hyprland_parar()
         hyprland_arrancar()
     if modo == "independiente" and actual != "independiente":
@@ -1057,7 +1112,7 @@ def _gpu_en_uso() -> str | None:
 
 
 def _cmd_gpu_hyprland(args) -> int:
-    cfg = _config_hyprland()
+    cfg = _config_hyprland(para_escribir=args.grafica is not None)
     if args.grafica is None:
         print(f"configurado   : {cfg.get('gpu', 'dedicada')}")
     else:
@@ -1153,9 +1208,9 @@ def cmd_status(args) -> int:
         print(f"pantallas      : {modo_pantallas()}")
         for nombre, titulo in planes_propios().items():
             print(f"  {nombre}: {titulo}")
+        opciones = _opciones_hyprland(cfg)
         print(f"gpu            : {cfg.get('gpu', 'dedicada')}"
-              + (f"; opciones {' '.join(map(str, cfg['opciones']))}"
-                 if cfg.get("opciones") else ""))
+              + (f"; opciones {' '.join(opciones)}" if opciones else ""))
         if andando:
             for linea in _registro_hyprland("", 2):
                 print("  " + linea)
