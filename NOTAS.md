@@ -12917,3 +12917,163 @@ Lo de *Ashe* en esa pasada no vale como pausa: a las 11:24:19 KWin dijo
 - Una pasada con `WE_MEDIDAS`, aprovechando un `make reload` que haga falta.
 - El camino de Hyprland de `medir_vivo.py` se tocó (`_salida`, `_medidas`,
   `_contexto`) y **no se ha ejecutado**: esta sesión es Plasma.
+
+## Hyprland en otra máquina: lo que salió probándolo a fondo
+
+Una pasada entera en el equipo de un usuario de Hyprland: CachyOS, Intel ADL +
+RTX 3050, eDP-1 a 144 Hz y DP-1 a 165 Hz, Noctalia como barra y fondo, y una
+biblioteca de **12 wallpapers** (10 escenas y 2 vídeos), no las 133 de aquí. Los
+arreglos de render se miden sobre esas 12; **falta pasarlos por las 133**
+(`test_luminancia --referencia` y `test_wescene`) antes de dar nada por cerrado.
+
+### Los tests de la locale no probaban la coma
+
+Esta máquina no tiene `es_ES` instalada, pero sí `es_EC`, que también es de coma,
+y el fondo corre con `LC_NUMERIC=es_EC.UTF-8`: la regla 6 muerde aquí igual.
+`test_wereloj`, `test_hoja` y `test_giro` pedían `"es_ES.UTF-8"` a ciegas, y
+`locale_con_coma()` de `test_weparticles` solo buscaba una lista fija sin
+`es_EC`. Resultado: `test_wereloj` y `test_weparticles` pasaban **sin haber
+probado la coma** (el arnés de `wereloj` ignoraba el fallo de `setlocale` y
+seguía en `C`), y los otros dos reventaban con un «el arnés falla» mudo.
+
+Ahora `tools/localecoma.py` da la locale: `es_ES` si está, y si no cualquier
+otra instalada cuyo `locale decimal_point` sea la coma ---se mira el separador,
+no el nombre, porque `locale` contesta lo de `C` para una que no existe---. Los
+cuatro tests la usan; el arnés de `wereloj` falla si `setlocale` falla, y sin
+ninguna locale de coma el test lo dice. Con `es_EC`: `strtof("0.5")` sin guarda
+da 0, y pasan los 71 relojes y las partículas.
+
+`test_hoja` y `test_giro` reventaban además con un `FileNotFoundError` cuando
+falta una escena del corpus de referencia. Ahora dicen `falta la escena X del
+corpus`, como `test_werender`, y `test_hoja` corre lo que sí puede.
+
+### Mayúsculas en las rutas de los assets
+
+`2722168925` pide `fonts/New Super Mario Font U.ttf`, `materials/effects/tint.json`
+y otras tres, y su paquete las trae bajo `Fonts/` y `Effects/`. En Windows es la
+misma carpeta. Eran **las 7 referencias sin resolver** de `test_wescene` en esa
+biblioteca, y sus tres capas de texto se caían.
+
+`AssetResolver._sin_mayusculas` busca sin distinguir mayúsculas, primero en el
+paquete y luego componente a componente en disco, **solo cuando el nombre exacto
+ya ha fallado**: lo que resolvía no cambia. Medido sobre las 12: referencias sin
+resolver de 7 a 0, 302 → 309 pases, luz sin una regresión.
+
+### Un `bool` en una asignación compuesta, y dos sentencias en una línea
+
+`barLeft *= isLeftChannel;` con `barLeft` entero y `isLeftChannel` bool: HLSL lo
+convierte solo y NVIDIA lo rechaza con `C7011 implicit cast from "bool" to "int"`.
+Era el visualizador de audio de `3444535389`, dos pases. `truncar_asignaciones`
+envuelve ahora el bool en el tipo del destino (`int(...)`, `float(...)`).
+
+La misma línea traía **dos sentencias**: `barLeft *= isLeftChannel; barRight *=
+isRightChannel;`. `_TRUNC_ASIG_RE` se las tragaba como una, con
+`isLeftChannel; barRight *= isRightChannel` de expresión; cualquier conversión
+la habría partido. Se tratan una a una, y si algún trozo no es una asignación
+(un comentario detrás) la línea se queda como estaba.
+
+Y `float localDensity, cameraOpticalDepth, … = 1.0;` no metía sus tipos en la
+tabla: `float t = exp(… * colorScatter …)` con `colorScatter` vec3 no se podía
+tipar y no se truncaba. Era el `atmosphere` de un efecto del Workshop.
+`_TRUNC_VARIAS_RE` registra los nombres sin reescribir la línea.
+
+En las 12: compilan 140/140 y enlazan 70/70 en Mesa y en NVIDIA (antes 129/132,
+131/132 y 63/66). `test_weshader` sobre los shaders de WE, **idéntico** antes y
+después.
+
+### Las mallas con varias submallas
+
+`test_wemdl` daba «basura tras la geometría» en `MarioKoopa.mdl` y `Question
+Block.mdl`. No era un campo mal leído: **el tercer u32 de la cabecera es el
+número de submallas**. Vale 1 en todas las puppet del corpus, y por eso se tomó
+por constante; esos dos modelos 3D traen 6 y 2, cada una con su material,
+vértices e índices, y leídas así acaban justo en el byte de relleno final.
+`_saltar_submallas` las recorre y valida sin decodificarlas ---los modelos 3D no
+se dibujan---, así que `consumed` cae donde debe.
+
+### `wectl start` mientras el fondo se reinicia
+
+Matando el fondo con `SIGSEGV` y pidiendo `wectl start` en los 2 s de
+`RestartSec`, la unidad está en `activating (auto-restart)`: `is-active` dice
+que no, `systemd-run` con el mismo nombre falla con «Unit … was already loaded»,
+y `wectl` decía «no arrancó el fondo» de un fondo que volvía solo un segundo
+después. `hyprland_arrancar` mira el `ActiveState` y deja en paz una unidad
+`active`, `activating` o `reloading`; espera a un `deactivating`. En
+`test_wectl`, con cada estado, y el caso falla sin el arreglo.
+
+### `hyprland.json` escrito a mano
+
+- `"opciones": "--hud"` (texto y no lista) se iteraba letra a letra: el fondo
+  recibía `- - h u d`.
+- `"opciones": null` tumbaba `wectl` con un `TypeError`: al iniciar sesión, sin
+  fondo y sin aviso.
+- Un JSON con una coma de más se ignoraba en silencio, y el siguiente `wectl
+  gpu` o `wectl pantallas` **lo sobrescribía** con lo poco que entendía.
+
+Ahora lo que no es lista se ignora con un aviso y el fondo arranca, un JSON roto
+avisa y arranca con los valores por defecto, y para escribir encima se para con
+un error. En `test_wectl`.
+
+### Enchufar un monitor recargaba los de todos
+
+El `Instantiator` de `hyprland/main.qml` tenía de modelo `Qt.application.screens`,
+un array de JS: al cambiar, **tira todos los delegados** y los crea otra vez.
+Probado con `hyprctl output create headless`: `Escena: plan nuevo` en los tres
+monitores, no solo en el nuevo. En un portátil, cada vez que se enchufa la
+pantalla, todas las capas fuera un instante y todas las escenas desde el disco.
+
+El modelo es ahora un `ListModel` con el nombre de cada monitor, al que
+`sincronizarMonitores()` añade o quita solo el que cambia. Medido: quitar una
+salida virtual libera solo su escena (`memoria libre devuelta`), crear otra hace
+**una** inicialización, y eDP-1 y DP-1 no se enteran. `Window.screen` tiene que
+seguir siendo la pantalla de QML (`QQuickScreenInfo`): con el `QScreen` de
+`hypr.pantalla` da «Unable to assign QScreen to QQuickScreenInfo».
+
+### Dos cargas por monitor al arrancar
+
+Al arrancar salían **4** `SceneView: backend` con dos monitores. El
+`onClaveChanged` de la creación cargaba el plan en el hueco B y el
+`Component.onCompleted` otra vez en el A: dos subidas de texturas y el doble de
+pico de memoria, y luego un relevo entre dos escenas iguales. `Escenas.qml` de
+Plasma ya lo evita con `listo`. Ahora la primera carga va al hueco que se ve y
+`onCompleted` no repite: **una por monitor** (3 con tres monitores).
+
+### `wectl pantallas mismo` ya no rearranca
+
+Rearrancar solo hace falta para pasar a `independiente` (`--planes` va en la
+línea de órdenes). Un fondo con `--planes` y sin planes propios ya es `mismo`,
+que es lo que hace `set`: rearrancar era un pantallazo sin nada que ganar.
+Medido: mismo PID antes y después.
+
+### `medir_vivo` en Hyprland, ejecutado
+
+Funciona: para el fondo, mide y lo devuelve. Dos cosas que en Plasma no se ven:
+
+- **`--pausa 0` no basta para que una pantalla dibuje.** Hyprland no manda
+  fotogramas a una superficie que no se ve: con Chrome a pantalla completa en
+  eDP-1, la medida salía con DP-1 sola y parecía la de las dos. Ahora lo
+  dice ---`AVISO: sin medida de eDP-1`--- y lo guarda en `sin_medida`.
+- **En esta máquina DP-1 no pasa de ~42 fps**, con tope 60 o sin tope, en dos
+  escenas. El tope funciona (5 → 5,5; 10 → 10,3; 20 → 20,5; 30 → 27,5; 45 →
+  40,2), así que el techo es del camino hasta el panel ---DP-1 cuelga de la
+  NVIDIA y Hyprland compone en la Intel---, no del motor. Con tope 30 salieron
+  **42** dos veces seguidas al principio y no se ha vuelto a ver: anotado, sin
+  causa.
+
+### Lo que se ha visto y no se ha tocado
+
+- **`3270776677` (*Lost in space - Signalis*)**: un rectángulo verde de 2017×985
+  en el centro que la vista previa no tiene. Es la `projectlayer` `Cell Grid`
+  (3840×2160) escalada por su padre `CellMiddleScreen`, una `composelayer` de
+  512×512 con escala (0,525, 0,456): cuadra al píxel. En la vista previa solo se
+  ve dentro de la pantallita de la consola, como si la `composelayer` recortara a
+  sus hijas. No se sabe qué regla aplica WE; se deja escrito (regla 1).
+- **`3444535389` (*Cat and bee*) sale «APAGADA»** en `test_luminancia` y está
+  bien: líneas blancas sobre negro (`bgcolor 0 0 0`). Su vista previa es un
+  recorte de 256×256 pegado al gato, con mucho más blanco por píxel: un
+  contraejemplo de la razón contra el preview.
+- `2722168925` y `3509243656` son escenas 3D (cámara en perspectiva, modelos,
+  luz direccional): negras, como dice «Qué no soporta». Pero `wectl shuffle` las
+  saca igual, y el usuario ve un fondo negro.
+- Con el monitor tapado y en pausa, un plan nuevo se carga en el otro hueco y
+  el relevo espera a que se destape: mientras, dos escenas en memoria.

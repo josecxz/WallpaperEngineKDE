@@ -64,6 +64,18 @@ make indice                       # reescribe los números desde NOTAS.md
 - `12844` **Plasma, medido** — *Jeanne d'Arc* 64 % de la integrada, *Ashe* 94 % y sin reposo; quizá con una pantalla en pausa.
 - `12880` **Con dos pantallas, solo pausa la que tiene el foco** — arreglado: la activa se busca en todas las pantallas y la cobertura decide cada una; 0,2 % de CPU con las dos tapadas.
 - `12915` **Lo que queda por medir en Plasma** — las pantallas a la vista y tapadas, una pasada con `WE_MEDIDAS` y el camino de Hyprland sin ejecutar.
+- `12921` **Hyprland en otra máquina: lo que salió probándolo a fondo** — 12 wallpapers, `es_EC`, dos GPU y dos monitores; arreglos medidos sobre 12, falta pasarlos por las 133.
+- `12929` **Los tests de la locale no probaban la coma** — sin `es_ES` instalada, `wereloj` y `weparticles` pasaban en `C`; `tools/localecoma.py` busca cualquier locale de coma.
+- `12950` **Mayúsculas en las rutas de los assets** — `Fonts/` frente a `fonts/`: las 7 referencias sin resolver de una biblioteca; `_sin_mayusculas` solo tras fallar el nombre exacto.
+- `12962` **Un `bool` en una asignación compuesta, y dos sentencias en una línea** — `C7011` en NVIDIA; además el patrón se tragaba dos sentencias, y las declaraciones múltiples no tipaban.
+- `12984` **Las mallas con varias submallas** — el tercer u32 de la cabecera es el número de submallas; no era basura tras la geometría.
+- `12994` **`wectl start` mientras el fondo se reinicia** — en `auto-restart` la unidad sigue cargada y `systemd-run` la rechazaba.
+- `13004` **`hyprland.json` escrito a mano** — opciones como texto, `null` y JSON roto; ya no se sobrescribe lo que no se entiende.
+- `13017` **Enchufar un monitor recargaba los de todos** — el `Instantiator` sobre un array de JS; ahora un `ListModel` por nombre.
+- `13032` **Dos cargas por monitor al arrancar** — `onClaveChanged` y `onCompleted` cargaban los dos; Plasma ya lo evitaba con `listo`.
+- `13041` **`wectl pantallas mismo` ya no rearranca** — solo pasar a `independiente` necesita `--planes`.
+- `13048` **`medir_vivo` en Hyprland, ejecutado** — una pantalla tapada no recibe fotogramas aunque sea `--pausa 0`; el techo de 42 fps de DP-1 no es del motor.
+- `13063` **Lo que se ha visto y no se ha tocado** — el rectángulo verde de Signalis (`composelayer` con hija), el falso «apagada» de Cat and bee y las escenas 3D en `shuffle`.
 - `10829` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
 - `10843` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10865` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
