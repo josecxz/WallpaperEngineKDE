@@ -78,6 +78,7 @@ QtObject {
     property VigiaArchivo vigia: VigiaArchivo { ruta: app.plan }
 
     Component.onCompleted: {
+        app.sincronizarMonitores()
         if (!app.plan)
             console.warn("hyprland/main.qml: falta --plan <ruta a plan.txt>")
         else
@@ -89,18 +90,44 @@ QtObject {
     }
 
     // ── un fondo por monitor ────────────────────────────────────────────────
+    //
+    // El modelo son los NOMBRES de los monitores, y al enchufar o
+    // desenchufar uno solo se añade o se quita ese. Con
+    // `Qt.application.screens` de modelo, un array de JS, el `Instantiator`
+    // rehacia todos los fondos y recargaba todas las escenas. Ver NOTAS,
+    // «Enchufar un monitor recargaba los de todos».
+    property ListModel monitores: ListModel {}
+    function sincronizarMonitores() {
+        // Sin nombre todavia no se sabe que monitor es; ya llegara otro aviso.
+        const nombres = Qt.application.screens.map(pantalla => pantalla.name)
+            .filter(nombre => nombre && (!app.solo.length || app.solo.indexOf(nombre) >= 0))
+        for (let i = monitores.count - 1; i >= 0; i--)
+            if (nombres.indexOf(monitores.get(i).nombre) < 0)
+                monitores.remove(i)
+        const hay = []
+        for (let i = 0; i < monitores.count; i++)
+            hay.push(monitores.get(i).nombre)
+        for (const nombre of nombres)
+            if (hay.indexOf(nombre) < 0)
+                monitores.append({ nombre: nombre })
+    }
+    property Connections pantallas: Connections {
+        target: Qt.application
+        function onScreensChanged() { app.sincronizarMonitores() }
+    }
+
     property Instantiator fondos: Instantiator {
-        model: app.solo.length
-               ? Qt.application.screens.filter(p => app.solo.indexOf(p.name) >= 0)
-               : Qt.application.screens
+        model: app.monitores
 
         delegate: Window {
             id: ventana
-            required property var modelData
-            screen: modelData
+            required property string nombre
+            // La pantalla de QML (`QQuickScreenInfo`): el `QScreen` de
+            // `hypr.pantalla` aqui no se puede asignar.
+            screen: Qt.application.screens.find(pantalla => pantalla.name === ventana.nombre) ?? null
             visible: false
             color: app.color
-            title: "WallpaperEngine " + modelData.name
+            title: "WallpaperEngine " + ventana.nombre
 
             LayerShell.Window.scope: "wallpaperengine"
             LayerShell.Window.layer: LayerShell.Window.LayerBackground
@@ -119,13 +146,17 @@ QtObject {
             // asi que se muestra cuando ya estan puestas.
             Component.onCompleted: {
                 show()
-                huecoA.planFijo = ventana.plan
-                huecoA.active = ventana.plan !== ""
+                // El `onClaveChanged` de la creacion puede haberla cargado
+                // ya; cargarla otra vez era subir las texturas dos veces.
+                if (!huecoA.active && !huecoB.active) {
+                    huecoA.planFijo = ventana.plan
+                    huecoA.active = ventana.plan !== ""
+                }
             }
 
             Hyprland {
                 id: hypr
-                monitor: ventana.modelData.name
+                monitor: ventana.nombre
                 modo: app.pausa
             }
 
@@ -140,7 +171,7 @@ QtObject {
             // El plan propio de este monitor, si `wectl` le ha dado uno.
             VigiaArchivo {
                 id: propio
-                ruta: app.planes ? app.planes + "/" + ventana.modelData.name + "/plan.txt" : ""
+                ruta: app.planes ? app.planes + "/" + ventana.nombre + "/plan.txt" : ""
             }
             readonly property bool planPropio: app.planes !== "" && propio.existe
             readonly property string plan: planPropio ? propio.ruta : app.plan
@@ -162,7 +193,13 @@ QtObject {
             readonly property var escena: turno === 0 ? huecoA : huecoB
             readonly property var otro: turno === 0 ? huecoB : huecoA
             onClaveChanged: {
-                console.info("Escena: plan nuevo en " + ventana.modelData.name
+                if (!escena.active && !otro.active) {
+                    // La primera: no hay nada que tapar, va al hueco que se ve.
+                    escena.planFijo = ventana.plan
+                    escena.active = ventana.plan !== ""
+                    return
+                }
+                console.info("Escena: plan nuevo en " + ventana.nombre
                              + ", se carga debajo de la que se ve")
                 otro.active = false
                 otro.planFijo = ventana.plan
@@ -175,7 +212,7 @@ QtObject {
                     return
                 turno = 1 - turno
                 otro.active = false
-                console.info("Escena: relevo en " + ventana.modelData.name + ", se ve el hueco "
+                console.info("Escena: relevo en " + ventana.nombre + ", se ve el hueco "
                              + (turno === 0 ? "A" : "B") + " y se suelta el otro")
             }
 
@@ -250,7 +287,7 @@ QtObject {
                         "── WallpaperEngine · Hyprland ──",
                         "escena    : " + (e ? e.sceneTitle || "…" : "-"),
                         "motor     : " + (e ? e.status : "-"),
-                        "monitor   : " + ventana.modelData.name + " " + ventana.width
+                        "monitor   : " + ventana.nombre + " " + ventana.width
                                         + "x" + ventana.height,
                         "gpu       : " + (e && e.msGpu >= 0 ? e.msGpu.toFixed(1) + " ms/fotograma"
                                                             : "sin medida"),
