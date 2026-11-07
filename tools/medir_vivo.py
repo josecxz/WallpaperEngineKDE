@@ -617,11 +617,29 @@ def main() -> int:
             "nvidia_sm_pct": media(pm.get(comp, [])) if comp else None,
         },
     }
+    # Las pantallas que no dieron ni una linea. En Hyprland `--pausa 0` no
+    # basta: el compositor no manda fotogramas a una superficie tapada, y la
+    # medida salia de una pantalla sola sin decirlo. Ver NOTAS, «`medir_vivo`
+    # en Hyprland, ejecutado».
+    esperadas = ([nombre for nombre, _, _ in wectl.monitores_hyprland()]
+                 if wectl.en_hyprland() else [])
+    if "--solo" in args.extra[:-1]:
+        solo = args.extra[args.extra.index("--solo") + 1].split(",")
+        esperadas = [nombre for nombre in esperadas if nombre in solo]
+    calladas = [nombre for nombre in esperadas if nombre not in resultado["pantallas"]]
+    resultado["sin_medida"] = calladas
     if args.sin_fondo:
         resultado["contexto"]["plan"] = "(sin fondo)"
     elif not resultado["pantallas"]:
-        raise SystemExit(f"el motor no dio ninguna linea de medida; mira {REGISTRO}")
+        raise SystemExit(f"el motor no dio ninguna linea de medida; mira {REGISTRO}"
+                         + ("; en Hyprland una pantalla tapada entera (una ventana"
+                            " a pantalla completa) no recibe fotogramas"
+                            if calladas else ""))
     _salida(resultado, args)
+    if calladas and not args.sin_fondo:
+        print(f"\nAVISO: sin medida de {', '.join(calladas)}: el compositor no le dio "
+              f"fotogramas (¿una ventana a pantalla completa encima?). La medida "
+              f"no es la de todas las pantallas.", file=sys.stderr)
     return 0
 
 
