@@ -650,6 +650,12 @@ _TRUNC_FOR_RE = re.compile(
 # `v_NoiseCoord = ...`, `albedo.rgb += ...`. El `(?!=)` deja fuera `==`.
 _TRUNC_ASIG_RE = re.compile(
     r"^([ \t]*)(\w+)(\.[xyzwrgba]+)?[ \t]*([-+*/]?)=(?!=)[ \t]*(.+);[ \t]*$")
+# `float a, b, c = 1.0;`: no se reescribe, pero sus tipos entran en la tabla,
+# que sin ellos lo que las usa no se puede tipar. Tras el primer `=` no se mira:
+# quedarse corto es dejar la linea como estaba.
+_TRUNC_VARIAS_RE = re.compile(
+    r"^[ \t]*(?:(?:const|highp|mediump|lowp)[ \t]+)*"
+    r"(float|int|uint|bool|[iub]?vec[234])[ \t]+(\w+(?:[ \t]*,[ \t]*\w+)+)[ \t]*(?:=[^;]*)?;[ \t]*$")
 _TRUNC_FUNC_RE = re.compile(r"^[ \t]*(\w+)[ \t]+(\w+)[ \t]*\(([^)]*)\)[ \t]*\{")
 _TRUNC_PARAM_RE = re.compile(r"(?:in|out|inout)?[ \t]*(\w+)[ \t]+(\w+)")
 _SWZ = "xyzw"
@@ -802,6 +808,47 @@ def truncar_asignaciones(body: str) -> str:
     funcs = weglsl.tabla_de_funciones(body)
     local: dict[str, int] = {}
     fuera: list[str] = []
+
+    def asignacion(ma: re.Match) -> str:
+        """Asignacion a una variable que ya existe: `v_NoiseCoord =
+        v_TexCoord;` con destino vec2 y origen vec4. Es la misma truncacion
+        que en una declaracion, pero el tipo del destino hay que buscarlo en
+        la tabla en vez de leerlo en la linea."""
+        sangria, nombre_d, swz, op, expr = ma.groups()
+        visible = {**glob, **local}
+        destino_t = visible.get(nombre_d)
+        if not destino_t:
+            return ma.group(0)
+        # Con swizzle manda el swizzle: `albedo.rgb += ...` pide tres
+        # componentes aunque `albedo` sea vec4.
+        ancho_destino = (len(swz) - 1) if swz else destino_t[1]
+        recortada = weglsl.truncar(expr, visible, funcs)
+        if recortada is not None:
+            expr = recortada
+        got = weglsl.tipo(expr, visible, funcs)
+        if got is not None and got[1] > ancho_destino:
+            expr = f"({expr}).{_SWZ[:ancho_destino]}"
+        if (got is not None and got[0] == "float"
+                and destino_t[0] in ("int", "uint") and not swz):
+            # Destino entero, valor flotante. En una compuesta hay que hacer
+            # la cuenta EN FLOTANTE y convertir al final: `bar *= 0.7` con
+            # bar entero vale 0 en HLSL, y `bar *= int(0.7)` lo dejaria en
+            # bar --- la barra de la escena se veria entera en vez de
+            # atenuada.
+            conv = destino_t[0]
+            if op:
+                expr = (f"{conv}(float({nombre_d}) {op} ({expr}))")
+                op = ""
+            else:
+                expr = f"{conv}({expr})"
+        elif (got is not None and got[0] == "bool" and got[1] == 1
+                and destino_t[0] in ("float", "int", "uint")):
+            # Un bool usado como numero: HLSL lo convierte solo (true -> 1),
+            # GLSL no, y NVIDIA rechaza `barLeft *= isLeftChannel` (C7011).
+            expr = f"{destino_t[0]}({expr})"
+        return f"{sangria}{nombre_d}{swz or ''} {op}= {expr};"
+
+
     prof = 0
     for linea in body.splitlines():
         if prof == 0:
@@ -862,40 +909,24 @@ def truncar_asignaciones(body: str) -> str:
             nombre = re.search(r"(\w+)[ \t]*=", cabeza)
             if nombre:
                 local[nombre.group(1)] = (weglsl.BASE_TIPO[tipo], destino)
+        elif prof > 0 and (mv := _TRUNC_VARIAS_RE.match(linea)):
+            for nombre in mv.group(2).split(","):
+                local[nombre.strip()] = (weglsl.BASE_TIPO[mv.group(1)],
+                                         weglsl.ANCHO_TIPO[mv.group(1)])
         elif prof > 0:
-            # Asignacion a una variable que ya existe: `v_NoiseCoord =
-            # v_TexCoord;` con destino vec2 y origen vec4. Es la misma
-            # truncacion que en una declaracion, pero el tipo del destino hay
-            # que buscarlo en la tabla en vez de leerlo en la linea.
             ma = _TRUNC_ASIG_RE.match(linea)
-            if ma:
-                sangria, nombre_d, swz, op, expr = ma.groups()
-                destino_t = {**glob, **local}.get(nombre_d)
-                if destino_t:
-                    # Con swizzle manda el swizzle: `albedo.rgb += ...` pide
-                    # tres componentes aunque `albedo` sea vec4.
-                    ancho_destino = (len(swz) - 1) if swz else destino_t[1]
-                    visible = {**glob, **local}
-                    recortada = weglsl.truncar(expr, visible, funcs)
-                    if recortada is not None:
-                        expr = recortada
-                    got = weglsl.tipo(expr, visible, funcs)
-                    if got is not None and got[1] > ancho_destino:
-                        expr = f"({expr}).{_SWZ[:ancho_destino]}"
-                    if (got is not None and got[0] == "float"
-                            and destino_t[0] in ("int", "uint") and not swz):
-                        # Destino entero, valor flotante. En una compuesta hay
-                        # que hacer la cuenta EN FLOTANTE y convertir al final:
-                        # `bar *= 0.7` con bar entero vale 0 en HLSL, y
-                        # `bar *= int(0.7)` lo dejaria en bar --- la barra de
-                        # la escena se veria entera en vez de atenuada.
-                        conv = destino_t[0]
-                        if op:
-                            expr = (f"{conv}(float({nombre_d}) {op} ({expr}))")
-                            op = ""
-                        else:
-                            expr = f"{conv}({expr})"
-                    linea = f"{sangria}{nombre_d}{swz or ''} {op}= {expr};"
+            if ma and ";" in ma.group(5):
+                # Dos sentencias en una linea (`a *= x; b *= y;`): el patron
+                # las tomaba por una sola expresion. Se tratan una a una, y si
+                # algun trozo no es una asignacion la linea no se toca.
+                partes = [trozo.strip() for trozo in linea.split(";")]
+                if partes and partes[-1] == "":
+                    partes.pop()
+                sueltas = [_TRUNC_ASIG_RE.match(trozo + ";") for trozo in partes]
+                if partes and all(sueltas):
+                    linea = ma.group(1) + " ".join(asignacion(m) for m in sueltas)
+            elif ma:
+                linea = asignacion(ma)
         fuera.append(linea)
         prof += linea.count("{") - linea.count("}")
         prof = max(prof, 0)
