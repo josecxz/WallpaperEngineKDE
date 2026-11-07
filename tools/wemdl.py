@@ -9,7 +9,8 @@ parpadeo descolocada en Jeanne.
 Formato (descubierto comparando los 84 .mdl de la biblioteca):
 
     char[]  magic  "MDLV00NN" terminado en nul, como PKGV0016 y TEXV0005
-    byte[12]       constantes; identicas en las 6 versiones observadas
+    byte[12]       u32, u32, u32; el TERCERO es el numero de submallas
+                   (ver `_saltar_submallas`); los otros dos no se usan
     char[]         ruta del material, terminada en nul
     byte[hueco]    relleno que depende de la version
     u32            campo de formato (0 en las versiones soportadas)
@@ -463,6 +464,40 @@ def load_mdl(path: str | Path) -> Mesh:
     return parse_mdl(path.read_bytes(), name=path.name)
 
 
+def _saltar_submallas(buf: bytes, pos: int, cuantas: int, gap: int, name: str) -> int:
+    """Pasa por encima de las submallas que siguen a la primera.
+
+    Las puppet traen una; un modelo 3D, una por material (`MarioKoopa.mdl`,
+    6). Cada una repite la forma de la primera sin la cabecera. No se
+    decodifican, porque los modelos 3D no se dibujan: solo se comprueba que
+    son coherentes, para que un contador mal leido falle aqui. Ver NOTAS,
+    «Las mallas con varias submallas».
+    """
+    if cuantas <= 0 or cuantas > 4096:     # absurdo: como si hubiera una
+        return pos
+    for numero in range(2, cuantas + 2):
+        donde = f"{name}: submalla {numero}"
+        try:
+            _, pos = _cstring(buf, pos)
+        except MdlError as e:
+            raise MdlError(f"{donde}: {e}") from e
+        pos += gap
+        if pos + 12 > len(buf):
+            raise MdlError(f"{donde}: cabecera cortada")
+        fmt, vsize = struct.unpack_from("<II", buf, pos)
+        pos += 8
+        if fmt not in LAYOUTS or vsize % (LAYOUTS[fmt][0] * 4):
+            raise MdlError(f"{donde}: formato {fmt:#x} con {vsize} b de vertices")
+        pos += vsize
+        if pos + 4 > len(buf):
+            raise MdlError(f"{donde}: el bloque de vertices desborda el fichero")
+        (isize,) = struct.unpack_from("<I", buf, pos)
+        pos += 4 + isize
+        if isize % 6 or pos > len(buf):
+            raise MdlError(f"{donde}: bloque de indices de {isize} b")
+    return pos
+
+
 def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
     version, pos = _cstring(buf, 0)
     if version not in VERSIONS:
@@ -470,6 +505,7 @@ def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
         raise MdlError(f"{name}: version {version} no soportada{extra}")
     gap = VERSIONS[version]
 
+    (submallas,) = struct.unpack_from("<I", buf, pos + 8)
     pos += HEADER_CONST
     material, pos = _cstring(buf, pos)
     pos += gap
@@ -505,6 +541,7 @@ def parse_mdl(buf: bytes, name: str = "<memoria>") -> Mesh:
     if int(indices.max()) >= n:
         raise MdlError(f"{name}: indice {indices.max()} fuera de rango con {n} vertices")
 
+    pos = _saltar_submallas(buf, pos, submallas - 1, gap, name)
     pos = _saltar_hasta_bloque(buf, pos)
 
     if off_hueso is None:
