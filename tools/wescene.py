@@ -57,6 +57,10 @@ class AssetResolver:
     # redecodifican todos, y en el barrido de las 125 escenas se nota.
     _text: dict[str, str] = field(default_factory=dict, repr=False)
     _json: dict[str, dict] = field(default_factory=dict, repr=False)
+    # Nombre en minusculas -> nombre real, de las entradas del paquete y de
+    # cada directorio de disco que se haya listado. Ver `_sin_mayusculas`.
+    _minusculas: dict[str, str] | None = field(default=None, repr=False)
+    _listados: dict[Path, dict[str, str]] = field(default_factory=dict, repr=False)
 
     @classmethod
     def for_wallpaper(cls, wallpaper_dir: Path, we_assets: Path) -> AssetResolver:
@@ -75,7 +79,46 @@ class AssetResolver:
             p = root / name
             if p.is_file():
                 return p.read_bytes()
+        datos = self._sin_mayusculas(name)
+        if datos is not None:
+            return datos
         raise SceneError(f"asset sin resolver: {name!r}")
+
+    def _sin_mayusculas(self, name: str) -> bytes | None:
+        """El asset con otras mayusculas, si lo hay.
+
+        WE corre en Windows, donde `Fonts/` y `fonts/` son la misma carpeta, y
+        hay escenas que piden una y empaquetan la otra. Solo se llega aqui si
+        el nombre exacto ha fallado: lo que ya resolvia no cambia. Ver NOTAS,
+        «Mayusculas en las rutas de los assets».
+        """
+        clave = name.lower()
+        if self._minusculas is None:
+            self._minusculas = {}
+            for nombre in self.entries:
+                self._minusculas.setdefault(nombre.lower(), nombre)
+        real = self._minusculas.get(clave)
+        if real is not None:
+            return self.entries[real]
+        for root in self.roots:
+            # Cada directorio se lista una vez: los assets de WE son miles.
+            actual = root
+            for trozo in Path(clave).parts:
+                listado = self._listados.get(actual)
+                if listado is None:
+                    try:
+                        listado = {hijo.name.lower(): hijo.name for hijo in actual.iterdir()}
+                    except OSError:
+                        listado = {}
+                    self._listados[actual] = listado
+                hallado = listado.get(trozo)
+                if hallado is None:
+                    break
+                actual = actual / hallado
+            else:
+                if actual.is_file():
+                    return actual.read_bytes()
+        return None
 
     def read_text(self, name: str) -> str:
         cached = self._text.get(name)
