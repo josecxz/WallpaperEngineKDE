@@ -47,6 +47,11 @@ import wepaths
 import wescript
 import wetext
 from wescene import AssetResolver
+from localecoma import SIN_COMA, locale_con_coma
+
+# La locale de coma con que el escritorio rompe `strtof` (CLAUDE.md, regla 6):
+# `es_ES` si esta instalada, o cualquier otra de coma. Ver tools/localecoma.py.
+COMA = locale_con_coma() or "es_ES.UTF-8"
 
 RAIZ = Path(__file__).resolve().parent.parent
 
@@ -61,8 +66,10 @@ ARNES = r"""
  * nada, porque un binario en C se queda en la locale "C" por defecto. */
 int main(int argc, char **argv)
 {
-    if (argc > 2)
-        setlocale(LC_ALL, argv[2]);
+    /* Si la locale no esta instalada, `setlocale` falla y el arnes seguiria
+     * en "C": la pasada con coma no probaria nada y saldria bien. */
+    if (argc > 2 && !setlocale(LC_ALL, argv[2]))
+        return 3;
 
     FILE *f = fopen(argv[1], "r");
     if (!f) return 2;
@@ -217,12 +224,12 @@ def compara(exe: Path, plan: Path, fmt, r, etq: str,
             fallos: list[str], instantes=INSTANTES,
             tope: float | None = 0.01) -> int:
     """Python contra C para un reloj ya escrito en `plan`, con las dos
-    locales. Devuelve 1 si también coincidió con `es_ES`.
+    locales. Devuelve 1 si también coincidió con la de coma (`COMA`).
 
     Con `tope=None` el margen es el del float del C: 1e-4, o 8 ulp de float32
     a la magnitud del vértice si es mayor ---hay capas a 2400 unidades del
     centro, donde un ulp ya son 2,4e-4---."""
-    for locale in ("C", "es_ES.UTF-8"):
+    for locale in ("C", COMA):
         # `es_ES` es la que hereda el escritorio y la que rompe `strtof`.
         entrada = "\n".join(
             str(int(t.timestamp())) for t in instantes) + "\n"
@@ -412,11 +419,13 @@ def main() -> int:
     print("── relojes del corpus ──")
     print(f"  escenas con reloj    {len(escenas)}")
     print(f"  capas de reloj       {n_capas}")
-    print(f"  con la locale es_ES  {con_locale}")
+    print(f"  con la locale {COMA:<6} {con_locale}")
     print(f"  con varios renglones {renglones}")
     print(f"  sintéticos con \\n    {sinteticos} de 5")
     print(f"  con kerning (al ulp) {con_pares}")
     print(f"  caso de kerning      {kerning} de 1")
+    if locale_con_coma() is None:
+        fallos.append(SIN_COMA)
     if fallos:
         print(f"\nFALLO: {len(fallos)} discrepancias")
         for f in fallos[:20]:

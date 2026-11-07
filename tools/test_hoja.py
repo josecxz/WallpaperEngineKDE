@@ -68,6 +68,11 @@ import wescene
 import wescript
 import wetex
 from wescene import AssetResolver
+from localecoma import locale_con_coma
+
+# La locale de coma con que el escritorio rompe `strtof` (CLAUDE.md, regla 6):
+# `es_ES` si esta instalada, o cualquier otra de coma. Ver tools/localecoma.py.
+COMA = locale_con_coma() or "es_ES.UTF-8"
 
 RAIZ = Path(__file__).resolve().parent.parent
 ESCENA = "3299228616"
@@ -330,7 +335,7 @@ def prueba_por_tiempo(fallos: list[str]) -> None:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         exe = compila(tmp, ARNES_TIEMPO, "arnes_tiempo")
-        for locale in ("C", "es_ES.UTF-8"):
+        for locale in ("C", COMA):
             plan = tmp / "hoja.txt"
             plan.write_text(linea + "\n")
             p = subprocess.run([str(exe), str(plan), locale],
@@ -424,7 +429,7 @@ def prueba_varias_imagenes(fallos: list[str]) -> None:
         exe = compila(tmp, ARNES_IMAGENES, "arnes_imagenes")
         plan = tmp / "hoja.txt"
         plan.write_text(tiempo + "\n" + linea + "\n")
-        for locale in ("C", "es_ES.UTF-8"):
+        for locale in ("C", COMA):
             p = subprocess.run([str(exe), str(plan), locale],
                                input="".join(f"{t}\n" for t in INSTANTES_IMAGENES),
                                capture_output=True, text=True)
@@ -485,8 +490,17 @@ def prueba_varias_imagenes(fallos: list[str]) -> None:
             fallos.append(f"{f} no llama a we_hoja_tiempo_textura")
 
 
+def falta_escena(escena: str) -> bool:
+    """Si la escena del corpus no esta instalada. Sin ella se dice y cuenta
+    como fallo, como en test_werender, en vez de un `FileNotFoundError`."""
+    return not (Path(wepaths.we_workshop()) / escena / "scene.pkg").is_file()
+
+
 def main() -> int:
     fallos: list[str] = []
+    if falta_escena(ESCENA):
+        print(f"FALLO: falta la escena {ESCENA} del corpus: su hoja es la prueba")
+        return 1
     obj, tex, (tw, th) = capa_y_hoja()
     print(f"── hoja de {ESCENA} capa {CAPA} ──")
     print(f"  textura {tw}x{th}, {len(tex.frames)} fotogramas: "
@@ -507,13 +521,13 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         exe = compila(tmp)
-        p = subprocess.run([str(exe), "-", "es_ES.UTF-8"],
+        p = subprocess.run([str(exe), "-", COMA],
                            capture_output=True, text=True)
-        print(f"  strtof(\"0.5\") sin guarda con es_ES: {p.stdout.strip() or p.returncode}")
+        print(f"  strtof(\"0.5\") sin guarda con {COMA}: {p.stdout.strip() or p.returncode}")
         if p.returncode or float(p.stdout) != 0.0:
-            fallos.append("la locale es_ES no muerde aquí: la prueba no "
+            fallos.append(f"la locale {COMA} no muerde aquí: la prueba no "
                           "probaría la guarda")
-        for locale in ("C", "es_ES.UTF-8"):
+        for locale in ("C", COMA):
             horas = list(range(24))
             salida = corre(exe, linea, locale, horas, tmp)
             for h, fila in zip(horas, salida):
@@ -552,8 +566,11 @@ def main() -> int:
         if n < 1:
             fallos.append(f"{f} no llama a we_hoja_uniforms")
 
-    prueba_por_tiempo(fallos)
-    prueba_varias_imagenes(fallos)
+    if falta_escena(ESCENA_TIEMPO):
+        fallos.append(f"hojatiempo: falta la escena {ESCENA_TIEMPO} del corpus")
+    else:
+        prueba_por_tiempo(fallos)
+        prueba_varias_imagenes(fallos)
 
     if fallos:
         print(f"\nFALLO: {len(fallos)}")

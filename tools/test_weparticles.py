@@ -63,6 +63,7 @@ import weparticles
 import wepaths
 import wescene
 from wescene import AssetResolver
+from localecoma import locale_con_coma
 
 FUENTE_C = Path(__file__).resolve().parent.parent / "src" / "weparticles.c"
 
@@ -1235,21 +1236,6 @@ def prueba_subdivision(tmp: Path) -> list[str]:
                 fallos.append(f"{donde}: con subdivision 3 el {que} se aparta "
                               f"{d:.3g} de lo que dibuja el .geom")
     return fallos
-
-
-def locale_con_coma() -> str | None:
-    """Primera locale instalada cuyo separador decimal NO sea el punto."""
-    try:
-        salida = subprocess.run(["locale", "-a"], capture_output=True,
-                                text=True, check=True).stdout.split()
-    except Exception:
-        return None
-    disponibles = {n.lower() for n in salida}
-    for cand in ("es_es.utf8", "es_es.utf-8", "de_de.utf8", "fr_fr.utf8",
-                 "it_it.utf8", "pt_br.utf8"):
-        if cand in disponibles:
-            return next(n for n in salida if n.lower() == cand)
-    return None
 
 
 def compila_arnes(tmp: Path) -> Path | None:

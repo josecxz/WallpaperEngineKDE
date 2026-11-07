@@ -102,6 +102,7 @@ aguja, tocas los dos a la vez o divergen.
 | `tools/wescript.py` | el JavaScript de una capa de texto → plantilla de reloj |
 | `tools/wevideo.py` | cabecera MP4 (`tkhd`) y cómo encaja el vídeo en la pantalla |
 | `tools/werender.py` | **el hub**: une todo, `--emit-plan`, renderiza a PNG |
+| `tools/localecoma.py` | la locale de coma con que los tests imitan al escritorio (`es_ES`, o cualquier otra de coma instalada) |
 | `src/sceneview.cpp` | `QQuickRhiItem`; `synchronize()` es el único punto sin carrera |
 | `src/glexecutor.cpp` | ejecutor en vivo (port de `glexec.c`) |
 | `src/otragpu.cpp` | el plan en otra GPU: su contexto EGL, leer el fotograma y subirlo a Qt |

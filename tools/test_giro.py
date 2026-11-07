@@ -74,6 +74,11 @@ import pkg_inspect
 import wepaths
 import werender
 import wescript
+from localecoma import locale_con_coma
+
+# La locale de coma con que el escritorio rompe `strtof` (CLAUDE.md, regla 6):
+# `es_ES` si esta instalada, o cualquier otra de coma. Ver tools/localecoma.py.
+COMA = locale_con_coma() or "es_ES.UTF-8"
 
 RAIZ = Path(__file__).resolve().parent.parent
 ESCENA = "2396319149"
@@ -232,7 +237,7 @@ def _compara(exe: Path, tmp: Path, linea: str, lienzo: tuple[int, int],
     (tmp / "giro.txt").write_text(linea + "\n")
     entrada = "".join(f"{t!r} {base[0]!r} {base[1]!r} {base[4]!r} {base[5]!r}\n"
                       for t in ts)
-    for locale in ("C", "es_ES.UTF-8"):
+    for locale in ("C", COMA):
         r = subprocess.run([str(exe), str(tmp / "giro.txt"), locale],
                            input=entrada, capture_output=True, text=True)
         salida = r.stdout.splitlines()
@@ -316,7 +321,7 @@ def _compara_vaiven(exe: Path, tmp: Path, linea: str, lienzo, base, nombre,
     idx = (0, 1, 3, 4, 5, 7)
     entrada = "".join(f"{t!r} " + " ".join(repr(base[i]) for i in idx) + "\n"
                       for t in ts)
-    for locale in ("C", "es_ES.UTF-8"):
+    for locale in ("C", COMA):
         r = subprocess.run([str(exe), "vaiven", str(tmp / "vaiven.txt"), locale],
                            input=entrada, capture_output=True, text=True)
         salida = r.stdout.splitlines()
@@ -372,6 +377,9 @@ def _sin_parallax_en_reposo(raw, general, lienzo, base, i, forma,
 def prueba_vaiven(exe: Path, tmp: Path) -> list[str]:
     fallos: list[str] = []
     for escena, capa, campo in VAIVENES:
+        if falta_escena(escena):
+            fallos.append(f"vaiven: falta la escena {escena} del corpus")
+            continue
         d = Path(wepaths.we_workshop()) / escena
         _, ents = pkg_inspect.read_pkg(str(d / "scene.pkg"))
         sj = json.loads(next(e for e in ents if e["name"] == "scene.json")["data"])
@@ -426,7 +434,7 @@ def prueba_vaiven(exe: Path, tmp: Path) -> list[str]:
 
     # Con `@TIME@` sin poner: se lee sin tiempo y con lo de detrás.
     (tmp / "vaiven.txt").write_text("vaiven origin 1.5 2.5 0.5 0 1.5 @TIME@ 0.25 0.5\n")
-    r = subprocess.run([str(exe), "vaiven", str(tmp / "vaiven.txt"), "es_ES.UTF-8"],
+    r = subprocess.run([str(exe), "vaiven", str(tmp / "vaiven.txt"), COMA],
                        input="", capture_output=True, text=True)
     ok = r.returncode == 0 and r.stdout.split()[1:] == \
         "0 1.5 2.5 0.5 0 1.5 0 0 0.25 0.5".split()
@@ -528,8 +536,17 @@ def prueba_vaiven_de_hijos() -> list[str]:
     return fallos
 
 
+def falta_escena(escena: str) -> bool:
+    """Si la escena del corpus no esta instalada. Sin ella se dice y cuenta
+    como fallo, como en test_werender, en vez de un `FileNotFoundError`."""
+    return not (Path(wepaths.we_workshop()) / escena / "scene.pkg").is_file()
+
+
 def main() -> int:
     fallos: list[str] = []
+    if falta_escena(ESCENA):
+        print(f"FALLO: falta la escena {ESCENA} del corpus: sus agujas son la prueba")
+        return 1
     d = Path(wepaths.we_workshop()) / ESCENA
     _, ents = pkg_inspect.read_pkg(str(d / "scene.pkg"))
     sj = json.loads(next(e for e in ents if e["name"] == "scene.json")["data"])
@@ -547,11 +564,11 @@ def main() -> int:
             fallos.append(f"el plan trae {len(lineas)} líneas giro")
         exe = compila(tmp)
 
-        p = subprocess.run([str(exe), "-", "es_ES.UTF-8"], capture_output=True,
+        p = subprocess.run([str(exe), "-", COMA], capture_output=True,
                            text=True)
-        print(f"  strtod(\"0.5\") sin guarda con es_ES: {p.stdout.strip() or p.returncode}")
+        print(f"  strtod(\"0.5\") sin guarda con {COMA}: {p.stdout.strip() or p.returncode}")
         if p.returncode or float(p.stdout) != 0.0:
-            fallos.append("la locale es_ES no muerde aquí: la prueba no "
+            fallos.append(f"la locale {COMA} no muerde aquí: la prueba no "
                           "probaría la guarda")
 
         lienzos = (lienzo,) + tuple(l for l in LIENZOS if l != lienzo)
@@ -589,7 +606,7 @@ def main() -> int:
         # Una línea sin lienzo, la de un plan de antes, se sigue leyendo y lo
         # deja a 0: `we_giro_coloca` gira entonces en clip, como se horneó.
         (tmp / "giro.txt").write_text("giro -720 1 0 0 @HORA@\n")
-        r = subprocess.run([str(exe), str(tmp / "giro.txt"), "es_ES.UTF-8"],
+        r = subprocess.run([str(exe), str(tmp / "giro.txt"), COMA],
                            input="", capture_output=True, text=True)
         ok = r.returncode == 0 and r.stdout.strip() == "lienzo 0 0"
         print(f"  {'ok' if ok else 'MAL':3} línea sin lienzo: {r.stdout.strip() or r.returncode}")
