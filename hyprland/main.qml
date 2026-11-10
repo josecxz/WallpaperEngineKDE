@@ -182,7 +182,7 @@ QtObject {
                 // El `onClaveChanged` de la creacion puede haberla cargado
                 // ya; cargarla otra vez era subir las texturas dos veces.
                 if (!huecoA.active && !huecoB.active) {
-                    huecoA.planFijo = ventana.plan
+                    ventana.fijar(huecoA)
                     huecoA.active = ventana.plan !== ""
                 }
             }
@@ -228,17 +228,22 @@ QtObject {
             onClaveChanged: {
                 if (!escena.active && !otro.active) {
                     // La primera: no hay nada que tapar, va al hueco que se ve.
-                    escena.planFijo = ventana.plan
+                    ventana.fijar(escena)
                     escena.active = ventana.plan !== ""
                     return
                 }
                 console.info("Escena: plan nuevo en " + ventana.nombre
                              + ", se carga debajo de la que se ve")
                 otro.active = false
-                otro.planFijo = ventana.plan
+                ventana.fijar(otro)
                 otro.active = ventana.plan !== ""
                 if (!otro.active)
                     escena.active = false
+            }
+            // El plan de un hueco, y si es web, leidos en el momento de cargarlo.
+            function fijar(h) {
+                h.planFijo = ventana.plan
+                h.webUrl = app.urlWeb(ventana.plan)
             }
             function relevo(h) {
                 if (h !== otro || !h.item || !h.item.dibujado)
@@ -253,7 +258,11 @@ QtObject {
                 id: huecoA
                 anchors.fill: parent
                 property string planFijo: ""
-                readonly property string webUrl: app.urlWeb(planFijo)
+                // Se fija con el plan, en `fijar`, y no como binding sobre
+                // `planFijo`: la ruta es la misma de un plan al siguiente
+                // (`plan.txt`), el binding no se reevaluaba y al pasar de un
+                // web a una escena el hueco volvia a cargar el web anterior.
+                property string webUrl: ""
                 active: false
                 z: ventana.turno === 0 ? 1 : 0
                 sourceComponent: webUrl ? app.componenteWeb() : escenaComponente
@@ -263,7 +272,11 @@ QtObject {
                 id: huecoB
                 anchors.fill: parent
                 property string planFijo: ""
-                readonly property string webUrl: app.urlWeb(planFijo)
+                // Se fija con el plan, en `fijar`, y no como binding sobre
+                // `planFijo`: la ruta es la misma de un plan al siguiente
+                // (`plan.txt`), el binding no se reevaluaba y al pasar de un
+                // web a una escena el hueco volvia a cargar el web anterior.
+                property string webUrl: ""
                 active: false
                 z: ventana.turno === 1 ? 1 : 0
                 sourceComponent: webUrl ? app.componenteWeb() : escenaComponente
