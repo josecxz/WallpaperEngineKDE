@@ -43,6 +43,16 @@ class SceneError(Exception):
     pass
 
 
+_CADENA_O_COMA_RE = re.compile(r'"(?:[^"\\]|\\.)*"|,(?=\s*[\]}])')
+
+
+def _sin_comas_finales(texto: str) -> str:
+    """Quita la coma que precede a `]` o `}`, sin tocar las de dentro de una
+    cadena: las cadenas casan antes y se devuelven tal cual."""
+    return _CADENA_O_COMA_RE.sub(
+        lambda m: m.group(0) if m.group(0).startswith('"') else "", texto)
+
+
 @dataclass
 class AssetResolver:
     """Sistema de ficheros virtual: primero el paquete, luego los assets de WE.
@@ -131,10 +141,17 @@ class AssetResolver:
         cached = self._json.get(name)
         if cached is not None:
             return cached
+        texto = self.read_text(name)
         try:
-            parsed = json.loads(self.read_text(name))
+            parsed = json.loads(texto)
         except json.JSONDecodeError as e:
-            raise SceneError(f"json invalido en {name!r}: {e}") from e
+            # WE lee una coma antes de `]` o `}`, y la trae su propio
+            # `effects/fluidsimulation/effect.json`. Solo si el JSON estricto
+            # falla: lo que ya se leia no cambia.
+            try:
+                parsed = json.loads(_sin_comas_finales(texto))
+            except json.JSONDecodeError:
+                raise SceneError(f"json invalido en {name!r}: {e}") from e
         self._json[name] = parsed
         return parsed
 
