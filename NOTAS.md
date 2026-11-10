@@ -13077,3 +13077,53 @@ Funciona: para el fondo, mide y lo devuelve. Dos cosas que en Plasma no se ven:
   saca igual, y el usuario ve un fondo negro.
 - Con el monitor tapado y en pausa, un plan nuevo se carga en el otro hueco y
   el relevo espera a que se destape: mientras, dos escenas en memoria.
+
+### Segunda pasada: 118 wallpapers
+
+Con la biblioteca ampliada a 118 (58 escenas, 43 vídeos, 15 web, 2 sin tipo),
+la batería entera y `test_luminancia` también sobre `main`: **la luz da lo
+mismo en la rama que en `main`**, 0 regresiones en cada arreglo.
+
+Arreglado:
+
+- **`test_wevideo` acusaba al motor de dos convenciones suyas.** Un vídeo cuya
+  pista de imagen empieza un fotograma después que el audio (`start_time`
+  0,0167) lo cuenta `src/wevideo.c` desde su primer fotograma, y `ffmpeg -ss`
+  desde el del fichero: el oráculo iba un fotograma por detrás y daba 190 de
+  diferencia con los píxeles idénticos (con +1 fotograma, diferencia 0). Y un
+  vídeo con píxeles no cuadrados (SAR 986:985) da en `tkhd` el tamaño de
+  presentación, 3843, frente al codificado de `ffprobe`, 3840; para encajarlo
+  vale el de presentación. 51/51 dimensiones y 153/153 fotogramas.
+- **Un bool como valor inicial de una declaración numérica** (`const float
+  mask = (luz > 0.5);`), el mismo C7011 que en la asignación compuesta.
+  `wescene` 404/406 (antes 403); `weshader`, idéntico.
+- **La fuente atada a un script** viaja como `{"value": ...}` igual que el texto
+  y `resolver_fuente` solo aceptaba la cadena: «el objeto no declara fuente».
+- **Una coma antes de `]` o `}`**: la trae el propio
+  `effects/fluidsimulation/effect.json` de WE, así que su lector la acepta. Se
+  reintenta sin las comas solo si el JSON estricto falla. 0 referencias sin
+  resolver y 20 variantes más, todas compilan. La escena que lo usa
+  (`3159990660`) pasa de 18 a 36 pases por fotograma.
+
+Visto y sin tocar:
+
+- `color_grading` (`2795521260`): `albedo.rgb = greyscale(albedo.rgb);` con
+  `greyscale` escalar. La difusión no se hace porque `greyscale` tiene la llave
+  en la línea siguiente y `_FUNC_RE` no la ve; ampliarlo está descartado en
+  `weglsl.py`. `shadow_map` (`2821337237`): con `SHADOWMASK 0` la función queda
+  sin `return`.
+- `2268178377` y `3000562427` piden fuentes (`FSEX302-alt.ttf`,
+  `MobileFont.ttf`) que no vienen ni en su paquete ni en los assets de WE. Qué
+  dibuja WE entonces no se sabe.
+- `3088099655` (*terminal | world clock*): los valores salen vacíos; el script
+  lee `registerAudioBuffers` y `timeOfDay`, fuera de lo que interpreta
+  `wescript`. `3041138949` (*Half Life 2*) sale «APAGADA» y está bien salvo el
+  pulso verde, que va con el audio.
+- `test_wetext` (caja) y tres comprobaciones de `test_wescript` cuentan casos
+  exactos del corpus de 133: con otra biblioteca fallan sin haber nada roto. La
+  misma fuente (Quicksand-Bold) da la caja de WE al 1,00 en una escena y al 1,36
+  en otra, así que no es `UNIDADES_POR_PUNTO`.
+- En vivo (`medir_vivo`, dos monitores, `gpu dedicada`): PipBoy 46 fps, Dystopic
+  City Port 50, FNAF 55, y **Counter Strike: Howl 29**, igual en `main`. En Howl
+  el render son 2 ms y la copia de lectura 25-29 ms, con `i915:render` al 92 % y
+  la NVIDIA a ~800 MHz: el tope es la copia hacia la Intel, no la escena.

@@ -76,6 +76,7 @@ make indice                       # reescribe los números desde NOTAS.md
 - `13041` **`wectl pantallas mismo` ya no rearranca** — solo pasar a `independiente` necesita `--planes`.
 - `13048` **`medir_vivo` en Hyprland, ejecutado** — una pantalla tapada no recibe fotogramas aunque sea `--pausa 0`; el techo de 42 fps de DP-1 no es del motor.
 - `13063` **Lo que se ha visto y no se ha tocado** — el rectángulo verde de Signalis (`composelayer` con hija), el falso «apagada» de Cat and bee y las escenas 3D en `shuffle`.
+- `13081` **Segunda pasada: 118 wallpapers** — la luz igual que en `main`; el oráculo de `test_wevideo`, un bool inicial, la fuente en `{value}` y la coma final de WE; Howl a 29 fps también en `main`, por la copia hacia la Intel.
 - `10829` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
 - `10843` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10865` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.
