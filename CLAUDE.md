@@ -110,6 +110,7 @@ aguja, tocas los dos a la vez o divergen.
 | `src/hyprland.cpp` | lo mismo en Hyprland por su IPC: pausa, cursor, y el vigía del `plan.txt` |
 | `plugin/contents/ui/Escenas.qml` | el fondo en Plasma: vigila el plan y carga la escena nueva debajo; sin nada de Plasma, para probarlo en un arnés |
 | `hyprland/main.qml` | el fondo en Hyprland: una superficie layer-shell por monitor (`make hyprland`) |
+| `hyprland/Web.qml` | un wallpaper web en Hyprland: `WebEngineView` y los scripts que imitan la API de WE (`werender.plan_de_web`) |
 | `src/weparticles.c` | simulador, **compartido** por los dos ejecutores |
 | `src/wevideo.c` | decodificador libav, **compartido** por los dos ejecutores |
 | `src/wereloj.c` | rehace los quads de un reloj, **compartido** por los dos |
@@ -164,7 +165,8 @@ make plan WALLPAPER=<ruta>     # deja plan.txt en plugin/contents/scene/
 
 ## Qué no soporta
 
-Wallpapers de tipo web, audio (ni el reactivo ni la pista de los vídeos),
+Wallpapers de tipo web **en Plasma** (en Hyprland sí, con QtWebEngine:
+`hyprland/Web.qml`, opcional), audio (ni el reactivo ni la pista de los vídeos),
 modelos 3D, focos y luces direccionales. El **bloom** sí, con la cadena LDR de
 WE (`werender.py`, `_emit_bloom`); el camino HDR de nueve escenas usa esa misma
 cadena porque no hay buffers en coma flotante. El vídeo se reproduce, pero

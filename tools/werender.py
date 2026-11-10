@@ -4211,6 +4211,107 @@ def video_de(wallpaper: Path) -> Path | None:
     return f if f.is_file() else None
 
 
+def web_de(wallpaper: Path) -> Path | None:
+    """El HTML de entrada de un wallpaper de tipo `web`, o None si no lo es."""
+    pj = wallpaper / "project.json"
+    if not pj.is_file():
+        return None
+    try:
+        j = json.loads(pj.read_text(errors="replace"))
+    except (ValueError, OSError):
+        return None
+    if str(j.get("type", "")).lower() != "web":
+        return None
+    f = wallpaper / str(j.get("file", "index.html"))
+    return f if f.is_file() else None
+
+
+# Lo que WE da a una pagina web y aqui no hay: el audio, los medios del
+# sistema, los ficheros del usuario. Se definen vacias ANTES de que corra la
+# pagina para que llamarlas no lance una excepcion y corte el resto del
+# script: 13 de los 15 web de la biblioteca registran un oyente de audio en su
+# arranque. Las propiedades si llegan, con los valores de `project.json`, como
+# las aplica WE al cargar.
+_WEB_STUBS = """(function () {
+  // El tope de fotogramas. Sin el, Chromium dibuja al ritmo del monitor
+  // ---144 y 165 Hz en la maquina donde se midio---, y en cada pantalla.
+  // `window.__weFps` lo pone `hyprland/Web.qml` desde `--fps` antes de este
+  // script; 0 es sin tope. Se frena `requestAnimationFrame`, que es como
+  // anima casi toda pagina: el callback solo corre cuando ha pasado un
+  // intervalo entero, y si no se vuelve a pedir al siguiente refresco.
+  var fps = +window.__weFps || 0;
+  if (fps > 0 && typeof window.requestAnimationFrame === "function") {
+    var nativo = window.requestAnimationFrame.bind(window);
+    var intervalo = 1000 / fps, ultimo = -1e9, cola = [], pedido = false, n = 0;
+    var tick = function (t) {
+      pedido = false;
+      // 1 ms de margen: el refresco no llega exacto al intervalo.
+      if (t - ultimo < intervalo - 1) { pedido = true; nativo(tick); return; }
+      ultimo = t;
+      var lista = cola; cola = [];
+      for (var i = 0; i < lista.length; i++)
+        try { lista[i].f(t); } catch (e) { console.error(e); }
+    };
+    window.requestAnimationFrame = function (f) {
+      cola.push({ id: ++n, f: f });
+      if (!pedido) { pedido = true; nativo(tick); }
+      return n;
+    };
+    window.cancelAnimationFrame = function (id) {
+      cola = cola.filter(function (x) { return x.id !== id; });
+    };
+  }
+  var nada = function () {};
+  var nombres = ["wallpaperRegisterAudioListener", "wallpaperRegisterMediaStatusListener",
+    "wallpaperRegisterMediaPropertiesListener", "wallpaperRegisterMediaThumbnailListener",
+    "wallpaperRegisterMediaPlaybackListener", "wallpaperRegisterMediaTimelineListener",
+    "wallpaperRequestRandomFileForProperty"];
+  for (var i = 0; i < nombres.length; i++)
+    if (typeof window[nombres[i]] !== "function") window[nombres[i]] = nada;
+})();
+"""
+
+_WEB_PROPIEDADES = """(function () {
+  var usuario = %s;
+  var general = %s;
+  if (+window.__weFps > 0) general.fps = +window.__weFps;
+  window.__wePausa = function (p) {
+    var l = window.wallpaperPropertyListener;
+    if (l && typeof l.setPaused === "function") try { l.setPaused(p); } catch (e) { console.error(e); }
+  };
+  var l = window.wallpaperPropertyListener;
+  if (!l) return;
+  if (typeof l.applyGeneralProperties === "function")
+    try { l.applyGeneralProperties(general); } catch (e) { console.error(e); }
+  if (typeof l.applyUserProperties === "function")
+    try { l.applyUserProperties(usuario); } catch (e) { console.error(e); }
+})();
+"""
+
+
+def plan_de_web(wallpaper: Path, html: Path, out_dir: Path,
+                fps: int = 60) -> dict:
+    """El plan de un wallpaper web: no hay grafo, solo la pagina.
+
+    `plan.txt` lleva el titulo y una linea `web <url>`; el anfitrion de
+    Hyprland la ve y pone un `WebEngineView` en vez del `SceneView`. Junto al
+    plan van los dos scripts que se inyectan en la pagina (`web-antes.js`,
+    antes de que corra; `web-despues.js`, al acabar de cargar).
+    """
+    j = json.loads((wallpaper / "project.json").read_text(errors="replace"))
+    props = (j.get("general") or {}).get("properties") or {}
+    usuario = {k: {"value": v.get("value")} for k, v in props.items()
+               if isinstance(v, dict) and "value" in v}
+    general = {"fps": fps}
+    (out_dir / "web-antes.js").write_text(_WEB_STUBS)
+    (out_dir / "web-despues.js").write_text(
+        _WEB_PROPIEDADES % (json.dumps(usuario), json.dumps(general)))
+    titulo = j.get("title", wallpaper.name)
+    (out_dir / "plan.txt").write_text(
+        f"title {titulo} ({wallpaper.name})\nweb {html.resolve().as_uri()}\n")
+    return {"pases": 0, "web": str(html), "propiedades": len(usuario)}
+
+
 def plan_de_video(mp4: Path, out_dir: Path, destino: Path,
                   resolucion: tuple[int, int] | None,
                   marca: str) -> tuple[list[str], tuple[int, int], dict]:
@@ -4326,6 +4427,12 @@ def emit_plan(wallpaper: Path, out_dir: Path,
     # Un wallpaper de tipo video no tiene grafo que resolver. Se despacha aqui
     # y no en quien llama para que `wectl` ---y cualquier otro--- no tenga que
     # saber de que tipo es lo que esta poniendo.
+    html = web_de(wallpaper)
+    if html is not None:
+        stats = plan_de_web(wallpaper, html, out_dir)
+        stats["plan"] = str(destino / "plan.txt")
+        return stats
+
     mp4 = video_de(wallpaper)
     if mp4 is not None:
         lineas, canvas, stats = plan_de_video(mp4, out_dir, destino,

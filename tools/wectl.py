@@ -294,6 +294,8 @@ def hyprland_arrancar() -> None:
         PANTALLAS.mkdir(parents=True, exist_ok=True)
         planes = ["--planes", str(PANTALLAS)]
     entorno = {"QT_FORCE_STDERR_LOGGING": "1",
+               # Para que `hyprland/main.qml` lea el plan y sepa si es web.
+               "QML_XHR_ALLOW_FILE_READ": "1",
                "QML_IMPORT_PATH": ":".join(
                    p for p in (str(MODULOS_QML), os.environ.get("QML_IMPORT_PATH"))
                    if p)}
@@ -373,13 +375,22 @@ def _plano(s: str) -> str:
 def _ejecutable(d: Path) -> bool:
     """Si este motor sabe poner ese wallpaper.
 
-    Dos formas: una escena (`scene.pkg`) o un video. Los de tipo `web` siguen
-    fuera. Los de video estuvieron fuera hasta que el motor aprendio a
-    decodificarlos ---lo necesitaba para las tres escenas cuya capa de fondo es
-    un MP4 dentro del `.tex`, y desde ahi los 15 de la biblioteca salen casi
+    Tres formas: una escena (`scene.pkg`), un video o, solo en Hyprland y con
+    QtWebEngine instalado, una pagina web. Los de video estuvieron fuera hasta
+    que el motor aprendio a decodificarlos ---lo necesitaba para las tres
+    escenas cuya capa de fondo es un MP4 dentro del `.tex`, y desde ahi los 15 de la biblioteca salen casi
     gratis: su plan es un quad con la textura encima.
     """
-    return (d / "scene.pkg").is_file() or werender.video_de(d) is not None
+    if (d / "scene.pkg").is_file() or werender.video_de(d) is not None:
+        return True
+    # Los web los pone solo el anfitrion de Hyprland (`hyprland/main.qml`,
+    # con QtWebEngine); el plugin de Plasma todavia no.
+    return werender.web_de(d) is not None and en_hyprland() and _hay_webengine()
+
+
+def _hay_webengine() -> bool:
+    return any((Path(p) / "QtWebEngine").is_dir()
+               for p in ("/usr/lib/qt6/qml", "/usr/lib64/qt6/qml"))
 
 
 def tipo_de(d: Path) -> str | None:

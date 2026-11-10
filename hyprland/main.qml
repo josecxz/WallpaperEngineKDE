@@ -77,6 +77,39 @@ QtObject {
 
     property VigiaArchivo vigia: VigiaArchivo { ruta: app.plan }
 
+    // La `url` de un plan web (`web <url>`, de `werender.plan_de_web`), o ""
+    // si es una escena o un video. Se lee el plan con un XHR sincrono:
+    // `wectl` arranca el fondo con `QML_XHR_ALLOW_FILE_READ=1`.
+    // `Web.qml` se compila solo cuando hace falta: sin `qt6-webengine`, su
+    // `import QtWebEngine` falla, y asi solo fallan los web.
+    // Un objeto y no una propiedad: guardarlo en una propiedad que lee el
+    // binding de `sourceComponent` era un bucle de bindings.
+    readonly property var _cache: ({})
+    function componenteWeb() {
+        if (!_cache.web) {
+            _cache.web = Qt.createComponent(Qt.resolvedUrl("Web.qml"))
+            if (_cache.web.status === Component.Error)
+                console.warn("hyprland/main.qml: " + _cache.web.errorString())
+        }
+        return _cache.web
+    }
+
+    function urlWeb(ruta) {
+        if (!ruta)
+            return ""
+        const xhr = new XMLHttpRequest()
+        try {
+            xhr.open("GET", "file://" + ruta, false)
+            xhr.send()
+        } catch (e) {
+            return ""
+        }
+        for (const linea of (xhr.responseText || "").split("\n"))
+            if (linea.startsWith("web "))
+                return linea.substring(4).trim()
+        return ""
+    }
+
     Component.onCompleted: {
         app.sincronizarMonitores()
         if (!app.plan)
@@ -220,17 +253,21 @@ QtObject {
                 id: huecoA
                 anchors.fill: parent
                 property string planFijo: ""
+                readonly property string webUrl: app.urlWeb(planFijo)
                 active: false
                 z: ventana.turno === 0 ? 1 : 0
-                sourceComponent: escenaComponente
+                sourceComponent: webUrl ? app.componenteWeb() : escenaComponente
+                onLoaded: if (webUrl) ventana.prepararWeb(item, planFijo, webUrl)
             }
             Loader {
                 id: huecoB
                 anchors.fill: parent
                 property string planFijo: ""
+                readonly property string webUrl: app.urlWeb(planFijo)
                 active: false
                 z: ventana.turno === 1 ? 1 : 0
-                sourceComponent: escenaComponente
+                sourceComponent: webUrl ? app.componenteWeb() : escenaComponente
+                onLoaded: if (webUrl) ventana.prepararWeb(item, planFijo, webUrl)
             }
             Connections {
                 target: huecoA.item
@@ -241,6 +278,14 @@ QtObject {
                 target: huecoB.item
                 ignoreUnknownSignals: true
                 function onStatusChanged() { ventana.relevo(huecoB) }
+            }
+
+            function prepararWeb(item, plan, url) {
+                item.colorFondo = app.color
+                item.fpsMax = app.fpsMax
+                item.dirPlan = plan.substring(0, plan.lastIndexOf("/"))
+                item.pausado = Qt.binding(() => hypr.tapado && item.dibujado)
+                item.direccion = url
             }
 
             Component {

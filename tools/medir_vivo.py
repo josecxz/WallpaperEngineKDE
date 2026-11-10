@@ -207,6 +207,7 @@ def _arrancar(plan: Path, extra: list[str]) -> int:
     cfg = wectl._config_hyprland()
     gpu = "integrada" if cfg.get("gpu") == "integrada" else "dedicada"
     entorno = {"QT_FORCE_STDERR_LOGGING": "1", "WE_MEDIDAS": "1",
+               "QML_XHR_ALLOW_FILE_READ": "1",
                "QML_IMPORT_PATH": str(wectl.MODULOS_QML)}
     for var in ("WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
                 "XDG_CURRENT_DESKTOP", "XDG_RUNTIME_DIR"):

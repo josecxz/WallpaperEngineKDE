@@ -77,6 +77,11 @@ make indice                       # reescribe los números desde NOTAS.md
 - `13048` **`medir_vivo` en Hyprland, ejecutado** — una pantalla tapada no recibe fotogramas aunque sea `--pausa 0`; el techo de 42 fps de DP-1 no es del motor.
 - `13063` **Lo que se ha visto y no se ha tocado** — el rectángulo verde de Signalis (`composelayer` con hija), el falso «apagada» de Cat and bee y las escenas 3D en `shuffle`.
 - `13081` **Segunda pasada: 118 wallpapers** — la luz igual que en `main`; el oráculo de `test_wevideo`, un bool inicial, la fuente en `{value}` y la coma final de WE; Howl a 29 fps también en `main`, por la copia hacia la Intel.
+- `13131` **Wallpapers web en Hyprland** — QtWebEngine en el anfitrión de Hyprland, opcional; Plasma sigue sin ellos.
+- `13139` **Cómo** — `plan_de_web` y la línea `web <url>`, el XHR del plan, `Web.qml` solo si hace falta, y los dos scripts que imitan la API de WE.
+- `13160` **Lo que sale** — 14 de 15 a la primera; la caída del proceso de GPU de Chromium es intermitente y sin aviso, y se recarga a los 15 s.
+- `13173` **Lo que cuestan** — de 7 % a 261 % de CPU; la página corre una vez por monitor; el tope a 30 fps y la pausa ayudan, los flags de GPU no.
+- `13192` **Lo que queda** — una sola página para todos los monitores, el audio, Plasma y la versión de QtWebEngine.
 - `10829` **Qué vale y qué no** — el fps del HUD no; el cronómetro sí pero salía una vez; `fdinfo` solo para la integrada; nadie contaba los fotogramas ejecutados.
 - `10843` **Los dos instrumentos** — la línea `SceneView: medida` y el medidor externo; y el fallo de las dos pantallas con el mismo nombre.
 - `10865` **El ruido** — tres medidas de `2788165557`: fps < 0,5 %, CPU/GPU por fotograma hasta 8 %. Un cambio cuenta si pasa del 10 % en tres medidas.

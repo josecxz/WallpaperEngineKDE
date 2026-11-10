@@ -13127,3 +13127,75 @@ Visto y sin tocar:
   City Port 50, FNAF 55, y **Counter Strike: Howl 29**, igual en `main`. En Howl
   el render son 2 ms y la copia de lectura 25-29 ms, con `i915:render` al 92 % y
   la NVIDIA a ~800 MHz: el tope es la copia hacia la Intel, no la escena.
+
+## Wallpapers web en Hyprland
+
+Los 15 `web` de la biblioteca de la máquina de Hyprland (los de la sección
+anterior) se ponen ahora en el anfitrión de Hyprland con **QtWebEngine**
+(Chromium): `hyprland/Web.qml`, un `WebEngineView` en lugar del `SceneView`.
+Plasma sigue sin ellos. Es opcional: sin `qt6-webengine`, `wectl` no los
+ofrece y el resto del fondo no cambia.
+
+### Cómo
+
+- `werender.plan_de_web`: el plan es el título y una línea `web <url>`, más
+  dos scripts junto a él. `emit_plan` despacha como con los vídeos, y `wectl`
+  no sabe de qué tipo es lo que pone; solo `_ejecutable` admite `web` si está
+  en Hyprland y hay QtWebEngine.
+- `main.qml` lee el plan con un XHR síncrono (`QML_XHR_ALLOW_FILE_READ=1`, en
+  `wectl` y en `medir_vivo`) y, si es web, el hueco carga `Web.qml` en vez de
+  la escena. `Web.qml` se compila solo entonces: su `import QtWebEngine`
+  rompería el fondo entero si no estuviera instalado. El componente se guarda
+  en un objeto y no en una propiedad: leerla y escribirla desde el binding de
+  `sourceComponent` era un bucle de bindings.
+- Lo que WE le da a la página: `web-antes.js` define vacías las funciones de
+  audio y medios (`wallpaperRegisterAudioListener` y las cinco de medios; 13
+  de los 15 registran el audio al arrancar y, sin ellas, una excepción corta
+  el resto del script) y `web-despues.js` llama a `applyGeneralProperties` y
+  `applyUserProperties` con los valores de `project.json`, en `Deferred`,
+  cuando la página ya ha registrado su `wallpaperPropertyListener`.
+- Tapado del todo, el `WebEngineView` se oculta, se congela
+  (`LifecycleState.Frozen`) y la página recibe `setPaused`, como en WE.
+
+### Lo que sale
+
+14 de 15 cargan y se ven animados a la primera. `Forward Air Base`
+(`3829499782`, three.js) se quedaba en negro: el proceso de GPU de Chromium
+cae con `GPU state invalid after WaitForGetOffsetInRange`. Con
+`--disable-gpu-compositing` carga, pero los otros 14 pasan de 1268 % a
+3378 % de CPU sumada (`Rhine Lab`, de 97 % a 766 %): no se usa. Repetido
+después, carga cinco de cinco; y `桌面鱼池` (`3810169247`) falló una de cuatro.
+Es intermitente y **sin aviso**: ni `LoadSucceeded` ni `LoadFailed`, y la CPU a
+cero. Por eso `Web.qml` recarga si a los 15 s no ha cargado, o si el proceso
+de la página termina, hasta tres veces. En diez cargas seguidas no hizo falta:
+el reintento está escrito y **no se ha visto actuar**.
+
+### Lo que cuestan
+
+Con dos monitores y sin pausa, CPU del árbol entero (el `qml` y los
+`QtWebEngineProcess`) y memoria: de 7 % y 0,8 GB (`Neofetch Terminal`) a
+261 % y 1,5 GB (`Outer Wilds`); la mediana, 89 %. Mucho más que una escena.
+Repartido en `Outer Wilds`: un `renderer` por pantalla al 95-99 % cada uno, y
+el `qml` al 83 %. **La página corre dos veces**, una por monitor.
+
+- **El tope de fotogramas.** Los monitores van a 144 y 165 Hz, y la página no
+  tenía tope. `web-antes.js` frena `requestAnimationFrame` al `--fps` del
+  anfitrión (60 por defecto). A 60 no cambia nada (1268 % → 1504 %, ruido):
+  Qt ya entregaba a unos 60. A 30, 1100 % (−13 % sumado; `Resident Evil 4`,
+  de 93 % a 5 %). Por eso el tope sigue a `--fps` y no hay uno propio.
+- **La GPU en Chromium.** `--ignore-gpu-blocklist --enable-gpu-rasterization`,
+  y con `--enable-zero-copy --use-vulkan`, en los cuatro más caros: 735 %,
+  720 % y 732 %. Nada. El gasto es el JavaScript de la página, no el raster.
+- **La pausa sí.** `Outer Wilds` con una pantalla tapada por una terminal y la
+  otra a la vista, de 270 % a 128 %.
+
+### Lo que queda
+
+- Dibujar la página **una vez** para todos los monitores en modo `mismo`:
+  ahora es un `WebEngineView` por pantalla, y eso es casi la mitad del gasto.
+- El audio reactivo y los medios del sistema: las funciones existen y no
+  llaman nunca. `wallpaperRequestRandomFileForProperty` y las propiedades de
+  tipo `directory`, igual.
+- Plasma: `Web.qml` no está en el plugin.
+- QtWebEngine 6.11.3 sobre Qt 6.12.0 (CachyOS adelantado a Arch): funciona,
+  pero no es la combinación que se compila junta.

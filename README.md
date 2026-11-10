@@ -39,8 +39,10 @@ SceneView: backend OpenGL, plan con 50 pases, lienzo 2560x1440,
   ---y 30 fps--- a 1,2 ms, y el fondo va a 165 fps. `wectl gpu integrated` lo
   devuelve a la integrada en caliente, por ejemplo para ahorrar batería.
 
-No soporta wallpapers de tipo web, ni audio: ni el reactivo ni la pista de
-sonido de los vídeos.
+No soporta wallpapers de tipo web en Plasma, ni audio: ni el reactivo ni la
+pista de sonido de los vídeos. En Hyprland los web sí se ponen si está
+instalado `qt6-webengine` (Chromium); sin audio, y cuestan bastante más CPU y
+memoria que una escena.
 
 ## Instalación
 
@@ -125,7 +127,7 @@ $ wectl list irelia
 ```
 
 El tipo es el que declara el propio `project.json`. La lista los enseña
-**todos**, incluidos los `web`, que este motor no pone: un wallpaper que no
+**todos**, incluidos los `web`, que este motor no pone en Plasma: un wallpaper que no
 aparece no se distingue de uno que no está instalado, y esa es justo la duda
 de quien no encuentra el suyo. El pie dice cuáles no se pueden poner, y
 `set` sobre uno de ellos lo explica en vez de decir que no existe.
