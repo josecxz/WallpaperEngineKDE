@@ -139,8 +139,12 @@ def resolver_fuente(res: AssetResolver, nombre: str) -> bytes:
     Los tres origenes existen de verdad en el corpus: 47 objetos traen la
     fuente dentro de su propio `scene.pkg` (`fonts/workshop/<id>/…`), 37 la
     toman de la instalacion de WE y 83 piden una del sistema.
+
+    La fuente atada a un script o a una propiedad viaja como `{"value": ...}`,
+    igual que el texto: manda `value`.
     """
-    if not isinstance(nombre, str) or not nombre:
+    nombre = texto_de(nombre)
+    if not nombre:
         raise TextoError("el objeto no declara fuente")
     if nombre.startswith("systemfont_"):
         blob = _por_fontconfig(nombre[len("systemfont_"):])
