@@ -196,14 +196,24 @@ def colorimetria(f: Path) -> tuple[str, str]:
 
 
 def ffprobe_dim(f: Path) -> tuple[int, int] | None:
+    """Tamano de PRESENTACION, que es el que da `tkhd`: con pixeles no
+    cuadrados (`sample_aspect_ratio` distinto de 1:1) el ancho codificado se
+    estira. Un 3840 con SAR 986:985 se presenta a 3843 y asi hay que encajarlo."""
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                        "-show_entries", "stream=width,height", "-of", "json",
-                        str(f)], capture_output=True, text=True)
+                        "-show_entries", "stream=width,height,sample_aspect_ratio",
+                        "-of", "json", str(f)], capture_output=True, text=True)
     try:
         s = json.loads(r.stdout)["streams"][0]
-        return int(s["width"]), int(s["height"])
+        w, h = int(s["width"]), int(s["height"])
     except Exception:
         return None
+    try:
+        num, den = (int(x) for x in str(s.get("sample_aspect_ratio")).split(":"))
+        if num > 0 and den > 0:
+            w = w * num // den
+    except ValueError:
+        pass
+    return w, h
 
 
 def prueba_dimensiones(casos) -> list[str]:
@@ -229,10 +239,24 @@ def prueba_dimensiones(casos) -> list[str]:
     return fallos
 
 
+def inicio_video(f: Path) -> float:
+    """`start_time` de la pista de imagen. `src/wevideo.c` cuenta t desde ahi
+    y `ffmpeg -ss` desde el del fichero: si el video arranca un fotograma
+    despues que el audio, sin sumarlo el oraculo va un fotograma por detras."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=start_time", "-of", "json",
+                        str(f)], capture_output=True, text=True)
+    try:
+        return max(0.0, float(json.loads(r.stdout)["streams"][0]["start_time"]))
+    except Exception:
+        return 0.0
+
+
 def frame_ffmpeg(f: Path, t: float, tmp: Path,
                  color: tuple[str, str]) -> np.ndarray | None:
     dst = tmp / "ref.raw"
     matriz, rango = color
+    t += inicio_video(f)
     r = subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{t:.6f}",
                         "-i", str(f), "-frames:v", "1",
                         "-vf", f"scale=in_color_matrix={matriz}:"
