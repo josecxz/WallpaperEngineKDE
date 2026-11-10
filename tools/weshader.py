@@ -895,6 +895,12 @@ def truncar_asignaciones(body: str) -> str:
                 # HLSL convierte solo de flotante a entero al asignar; GLSL no.
                 if got[0] == "float" and base_destino in ("int", "uint"):
                     expr = f"{base_destino}({expr})"
+                # Y de bool a numero: `float mask = (luz > 0.5);` vale 1 o 0
+                # en HLSL, y NVIDIA lo rechaza en GLSL (C7011), igual que en
+                # una asignacion.
+                elif (got[0] == "bool" and got[1] == 1 and destino == 1
+                        and base_destino in ("float", "int", "uint")):
+                    expr = f"{base_destino}({expr})"
             elif destino == 1 and base_destino in ("int", "uint"):
                 expr = _sin_uint(expr, visible)
                 # Sin poder afirmar el tipo, un destino entero se envuelve
